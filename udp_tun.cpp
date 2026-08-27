@@ -31,6 +31,24 @@ constexpr std::size_t protocol_header_v2_size = 32;
 constexpr std::size_t buffer_size = 65536;
 constexpr int keepalive_seconds = 5;
 
+enum class LogLevel {
+    quiet = 0,
+    info = 1,
+    debug = 2,
+};
+
+LogLevel log_level = LogLevel::info;
+
+bool log_enabled(LogLevel level) {
+    return static_cast<int>(log_level) >= static_cast<int>(level);
+}
+
+void log_info(const std::string& message) {
+    if (log_enabled(LogLevel::info)) {
+        std::cerr << message << "\n";
+    }
+}
+
 enum class PacketType : std::uint8_t {
     hello = 1,
     keepalive = 2,
@@ -51,6 +69,10 @@ struct Packet {
 };
 
 void dump_bytes(const std::string& prefix, const std::uint8_t* data, std::size_t size, std::size_t max_bytes = 28) {
+    if (not log_enabled(LogLevel::debug)) {
+        return;
+    }
+
     std::cerr << prefix << " " << size << " bytes:";
 
     const std::size_t count = std::min(size, max_bytes);
@@ -413,11 +435,13 @@ public:
         ascon::mac(node_key_, tunnel_id_, mac_input.data(), mac_input.size(), tag);
         std::memcpy(output.data() + 16, tag.data(), tag.size());
 
-        std::cerr
-            << "ENCODE v2 seq=" << packet.sequence
-            << " payload=" << packet.payload.size()
-            << " output=" << output.size()
-            << "\n";
+        if (log_enabled(LogLevel::debug)) {
+            std::cerr
+                << "ENCODE v2 seq=" << packet.sequence
+                << " payload=" << packet.payload.size()
+                << " output=" << output.size()
+                << "\n";
+        }
 
         return output;
     }
@@ -706,23 +730,27 @@ public:
                     } else if (version == protocol_version_v1 and allow_v1_) {
                         decoded = protocol_v1_.decode(buffer.data(), static_cast<std::size_t>(received), packet);
                     } else {
-                        std::cerr << "DROP protocol version " << static_cast<unsigned>(version) << " not allowed\n";
+                        if (log_enabled(LogLevel::info)) {
+                            std::cerr << "DROP protocol version " << static_cast<unsigned>(version) << " not allowed\n";
+                        }
                         continue;
                     }
 
                     if (not decoded) {
-                        std::cerr << "DROP invalid/auth-failed protocol packet\n";
+                        log_info("DROP invalid/auth-failed protocol packet");
                         continue;
                     }
 
                     if (packet.tunnel_id != tunnel_id_) {
-                        std::cerr << "DROP tunnel id mismatch\n";
+                        log_info("DROP tunnel id mismatch");
                         continue;
                     }
 
                     if (packet.protocol_version == protocol_version_v2) {
                         if (not replay_window_.accept(packet.sequence)) {
-                            std::cerr << "DROP replay/old seq=" << packet.sequence << "\n";
+                            if (log_enabled(LogLevel::info)) {
+                                std::cerr << "DROP replay/old seq=" << packet.sequence << "\n";
+                            }
                             continue;
                         }
                     }
@@ -732,12 +760,14 @@ public:
                         udp_.set_peer(source, source_length);
                     }
 
-                    std::cerr
-                        << "ACCEPT v" << static_cast<unsigned>(packet.protocol_version)
-                        << " seq=" << packet.sequence
-                        << " type=" << static_cast<unsigned>(packet.type)
-                        << " payload=" << packet.payload.size()
-                        << "\n";
+                    if (log_enabled(LogLevel::debug)) {
+                        std::cerr
+                            << "ACCEPT v" << static_cast<unsigned>(packet.protocol_version)
+                            << " seq=" << packet.sequence
+                            << " type=" << static_cast<unsigned>(packet.type)
+                            << " payload=" << packet.payload.size()
+                            << "\n";
+                    }
 
                     if (packet.type == PacketType::data and process(packet, Direction::udp_to_tun)) {
                         dump_bytes("TUN write", packet.payload.data(), packet.payload.size(), 20);
@@ -786,11 +816,32 @@ private:
 void usage(const char* program_name) {
     std::cerr
         << "Usage:\n"
-        << "  " << program_name << " server <id> <ifname> [--allow-v1]\n"
-        << "  " << program_name << " client <id> <ifname> <host> [--allow-v1]\n"
+        << "  " << program_name << " server <id> <ifname> [--allow-v1] [--debug|--quiet]\n"
+        << "  " << program_name << " client <id> <ifname> <host> [--allow-v1] [--debug|--quiet]\n"
+        << "\n"
+        << "Logging:\n"
+        << "  default          informational drops/errors only\n"
+        << "  --debug          packet dumps and protocol details\n"
+        << "  --quiet          suppress non-fatal logging\n"
         << "\n"
         << "Environment:\n"
         << "  TUNTOM_SECRET   32 hex characters (128-bit master key)\n";
+}
+
+void parse_options(int argc, char** argv, int first_option, bool& allow_v1) {
+    for (int i = first_option; i < argc; ++i) {
+        const std::string option = argv[i];
+
+        if (option == "--allow-v1") {
+            allow_v1 = true;
+        } else if (option == "--debug") {
+            log_level = LogLevel::debug;
+        } else if (option == "--quiet") {
+            log_level = LogLevel::quiet;
+        } else {
+            throw std::runtime_error("Unknown option: " + option);
+        }
+    }
 }
 
 std::uint16_t parse_tunnel_id(const char* value) {
@@ -816,11 +867,8 @@ int main(int argc, char** argv) {
         const std::string interface_name = argv[3];
 
         if (mode == "server") {
-            const bool allow_v1 = argc == 5 and std::string(argv[4]) == "--allow-v1";
-            if (argc != 4 and not allow_v1) {
-                usage(argv[0]);
-                return 1;
-            }
+            bool allow_v1 = false;
+            parse_options(argc, argv, 4, allow_v1);
 
             Tunnel tunnel(tunnel_id, true, interface_name, "", allow_v1);
             tunnel.run();
@@ -828,11 +876,13 @@ int main(int argc, char** argv) {
         }
 
         if (mode == "client") {
-            const bool allow_v1 = argc == 6 and std::string(argv[5]) == "--allow-v1";
-            if ((argc != 5 and not allow_v1)) {
+            if (argc < 5) {
                 usage(argv[0]);
                 return 1;
             }
+
+            bool allow_v1 = false;
+            parse_options(argc, argv, 5, allow_v1);
 
             Tunnel tunnel(tunnel_id, false, interface_name, argv[4], allow_v1);
             tunnel.run();
