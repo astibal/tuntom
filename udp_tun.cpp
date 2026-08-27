@@ -28,8 +28,6 @@ constexpr std::uint8_t protocol_version_v1 = 1;
 constexpr std::uint8_t protocol_version_v2 = 2;
 constexpr std::size_t protocol_header_v1_size = 8;
 constexpr std::size_t protocol_header_v2_size = 32;
-constexpr std::size_t auth_tag_size = 16;
-constexpr std::size_t master_key_size = 16;
 constexpr std::size_t buffer_size = 65536;
 constexpr int keepalive_seconds = 5;
 
@@ -63,9 +61,144 @@ void dump_bytes(const std::string& prefix, const std::uint8_t* data, std::size_t
     std::cerr << std::dec << "\n";
 }
 
+namespace ascon {
+
+constexpr std::size_t key_size = 16;
+constexpr std::size_t tag_size = 16;
+
+using key_type = std::array<std::uint8_t, key_size>;
+using tag_type = std::array<std::uint8_t, tag_size>;
+
 std::uint64_t rotate_right(std::uint64_t value, unsigned shift) {
     return (value >> shift) | (value << (64U - shift));
 }
+
+std::uint64_t load_be64(const std::uint8_t* data) {
+    std::uint64_t value = 0;
+    for (int i = 0; i < 8; ++i) {
+        value = (value << 8U) | data[i];
+    }
+    return value;
+}
+
+void store_be64(std::uint8_t* data, std::uint64_t value) {
+    for (int i = 7; i >= 0; --i) {
+        data[i] = static_cast<std::uint8_t>(value & 0xffU);
+        value >>= 8U;
+    }
+}
+
+void permute(std::array<std::uint64_t, 5>& state, int rounds) {
+    static constexpr std::array<std::uint8_t, 12> round_constants {
+        0xf0, 0xe1, 0xd2, 0xc3, 0xb4, 0xa5,
+        0x96, 0x87, 0x78, 0x69, 0x5a, 0x4b,
+    };
+
+    const int first_round = 12 - rounds;
+    for (int round = first_round; round < 12; ++round) {
+        state[2] ^= round_constants[round];
+
+        state[0] ^= state[4];
+        state[4] ^= state[3];
+        state[2] ^= state[1];
+
+        const std::uint64_t t0 = not state[0] and state[1];
+        const std::uint64_t t1 = not state[1] and state[2];
+        const std::uint64_t t2 = not state[2] and state[3];
+        const std::uint64_t t3 = not state[3] and state[4];
+        const std::uint64_t t4 = not state[4] and state[0];
+
+        state[0] ^= t1;
+        state[1] ^= t2;
+        state[2] ^= t3;
+        state[3] ^= t4;
+        state[4] ^= t0;
+
+        state[1] ^= state[0];
+        state[0] ^= state[4];
+        state[3] ^= state[2];
+        state[2] = not state[2];
+
+        state[0] ^= rotate_right(state[0], 19) ^ rotate_right(state[0], 28);
+        state[1] ^= rotate_right(state[1], 61) ^ rotate_right(state[1], 39);
+        state[2] ^= rotate_right(state[2], 1) ^ rotate_right(state[2], 6);
+        state[3] ^= rotate_right(state[3], 10) ^ rotate_right(state[3], 17);
+        state[4] ^= rotate_right(state[4], 7) ^ rotate_right(state[4], 41);
+    }
+}
+
+void mac(
+    const key_type& key,
+    std::uint16_t tunnel_id,
+    const std::uint8_t* data,
+    std::size_t size,
+    tag_type& tag) {
+
+    const std::uint64_t k0 = load_be64(key.data());
+    const std::uint64_t k1 = load_be64(key.data() + 8);
+
+    // Compact Ascon-p[12]/p[8]-based keyed sponge MAC.
+    // Kept self-contained for the single-file deployment model.
+    std::array<std::uint64_t, 5> state {
+        0x54554e544f4d4d41ULL, // "TUNTOMMA" domain separator
+        k0,
+        k1,
+        static_cast<std::uint64_t>(tunnel_id),
+        not static_cast<std::uint64_t>(tunnel_id),
+    };
+
+    permute(state, 12);
+    state[3] ^= k0;
+    state[4] ^= k1;
+
+    while (size >= 8) {
+        state[0] ^= load_be64(data);
+        permute(state, 8);
+        data += 8;
+        size -= 8;
+    }
+
+    std::array<std::uint8_t, 8> final_block {};
+    if (size > 0) {
+        std::memcpy(final_block.data(), data, size);
+    }
+    final_block[size] = 0x80;
+
+    state[0] ^= load_be64(final_block.data());
+    state[4] ^= 1;
+
+    state[1] ^= k0;
+    state[2] ^= k1;
+    permute(state, 12);
+    state[3] ^= k0;
+    state[4] ^= k1;
+
+    store_be64(tag.data(), state[3]);
+    store_be64(tag.data() + 8, state[4]);
+}
+
+key_type derive_node_key(const key_type& master_key, std::uint16_t tunnel_id) {
+    static constexpr std::array<std::uint8_t, 15> label {
+        'T', 'U', 'N', 'T', 'O', 'M', '-', 'N', 'O', 'D', 'E', '-', 'K', 'E', 'Y'
+    };
+
+    tag_type derived {};
+    mac(master_key, tunnel_id, label.data(), label.size(), derived);
+
+    key_type node_key {};
+    std::copy(derived.begin(), derived.end(), node_key.begin());
+    return node_key;
+}
+
+bool constant_time_equal(const std::uint8_t* a, const std::uint8_t* b, std::size_t size) {
+    std::uint8_t difference = 0;
+    for (std::size_t i = 0; i < size; ++i) {
+        difference |= static_cast<std::uint8_t>(a[i] ^ b[i]);
+    }
+    return difference == 0;
+}
+
+} // namespace ascon
 
 std::uint64_t load_be64(const std::uint8_t* data) {
     std::uint64_t value = 0;
@@ -105,107 +238,18 @@ void store_be32(std::uint8_t* data, std::uint32_t value) {
     data[3] = static_cast<std::uint8_t>(value & 0xffU);
 }
 
-void ascon_permute(std::array<std::uint64_t, 5>& state, int rounds) {
-    static constexpr std::array<std::uint8_t, 12> round_constants {
-        0xf0, 0xe1, 0xd2, 0xc3, 0xb4, 0xa5,
-        0x96, 0x87, 0x78, 0x69, 0x5a, 0x4b,
-    };
-
-    const int first_round = 12 - rounds;
-    for (int round = first_round; round < 12; ++round) {
-        state[2] ^= round_constants[round];
-
-        state[0] ^= state[4];
-        state[4] ^= state[3];
-        state[2] ^= state[1];
-
-        const std::uint64_t t0 = not state[0] and state[1];
-        const std::uint64_t t1 = not state[1] and state[2];
-        const std::uint64_t t2 = not state[2] and state[3];
-        const std::uint64_t t3 = not state[3] and state[4];
-        const std::uint64_t t4 = not state[4] and state[0];
-
-        state[0] ^= t1;
-        state[1] ^= t2;
-        state[2] ^= t3;
-        state[3] ^= t4;
-        state[4] ^= t0;
-
-        state[1] ^= state[0];
-        state[0] ^= state[4];
-        state[3] ^= state[2];
-        state[2] = not state[2];
-
-        state[0] ^= rotate_right(state[0], 19) ^ rotate_right(state[0], 28);
-        state[1] ^= rotate_right(state[1], 61) ^ rotate_right(state[1], 39);
-        state[2] ^= rotate_right(state[2], 1) ^ rotate_right(state[2], 6);
-        state[3] ^= rotate_right(state[3], 10) ^ rotate_right(state[3], 17);
-        state[4] ^= rotate_right(state[4], 7) ^ rotate_right(state[4], 41);
-    }
-}
-
-void ascon_mac(
-    const std::array<std::uint8_t, master_key_size>& key,
-    std::uint16_t tunnel_id,
-    const std::uint8_t* data,
-    std::size_t size,
-    std::array<std::uint8_t, auth_tag_size>& tag) {
-
-    const std::uint64_t k0 = load_be64(key.data());
-    const std::uint64_t k1 = load_be64(key.data() + 8);
-
-    // Compact Ascon-p[12]/p[8]-based keyed sponge MAC.
-    // Kept self-contained for the single-file deployment model.
-    std::array<std::uint64_t, 5> state {
-        0x54554e544f4d4d41ULL, // "TUNTOMMA" domain separator
-        k0,
-        k1,
-        static_cast<std::uint64_t>(tunnel_id),
-        not static_cast<std::uint64_t>(tunnel_id),
-    };
-
-    ascon_permute(state, 12);
-    state[3] ^= k0;
-    state[4] ^= k1;
-
-    while (size >= 8) {
-        state[0] ^= load_be64(data);
-        ascon_permute(state, 8);
-        data += 8;
-        size -= 8;
-    }
-
-    std::array<std::uint8_t, 8> final_block {};
-    if (size > 0) {
-        std::memcpy(final_block.data(), data, size);
-    }
-    final_block[size] = 0x80;
-
-    state[0] ^= load_be64(final_block.data());
-    state[4] ^= 1;
-
-    state[1] ^= k0;
-    state[2] ^= k1;
-    ascon_permute(state, 12);
-    state[3] ^= k0;
-    state[4] ^= k1;
-
-    store_be64(tag.data(), state[3]);
-    store_be64(tag.data() + 8, state[4]);
-}
-
-std::array<std::uint8_t, master_key_size> parse_master_key() {
+ascon::key_type parse_master_key() {
     const char* secret = std::getenv("TUNTOM_SECRET");
     if (secret == nullptr) {
         throw std::runtime_error("TUNTOM_SECRET is not set");
     }
 
     const std::string value(secret);
-    if (value.size() != master_key_size * 2) {
+    if (value.size() != ascon::key_size * 2) {
         throw std::runtime_error("TUNTOM_SECRET must contain exactly 32 hex characters");
     }
 
-    std::array<std::uint8_t, master_key_size> key {};
+    ascon::key_type key {};
     for (std::size_t i = 0; i < key.size(); ++i) {
         const std::string byte_string = value.substr(i * 2, 2);
         std::size_t parsed = 0;
@@ -217,30 +261,6 @@ std::array<std::uint8_t, master_key_size> parse_master_key() {
     }
 
     return key;
-}
-
-std::array<std::uint8_t, master_key_size> derive_node_key(
-    const std::array<std::uint8_t, master_key_size>& master_key,
-    std::uint16_t tunnel_id) {
-
-    static constexpr std::array<std::uint8_t, 15> label {
-        'T', 'U', 'N', 'T', 'O', 'M', '-', 'N', 'O', 'D', 'E', '-', 'K', 'E', 'Y'
-    };
-
-    std::array<std::uint8_t, auth_tag_size> derived {};
-    ascon_mac(master_key, tunnel_id, label.data(), label.size(), derived);
-
-    std::array<std::uint8_t, master_key_size> node_key {};
-    std::copy(derived.begin(), derived.end(), node_key.begin());
-    return node_key;
-}
-
-bool constant_time_equal(const std::uint8_t* a, const std::uint8_t* b, std::size_t size) {
-    std::uint8_t difference = 0;
-    for (std::size_t i = 0; i < size; ++i) {
-        difference |= static_cast<std::uint8_t>(a[i] ^ b[i]);
-    }
-    return difference == 0;
 }
 
 class SequenceGenerator {
@@ -361,9 +381,9 @@ public:
 
 class ProtocolV2 final : public Protocol {
 public:
-    ProtocolV2(std::uint16_t tunnel_id, const std::array<std::uint8_t, master_key_size>& master_key)
+    ProtocolV2(std::uint16_t tunnel_id, const ascon::key_type& master_key)
         : tunnel_id_(tunnel_id),
-          node_key_(derive_node_key(master_key, tunnel_id)) {
+          node_key_(ascon::derive_node_key(master_key, tunnel_id)) {
     }
 
     std::uint8_t version() const override {
@@ -389,8 +409,8 @@ public:
             std::memcpy(mac_input.data() + 16, packet.payload.data(), packet.payload.size());
         }
 
-        std::array<std::uint8_t, auth_tag_size> tag {};
-        ascon_mac(node_key_, tunnel_id_, mac_input.data(), mac_input.size(), tag);
+        ascon::tag_type tag {};
+        ascon::mac(node_key_, tunnel_id_, mac_input.data(), mac_input.size(), tag);
         std::memcpy(output.data() + 16, tag.data(), tag.size());
 
         std::cerr
@@ -430,10 +450,10 @@ public:
                 size - protocol_header_v2_size);
         }
 
-        std::array<std::uint8_t, auth_tag_size> expected_tag {};
-        ascon_mac(node_key_, tunnel_id_, mac_input.data(), mac_input.size(), expected_tag);
+        ascon::tag_type expected_tag {};
+        ascon::mac(node_key_, tunnel_id_, mac_input.data(), mac_input.size(), expected_tag);
 
-        if (not constant_time_equal(data + 16, expected_tag.data(), expected_tag.size())) {
+        if (not ascon::constant_time_equal(data + 16, expected_tag.data(), expected_tag.size())) {
             return false;
         }
 
@@ -447,7 +467,7 @@ public:
 
 private:
     std::uint16_t tunnel_id_ = 0;
-    std::array<std::uint8_t, master_key_size> node_key_ {};
+    ascon::key_type node_key_ {};
 };
 
 class TunDevice {
