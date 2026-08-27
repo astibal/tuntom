@@ -97,6 +97,7 @@ The bootstrap script writes logs to:
 ```
 
 Debug packet dumps are currently enabled intentionally.
+Project comes with Wireshark dissector [tuntom.lua](tuntom.lua).
 
 ## Files
 
