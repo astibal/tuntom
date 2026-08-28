@@ -19,6 +19,8 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -26,10 +28,27 @@ namespace {
 constexpr std::uint32_t protocol_magic = 0x5554554e; // "UTUN"
 constexpr std::uint8_t protocol_version_v1 = 1;
 constexpr std::uint8_t protocol_version_v2 = 2;
+constexpr std::uint8_t protocol_version_v3 = 3;
+
 constexpr std::size_t protocol_header_v1_size = 8;
 constexpr std::size_t protocol_header_v2_size = 32;
+constexpr std::size_t protocol_header_v3_size = 48;
+
+constexpr std::size_t udp_header_size = 8;
+constexpr std::size_t ipv4_header_min_size = 20;
+constexpr std::size_t ipv6_header_size = 40;
 constexpr std::size_t buffer_size = 65536;
+
+constexpr std::size_t default_tun_mtu = 1500;
+constexpr std::size_t default_transport_mtu = 1400;
+constexpr std::size_t min_transport_mtu = 1280;
+constexpr std::size_t max_ip_packet_size = 65535;
+
 constexpr int keepalive_seconds = 5;
+constexpr int reassembly_timeout_seconds = 3;
+constexpr std::size_t max_reassembly_entries = 64;
+constexpr std::size_t max_reassembly_bytes = 4 * 1024 * 1024;
+constexpr std::size_t max_fragments_per_packet = 64;
 
 enum class LogLevel {
     quiet = 0,
@@ -63,12 +82,31 @@ enum class Direction {
 struct Packet {
     PacketType type = PacketType::data;
     std::uint16_t tunnel_id = 0;
-    std::uint8_t protocol_version = protocol_version_v2;
+    std::uint8_t protocol_version = protocol_version_v3;
     std::uint64_t sequence = 0;
+
+    // V3 data-fragment metadata. Control packets keep these at zero.
+    std::uint64_t message_id = 0;
+    std::uint32_t fragment_offset = 0;
+    std::uint32_t original_length = 0;
+
     std::vector<std::uint8_t> payload;
 };
 
-void dump_bytes(const std::string& prefix, const std::uint8_t* data, std::size_t size, std::size_t max_bytes = 28) {
+struct Options {
+    bool allow_v1 = false;
+    bool allow_v2 = false;
+    bool ttl_compensate = true;
+    std::size_t tun_mtu = default_tun_mtu;
+    std::size_t transport_mtu = default_transport_mtu;
+};
+
+void dump_bytes(
+    const std::string& prefix,
+    const std::uint8_t* data,
+    std::size_t size,
+    std::size_t max_bytes = 28) {
+
     if (not log_enabled(LogLevel::debug)) {
         return;
     }
@@ -243,14 +281,17 @@ void store_be16(std::uint8_t* data, std::uint16_t value) {
 }
 
 std::uint16_t load_be16(const std::uint8_t* data) {
-    return static_cast<std::uint16_t>((static_cast<std::uint16_t>(data[0]) << 8U) | data[1]);
+    return static_cast<std::uint16_t>(
+        (static_cast<std::uint16_t>(data[0]) << 8U) |
+        data[1]);
 }
 
 std::uint32_t load_be32(const std::uint8_t* data) {
-    return (static_cast<std::uint32_t>(data[0]) << 24U) |
-           (static_cast<std::uint32_t>(data[1]) << 16U) |
-           (static_cast<std::uint32_t>(data[2]) << 8U) |
-           static_cast<std::uint32_t>(data[3]);
+    return
+        (static_cast<std::uint32_t>(data[0]) << 24U) |
+        (static_cast<std::uint32_t>(data[1]) << 16U) |
+        (static_cast<std::uint32_t>(data[2]) << 8U) |
+        static_cast<std::uint32_t>(data[3]);
 }
 
 void store_be32(std::uint8_t* data, std::uint32_t value) {
@@ -289,7 +330,9 @@ class SequenceGenerator {
 public:
     std::uint64_t next() {
         const auto now = std::chrono::system_clock::now().time_since_epoch();
-        const auto nanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
+        const auto nanoseconds =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
+
         std::uint64_t candidate = static_cast<std::uint64_t>(nanoseconds);
 
         if (candidate <= last_sequence_) {
@@ -319,6 +362,7 @@ public:
 
         if (sequence > highest_sequence_) {
             const std::uint64_t shift = sequence - highest_sequence_;
+
             if (shift >= 64) {
                 bitmap_ = 1;
             } else {
@@ -354,7 +398,10 @@ public:
 
     virtual std::uint8_t version() const = 0;
     virtual std::vector<std::uint8_t> encode(const Packet& packet) const = 0;
-    virtual bool decode(const std::uint8_t* data, std::size_t size, Packet& packet) const = 0;
+    virtual bool decode(
+        const std::uint8_t* data,
+        std::size_t size,
+        Packet& packet) const = 0;
 };
 
 class ProtocolV1 final : public Protocol {
@@ -364,7 +411,8 @@ public:
     }
 
     std::vector<std::uint8_t> encode(const Packet& packet) const override {
-        std::vector<std::uint8_t> output(protocol_header_v1_size + packet.payload.size());
+        std::vector<std::uint8_t> output(
+            protocol_header_v1_size + packet.payload.size());
 
         store_be32(output.data() + 0, protocol_magic);
         store_be16(output.data() + 4, packet.tunnel_id);
@@ -372,23 +420,37 @@ public:
         output[7] = static_cast<std::uint8_t>(packet.type);
 
         if (not packet.payload.empty()) {
-            std::memcpy(output.data() + protocol_header_v1_size, packet.payload.data(), packet.payload.size());
+            std::memcpy(
+                output.data() + protocol_header_v1_size,
+                packet.payload.data(),
+                packet.payload.size());
         }
 
         return output;
     }
 
-    bool decode(const std::uint8_t* data, std::size_t size, Packet& packet) const override {
+    bool decode(
+        const std::uint8_t* data,
+        std::size_t size,
+        Packet& packet) const override {
+
         if (size < protocol_header_v1_size) {
             return false;
         }
 
-        if (load_be32(data + 0) != protocol_magic or data[6] != protocol_version_v1) {
+        if (
+            load_be32(data + 0) != protocol_magic or
+            data[6] != protocol_version_v1) {
+
             return false;
         }
 
         const auto type = static_cast<PacketType>(data[7]);
-        if (type != PacketType::hello and type != PacketType::keepalive and type != PacketType::data) {
+        if (
+            type != PacketType::hello and
+            type != PacketType::keepalive and
+            type != PacketType::data) {
+
             return false;
         }
 
@@ -396,6 +458,10 @@ public:
         packet.tunnel_id = load_be16(data + 4);
         packet.protocol_version = protocol_version_v1;
         packet.sequence = 0;
+        packet.message_id = 0;
+        packet.fragment_offset = 0;
+        packet.original_length = static_cast<std::uint32_t>(
+            size - protocol_header_v1_size);
         packet.payload.assign(data + protocol_header_v1_size, data + size);
         return true;
     }
@@ -403,7 +469,9 @@ public:
 
 class ProtocolV2 final : public Protocol {
 public:
-    ProtocolV2(std::uint16_t tunnel_id, const ascon::key_type& master_key)
+    ProtocolV2(
+        std::uint16_t tunnel_id,
+        const ascon::key_type& master_key)
         : tunnel_id_(tunnel_id),
           node_key_(ascon::derive_node_key(master_key, tunnel_id)) {
     }
@@ -413,7 +481,8 @@ public:
     }
 
     std::vector<std::uint8_t> encode(const Packet& packet) const override {
-        std::vector<std::uint8_t> output(protocol_header_v2_size + packet.payload.size());
+        std::vector<std::uint8_t> output(
+            protocol_header_v2_size + packet.payload.size());
 
         store_be32(output.data() + 0, protocol_magic);
         store_be16(output.data() + 4, packet.tunnel_id);
@@ -422,36 +491,48 @@ public:
         store_be64(output.data() + 8, packet.sequence);
 
         if (not packet.payload.empty()) {
-            std::memcpy(output.data() + protocol_header_v2_size, packet.payload.data(), packet.payload.size());
+            std::memcpy(
+                output.data() + protocol_header_v2_size,
+                packet.payload.data(),
+                packet.payload.size());
         }
 
         std::vector<std::uint8_t> mac_input(16 + packet.payload.size());
         std::memcpy(mac_input.data(), output.data(), 16);
+
         if (not packet.payload.empty()) {
-            std::memcpy(mac_input.data() + 16, packet.payload.data(), packet.payload.size());
+            std::memcpy(
+                mac_input.data() + 16,
+                packet.payload.data(),
+                packet.payload.size());
         }
 
         ascon::tag_type tag {};
-        ascon::mac(node_key_, tunnel_id_, mac_input.data(), mac_input.size(), tag);
-        std::memcpy(output.data() + 16, tag.data(), tag.size());
+        ascon::mac(
+            node_key_,
+            tunnel_id_,
+            mac_input.data(),
+            mac_input.size(),
+            tag);
 
-        if (log_enabled(LogLevel::debug)) {
-            std::cerr
-                << "ENCODE v2 seq=" << packet.sequence
-                << " payload=" << packet.payload.size()
-                << " output=" << output.size()
-                << "\n";
-        }
+        std::memcpy(output.data() + 16, tag.data(), tag.size());
 
         return output;
     }
 
-    bool decode(const std::uint8_t* data, std::size_t size, Packet& packet) const override {
+    bool decode(
+        const std::uint8_t* data,
+        std::size_t size,
+        Packet& packet) const override {
+
         if (size < protocol_header_v2_size) {
             return false;
         }
 
-        if (load_be32(data + 0) != protocol_magic or data[6] != protocol_version_v2) {
+        if (
+            load_be32(data + 0) != protocol_magic or
+            data[6] != protocol_version_v2) {
+
             return false;
         }
 
@@ -461,12 +542,19 @@ public:
         }
 
         const auto type = static_cast<PacketType>(data[7]);
-        if (type != PacketType::hello and type != PacketType::keepalive and type != PacketType::data) {
+        if (
+            type != PacketType::hello and
+            type != PacketType::keepalive and
+            type != PacketType::data) {
+
             return false;
         }
 
-        std::vector<std::uint8_t> mac_input(16 + size - protocol_header_v2_size);
+        std::vector<std::uint8_t> mac_input(
+            16 + size - protocol_header_v2_size);
+
         std::memcpy(mac_input.data(), data, 16);
+
         if (size > protocol_header_v2_size) {
             std::memcpy(
                 mac_input.data() + 16,
@@ -475,9 +563,19 @@ public:
         }
 
         ascon::tag_type expected_tag {};
-        ascon::mac(node_key_, tunnel_id_, mac_input.data(), mac_input.size(), expected_tag);
+        ascon::mac(
+            node_key_,
+            tunnel_id_,
+            mac_input.data(),
+            mac_input.size(),
+            expected_tag);
 
-        if (not ascon::constant_time_equal(data + 16, expected_tag.data(), expected_tag.size())) {
+        if (
+            not ascon::constant_time_equal(
+                data + 16,
+                expected_tag.data(),
+                expected_tag.size())) {
+
             return false;
         }
 
@@ -485,7 +583,184 @@ public:
         packet.tunnel_id = tunnel_id;
         packet.protocol_version = protocol_version_v2;
         packet.sequence = load_be64(data + 8);
+        packet.message_id = 0;
+        packet.fragment_offset = 0;
+        packet.original_length = static_cast<std::uint32_t>(
+            size - protocol_header_v2_size);
         packet.payload.assign(data + protocol_header_v2_size, data + size);
+        return true;
+    }
+
+private:
+    std::uint16_t tunnel_id_ = 0;
+    ascon::key_type node_key_ {};
+};
+
+class ProtocolV3 final : public Protocol {
+public:
+    ProtocolV3(
+        std::uint16_t tunnel_id,
+        const ascon::key_type& master_key)
+        : tunnel_id_(tunnel_id),
+          node_key_(ascon::derive_node_key(master_key, tunnel_id)) {
+    }
+
+    std::uint8_t version() const override {
+        return protocol_version_v3;
+    }
+
+    std::vector<std::uint8_t> encode(const Packet& packet) const override {
+        std::vector<std::uint8_t> output(
+            protocol_header_v3_size + packet.payload.size());
+
+        // Bytes 0..31 are authenticated metadata.
+        store_be32(output.data() + 0, protocol_magic);
+        store_be16(output.data() + 4, packet.tunnel_id);
+        output[6] = protocol_version_v3;
+        output[7] = static_cast<std::uint8_t>(packet.type);
+        store_be64(output.data() + 8, packet.sequence);
+        store_be64(output.data() + 16, packet.message_id);
+        store_be32(output.data() + 24, packet.fragment_offset);
+        store_be32(output.data() + 28, packet.original_length);
+
+        if (not packet.payload.empty()) {
+            std::memcpy(
+                output.data() + protocol_header_v3_size,
+                packet.payload.data(),
+                packet.payload.size());
+        }
+
+        // The tag itself occupies bytes 32..47 and is not part of the MAC
+        // input. The complete V3 metadata (0..31) plus payload is covered.
+        std::vector<std::uint8_t> mac_input(32 + packet.payload.size());
+        std::memcpy(mac_input.data(), output.data(), 32);
+
+        if (not packet.payload.empty()) {
+            std::memcpy(
+                mac_input.data() + 32,
+                packet.payload.data(),
+                packet.payload.size());
+        }
+
+        ascon::tag_type tag {};
+        ascon::mac(
+            node_key_,
+            tunnel_id_,
+            mac_input.data(),
+            mac_input.size(),
+            tag);
+
+        std::memcpy(output.data() + 32, tag.data(), tag.size());
+
+        if (log_enabled(LogLevel::debug)) {
+            std::cerr
+                << "ENCODE v3 seq=" << packet.sequence
+                << " msg=" << packet.message_id
+                << " offset=" << packet.fragment_offset
+                << " original=" << packet.original_length
+                << " payload=" << packet.payload.size()
+                << " output=" << output.size()
+                << "\n";
+        }
+
+        return output;
+    }
+
+    bool decode(
+        const std::uint8_t* data,
+        std::size_t size,
+        Packet& packet) const override {
+
+        if (size < protocol_header_v3_size) {
+            return false;
+        }
+
+        if (
+            load_be32(data + 0) != protocol_magic or
+            data[6] != protocol_version_v3) {
+
+            return false;
+        }
+
+        const std::uint16_t tunnel_id = load_be16(data + 4);
+        if (tunnel_id != tunnel_id_) {
+            return false;
+        }
+
+        const auto type = static_cast<PacketType>(data[7]);
+        if (
+            type != PacketType::hello and
+            type != PacketType::keepalive and
+            type != PacketType::data) {
+
+            return false;
+        }
+
+        std::vector<std::uint8_t> mac_input(
+            32 + size - protocol_header_v3_size);
+
+        std::memcpy(mac_input.data(), data, 32);
+
+        if (size > protocol_header_v3_size) {
+            std::memcpy(
+                mac_input.data() + 32,
+                data + protocol_header_v3_size,
+                size - protocol_header_v3_size);
+        }
+
+        ascon::tag_type expected_tag {};
+        ascon::mac(
+            node_key_,
+            tunnel_id_,
+            mac_input.data(),
+            mac_input.size(),
+            expected_tag);
+
+        if (
+            not ascon::constant_time_equal(
+                data + 32,
+                expected_tag.data(),
+                expected_tag.size())) {
+
+            return false;
+        }
+
+        packet.type = type;
+        packet.tunnel_id = tunnel_id;
+        packet.protocol_version = protocol_version_v3;
+        packet.sequence = load_be64(data + 8);
+        packet.message_id = load_be64(data + 16);
+        packet.fragment_offset = load_be32(data + 24);
+        packet.original_length = load_be32(data + 28);
+        packet.payload.assign(data + protocol_header_v3_size, data + size);
+
+        if (packet.type == PacketType::data) {
+            if (
+                packet.message_id == 0 or
+                packet.original_length == 0 or
+                packet.payload.empty()) {
+
+                return false;
+            }
+
+            const std::uint64_t fragment_end =
+                static_cast<std::uint64_t>(packet.fragment_offset) +
+                packet.payload.size();
+
+            if (fragment_end > packet.original_length) {
+                return false;
+            }
+        } else {
+            if (
+                packet.message_id != 0 or
+                packet.fragment_offset != 0 or
+                packet.original_length != 0 or
+                not packet.payload.empty()) {
+
+                return false;
+            }
+        }
+
         return true;
     }
 
@@ -496,15 +771,24 @@ private:
 
 class TunDevice {
 public:
-    explicit TunDevice(const std::string& interface_name) {
+    TunDevice(
+        const std::string& interface_name,
+        std::size_t mtu)
+        : interface_name_(interface_name) {
+
         fd_ = ::open("/dev/net/tun", O_RDWR | O_CLOEXEC);
         if (fd_ < 0) {
-            throw std::runtime_error("Cannot open /dev/net/tun: " + std::string(std::strerror(errno)));
+            throw std::runtime_error(
+                "Cannot open /dev/net/tun: " +
+                std::string(std::strerror(errno)));
         }
 
         ifreq request {};
         request.ifr_flags = IFF_TUN | IFF_NO_PI;
-        std::strncpy(request.ifr_name, interface_name.c_str(), IFNAMSIZ - 1);
+        std::strncpy(
+            request.ifr_name,
+            interface_name.c_str(),
+            IFNAMSIZ - 1);
 
         if (::ioctl(fd_, TUNSETIFF, &request) < 0) {
             const std::string error = std::strerror(errno);
@@ -512,6 +796,9 @@ public:
             fd_ = -1;
             throw std::runtime_error("TUNSETIFF failed: " + error);
         }
+
+        interface_name_ = request.ifr_name;
+        set_mtu(mtu);
     }
 
     ~TunDevice() {
@@ -533,7 +820,32 @@ public:
     }
 
 private:
+    void set_mtu(std::size_t mtu) {
+        const int socket_fd = ::socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+        if (socket_fd < 0) {
+            throw std::runtime_error(
+                "Cannot create MTU ioctl socket: " +
+                std::string(std::strerror(errno)));
+        }
+
+        ifreq request {};
+        std::strncpy(
+            request.ifr_name,
+            interface_name_.c_str(),
+            IFNAMSIZ - 1);
+        request.ifr_mtu = static_cast<int>(mtu);
+
+        if (::ioctl(socket_fd, SIOCSIFMTU, &request) < 0) {
+            const std::string error = std::strerror(errno);
+            ::close(socket_fd);
+            throw std::runtime_error("SIOCSIFMTU failed: " + error);
+        }
+
+        ::close(socket_fd);
+    }
+
     int fd_ = -1;
+    std::string interface_name_;
 };
 
 class UdpEndpoint {
@@ -547,20 +859,52 @@ public:
     void open_server(std::uint16_t port) {
         fd_ = ::socket(AF_INET6, SOCK_DGRAM | SOCK_CLOEXEC, 0);
         if (fd_ < 0) {
-            throw std::runtime_error("socket() failed: " + std::string(std::strerror(errno)));
+            throw std::runtime_error(
+                "socket() failed: " +
+                std::string(std::strerror(errno)));
+        }
+
+        int reuse_addr = 1;
+        if (::setsockopt(
+                fd_,
+                SOL_SOCKET,
+                SO_REUSEADDR,
+                &reuse_addr,
+                sizeof(reuse_addr)) < 0) {
+
+            throw std::runtime_error(
+                "setsockopt(SO_REUSEADDR) failed: " +
+                std::string(std::strerror(errno)));
         }
 
         int v6_only = 0;
-        ::setsockopt(fd_, IPPROTO_IPV6, IPV6_V6ONLY, &v6_only, sizeof(v6_only));
+        ::setsockopt(
+            fd_,
+            IPPROTO_IPV6,
+            IPV6_V6ONLY,
+            &v6_only,
+            sizeof(v6_only));
 
         sockaddr_in6 address {};
         address.sin6_family = AF_INET6;
         address.sin6_addr = in6addr_any;
         address.sin6_port = htons(port);
 
-        if (::bind(fd_, reinterpret_cast<sockaddr*>(&address), sizeof(address)) < 0) {
-            throw std::runtime_error("bind() failed: " + std::string(std::strerror(errno)));
+        if (
+            ::bind(
+                fd_,
+                reinterpret_cast<sockaddr*>(&address),
+                sizeof(address)) < 0) {
+
+            throw std::runtime_error(
+                "bind() failed: " +
+                std::string(std::strerror(errno)));
         }
+
+        // A dual-stack server socket is treated conservatively as IPv6 for
+        // transport-MTU calculations. IPv4-mapped peers therefore merely
+        // get 20 bytes of extra safety margin.
+        outer_ip_header_size_ = ipv6_header_size;
     }
 
     void open_client(const std::string& host, std::uint16_t port) {
@@ -571,13 +915,26 @@ public:
         addrinfo* result = nullptr;
         const std::string service = std::to_string(port);
 
-        const int rc = ::getaddrinfo(host.c_str(), service.c_str(), &hints, &result);
+        const int rc =
+            ::getaddrinfo(
+                host.c_str(),
+                service.c_str(),
+                &hints,
+                &result);
+
         if (rc != 0) {
-            throw std::runtime_error("getaddrinfo() failed: " + std::string(gai_strerror(rc)));
+            throw std::runtime_error(
+                "getaddrinfo() failed: " +
+                std::string(gai_strerror(rc)));
         }
 
         for (addrinfo* item = result; item != nullptr; item = item->ai_next) {
-            const int candidate = ::socket(item->ai_family, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+            const int candidate =
+                ::socket(
+                    item->ai_family,
+                    SOCK_DGRAM | SOCK_CLOEXEC,
+                    0);
+
             if (candidate < 0) {
                 continue;
             }
@@ -587,6 +944,12 @@ public:
             std::memcpy(&peer_, item->ai_addr, item->ai_addrlen);
             peer_length_ = static_cast<socklen_t>(item->ai_addrlen);
             peer_valid_ = true;
+
+            outer_ip_header_size_ =
+                item->ai_family == AF_INET
+                    ? ipv4_header_min_size
+                    : ipv6_header_size;
+
             break;
         }
 
@@ -619,7 +982,10 @@ public:
             &source_length);
     }
 
-    void set_peer(const sockaddr_storage& peer, socklen_t peer_length) {
+    void set_peer(
+        const sockaddr_storage& peer,
+        socklen_t peer_length) {
+
         peer_ = peer;
         peer_length_ = peer_length;
         peer_valid_ = true;
@@ -639,12 +1005,306 @@ public:
             peer_length_);
     }
 
+    std::size_t outer_ip_header_size() const {
+        return outer_ip_header_size_;
+    }
+
 private:
     int fd_ = -1;
     sockaddr_storage peer_ {};
     socklen_t peer_length_ = 0;
     bool peer_valid_ = false;
+    std::size_t outer_ip_header_size_ = ipv6_header_size;
 };
+
+struct FragmentRange {
+    std::uint32_t begin = 0;
+    std::uint32_t end = 0;
+};
+
+struct ReassemblyEntry {
+    std::uint32_t original_length = 0;
+    std::vector<std::uint8_t> buffer;
+    std::vector<FragmentRange> ranges;
+    std::size_t received_bytes = 0;
+    std::chrono::steady_clock::time_point last_update {};
+};
+
+class Reassembler {
+public:
+    explicit Reassembler(std::size_t maximum_packet_size)
+        : maximum_packet_size_(maximum_packet_size) {
+    }
+
+    bool accept(
+        const Packet& fragment,
+        std::vector<std::uint8_t>& complete_packet) {
+
+        complete_packet.clear();
+
+        if (
+            fragment.message_id == 0 or
+            fragment.original_length == 0 or
+            fragment.original_length > maximum_packet_size_ or
+            fragment.payload.empty()) {
+
+            return false;
+        }
+
+        const std::uint64_t end64 =
+            static_cast<std::uint64_t>(fragment.fragment_offset) +
+            fragment.payload.size();
+
+        if (end64 > fragment.original_length) {
+            return false;
+        }
+
+        const std::uint32_t begin = fragment.fragment_offset;
+        const std::uint32_t end = static_cast<std::uint32_t>(end64);
+
+        if (
+            begin == 0 and
+            end == fragment.original_length) {
+
+            complete_packet = fragment.payload;
+            return true;
+        }
+
+        cleanup_expired();
+
+        auto iterator = entries_.find(fragment.message_id);
+
+        if (iterator == entries_.end()) {
+            if (
+                entries_.size() >= max_reassembly_entries or
+                total_bytes_ + fragment.original_length >
+                    max_reassembly_bytes) {
+
+                log_info("DROP reassembly capacity exceeded");
+                return false;
+            }
+
+            ReassemblyEntry entry;
+            entry.original_length = fragment.original_length;
+            entry.buffer.resize(fragment.original_length);
+            entry.last_update = std::chrono::steady_clock::now();
+
+            total_bytes_ += entry.buffer.size();
+
+            iterator =
+                entries_
+                    .emplace(
+                        fragment.message_id,
+                        std::move(entry))
+                    .first;
+        }
+
+        ReassemblyEntry& entry = iterator->second;
+
+        if (entry.original_length != fragment.original_length) {
+            erase(iterator);
+            log_info("DROP inconsistent reassembly length");
+            return false;
+        }
+
+        if (entry.ranges.size() >= max_fragments_per_packet) {
+            erase(iterator);
+            log_info("DROP too many fragments");
+            return false;
+        }
+
+        for (const FragmentRange& range : entry.ranges) {
+            if (begin < range.end and end > range.begin) {
+                log_info("DROP duplicate/overlapping fragment");
+                return false;
+            }
+        }
+
+        std::memcpy(
+            entry.buffer.data() + begin,
+            fragment.payload.data(),
+            fragment.payload.size());
+
+        entry.ranges.push_back({begin, end});
+        entry.received_bytes += fragment.payload.size();
+        entry.last_update = std::chrono::steady_clock::now();
+
+        if (entry.received_bytes != entry.original_length) {
+            return false;
+        }
+
+        complete_packet = std::move(entry.buffer);
+        total_bytes_ -= entry.original_length;
+        entries_.erase(iterator);
+        return true;
+    }
+
+    void cleanup_expired() {
+        const auto now = std::chrono::steady_clock::now();
+
+        for (auto iterator = entries_.begin(); iterator != entries_.end();) {
+            if (
+                now - iterator->second.last_update >=
+                std::chrono::seconds(reassembly_timeout_seconds)) {
+
+                total_bytes_ -= iterator->second.buffer.size();
+                iterator = entries_.erase(iterator);
+            } else {
+                ++iterator;
+            }
+        }
+    }
+
+private:
+    using entry_iterator =
+        std::unordered_map<std::uint64_t, ReassemblyEntry>::iterator;
+
+    void erase(entry_iterator iterator) {
+        total_bytes_ -= iterator->second.buffer.size();
+        entries_.erase(iterator);
+    }
+
+    std::size_t maximum_packet_size_ = default_tun_mtu;
+    std::unordered_map<std::uint64_t, ReassemblyEntry> entries_;
+    std::size_t total_bytes_ = 0;
+};
+
+std::uint16_t ipv4_header_checksum(
+    const std::uint8_t* data,
+    std::size_t size) {
+
+    std::uint32_t sum = 0;
+
+    for (std::size_t i = 0; i + 1 < size; i += 2) {
+        sum +=
+            static_cast<std::uint16_t>(
+                (static_cast<std::uint16_t>(data[i]) << 8U) |
+                data[i + 1]);
+
+        while ((sum >> 16U) != 0) {
+            sum = (sum & 0xffffU) + (sum >> 16U);
+        }
+    }
+
+    if ((size & 1U) != 0) {
+        sum += static_cast<std::uint16_t>(data[size - 1] << 8U);
+    }
+
+    while ((sum >> 16U) != 0) {
+        sum = (sum & 0xffffU) + (sum >> 16U);
+    }
+
+    return static_cast<std::uint16_t>(~sum);
+}
+
+bool compensate_ipv4_ttl(
+    std::uint8_t* packet,
+    std::size_t size) {
+
+    if (size < ipv4_header_min_size) {
+        return false;
+    }
+
+    const std::size_t header_size =
+        static_cast<std::size_t>(packet[0] & 0x0fU) * 4;
+
+    if (
+        header_size < ipv4_header_min_size or
+        header_size > size) {
+
+        return false;
+    }
+
+    if (packet[8] == 255) {
+        return true;
+    }
+
+    ++packet[8];
+
+    // Recompute the IPv4 header checksum after the TTL change.
+    packet[10] = 0;
+    packet[11] = 0;
+
+    const std::uint16_t checksum =
+        ipv4_header_checksum(packet, header_size);
+
+    store_be16(packet + 10, checksum);
+    return true;
+}
+
+bool compensate_ipv6_hop_limit(
+    std::uint8_t* packet,
+    std::size_t size) {
+
+    if (size < ipv6_header_size) {
+        return false;
+    }
+
+    if (packet[7] < 255) {
+        ++packet[7];
+    }
+
+    return true;
+}
+
+void compensate_ip_hop(
+    std::vector<std::uint8_t>& packet) {
+
+    if (packet.empty()) {
+        return;
+    }
+
+    const std::uint8_t version =
+        static_cast<std::uint8_t>(packet[0] >> 4U);
+
+    if (version == 4) {
+        if (not compensate_ipv4_ttl(packet.data(), packet.size())) {
+            log_info("TTL compensation skipped: invalid IPv4 header");
+        }
+    } else if (version == 6) {
+        if (
+            not compensate_ipv6_hop_limit(
+                packet.data(),
+                packet.size())) {
+
+            log_info(
+                "Hop-limit compensation skipped: invalid IPv6 header");
+        }
+    }
+}
+
+struct FragmentPlan {
+    std::size_t count = 0;
+    std::size_t base_size = 0;
+    std::size_t larger_fragments = 0;
+};
+
+FragmentPlan make_fragment_plan(
+    std::size_t packet_size,
+    std::size_t maximum_fragment_payload) {
+
+    if (packet_size == 0 or maximum_fragment_payload == 0) {
+        throw std::runtime_error("Invalid fragmentation parameters");
+    }
+
+    const std::size_t count =
+        (packet_size + maximum_fragment_payload - 1) /
+        maximum_fragment_payload;
+
+    if (count > max_fragments_per_packet) {
+        throw std::runtime_error(
+            "Packet requires too many transport fragments");
+    }
+
+    const std::size_t base_size = packet_size / count;
+    const std::size_t remainder = packet_size % count;
+
+    return {
+        count,
+        base_size,
+        remainder,
+    };
+}
 
 class Tunnel {
 public:
@@ -653,19 +1313,37 @@ public:
         bool server_mode,
         const std::string& interface_name,
         const std::string& remote_host,
-        bool allow_v1)
+        const Options& options)
         : tunnel_id_(tunnel_id),
           server_mode_(server_mode),
-          tun_(interface_name),
-          protocol_v2_(tunnel_id, parse_master_key()),
-          allow_v1_(allow_v1) {
+          options_(options),
+          tun_(interface_name, options.tun_mtu),
+          master_key_(parse_master_key()),
+          protocol_v2_(tunnel_id, master_key_),
+          protocol_v3_(tunnel_id, master_key_),
+          reassembler_(options.tun_mtu) {
 
-        const std::uint16_t port = static_cast<std::uint16_t>(40000 + tunnel_id_);
+        const std::uint16_t port =
+            static_cast<std::uint16_t>(40000 + tunnel_id_);
 
         if (server_mode_) {
             udp_.open_server(port);
         } else {
             udp_.open_client(remote_host, port);
+        }
+
+        validate_fragment_capacity();
+
+        if (log_enabled(LogLevel::info)) {
+            std::cerr
+                << "tuntom id=" << tunnel_id_
+                << " tun-mtu=" << options_.tun_mtu
+                << " transport-mtu=" << options_.transport_mtu
+                << " max-fragment-payload="
+                << maximum_fragment_payload()
+                << " ttl-compensate="
+                << (options_.ttl_compensate ? "yes" : "no")
+                << "\n";
         }
     }
 
@@ -677,6 +1355,9 @@ public:
         }
 
         auto last_keepalive = std::chrono::steady_clock::now();
+        auto last_reassembly_cleanup =
+            std::chrono::steady_clock::now();
+
         std::array<std::uint8_t, buffer_size> buffer {};
 
         while (true) {
@@ -687,28 +1368,39 @@ public:
             descriptors[1].events = POLLIN;
 
             const int rc = ::poll(descriptors, 2, 1000);
+
             if (rc < 0) {
                 if (errno == EINTR) {
                     continue;
                 }
-                throw std::runtime_error("poll() failed: " + std::string(std::strerror(errno)));
+
+                throw std::runtime_error(
+                    "poll() failed: " +
+                    std::string(std::strerror(errno)));
             }
 
             if ((descriptors[0].revents & POLLIN) != 0) {
-                const ssize_t received = tun_.read_packet(buffer.data(), buffer.size());
+                const ssize_t received =
+                    tun_.read_packet(
+                        buffer.data(),
+                        buffer.size());
+
                 if (received > 0) {
-                    dump_bytes("TUN read", buffer.data(), static_cast<std::size_t>(received), 20);
+                    const std::size_t packet_size =
+                        static_cast<std::size_t>(received);
 
-                    Packet packet;
-                    packet.type = PacketType::data;
-                    packet.tunnel_id = tunnel_id_;
-                    packet.protocol_version = protocol_version_v2;
-                    packet.sequence = sequence_generator_.next();
-                    packet.payload.assign(buffer.data(), buffer.data() + received);
+                    dump_bytes(
+                        "TUN read",
+                        buffer.data(),
+                        packet_size,
+                        20);
 
-                    if (process(packet, Direction::tun_to_udp)) {
-                        const auto encoded = protocol_v2_.encode(packet);
-                        udp_.send(encoded.data(), encoded.size());
+                    if (packet_size > options_.tun_mtu) {
+                        log_info("DROP TUN packet larger than configured MTU");
+                    } else {
+                        send_data(
+                            buffer.data(),
+                            packet_size);
                     }
                 }
             }
@@ -717,137 +1409,472 @@ public:
                 sockaddr_storage source {};
                 socklen_t source_length = 0;
 
-                const ssize_t received = udp_.receive(buffer.data(), buffer.size(), source, source_length);
+                const ssize_t received =
+                    udp_.receive(
+                        buffer.data(),
+                        buffer.size(),
+                        source,
+                        source_length);
+
                 if (received > 0) {
-                    dump_bytes("UDP recv", buffer.data(), static_cast<std::size_t>(received), 40);
-
-                    Packet packet;
-                    const std::uint8_t version = static_cast<std::size_t>(received) > 6 ? buffer[6] : 0;
-                    bool decoded = false;
-
-                    if (version == protocol_version_v2) {
-                        decoded = protocol_v2_.decode(buffer.data(), static_cast<std::size_t>(received), packet);
-                    } else if (version == protocol_version_v1 and allow_v1_) {
-                        decoded = protocol_v1_.decode(buffer.data(), static_cast<std::size_t>(received), packet);
-                    } else {
-                        if (log_enabled(LogLevel::info)) {
-                            std::cerr << "DROP protocol version " << static_cast<unsigned>(version) << " not allowed\n";
-                        }
-                        continue;
-                    }
-
-                    if (not decoded) {
-                        log_info("DROP invalid/auth-failed protocol packet");
-                        continue;
-                    }
-
-                    if (packet.tunnel_id != tunnel_id_) {
-                        log_info("DROP tunnel id mismatch");
-                        continue;
-                    }
-
-                    if (packet.protocol_version == protocol_version_v2) {
-                        if (not replay_window_.accept(packet.sequence)) {
-                            if (log_enabled(LogLevel::info)) {
-                                std::cerr << "DROP replay/old seq=" << packet.sequence << "\n";
-                            }
-                            continue;
-                        }
-                    }
-
-                    // Server learns/updates the NAT peer only after successful authentication.
-                    if (server_mode_) {
-                        udp_.set_peer(source, source_length);
-                    }
-
-                    if (log_enabled(LogLevel::debug)) {
-                        std::cerr
-                            << "ACCEPT v" << static_cast<unsigned>(packet.protocol_version)
-                            << " seq=" << packet.sequence
-                            << " type=" << static_cast<unsigned>(packet.type)
-                            << " payload=" << packet.payload.size()
-                            << "\n";
-                    }
-
-                    if (packet.type == PacketType::data and process(packet, Direction::udp_to_tun)) {
-                        dump_bytes("TUN write", packet.payload.data(), packet.payload.size(), 20);
-                        tun_.write_packet(packet.payload.data(), packet.payload.size());
-                    }
+                    handle_udp_packet(
+                        buffer.data(),
+                        static_cast<std::size_t>(received),
+                        source,
+                        source_length);
                 }
             }
 
             const auto now = std::chrono::steady_clock::now();
-            if (not server_mode_ and now - last_keepalive >= std::chrono::seconds(keepalive_seconds)) {
+
+            if (
+                not server_mode_ and
+                now - last_keepalive >=
+                    std::chrono::seconds(keepalive_seconds)) {
+
                 send_control(PacketType::keepalive);
                 last_keepalive = now;
+            }
+
+            if (
+                now - last_reassembly_cleanup >=
+                std::chrono::seconds(1)) {
+
+                reassembler_.cleanup_expired();
+                last_reassembly_cleanup = now;
             }
         }
     }
 
 protected:
     virtual bool process(Packet&, Direction) {
-        // Future packet processing hooks (e.g. smithproxy integration) can override this.
+        // Future packet processing hooks (e.g. smithproxy integration)
+        // can override this.
         return true;
     }
 
 private:
+    std::size_t maximum_fragment_payload() const {
+        const std::size_t overhead =
+            udp_.outer_ip_header_size() +
+            udp_header_size +
+            protocol_header_v3_size;
+
+        if (options_.transport_mtu <= overhead) {
+            throw std::runtime_error(
+                "Transport MTU is too small for tuntom V3");
+        }
+
+        return options_.transport_mtu - overhead;
+    }
+
+    void validate_fragment_capacity() const {
+        const std::size_t maximum_payload =
+            maximum_fragment_payload();
+
+        const std::size_t fragment_count =
+            (options_.tun_mtu + maximum_payload - 1) /
+            maximum_payload;
+
+        if (fragment_count > max_fragments_per_packet) {
+            throw std::runtime_error(
+                "Configured MTU/transport-MTU combination may require "
+                "more than 64 fragments");
+        }
+    }
+
+    void send_data(
+        const std::uint8_t* data,
+        std::size_t size) {
+
+        Packet logical_packet;
+        logical_packet.type = PacketType::data;
+        logical_packet.tunnel_id = tunnel_id_;
+        logical_packet.protocol_version = protocol_version_v3;
+        logical_packet.payload.assign(data, data + size);
+
+        if (not process(logical_packet, Direction::tun_to_udp)) {
+            return;
+        }
+
+        const std::size_t maximum_payload =
+            maximum_fragment_payload();
+
+        const FragmentPlan plan =
+            make_fragment_plan(
+                logical_packet.payload.size(),
+                maximum_payload);
+
+        const std::uint64_t message_id =
+            message_id_generator_.next();
+
+        std::size_t offset = 0;
+
+        for (std::size_t index = 0; index < plan.count; ++index) {
+            const std::size_t fragment_size =
+                plan.base_size +
+                (index < plan.larger_fragments ? 1 : 0);
+
+            Packet fragment;
+            fragment.type = PacketType::data;
+            fragment.tunnel_id = tunnel_id_;
+            fragment.protocol_version = protocol_version_v3;
+            fragment.sequence = sequence_generator_.next();
+            fragment.message_id = message_id;
+            fragment.fragment_offset =
+                static_cast<std::uint32_t>(offset);
+            fragment.original_length =
+                static_cast<std::uint32_t>(
+                    logical_packet.payload.size());
+
+            fragment.payload.assign(
+                logical_packet.payload.begin() +
+                    static_cast<std::ptrdiff_t>(offset),
+                logical_packet.payload.begin() +
+                    static_cast<std::ptrdiff_t>(
+                        offset + fragment_size));
+
+            const auto encoded =
+                protocol_v3_.encode(fragment);
+
+            const ssize_t sent =
+                udp_.send(
+                    encoded.data(),
+                    encoded.size());
+
+            if (sent < 0) {
+                if (log_enabled(LogLevel::info)) {
+                    std::cerr
+                        << "UDP send failed: "
+                        << std::strerror(errno)
+                        << "\n";
+                }
+                return;
+            }
+
+            if (log_enabled(LogLevel::debug)) {
+                std::cerr
+                    << "FRAGMENT "
+                    << (index + 1) << "/" << plan.count
+                    << " msg=" << message_id
+                    << " offset=" << offset
+                    << " size=" << fragment_size
+                    << "\n";
+            }
+
+            offset += fragment_size;
+        }
+    }
+
+    void handle_udp_packet(
+        const std::uint8_t* data,
+        std::size_t size,
+        const sockaddr_storage& source,
+        socklen_t source_length) {
+
+        dump_bytes("UDP recv", data, size, 40);
+
+        Packet packet;
+        const std::uint8_t version =
+            size > 6 ? data[6] : 0;
+
+        bool decoded = false;
+
+        if (version == protocol_version_v3) {
+            decoded =
+                protocol_v3_.decode(
+                    data,
+                    size,
+                    packet);
+        } else if (
+            version == protocol_version_v2 and
+            options_.allow_v2) {
+
+            decoded =
+                protocol_v2_.decode(
+                    data,
+                    size,
+                    packet);
+        } else if (
+            version == protocol_version_v1 and
+            options_.allow_v1) {
+
+            decoded =
+                protocol_v1_.decode(
+                    data,
+                    size,
+                    packet);
+        } else {
+            if (log_enabled(LogLevel::info)) {
+                std::cerr
+                    << "DROP protocol version "
+                    << static_cast<unsigned>(version)
+                    << " not allowed\n";
+            }
+            return;
+        }
+
+        if (not decoded) {
+            log_info("DROP invalid/auth-failed protocol packet");
+            return;
+        }
+
+        if (packet.tunnel_id != tunnel_id_) {
+            log_info("DROP tunnel id mismatch");
+            return;
+        }
+
+        if (packet.protocol_version >= protocol_version_v2) {
+            if (not replay_window_.accept(packet.sequence)) {
+                if (log_enabled(LogLevel::info)) {
+                    std::cerr
+                        << "DROP replay/old seq="
+                        << packet.sequence
+                        << "\n";
+                }
+                return;
+            }
+        }
+
+        // Server learns/updates the NAT peer only after successful
+        // authentication (or accepted V1 when explicitly enabled).
+        if (server_mode_) {
+            udp_.set_peer(source, source_length);
+        }
+
+        if (log_enabled(LogLevel::debug)) {
+            std::cerr
+                << "ACCEPT v"
+                << static_cast<unsigned>(packet.protocol_version)
+                << " seq=" << packet.sequence
+                << " type=" << static_cast<unsigned>(packet.type)
+                << " msg=" << packet.message_id
+                << " offset=" << packet.fragment_offset
+                << " original=" << packet.original_length
+                << " payload=" << packet.payload.size()
+                << "\n";
+        }
+
+        if (packet.type != PacketType::data) {
+            return;
+        }
+
+        if (packet.protocol_version == protocol_version_v3) {
+            std::vector<std::uint8_t> complete_packet;
+
+            if (
+                not reassembler_.accept(
+                    packet,
+                    complete_packet)) {
+
+                return;
+            }
+
+            Packet logical_packet;
+            logical_packet.type = PacketType::data;
+            logical_packet.tunnel_id = tunnel_id_;
+            logical_packet.protocol_version = protocol_version_v3;
+            logical_packet.sequence = packet.sequence;
+            logical_packet.message_id = packet.message_id;
+            logical_packet.original_length =
+                static_cast<std::uint32_t>(
+                    complete_packet.size());
+            logical_packet.payload =
+                std::move(complete_packet);
+
+            deliver_to_tun(logical_packet);
+            return;
+        }
+
+        // Legacy V1/V2 packets are unfragmented.
+        deliver_to_tun(packet);
+    }
+
+    void deliver_to_tun(Packet& packet) {
+        if (not process(packet, Direction::udp_to_tun)) {
+            return;
+        }
+
+        if (packet.payload.size() > options_.tun_mtu) {
+            log_info("DROP reassembled packet larger than configured MTU");
+            return;
+        }
+
+        if (options_.ttl_compensate) {
+            compensate_ip_hop(packet.payload);
+        }
+
+        dump_bytes(
+            "TUN write",
+            packet.payload.data(),
+            packet.payload.size(),
+            20);
+
+        const ssize_t written =
+            tun_.write_packet(
+                packet.payload.data(),
+                packet.payload.size());
+
+        if (
+            written < 0 and
+            log_enabled(LogLevel::info)) {
+
+            std::cerr
+                << "TUN write failed: "
+                << std::strerror(errno)
+                << "\n";
+        }
+    }
+
     void send_control(PacketType type) {
         Packet packet;
         packet.type = type;
         packet.tunnel_id = tunnel_id_;
-        packet.protocol_version = protocol_version_v2;
+        packet.protocol_version = protocol_version_v3;
         packet.sequence = sequence_generator_.next();
 
-        const auto encoded = protocol_v2_.encode(packet);
-        udp_.send(encoded.data(), encoded.size());
+        const auto encoded =
+            protocol_v3_.encode(packet);
+
+        udp_.send(
+            encoded.data(),
+            encoded.size());
     }
 
     std::uint16_t tunnel_id_ = 0;
     bool server_mode_ = false;
+    Options options_;
+
     TunDevice tun_;
     UdpEndpoint udp_;
+
+    const ascon::key_type master_key_;
     ProtocolV1 protocol_v1_;
     ProtocolV2 protocol_v2_;
-    bool allow_v1_ = false;
+    ProtocolV3 protocol_v3_;
+
     SequenceGenerator sequence_generator_;
+    SequenceGenerator message_id_generator_;
     ReplayWindow replay_window_;
+    Reassembler reassembler_;
 };
 
 void usage(const char* program_name) {
     std::cerr
         << "Usage:\n"
-        << "  " << program_name << " server <id> <ifname> [--allow-v1] [--debug|--quiet]\n"
-        << "  " << program_name << " client <id> <ifname> <host> [--allow-v1] [--debug|--quiet]\n"
+        << "  " << program_name
+        << " server <id> <ifname> [options]\n"
+        << "  " << program_name
+        << " client <id> <ifname> <host> [options]\n"
+        << "\n"
+        << "Transport options:\n"
+        << "  --mtu <n>             TUN/inner MTU (default 1500)\n"
+        << "  --transport-mtu <n>   Maximum outer IP packet MTU "
+           "(default 1400)\n"
+        << "  --no-ttl-compensate   Do not compensate the extra "
+           "tuntom routing hop\n"
+        << "\n"
+        << "Compatibility:\n"
+        << "  --allow-v2            Accept legacy authenticated V2 "
+           "packets\n"
+        << "  --allow-v1            Accept legacy unauthenticated V1 "
+           "packets\n"
         << "\n"
         << "Logging:\n"
-        << "  default          informational drops/errors only\n"
-        << "  --debug          packet dumps and protocol details\n"
-        << "  --quiet          suppress non-fatal logging\n"
+        << "  default                informational drops/errors only\n"
+        << "  --debug                packet/fragment protocol details\n"
+        << "  --quiet                suppress non-fatal logging\n"
         << "\n"
         << "Environment:\n"
-        << "  TUNTOM_SECRET   32 hex characters (128-bit master key)\n";
+        << "  TUNTOM_SECRET          32 hex characters "
+           "(128-bit master key)\n";
 }
 
-void parse_options(int argc, char** argv, int first_option, bool& allow_v1) {
+std::size_t parse_size_option(
+    const std::string& option,
+    const char* value,
+    std::size_t minimum,
+    std::size_t maximum) {
+
+    std::size_t parsed_characters = 0;
+    const unsigned long parsed =
+        std::stoul(
+            value,
+            &parsed_characters,
+            10);
+
+    if (
+        value[parsed_characters] != '\0' or
+        parsed < minimum or
+        parsed > maximum) {
+
+        throw std::runtime_error(
+            option + " must be in range " +
+            std::to_string(minimum) +
+            ".." +
+            std::to_string(maximum));
+    }
+
+    return static_cast<std::size_t>(parsed);
+}
+
+void parse_options(
+    int argc,
+    char** argv,
+    int first_option,
+    Options& options) {
+
     for (int i = first_option; i < argc; ++i) {
         const std::string option = argv[i];
 
         if (option == "--allow-v1") {
-            allow_v1 = true;
+            options.allow_v1 = true;
+        } else if (option == "--allow-v2") {
+            options.allow_v2 = true;
         } else if (option == "--debug") {
             log_level = LogLevel::debug;
         } else if (option == "--quiet") {
             log_level = LogLevel::quiet;
+        } else if (option == "--no-ttl-compensate") {
+            options.ttl_compensate = false;
+        } else if (option == "--ttl-compensate") {
+            options.ttl_compensate = true;
+        } else if (option == "--mtu") {
+            if (++i >= argc) {
+                throw std::runtime_error("--mtu requires a value");
+            }
+
+            options.tun_mtu =
+                parse_size_option(
+                    "--mtu",
+                    argv[i],
+                    576,
+                    max_ip_packet_size);
+        } else if (option == "--transport-mtu") {
+            if (++i >= argc) {
+                throw std::runtime_error(
+                    "--transport-mtu requires a value");
+            }
+
+            options.transport_mtu =
+                parse_size_option(
+                    "--transport-mtu",
+                    argv[i],
+                    min_transport_mtu,
+                    max_ip_packet_size);
         } else {
-            throw std::runtime_error("Unknown option: " + option);
+            throw std::runtime_error(
+                "Unknown option: " + option);
         }
     }
 }
 
 std::uint16_t parse_tunnel_id(const char* value) {
     const unsigned long parsed = std::stoul(value);
+
     if (parsed == 0 or parsed > 255) {
-        throw std::runtime_error("Tunnel id must be in range 1..255");
+        throw std::runtime_error(
+            "Tunnel id must be in range 1..255");
     }
 
     return static_cast<std::uint16_t>(parsed);
@@ -863,14 +1890,25 @@ int main(int argc, char** argv) {
         }
 
         const std::string mode = argv[1];
-        const std::uint16_t tunnel_id = parse_tunnel_id(argv[2]);
+        const std::uint16_t tunnel_id =
+            parse_tunnel_id(argv[2]);
         const std::string interface_name = argv[3];
 
         if (mode == "server") {
-            bool allow_v1 = false;
-            parse_options(argc, argv, 4, allow_v1);
+            Options options;
+            parse_options(
+                argc,
+                argv,
+                4,
+                options);
 
-            Tunnel tunnel(tunnel_id, true, interface_name, "", allow_v1);
+            Tunnel tunnel(
+                tunnel_id,
+                true,
+                interface_name,
+                "",
+                options);
+
             tunnel.run();
             return 0;
         }
@@ -881,10 +1919,20 @@ int main(int argc, char** argv) {
                 return 1;
             }
 
-            bool allow_v1 = false;
-            parse_options(argc, argv, 5, allow_v1);
+            Options options;
+            parse_options(
+                argc,
+                argv,
+                5,
+                options);
 
-            Tunnel tunnel(tunnel_id, false, interface_name, argv[4], allow_v1);
+            Tunnel tunnel(
+                tunnel_id,
+                false,
+                interface_name,
+                argv[4],
+                options);
+
             tunnel.run();
             return 0;
         }
@@ -892,7 +1940,11 @@ int main(int argc, char** argv) {
         usage(argv[0]);
         return 1;
     } catch (const std::exception& error) {
-        std::cerr << "ERROR: " << error.what() << "\n";
+        std::cerr
+            << "ERROR: "
+            << error.what()
+            << "\n";
+
         return 1;
     }
 }

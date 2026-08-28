@@ -12,10 +12,15 @@ The main goal is simplicity:
 - source is copied to the remote host through SSH, compiled there, and started
 - NAT-friendly client/server model
 - Linux TUN interfaces on both ends
-- authenticated protocol v2 with replay protection
-- optional compatibility with protocol v1
+- authenticated protocol v3 with replay protection
+- internal balanced fragmentation and reassembly
+- configurable inner/TUN MTU and transport MTU
+- optional compatibility with protocol v2 and v1
+- optional TTL / IPv6 Hop-Limit compensation
+- Wireshark dissector with v3 fragment reassembly
 
-The tunnel is intentionally small and dumb. 
+The tunnel is intentionally small and dumb.
+
 Routing, policy routing, firewalling, transparent proxying, integration, and similar logic are left to normal Linux networking.
 
 ## Requirements
@@ -65,14 +70,15 @@ Tunnel ID determines the interface names, addresses, and UDP port.
 For tunnel `42`:
 
 ```text
-client interface: ut42c
-server interface: ut42s
+local/client interface:   ut42c
+remote/server interface:  ut42s
 
-client address:   10.254.42.1
-server address:   10.254.42.2
+local/client address:     10.254.42.1
+remote/server address:    10.254.42.2
 
-UDP port:         40042
-MTU:              1400
+UDP port:                 40042
+TUN MTU:                  1500
+transport MTU:            1400
 ```
 
 After setup, this should work:
@@ -87,6 +93,140 @@ Loopback testing is supported:
 sudo -E ./mk_tunnel.sh 42 localhost
 ```
 
+## MTU and fragmentation
+
+`tuntom` separates the MTU visible on the TUN interface from the MTU used by the underlying UDP transport.
+
+Defaults:
+
+```text
+TUNTOM_MTU=1500
+TUNTOM_TRANSPORT_MTU=1400
+```
+
+The TUN interface therefore behaves like a normal 1500-byte L3 interface even when the path carrying tuntom UDP datagrams requires smaller packets.
+
+If an inner packet does not fit into one tuntom UDP datagram, protocol v3 fragments it internally and reassembles it on the receiving side.
+
+Fragmentation is balanced. Instead of sending one maximum-sized fragment followed by a small tail, tuntom divides the packet into approximately equal-sized parts.
+
+Example:
+
+```text
+1500 bytes -> 750 + 750
+1401 bytes -> 701 + 700
+```
+
+This avoids exposing a smaller TUN MTU to systems behind the tunnel and also avoids a characteristic large-fragment/small-tail pattern.
+
+The values can be overridden when using the bootstrap script:
+
+```bash
+TUNTOM_MTU=9000 \
+TUNTOM_TRANSPORT_MTU=1500 \
+sudo -E ./mk_tunnel.sh 42 sx2
+```
+
+In this example, the tunnel presents MTU 9000 while transparently fragmenting the traffic over a 1500-byte transport path.
+
+## TTL / Hop-Limit compensation
+
+By default, tuntom compensates one routing hop when writing a received packet into the TUN interface.
+
+For IPv4 it increments TTL by one and recomputes the IPv4 header checksum.
+
+For IPv6 it increments Hop Limit by one.
+
+This is useful when tuntom connects two routing points and should behave like one logical routed hop rather than exposing both tuntom endpoints as separate hops.
+
+The compensation can be disabled in the C++ binary using:
+
+```text
+--no-ttl-compensate
+```
+
+### Known limitation
+
+TTL / Hop-Limit compensation assumes that traffic entering tuntom was forwarded by the sending host before it reached the TUN interface.
+
+Locally generated traffic is different: it has not yet consumed a forwarding hop.
+
+`tuntom` deliberately does not try to detect this case because doing so would require additional kernel metadata, packet marking, address classification, or protocol flags.
+
+As a result, locally generated traffic such as a ping originating directly on a tuntom endpoint may appear with TTL / Hop Limit one higher than expected on the remote side.
+
+This is a known limitation and an intentional KISS tradeoff. The administrator of the tuntom endpoint already knows that the tunnel exists.
+
+## Protocol compatibility
+
+Protocol v3 is the default transmit protocol.
+
+Legacy receive compatibility can be enabled explicitly:
+
+```text
+--allow-v2
+--allow-v1
+```
+
+There is no automatic downgrade.
+
+Protocol v1 is unauthenticated and should only be enabled when compatibility is explicitly required.
+
+## Wireshark
+
+The project includes a Wireshark Lua dissector:
+
+```text
+tuntom.lua
+```
+
+It understands protocol versions v1, v2, and v3.
+
+For v3 it displays:
+
+- sequence number
+- message ID
+- fragment offset
+- original packet length
+- fragment length
+- authentication tag
+- reassembly information
+
+The dissector also reassembles fragmented v3 DATA packets and passes the reconstructed packet to Wireshark's normal IPv4 or IPv6 dissector.
+
+## Hooks
+
+`mk_tunnel.sh` supports local pre/post lifecycle hooks.
+
+By default:
+
+```text
+/etc/tuntom/tuntom-pre.sh
+/etc/tuntom/tuntom-post.sh
+```
+
+The hook files only need to exist on the local/caller host.
+
+The same hook content is executed locally and streamed over SSH to the remote host.
+
+Hook context uses:
+
+```text
+TUNTOM_SIDE=local
+TUNTOM_SIDE=remote
+```
+
+Typical hook phases are:
+
+```text
+pre/down
+post/down
+pre/up
+post/up
+```
+
+`post/up` is especially useful for adding routes, DNAT rules, or other per-tunnel policy after tuntom networking has been created.
+
 ## Logs
 
 The bootstrap script writes logs to:
@@ -96,14 +236,15 @@ The bootstrap script writes logs to:
 /tmp/udp_tun-42-server.log
 ```
 
-Debug packet dumps are currently enabled intentionally.
-Project comes with Wireshark dissector [tuntom.lua](tuntom.lua).
+Use `--debug` on the C++ binary for packet and protocol details.
 
 ## Files
 
 ```text
 udp_tun.cpp     self-contained C++17 implementation
-mk_tunnel.sh   build/deploy/start helper
+mk_tunnel.sh    build/deploy/start helper
+tuntom-net.sh   optional per-tunnel Linux routing/NAT helper
+tuntom.lua      Wireshark dissector
 README.md       quick usage
 DETAILS.md      implementation notes
 LICENSE.md      BSD 3-Clause license

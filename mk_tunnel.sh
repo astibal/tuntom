@@ -67,7 +67,8 @@ client_if="ut${id}c"
 server_if="ut${id}s"
 client_ip="10.254.${id}.1"
 server_ip="10.254.${id}.2"
-mtu="1400"
+mtu="${TUNTOM_MTU:-1500}"
+transport_mtu="${TUNTOM_TRANSPORT_MTU:-1400}"
 udp_port="$((40000 + id))"
 
 tuntom_mark_mask="${TUNTOM_MARK_MASK:-0x00ff0000}"
@@ -134,6 +135,7 @@ run_hook_local() {
         TUNTOM_SERVER_IP="$server_ip" \
         TUNTOM_UDP_PORT="$udp_port" \
         TUNTOM_MTU="$mtu" \
+        TUNTOM_TRANSPORT_MTU="$transport_mtu" \
         TUNTOM_SNAT="$tuntom_snat" \
         TUNTOM_MSS_CLAMP="$tuntom_mss_clamp" \
         TUNTOM_MARK="$tuntom_mark" \
@@ -174,6 +176,7 @@ run_hook_remote() {
          TUNTOM_SERVER_IP='${server_ip}' \
          TUNTOM_UDP_PORT='${udp_port}' \
          TUNTOM_MTU='${mtu}' \
+         TUNTOM_TRANSPORT_MTU='${transport_mtu}' \
          TUNTOM_SNAT='${tuntom_snat}' \
          TUNTOM_MSS_CLAMP='${tuntom_mss_clamp}' \
          TUNTOM_MARK='${tuntom_mark}' \
@@ -315,6 +318,8 @@ echo "  remote:     ${remote}"
 echo "  client if:  ${client_if} ${client_ip} -> ${server_ip}"
 echo "  server if:  ${server_if} ${server_ip} -> ${client_ip}"
 echo "  UDP port:   ${udp_port}"
+echo "  TUN MTU:    ${mtu}"
+echo "  xport MTU:  ${transport_mtu}"
 echo "  SNAT:       ${tuntom_snat}"
 echo "  MSS clamp:  ${tuntom_mss_clamp}"
 echo "  pre hook:   ${tuntom_pre_hook} (local file, runs local+remote)"
@@ -351,7 +356,10 @@ echo "[6] Start remote server"
 printf '%s\n' "$TUNTOM_SECRET" | ssh "$remote" "
     read -r TUNTOM_SECRET
     export TUNTOM_SECRET
-    nohup '${remote_bin}' server '${id}' '${server_if}' >'${remote_log}' 2>&1 </dev/null &
+    nohup '${remote_bin}' server '${id}' '${server_if}' \
+        --mtu '${mtu}' \
+        --transport-mtu '${transport_mtu}' \
+        >'${remote_log}' 2>&1 </dev/null &
     echo \$! > '${remote_pid_file}'
 "
 
@@ -374,7 +382,7 @@ run_hook_remote "$tuntom_post_hook" post up remote "$server_if" "$server_ip" "$c
 
 echo "[8] Start local client"
 "${root_cmd[@]}" sh -c \
-    "nohup '${local_bin}' client '${id}' '${client_if}' '${remote#*@}' >'${local_log}' 2>&1 </dev/null & echo \$! > '${local_pid_file}'"
+    "nohup '${local_bin}' client '${id}' '${client_if}' '${remote#*@}' --mtu '${mtu}' --transport-mtu '${transport_mtu}' >'${local_log}' 2>&1 </dev/null & echo \$! > '${local_pid_file}'"
 
 for _ in $(seq 1 20); do
     if "${root_cmd[@]}" ip link show "$client_if" >/dev/null 2>&1; then
