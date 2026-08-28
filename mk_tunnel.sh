@@ -1,13 +1,41 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 2 ]]; then
-    echo "Usage: $0 <id 1..255> <host|user@host>" >&2
+if (( $# < 2 )); then
+    echo "Usage: $0 <id 1..255> <host|user@host> [--snat|--no-snat] [--mss-clamp|--no-mss-clamp]" >&2
     exit 1
 fi
 
 id="$1"
 remote="$2"
+shift 2
+
+tuntom_snat=0
+tuntom_mss_clamp=1
+
+while (( $# > 0 )); do
+    case "$1" in
+        --snat)
+            tuntom_snat=1
+            ;;
+        --no-snat)
+            tuntom_snat=0
+            ;;
+        --mss-clamp)
+            tuntom_mss_clamp=1
+            ;;
+        --no-mss-clamp)
+            tuntom_mss_clamp=0
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            echo "Usage: $0 <id 1..255> <host|user@host> [--snat|--no-snat] [--mss-clamp|--no-mss-clamp]" >&2
+            exit 1
+            ;;
+    esac
+
+    shift
+done
 
 if ! [[ "$id" =~ ^[0-9]+$ ]] || (( id < 1 || id > 255 )); then
     echo "Tunnel id must be in range 1..255" >&2
@@ -33,6 +61,7 @@ export TUNTOM_SECRET
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source_file="${script_dir}/udp_tun.cpp"
+net_file="${script_dir}/tuntom-net.sh"
 
 client_if="ut${id}c"
 server_if="ut${id}s"
@@ -42,6 +71,8 @@ mtu="1400"
 
 local_bin="/tmp/udp_tun-${id}-client"
 remote_bin="/tmp/udp_tun-${id}-server"
+remote_net_file="/tmp/tuntom-net-${id}.sh"
+
 local_log="/tmp/udp_tun-${id}-client.log"
 remote_log="/tmp/udp_tun-${id}-server.log"
 local_pid_file="/tmp/udp_tun-${id}-client.pid"
@@ -49,6 +80,11 @@ remote_pid_file="/tmp/udp_tun-${id}-server.pid"
 
 if [[ ! -f "$source_file" ]]; then
     echo "Missing source file: $source_file" >&2
+    exit 1
+fi
+
+if [[ ! -f "$net_file" ]]; then
+    echo "Missing network helper: $net_file" >&2
     exit 1
 fi
 
@@ -97,11 +133,65 @@ stop_remote_process() {
     "
 }
 
+net_down_local() {
+    "${root_cmd[@]}" env \
+        TUNTOM_ID="$id" \
+        TUNTOM_IF="$client_if" \
+        TUNTOM_SNAT="$tuntom_snat" \
+        TUNTOM_MSS_CLAMP="$tuntom_mss_clamp" \
+        bash -c "
+            source '$net_file'
+            tuntom_net_down
+        " || true
+}
+
+net_down_remote() {
+    ssh "$remote" "
+        if [ -f '${remote_net_file}' ]; then
+            TUNTOM_ID='${id}' \
+            TUNTOM_IF='${server_if}' \
+            TUNTOM_SNAT='${tuntom_snat}' \
+            TUNTOM_MSS_CLAMP='${tuntom_mss_clamp}' \
+            bash -c \"
+                source '${remote_net_file}'
+                tuntom_net_down
+            \"
+        fi
+    " || true
+}
+
+net_up_local() {
+    "${root_cmd[@]}" env \
+        TUNTOM_ID="$id" \
+        TUNTOM_IF="$client_if" \
+        TUNTOM_SNAT="$tuntom_snat" \
+        TUNTOM_MSS_CLAMP="$tuntom_mss_clamp" \
+        bash -c "
+            source '$net_file'
+            tuntom_net_up
+        "
+}
+
+net_up_remote() {
+    ssh "$remote" "
+        TUNTOM_ID='${id}' \
+        TUNTOM_IF='${server_if}' \
+        TUNTOM_SNAT='${tuntom_snat}' \
+        TUNTOM_MSS_CLAMP='${tuntom_mss_clamp}' \
+        bash -c \"
+            source '${remote_net_file}'
+            tuntom_net_up
+        \"
+    "
+}
+
 echo "Tunnel ${id}"
 echo "  remote:     ${remote}"
 echo "  client if:  ${client_if} ${client_ip} -> ${server_ip}"
 echo "  server if:  ${server_if} ${server_ip} -> ${client_ip}"
 echo "  UDP port:   $((40000 + id))"
+echo "  SNAT:       ${tuntom_snat}"
+echo "  MSS clamp:  ${tuntom_mss_clamp}"
 echo "  protocol:   v2 / Ascon auth + sequence replay protection"
 
 echo "[1] Compile local"
@@ -112,14 +202,21 @@ ssh -o BatchMode=yes "$remote" \
     "g++ -x c++ -std=c++17 -O2 -Wall -Wextra -pedantic -o '${remote_bin}' -" \
     < "$source_file"
 
-echo "[3] Stop previous processes"
+echo "[3] Deploy network helper"
+ssh "$remote" "cat > '${remote_net_file}' && chmod 700 '${remote_net_file}'" < "$net_file"
+
+echo "[4] Stop previous processes"
 stop_local_process
 stop_remote_process
+
+echo "[5] Clean previous networking"
+net_down_local
+net_down_remote
 
 "${root_cmd[@]}" ip link del "$client_if" 2>/dev/null || true
 ssh "$remote" "ip link del '${server_if}' 2>/dev/null || true"
 
-echo "[4] Start remote server"
+echo "[6] Start remote server"
 printf '%s\n' "$TUNTOM_SECRET" | ssh "$remote" "
     read -r TUNTOM_SECRET
     export TUNTOM_SECRET
@@ -139,7 +236,10 @@ ssh "$remote" "
     ip link set dev '${server_if}' mtu '${mtu}' up
 "
 
-echo "[5] Start local client"
+echo "[7] Configure remote networking"
+net_up_remote
+
+echo "[8] Start local client"
 "${root_cmd[@]}" sh -c \
     "nohup '${local_bin}' client '${id}' '${client_if}' '${remote#*@}' >'${local_log}' 2>&1 </dev/null & echo \$! > '${local_pid_file}'"
 
@@ -153,7 +253,10 @@ done
 "${root_cmd[@]}" ip address add "$client_ip" peer "$server_ip" dev "$client_if"
 "${root_cmd[@]}" ip link set dev "$client_if" mtu "$mtu" up
 
-echo "[6] Test"
+echo "[9] Configure local networking"
+net_up_local
+
+echo "[10] Test"
 if "${root_cmd[@]}" ping -I "$client_if" -c 3 -W 2 "$server_ip"; then
     echo "Tunnel is UP"
 else
