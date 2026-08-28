@@ -68,6 +68,18 @@ server_if="ut${id}s"
 client_ip="10.254.${id}.1"
 server_ip="10.254.${id}.2"
 mtu="1400"
+udp_port="$((40000 + id))"
+
+tuntom_mark_mask="${TUNTOM_MARK_MASK:-0x00ff0000}"
+tuntom_mark="${TUNTOM_MARK:-$((id << 16))}"
+tuntom_table="${TUNTOM_TABLE:-$((10000 + id))}"
+tuntom_chain="${TUNTOM_CHAIN:-TUNTOM_${id}}"
+
+# Optional hooks. Hook files exist ONLY on the caller/local host.
+# For the remote side, the same local file is streamed over SSH to bash -s.
+# Missing hook files are silently ignored.
+tuntom_pre_hook="${TUNTOM_PRE_HOOK:-/etc/tuntom/tuntom-pre.sh}"
+tuntom_post_hook="${TUNTOM_POST_HOOK:-/etc/tuntom/tuntom-post.sh}"
 
 local_bin="/tmp/udp_tun-${id}-client"
 remote_bin="/tmp/udp_tun-${id}-server"
@@ -93,6 +105,107 @@ if [[ $EUID -eq 0 ]]; then
 else
     root_cmd=(sudo -E)
 fi
+
+
+run_hook_local() {
+    local hook="$1"
+    local phase="$2"
+    local action="$3"
+    local side="$4"
+    local tuntom_if="$5"
+    local local_ip="$6"
+    local peer_ip="$7"
+
+    if [[ ! -f "$hook" ]]; then
+        return 0
+    fi
+
+    echo "  hook ${phase}/${action}/${side}: ${hook}"
+
+    "${root_cmd[@]}" env \
+        TUNTOM_ID="$id" \
+        TUNTOM_ACTION="$action" \
+        TUNTOM_PHASE="$phase" \
+        TUNTOM_SIDE="$side" \
+        TUNTOM_IF="$tuntom_if" \
+        TUNTOM_LOCAL_IP="$local_ip" \
+        TUNTOM_PEER_IP="$peer_ip" \
+        TUNTOM_CLIENT_IP="$client_ip" \
+        TUNTOM_SERVER_IP="$server_ip" \
+        TUNTOM_UDP_PORT="$udp_port" \
+        TUNTOM_MTU="$mtu" \
+        TUNTOM_SNAT="$tuntom_snat" \
+        TUNTOM_MSS_CLAMP="$tuntom_mss_clamp" \
+        TUNTOM_MARK="$tuntom_mark" \
+        TUNTOM_MARK_MASK="$tuntom_mark_mask" \
+        TUNTOM_TABLE="$tuntom_table" \
+        TUNTOM_CHAIN="$tuntom_chain" \
+        TUNTOM_NAT_CHAIN="${tuntom_chain}_N" \
+        TUNTOM_SNAT_CHAIN="${tuntom_chain}_S" \
+        TUNTOM_MANGLE_CHAIN="${tuntom_chain}_M" \
+        TUNTOM_FORWARD_CHAIN="${tuntom_chain}_F" \
+        bash "$hook"
+}
+
+run_hook_remote() {
+    local hook="$1"
+    local phase="$2"
+    local action="$3"
+    local side="$4"
+    local tuntom_if="$5"
+    local local_ip="$6"
+    local peer_ip="$7"
+
+    if [[ ! -f "$hook" ]]; then
+        return 0
+    fi
+
+    echo "  hook ${phase}/${action}/${side}: ${hook} -> ${remote}"
+
+    ssh "$remote" \
+        "TUNTOM_ID='${id}' \
+         TUNTOM_ACTION='${action}' \
+         TUNTOM_PHASE='${phase}' \
+         TUNTOM_SIDE='${side}' \
+         TUNTOM_IF='${tuntom_if}' \
+         TUNTOM_LOCAL_IP='${local_ip}' \
+         TUNTOM_PEER_IP='${peer_ip}' \
+         TUNTOM_CLIENT_IP='${client_ip}' \
+         TUNTOM_SERVER_IP='${server_ip}' \
+         TUNTOM_UDP_PORT='${udp_port}' \
+         TUNTOM_MTU='${mtu}' \
+         TUNTOM_SNAT='${tuntom_snat}' \
+         TUNTOM_MSS_CLAMP='${tuntom_mss_clamp}' \
+         TUNTOM_MARK='${tuntom_mark}' \
+         TUNTOM_MARK_MASK='${tuntom_mark_mask}' \
+         TUNTOM_TABLE='${tuntom_table}' \
+         TUNTOM_CHAIN='${tuntom_chain}' \
+         TUNTOM_NAT_CHAIN='${tuntom_chain}_N' \
+         TUNTOM_SNAT_CHAIN='${tuntom_chain}_S' \
+         TUNTOM_MANGLE_CHAIN='${tuntom_chain}_M' \
+         TUNTOM_FORWARD_CHAIN='${tuntom_chain}_F' \
+         bash -s" < "$hook"
+}
+
+hook_pre_down_local() {
+    run_hook_local "$tuntom_pre_hook" pre down local "$client_if" "$client_ip" "$server_ip" || \
+        echo "WARNING: local pre/down hook failed" >&2
+}
+
+hook_post_down_local() {
+    run_hook_local "$tuntom_post_hook" post down local "$client_if" "$client_ip" "$server_ip" || \
+        echo "WARNING: local post/down hook failed" >&2
+}
+
+hook_pre_down_remote() {
+    run_hook_remote "$tuntom_pre_hook" pre down remote "$server_if" "$server_ip" "$client_ip" || \
+        echo "WARNING: remote pre/down hook failed" >&2
+}
+
+hook_post_down_remote() {
+    run_hook_remote "$tuntom_post_hook" post down remote "$server_if" "$server_ip" "$client_ip" || \
+        echo "WARNING: remote post/down hook failed" >&2
+}
 
 stop_local_process() {
     if [[ ! -f "$local_pid_file" ]]; then
@@ -139,6 +252,10 @@ net_down_local() {
         TUNTOM_IF="$client_if" \
         TUNTOM_SNAT="$tuntom_snat" \
         TUNTOM_MSS_CLAMP="$tuntom_mss_clamp" \
+        TUNTOM_MARK="$tuntom_mark" \
+        TUNTOM_MARK_MASK="$tuntom_mark_mask" \
+        TUNTOM_TABLE="$tuntom_table" \
+        TUNTOM_CHAIN="$tuntom_chain" \
         bash -c "
             source '$net_file'
             tuntom_net_down
@@ -152,6 +269,10 @@ net_down_remote() {
             TUNTOM_IF='${server_if}' \
             TUNTOM_SNAT='${tuntom_snat}' \
             TUNTOM_MSS_CLAMP='${tuntom_mss_clamp}' \
+            TUNTOM_MARK='${tuntom_mark}' \
+            TUNTOM_MARK_MASK='${tuntom_mark_mask}' \
+            TUNTOM_TABLE='${tuntom_table}' \
+            TUNTOM_CHAIN='${tuntom_chain}' \
             bash -c \"
                 source '${remote_net_file}'
                 tuntom_net_down
@@ -166,6 +287,10 @@ net_up_local() {
         TUNTOM_IF="$client_if" \
         TUNTOM_SNAT="$tuntom_snat" \
         TUNTOM_MSS_CLAMP="$tuntom_mss_clamp" \
+        TUNTOM_MARK="$tuntom_mark" \
+        TUNTOM_MARK_MASK="$tuntom_mark_mask" \
+        TUNTOM_TABLE="$tuntom_table" \
+        TUNTOM_CHAIN="$tuntom_chain" \
         bash -c "
             source '$net_file'
             tuntom_net_up
@@ -189,9 +314,11 @@ echo "Tunnel ${id}"
 echo "  remote:     ${remote}"
 echo "  client if:  ${client_if} ${client_ip} -> ${server_ip}"
 echo "  server if:  ${server_if} ${server_ip} -> ${client_ip}"
-echo "  UDP port:   $((40000 + id))"
+echo "  UDP port:   ${udp_port}"
 echo "  SNAT:       ${tuntom_snat}"
 echo "  MSS clamp:  ${tuntom_mss_clamp}"
+echo "  pre hook:   ${tuntom_pre_hook} (local file, runs local+remote)"
+echo "  post hook:  ${tuntom_post_hook} (local file, runs local+remote)"
 echo "  protocol:   v2 / Ascon auth + sequence replay protection"
 
 echo "[1] Compile local"
@@ -210,8 +337,12 @@ stop_local_process
 stop_remote_process
 
 echo "[5] Clean previous networking"
+hook_pre_down_local
+hook_pre_down_remote
 net_down_local
 net_down_remote
+hook_post_down_local
+hook_post_down_remote
 
 "${root_cmd[@]}" ip link del "$client_if" 2>/dev/null || true
 ssh "$remote" "ip link del '${server_if}' 2>/dev/null || true"
@@ -237,7 +368,9 @@ ssh "$remote" "
 "
 
 echo "[7] Configure remote networking"
+run_hook_remote "$tuntom_pre_hook" pre up remote "$server_if" "$server_ip" "$client_ip"
 net_up_remote
+run_hook_remote "$tuntom_post_hook" post up remote "$server_if" "$server_ip" "$client_ip"
 
 echo "[8] Start local client"
 "${root_cmd[@]}" sh -c \
@@ -254,7 +387,9 @@ done
 "${root_cmd[@]}" ip link set dev "$client_if" mtu "$mtu" up
 
 echo "[9] Configure local networking"
+run_hook_local "$tuntom_pre_hook" pre up local "$client_if" "$client_ip" "$server_ip"
 net_up_local
+run_hook_local "$tuntom_post_hook" post up local "$client_if" "$client_ip" "$server_ip"
 
 echo "[10] Test"
 if "${root_cmd[@]}" ping -I "$client_if" -c 3 -W 2 "$server_ip"; then
