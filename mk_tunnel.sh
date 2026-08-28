@@ -84,6 +84,12 @@ tuntom_post_hook="${TUNTOM_POST_HOOK:-/etc/tuntom/tuntom-post.sh}"
 
 local_bin="/tmp/udp_tun-${id}-client"
 remote_bin="/tmp/udp_tun-${id}-server"
+
+# Build into separate staging files so a failed or slow compilation never
+# touches the binaries used by the currently running tunnel.
+local_stage="${local_bin}.new.$$"
+remote_stage="${remote_bin}.new.$$"
+
 remote_net_file="/tmp/tuntom-net-${id}.sh"
 
 local_log="/tmp/udp_tun-${id}-client.log"
@@ -106,6 +112,18 @@ if [[ $EUID -eq 0 ]]; then
 else
     root_cmd=(sudo -E)
 fi
+
+stage_active=1
+
+cleanup_staging() {
+    if (( stage_active )); then
+        rm -f "$local_stage" 2>/dev/null || true
+        ssh "$remote" "rm -f '${remote_stage}'" >/dev/null 2>&1 || true
+    fi
+}
+
+trap cleanup_staging EXIT
+
 
 
 run_hook_local() {
@@ -218,11 +236,23 @@ stop_local_process() {
     local pid
     pid="$(cat "$local_pid_file" 2>/dev/null || true)"
 
-    if [[ "$pid" =~ ^[0-9]+$ ]] && [[ -e "/proc/${pid}/exe" ]]; then
-        local exe
-        exe="$(readlink -f "/proc/${pid}/exe" 2>/dev/null || true)"
-        if [[ "$exe" == "$local_bin" ]]; then
+    if [[ "$pid" =~ ^[0-9]+$ ]]; then
+        local argv0
+        argv0="$("${root_cmd[@]}" sh -c "tr '\\0' '\\n' < '/proc/${pid}/cmdline' 2>/dev/null | head -n 1" || true)"
+
+        if [[ "$argv0" == "$local_bin" ]]; then
             "${root_cmd[@]}" kill "$pid" 2>/dev/null || true
+            for _ in $(seq 1 20); do
+                if ! "${root_cmd[@]}" kill -0 "$pid" 2>/dev/null; then
+                    break
+                fi
+                sleep 0.05
+            done
+            if "${root_cmd[@]}" kill -0 "$pid" 2>/dev/null; then
+                "${root_cmd[@]}" kill -KILL "$pid" 2>/dev/null || true
+            fi
+        else
+            echo "WARNING: stale local PID file ${local_pid_file}: PID ${pid} is not ${local_bin}" >&2
         fi
     fi
 
@@ -236,11 +266,19 @@ stop_remote_process() {
             case \"\$pid\" in
                 ''|*[!0-9]*) ;;
                 *)
-                    if [ -e \"/proc/\$pid/exe\" ]; then
-                        exe=\$(readlink -f \"/proc/\$pid/exe\" 2>/dev/null || true)
-                        if [ \"\$exe\" = '${remote_bin}' ]; then
-                            kill \"\$pid\" 2>/dev/null || true
+                    argv0=\$(tr '\\000' '\\n' < \"/proc/\$pid/cmdline\" 2>/dev/null | head -n 1 || true)
+                    if [ \"\$argv0\" = '${remote_bin}' ]; then
+                        kill \"\$pid\" 2>/dev/null || true
+                        n=0
+                        while kill -0 \"\$pid\" 2>/dev/null && [ \"\$n\" -lt 20 ]; do
+                            sleep 0.05
+                            n=\$((n + 1))
+                        done
+                        if kill -0 \"\$pid\" 2>/dev/null; then
+                            kill -KILL \"\$pid\" 2>/dev/null || true
                         fi
+                    else
+                        echo \"WARNING: stale remote PID file ${remote_pid_file}: PID \$pid is not ${remote_bin}\" >&2
                     fi
                     ;;
             esac
@@ -324,19 +362,24 @@ echo "  SNAT:       ${tuntom_snat}"
 echo "  MSS clamp:  ${tuntom_mss_clamp}"
 echo "  pre hook:   ${tuntom_pre_hook} (local file, runs local+remote)"
 echo "  post hook:  ${tuntom_post_hook} (local file, runs local+remote)"
-echo "  protocol:   v2 / Ascon auth + sequence replay protection"
+echo "  protocol:   v3 / Ascon auth + replay protection + fragmentation"
 
-echo "[1] Compile local"
-g++ -std=c++17 -O2 -Wall -Wextra -pedantic "$source_file" -o "$local_bin"
+echo "[1] Compile local staging binary"
+rm -f "$local_stage"
+g++ -std=c++17 -O2 -Wall -Wextra -pedantic "$source_file" -o "$local_stage"
+test -x "$local_stage"
 
-echo "[2] Compile remote"
+echo "[2] Compile remote staging binary"
+ssh -o BatchMode=yes "$remote" "rm -f '${remote_stage}'"
 ssh -o BatchMode=yes "$remote" \
-    "g++ -x c++ -std=c++17 -O2 -Wall -Wextra -pedantic -o '${remote_bin}' -" \
+    "g++ -x c++ -std=c++17 -O2 -Wall -Wextra -pedantic -o '${remote_stage}' - && test -x '${remote_stage}'" \
     < "$source_file"
 
 echo "[3] Deploy network helper"
 ssh "$remote" "cat > '${remote_net_file}' && chmod 700 '${remote_net_file}'" < "$net_file"
 
+# Up to this point the currently running tunnel is untouched. Only after all
+# preparation succeeds do we perform the short switchover.
 echo "[4] Stop previous processes"
 stop_local_process
 stop_remote_process
@@ -352,7 +395,12 @@ hook_post_down_remote
 "${root_cmd[@]}" ip link del "$client_if" 2>/dev/null || true
 ssh "$remote" "ip link del '${server_if}' 2>/dev/null || true"
 
-echo "[6] Start remote server"
+echo "[6] Install staged binaries"
+"${root_cmd[@]}" mv -f "$local_stage" "$local_bin"
+ssh "$remote" "mv -f '${remote_stage}' '${remote_bin}'"
+stage_active=0
+
+echo "[7] Start remote server"
 printf '%s\n' "$TUNTOM_SECRET" | ssh "$remote" "
     read -r TUNTOM_SECRET
     export TUNTOM_SECRET
@@ -375,12 +423,12 @@ ssh "$remote" "
     ip link set dev '${server_if}' mtu '${mtu}' up
 "
 
-echo "[7] Configure remote networking"
+echo "[8] Configure remote networking"
 run_hook_remote "$tuntom_pre_hook" pre up remote "$server_if" "$server_ip" "$client_ip"
 net_up_remote
 run_hook_remote "$tuntom_post_hook" post up remote "$server_if" "$server_ip" "$client_ip"
 
-echo "[8] Start local client"
+echo "[9] Start local client"
 "${root_cmd[@]}" sh -c \
     "nohup '${local_bin}' client '${id}' '${client_if}' '${remote#*@}' --mtu '${mtu}' --transport-mtu '${transport_mtu}' >'${local_log}' 2>&1 </dev/null & echo \$! > '${local_pid_file}'"
 
@@ -394,12 +442,12 @@ done
 "${root_cmd[@]}" ip address add "$client_ip" peer "$server_ip" dev "$client_if"
 "${root_cmd[@]}" ip link set dev "$client_if" mtu "$mtu" up
 
-echo "[9] Configure local networking"
+echo "[10] Configure local networking"
 run_hook_local "$tuntom_pre_hook" pre up local "$client_if" "$client_ip" "$server_ip"
 net_up_local
 run_hook_local "$tuntom_post_hook" post up local "$client_if" "$client_ip" "$server_ip"
 
-echo "[10] Test"
+echo "[11] Test"
 if "${root_cmd[@]}" ping -I "$client_if" -c 3 -W 2 "$server_ip"; then
     echo "Tunnel is UP"
 else
