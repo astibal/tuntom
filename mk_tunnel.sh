@@ -57,6 +57,12 @@ if ! [[ "$TUNTOM_SECRET" =~ ^[0-9A-Fa-f]{32}$ ]]; then
     exit 1
 fi
 
+if [[ "${TUNTOM_STATS_FORMAT:-txt}" != "txt" ]]; then
+    echo "Unsupported TUNTOM_STATS_FORMAT: ${TUNTOM_STATS_FORMAT}" >&2
+    echo "Currently supported: txt" >&2
+    exit 1
+fi
+
 export TUNTOM_SECRET
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -82,8 +88,8 @@ tuntom_chain="${TUNTOM_CHAIN:-TUNTOM_${id}}"
 tuntom_pre_hook="${TUNTOM_PRE_HOOK:-/etc/tuntom/tuntom-pre.sh}"
 tuntom_post_hook="${TUNTOM_POST_HOOK:-/etc/tuntom/tuntom-post.sh}"
 
-local_bin="/tmp/udp_tun-${id}-client"
-remote_bin="/tmp/udp_tun-${id}-server"
+local_bin="/tmp/tuntom_${id}c"
+remote_bin="/tmp/tuntom_${id}s"
 
 # Build into separate staging files so a failed or slow compilation never
 # touches the binaries used by the currently running tunnel.
@@ -94,8 +100,14 @@ remote_net_file="/tmp/tuntom-net-${id}.sh"
 
 local_log="/tmp/udp_tun-${id}-client.log"
 remote_log="/tmp/udp_tun-${id}-server.log"
-local_pid_file="/tmp/udp_tun-${id}-client.pid"
-remote_pid_file="/tmp/udp_tun-${id}-server.pid"
+
+run_dir="/run/tuntom"
+
+local_pid_file="${run_dir}/${id}c.pid"
+remote_pid_file="${run_dir}/${id}s.pid"
+local_stats_file="${run_dir}/${id}c.stats"
+remote_stats_file="${run_dir}/${id}s.stats"
+stats_format="${TUNTOM_STATS_FORMAT:-txt}"
 
 if [[ ! -f "$source_file" ]]; then
     echo "Missing source file: $source_file" >&2
@@ -360,6 +372,7 @@ echo "  TUN MTU:    ${mtu}"
 echo "  xport MTU:  ${transport_mtu}"
 echo "  SNAT:       ${tuntom_snat}"
 echo "  MSS clamp:  ${tuntom_mss_clamp}"
+echo "  stats:      ${stats_format} -> ${run_dir}/${id}{c,s}.stats"
 echo "  pre hook:   ${tuntom_pre_hook} (local file, runs local+remote)"
 echo "  post hook:  ${tuntom_post_hook} (local file, runs local+remote)"
 echo "  protocol:   v3 / Ascon auth + replay protection + fragmentation"
@@ -378,11 +391,16 @@ ssh -o BatchMode=yes "$remote" \
 echo "[3] Deploy network helper"
 ssh "$remote" "cat > '${remote_net_file}' && chmod 700 '${remote_net_file}'" < "$net_file"
 
+"${root_cmd[@]}" mkdir -p "$run_dir"
+ssh "$remote" "mkdir -p '${run_dir}'"
+
 # Up to this point the currently running tunnel is untouched. Only after all
 # preparation succeeds do we perform the short switchover.
 echo "[4] Stop previous processes"
 stop_local_process
 stop_remote_process
+rm -f "$local_stats_file" 2>/dev/null || true
+ssh "$remote" "rm -f '${remote_stats_file}'" >/dev/null 2>&1 || true
 
 echo "[5] Clean previous networking"
 hook_pre_down_local
@@ -407,6 +425,8 @@ printf '%s\n' "$TUNTOM_SECRET" | ssh "$remote" "
     nohup '${remote_bin}' server '${id}' '${server_if}' \
         --mtu '${mtu}' \
         --transport-mtu '${transport_mtu}' \
+        --stats-format '${stats_format}' \
+        --stats-file '${remote_stats_file}' \
         >'${remote_log}' 2>&1 </dev/null &
     echo \$! > '${remote_pid_file}'
 "
@@ -430,7 +450,7 @@ run_hook_remote "$tuntom_post_hook" post up remote "$server_if" "$server_ip" "$c
 
 echo "[9] Start local client"
 "${root_cmd[@]}" sh -c \
-    "nohup '${local_bin}' client '${id}' '${client_if}' '${remote#*@}' --mtu '${mtu}' --transport-mtu '${transport_mtu}' >'${local_log}' 2>&1 </dev/null & echo \$! > '${local_pid_file}'"
+    "nohup '${local_bin}' client '${id}' '${client_if}' '${remote#*@}' --mtu '${mtu}' --transport-mtu '${transport_mtu}' --stats-format '${stats_format}' --stats-file '${local_stats_file}' >'${local_log}' 2>&1 </dev/null & echo \$! > '${local_pid_file}'"
 
 for _ in $(seq 1 20); do
     if "${root_cmd[@]}" ip link show "$client_if" >/dev/null 2>&1; then

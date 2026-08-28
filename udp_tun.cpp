@@ -14,6 +14,8 @@
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
+#include <cstdio>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -93,12 +95,40 @@ struct Packet {
     std::vector<std::uint8_t> payload;
 };
 
+enum class StatsFormat {
+    txt,
+};
+
 struct Options {
     bool allow_v1 = false;
     bool allow_v2 = false;
     bool ttl_compensate = true;
     std::size_t tun_mtu = default_tun_mtu;
     std::size_t transport_mtu = default_transport_mtu;
+    std::string stats_file;
+    StatsFormat stats_format = StatsFormat::txt;
+};
+
+struct Stats {
+    std::uint64_t tun_rx_packets = 0;
+    std::uint64_t tun_rx_bytes = 0;
+    std::uint64_t tun_tx_packets = 0;
+    std::uint64_t tun_tx_bytes = 0;
+    std::uint64_t udp_rx_packets = 0;
+    std::uint64_t udp_rx_bytes = 0;
+    std::uint64_t udp_tx_packets = 0;
+    std::uint64_t udp_tx_bytes = 0;
+    std::uint64_t data_tx_packets = 0;
+    std::uint64_t data_rx_packets = 0;
+    std::uint64_t fragments_tx = 0;
+    std::uint64_t fragments_rx = 0;
+    std::uint64_t drops_protocol = 0;
+    std::uint64_t drops_tunnel_id = 0;
+    std::uint64_t drops_replay = 0;
+    std::uint64_t drops_mtu = 0;
+    std::uint64_t drops_process = 0;
+    std::uint64_t udp_send_errors = 0;
+    std::uint64_t tun_write_errors = 0;
 };
 
 void dump_bytes(
@@ -864,19 +894,6 @@ public:
                 std::string(std::strerror(errno)));
         }
 
-        int reuse_addr = 1;
-        if (::setsockopt(
-                fd_,
-                SOL_SOCKET,
-                SO_REUSEADDR,
-                &reuse_addr,
-                sizeof(reuse_addr)) < 0) {
-
-            throw std::runtime_error(
-                "setsockopt(SO_REUSEADDR) failed: " +
-                std::string(std::strerror(errno)));
-        }
-
         int v6_only = 0;
         ::setsockopt(
             fd_,
@@ -1343,6 +1360,8 @@ public:
                 << maximum_fragment_payload()
                 << " ttl-compensate="
                 << (options_.ttl_compensate ? "yes" : "no")
+                << " stats="
+                << (options_.stats_file.empty() ? "off" : options_.stats_file)
                 << "\n";
         }
     }
@@ -1357,6 +1376,10 @@ public:
         auto last_keepalive = std::chrono::steady_clock::now();
         auto last_reassembly_cleanup =
             std::chrono::steady_clock::now();
+        auto last_stats_write =
+            std::chrono::steady_clock::now();
+
+        write_stats();
 
         std::array<std::uint8_t, buffer_size> buffer {};
 
@@ -1389,6 +1412,9 @@ public:
                     const std::size_t packet_size =
                         static_cast<std::size_t>(received);
 
+                    ++stats_.tun_rx_packets;
+                    stats_.tun_rx_bytes += packet_size;
+
                     dump_bytes(
                         "TUN read",
                         buffer.data(),
@@ -1396,6 +1422,7 @@ public:
                         20);
 
                     if (packet_size > options_.tun_mtu) {
+                        ++stats_.drops_mtu;
                         log_info("DROP TUN packet larger than configured MTU");
                     } else {
                         send_data(
@@ -1417,6 +1444,10 @@ public:
                         source_length);
 
                 if (received > 0) {
+                    ++stats_.udp_rx_packets;
+                    stats_.udp_rx_bytes +=
+                        static_cast<std::uint64_t>(received);
+
                     handle_udp_packet(
                         buffer.data(),
                         static_cast<std::size_t>(received),
@@ -1442,6 +1473,14 @@ public:
 
                 reassembler_.cleanup_expired();
                 last_reassembly_cleanup = now;
+            }
+
+            if (
+                now - last_stats_write >=
+                    std::chrono::seconds(1)) {
+
+                write_stats();
+                last_stats_write = now;
             }
         }
     }
@@ -1494,8 +1533,17 @@ private:
         logical_packet.payload.assign(data, data + size);
 
         if (not process(logical_packet, Direction::tun_to_udp)) {
+            ++stats_.drops_process;
             return;
         }
+
+        if (logical_packet.payload.size() > options_.tun_mtu) {
+            ++stats_.drops_mtu;
+            log_info("DROP processed packet larger than configured MTU");
+            return;
+        }
+
+        ++stats_.data_tx_packets;
 
         const std::size_t maximum_payload =
             maximum_fragment_payload();
@@ -1543,6 +1591,7 @@ private:
                     encoded.size());
 
             if (sent < 0) {
+                ++stats_.udp_send_errors;
                 if (log_enabled(LogLevel::info)) {
                     std::cerr
                         << "UDP send failed: "
@@ -1551,6 +1600,11 @@ private:
                 }
                 return;
             }
+
+            ++stats_.udp_tx_packets;
+            stats_.udp_tx_bytes +=
+                static_cast<std::uint64_t>(sent);
+            ++stats_.fragments_tx;
 
             if (log_enabled(LogLevel::debug)) {
                 std::cerr
@@ -1605,6 +1659,7 @@ private:
                     size,
                     packet);
         } else {
+            ++stats_.drops_protocol;
             if (log_enabled(LogLevel::info)) {
                 std::cerr
                     << "DROP protocol version "
@@ -1615,17 +1670,20 @@ private:
         }
 
         if (not decoded) {
+            ++stats_.drops_protocol;
             log_info("DROP invalid/auth-failed protocol packet");
             return;
         }
 
         if (packet.tunnel_id != tunnel_id_) {
+            ++stats_.drops_tunnel_id;
             log_info("DROP tunnel id mismatch");
             return;
         }
 
         if (packet.protocol_version >= protocol_version_v2) {
             if (not replay_window_.accept(packet.sequence)) {
+                ++stats_.drops_replay;
                 if (log_enabled(LogLevel::info)) {
                     std::cerr
                         << "DROP replay/old seq="
@@ -1660,6 +1718,8 @@ private:
         }
 
         if (packet.protocol_version == protocol_version_v3) {
+            ++stats_.fragments_rx;
+
             std::vector<std::uint8_t> complete_packet;
 
             if (
@@ -1692,10 +1752,12 @@ private:
 
     void deliver_to_tun(Packet& packet) {
         if (not process(packet, Direction::udp_to_tun)) {
+            ++stats_.drops_process;
             return;
         }
 
         if (packet.payload.size() > options_.tun_mtu) {
+            ++stats_.drops_mtu;
             log_info("DROP reassembled packet larger than configured MTU");
             return;
         }
@@ -1715,14 +1777,20 @@ private:
                 packet.payload.data(),
                 packet.payload.size());
 
-        if (
-            written < 0 and
-            log_enabled(LogLevel::info)) {
+        if (written < 0) {
+            ++stats_.tun_write_errors;
 
-            std::cerr
-                << "TUN write failed: "
-                << std::strerror(errno)
-                << "\n";
+            if (log_enabled(LogLevel::info)) {
+                std::cerr
+                    << "TUN write failed: "
+                    << std::strerror(errno)
+                    << "\n";
+            }
+        } else {
+            ++stats_.tun_tx_packets;
+            stats_.tun_tx_bytes +=
+                static_cast<std::uint64_t>(written);
+            ++stats_.data_rx_packets;
         }
     }
 
@@ -1736,9 +1804,99 @@ private:
         const auto encoded =
             protocol_v3_.encode(packet);
 
-        udp_.send(
-            encoded.data(),
-            encoded.size());
+        const ssize_t sent =
+            udp_.send(
+                encoded.data(),
+                encoded.size());
+
+        if (sent < 0) {
+            ++stats_.udp_send_errors;
+        } else {
+            ++stats_.udp_tx_packets;
+            stats_.udp_tx_bytes +=
+                static_cast<std::uint64_t>(sent);
+        }
+    }
+
+    void write_stats() {
+        if (options_.stats_file.empty()) {
+            return;
+        }
+
+        const auto now_steady = std::chrono::steady_clock::now();
+        const auto uptime =
+            std::chrono::duration_cast<std::chrono::seconds>(
+                now_steady - started_at_).count();
+
+        const auto now_system =
+            std::chrono::system_clock::now();
+        const auto updated_unix =
+            std::chrono::duration_cast<std::chrono::seconds>(
+                now_system.time_since_epoch()).count();
+
+        const std::string temporary_file =
+            options_.stats_file +
+            ".tmp." +
+            std::to_string(static_cast<long long>(::getpid()));
+
+        {
+            std::ofstream output(
+                temporary_file,
+                std::ios::out | std::ios::trunc);
+
+            if (not output) {
+                log_info("Unable to open stats file " + temporary_file);
+                return;
+            }
+
+            output
+                << "format=txt\n"
+                << "format_version=1\n"
+                << "pid=" << ::getpid() << "\n"
+                << "tunnel_id=" << tunnel_id_ << "\n"
+                << "mode=" << (server_mode_ ? "server" : "client") << "\n"
+                << "updated_unix=" << updated_unix << "\n"
+                << "uptime_seconds=" << uptime << "\n"
+                << "tun_rx_packets=" << stats_.tun_rx_packets << "\n"
+                << "tun_rx_bytes=" << stats_.tun_rx_bytes << "\n"
+                << "tun_tx_packets=" << stats_.tun_tx_packets << "\n"
+                << "tun_tx_bytes=" << stats_.tun_tx_bytes << "\n"
+                << "udp_rx_packets=" << stats_.udp_rx_packets << "\n"
+                << "udp_rx_bytes=" << stats_.udp_rx_bytes << "\n"
+                << "udp_tx_packets=" << stats_.udp_tx_packets << "\n"
+                << "udp_tx_bytes=" << stats_.udp_tx_bytes << "\n"
+                << "data_tx_packets=" << stats_.data_tx_packets << "\n"
+                << "data_rx_packets=" << stats_.data_rx_packets << "\n"
+                << "fragments_tx=" << stats_.fragments_tx << "\n"
+                << "fragments_rx=" << stats_.fragments_rx << "\n"
+                << "drops_protocol=" << stats_.drops_protocol << "\n"
+                << "drops_tunnel_id=" << stats_.drops_tunnel_id << "\n"
+                << "drops_replay=" << stats_.drops_replay << "\n"
+                << "drops_mtu=" << stats_.drops_mtu << "\n"
+                << "drops_process=" << stats_.drops_process << "\n"
+                << "udp_send_errors=" << stats_.udp_send_errors << "\n"
+                << "tun_write_errors=" << stats_.tun_write_errors << "\n";
+
+            output.flush();
+
+            if (not output) {
+                log_info("Unable to write stats file " + temporary_file);
+                return;
+            }
+        }
+
+        if (
+            std::rename(
+                temporary_file.c_str(),
+                options_.stats_file.c_str()) != 0) {
+
+            log_info(
+                "Unable to publish stats file " +
+                options_.stats_file +
+                ": " +
+                std::strerror(errno));
+            std::remove(temporary_file.c_str());
+        }
     }
 
     std::uint16_t tunnel_id_ = 0;
@@ -1757,6 +1915,10 @@ private:
     SequenceGenerator message_id_generator_;
     ReplayWindow replay_window_;
     Reassembler reassembler_;
+
+    Stats stats_;
+    const std::chrono::steady_clock::time_point started_at_ =
+        std::chrono::steady_clock::now();
 };
 
 void usage(const char* program_name) {
@@ -1773,6 +1935,10 @@ void usage(const char* program_name) {
            "(default 1400)\n"
         << "  --no-ttl-compensate   Do not compensate the extra "
            "tuntom routing hop\n"
+        << "\n"
+        << "Statistics:\n"
+        << "  --stats-file <path>    Export runtime statistics to file\n"
+        << "  --stats-format <fmt>   Statistics format; currently: txt\n"
         << "\n"
         << "Compatibility:\n"
         << "  --allow-v2            Accept legacy authenticated V2 "
@@ -1862,6 +2028,33 @@ void parse_options(
                     argv[i],
                     min_transport_mtu,
                     max_ip_packet_size);
+        } else if (option == "--stats-file") {
+            if (++i >= argc) {
+                throw std::runtime_error(
+                    "--stats-file requires a value");
+            }
+
+            options.stats_file = argv[i];
+
+            if (options.stats_file.empty()) {
+                throw std::runtime_error(
+                    "--stats-file must not be empty");
+            }
+        } else if (option == "--stats-format") {
+            if (++i >= argc) {
+                throw std::runtime_error(
+                    "--stats-format requires a value");
+            }
+
+            const std::string format = argv[i];
+
+            if (format == "txt") {
+                options.stats_format = StatsFormat::txt;
+            } else {
+                throw std::runtime_error(
+                    "Unsupported stats format: " + format +
+                    " (currently supported: txt)");
+            }
         } else {
             throw std::runtime_error(
                 "Unknown option: " + option);
