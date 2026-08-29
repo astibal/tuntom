@@ -129,6 +129,55 @@ else
     root_cmd=(sudo -E)
 fi
 
+mk_lock_file="${run_dir}/mk_${id}.lock"
+
+acquire_mk_lock() {
+    "${root_cmd[@]}" mkdir -p "$run_dir"
+
+    coproc TUNTOM_MK_LOCK {
+        "${root_cmd[@]}" bash -c '
+            lock_file="$1"
+
+            exec 9>"$lock_file"
+
+            if ! flock -n 9; then
+                exit 75
+            fi
+
+            printf "LOCKED\n"
+
+            # Keep fd 9 and therefore the flock alive until the parent
+            # mk_ script exits and closes this coprocess stdin pipe.
+            cat >/dev/null
+        ' bash "$mk_lock_file"
+    }
+
+    local lock_status=""
+
+    if ! IFS= read -r lock_status <&"${TUNTOM_MK_LOCK[0]}"; then
+        local lock_rc=0
+        wait "$TUNTOM_MK_LOCK_PID" || lock_rc=$?
+
+        if (( lock_rc == 75 )); then
+            echo "Another mk_ process is already operating on tunnel ${id}" >&2
+            echo "Lock: ${mk_lock_file}" >&2
+        else
+            echo "Unable to acquire mk_ lock ${mk_lock_file}" >&2
+        fi
+
+        exit 1
+    fi
+
+    if [[ "$lock_status" != "LOCKED" ]]; then
+        echo "Unable to acquire mk_ lock ${mk_lock_file}" >&2
+        exit 1
+    fi
+
+    echo "  mk_ lock:   ${mk_lock_file}"
+}
+
+acquire_mk_lock
+
 ensure_runtime_account_local() {
     if ! getent group "$runtime_group" >/dev/null 2>&1; then
         "${root_cmd[@]}" groupadd --system "$runtime_group"
