@@ -34,6 +34,11 @@
 --   1 = HELLO
 --   2 = KEEPALIVE
 --   3 = DATA
+--   4 = PING
+--   5 = PONG
+--
+-- V3 PING/PONG use message_id as the probe_id. fragment_offset and
+-- original_length remain zero and there is no payload.
 --
 -- V3 DATA fragments are reassembled in Lua. The reassembly key includes
 -- tunnel id, message id and packet direction. Once all byte ranges are
@@ -57,6 +62,8 @@ local packet_type_names = {
     [1] = "HELLO",
     [2] = "KEEPALIVE",
     [3] = "DATA",
+    [4] = "PING",
+    [5] = "PONG",
 }
 
 local f_magic = ProtoField.string(
@@ -92,6 +99,12 @@ local f_sequence = ProtoField.uint64(
 local f_message_id = ProtoField.uint64(
     "tuntom.message_id",
     "Message ID",
+    base.DEC
+)
+
+local f_probe_id = ProtoField.uint64(
+    "tuntom.probe_id",
+    "Probe ID",
     base.DEC
 )
 
@@ -164,6 +177,7 @@ tuntom.fields = {
     f_type,
     f_sequence,
     f_message_id,
+    f_probe_id,
     f_fragment_offset,
     f_original_length,
     f_fragment_length,
@@ -720,6 +734,17 @@ function tuntom.dissector(buffer, pinfo, tree)
         end
     end
 
+    if version == 3 and
+       (packet_type == 4 or packet_type == 5) then
+
+        local probe_id =
+            buffer(16, 8):uint64()
+
+        info = info ..
+            ", probe=" ..
+            tostring(probe_id)
+    end
+
     pinfo.cols.info = info
 
     local subtree =
@@ -777,10 +802,17 @@ function tuntom.dissector(buffer, pinfo, tree)
                 payload_length
             )
         else
-            subtree:add(
-                f_message_id,
-                buffer(16, 8)
-            )
+            if packet_type == 4 or packet_type == 5 then
+                subtree:add(
+                    f_probe_id,
+                    buffer(16, 8)
+                )
+            else
+                subtree:add(
+                    f_message_id,
+                    buffer(16, 8)
+                )
+            end
 
             subtree:add(
                 f_fragment_offset,

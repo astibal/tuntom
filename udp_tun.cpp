@@ -52,6 +52,8 @@ constexpr std::size_t min_transport_mtu = 1280;
 constexpr std::size_t max_ip_packet_size = 65535;
 
 constexpr int keepalive_seconds = 5;
+constexpr int rtt_probe_interval_seconds = 15;
+constexpr int rtt_probe_timeout_seconds = 5;
 constexpr int reassembly_timeout_seconds = 3;
 constexpr std::size_t max_reassembly_entries = 64;
 constexpr std::size_t max_reassembly_bytes = 4 * 1024 * 1024;
@@ -222,6 +224,8 @@ enum class PacketType : std::uint8_t {
     hello = 1,
     keepalive = 2,
     data = 3,
+    ping = 4,
+    pong = 5,
 };
 
 enum class Direction {
@@ -235,7 +239,7 @@ struct Packet {
     std::uint8_t protocol_version = protocol_version_v3;
     std::uint64_t sequence = 0;
 
-    // V3 data-fragment metadata. Control packets keep these at zero.
+    // V3 DATA uses fragment metadata. PING/PONG use message_id as probe_id.
     std::uint64_t message_id = 0;
     std::uint32_t fragment_offset = 0;
     std::uint32_t original_length = 0;
@@ -277,6 +281,14 @@ struct Stats {
     std::uint64_t drops_process = 0;
     std::uint64_t udp_send_errors = 0;
     std::uint64_t tun_write_errors = 0;
+
+    double rtt_last_ms = 0.0;
+    double rtt_min_ms = 0.0;
+    double rtt_max_ms = 0.0;
+    double rtt_avg_ms = 0.0;
+    double rtt_jitter_ms = 0.0;
+    std::uint64_t rtt_samples = 0;
+    std::uint64_t rtt_lost = 0;
 };
 
 void dump_bytes(
@@ -869,7 +881,9 @@ public:
         if (
             type != PacketType::hello and
             type != PacketType::keepalive and
-            type != PacketType::data) {
+            type != PacketType::data and
+            type != PacketType::ping and
+            type != PacketType::pong) {
 
             return false;
         }
@@ -926,6 +940,18 @@ public:
                 packet.payload.size();
 
             if (fragment_end > packet.original_length) {
+                return false;
+            }
+        } else if (
+            packet.type == PacketType::ping or
+            packet.type == PacketType::pong) {
+
+            if (
+                packet.message_id == 0 or
+                packet.fragment_offset != 0 or
+                packet.original_length != 0 or
+                not packet.payload.empty()) {
+
                 return false;
             }
         } else {
@@ -1438,6 +1464,10 @@ void compensate_ip_hop(
     }
 }
 
+struct ProbeState {
+    std::chrono::steady_clock::time_point sent_at;
+};
+
 struct FragmentPlan {
     std::size_t count = 0;
     std::size_t base_size = 0;
@@ -1519,11 +1549,19 @@ public:
     virtual ~Tunnel() = default;
 
     void run() {
+        const auto started_now =
+            std::chrono::steady_clock::now();
+
         if (not server_mode_) {
             send_control(PacketType::hello);
+            send_rtt_probe();
+            next_rtt_probe_ =
+                started_now +
+                std::chrono::seconds(rtt_probe_interval_seconds);
+            rtt_probe_schedule_active_ = true;
         }
 
-        auto last_keepalive = std::chrono::steady_clock::now();
+        auto last_keepalive = started_now;
         auto last_reassembly_cleanup =
             std::chrono::steady_clock::now();
         auto last_stats_write =
@@ -1616,6 +1654,18 @@ public:
                 send_control(PacketType::keepalive);
                 last_keepalive = now;
             }
+
+            if (
+                rtt_probe_schedule_active_ and
+                now >= next_rtt_probe_) {
+
+                send_rtt_probe();
+                next_rtt_probe_ +=
+                    std::chrono::seconds(
+                        rtt_probe_interval_seconds);
+            }
+
+            cleanup_rtt_probes(now);
 
             if (
                 now - last_reassembly_cleanup >=
@@ -1863,6 +1913,31 @@ private:
                 << "\n";
         }
 
+        if (packet.type == PacketType::ping) {
+            if (
+                server_mode_ and
+                not rtt_probe_schedule_active_) {
+
+                const auto now =
+                    std::chrono::steady_clock::now();
+
+                next_rtt_probe_ =
+                    now +
+                    std::chrono::milliseconds(
+                        (rtt_probe_interval_seconds * 1000) / 2);
+
+                rtt_probe_schedule_active_ = true;
+            }
+
+            send_probe_reply(packet.message_id);
+            return;
+        }
+
+        if (packet.type == PacketType::pong) {
+            handle_probe_reply(packet.message_id);
+            return;
+        }
+
         if (packet.type != PacketType::data) {
             return;
         }
@@ -1944,12 +2019,16 @@ private:
         }
     }
 
-    void send_control(PacketType type) {
+    bool send_control_packet(
+        PacketType type,
+        std::uint64_t message_id = 0) {
+
         Packet packet;
         packet.type = type;
         packet.tunnel_id = tunnel_id_;
         packet.protocol_version = protocol_version_v3;
         packet.sequence = sequence_generator_.next();
+        packet.message_id = message_id;
 
         const auto encoded =
             protocol_v3_.encode(packet);
@@ -1961,10 +2040,103 @@ private:
 
         if (sent < 0) {
             ++stats_.udp_send_errors;
+            return false;
+        }
+
+        ++stats_.udp_tx_packets;
+        stats_.udp_tx_bytes +=
+            static_cast<std::uint64_t>(sent);
+
+        return true;
+    }
+
+    void send_control(PacketType type) {
+        send_control_packet(type);
+    }
+
+    void send_rtt_probe() {
+        const std::uint64_t probe_id =
+            message_id_generator_.next();
+
+        const auto sent_at =
+            std::chrono::steady_clock::now();
+
+        if (send_control_packet(PacketType::ping, probe_id)) {
+            rtt_probes_[probe_id] = ProbeState { sent_at };
+        }
+    }
+
+    void send_probe_reply(std::uint64_t probe_id) {
+        if (probe_id == 0) {
+            return;
+        }
+
+        send_control_packet(PacketType::pong, probe_id);
+    }
+
+    void handle_probe_reply(std::uint64_t probe_id) {
+        const auto it =
+            rtt_probes_.find(probe_id);
+
+        if (it == rtt_probes_.end()) {
+            return;
+        }
+
+        const auto now =
+            std::chrono::steady_clock::now();
+
+        const double rtt_ms =
+            std::chrono::duration<double, std::milli>(
+                now - it->second.sent_at).count();
+
+        rtt_probes_.erase(it);
+
+        stats_.rtt_last_ms = rtt_ms;
+
+        if (stats_.rtt_samples == 0) {
+            stats_.rtt_min_ms = rtt_ms;
+            stats_.rtt_max_ms = rtt_ms;
+            stats_.rtt_avg_ms = rtt_ms;
+            stats_.rtt_jitter_ms = 0.0;
         } else {
-            ++stats_.udp_tx_packets;
-            stats_.udp_tx_bytes +=
-                static_cast<std::uint64_t>(sent);
+            stats_.rtt_min_ms =
+                std::min(stats_.rtt_min_ms, rtt_ms);
+            stats_.rtt_max_ms =
+                std::max(stats_.rtt_max_ms, rtt_ms);
+
+            const double previous_average =
+                stats_.rtt_avg_ms;
+
+            stats_.rtt_avg_ms +=
+                (rtt_ms - stats_.rtt_avg_ms) /
+                static_cast<double>(stats_.rtt_samples + 1);
+
+            const double deviation =
+                std::abs(rtt_ms - previous_average);
+
+            stats_.rtt_jitter_ms +=
+                (deviation - stats_.rtt_jitter_ms) / 16.0;
+        }
+
+        ++stats_.rtt_samples;
+    }
+
+    void cleanup_rtt_probes(
+        const std::chrono::steady_clock::time_point& now) {
+
+        for (auto it = rtt_probes_.begin();
+             it != rtt_probes_.end();) {
+
+            if (
+                now - it->second.sent_at >=
+                    std::chrono::seconds(
+                        rtt_probe_timeout_seconds)) {
+
+                ++stats_.rtt_lost;
+                it = rtt_probes_.erase(it);
+            } else {
+                ++it;
+            }
         }
     }
 
@@ -2025,7 +2197,16 @@ private:
                 << "drops_mtu=" << stats_.drops_mtu << "\n"
                 << "drops_process=" << stats_.drops_process << "\n"
                 << "udp_send_errors=" << stats_.udp_send_errors << "\n"
-                << "tun_write_errors=" << stats_.tun_write_errors << "\n";
+                << "tun_write_errors=" << stats_.tun_write_errors << "\n"
+                << std::fixed << std::setprecision(3)
+                << "rtt_last_ms=" << stats_.rtt_last_ms << "\n"
+                << "rtt_min_ms=" << stats_.rtt_min_ms << "\n"
+                << "rtt_max_ms=" << stats_.rtt_max_ms << "\n"
+                << "rtt_avg_ms=" << stats_.rtt_avg_ms << "\n"
+                << "rtt_jitter_ms=" << stats_.rtt_jitter_ms << "\n"
+                << std::defaultfloat
+                << "rtt_samples=" << stats_.rtt_samples << "\n"
+                << "rtt_lost=" << stats_.rtt_lost << "\n";
 
             output.flush();
 
@@ -2066,6 +2247,9 @@ private:
     ReplayWindow replay_window_;
     Reassembler reassembler_;
 
+    std::unordered_map<std::uint64_t, ProbeState> rtt_probes_;
+    bool rtt_probe_schedule_active_ = false;
+    std::chrono::steady_clock::time_point next_rtt_probe_ {};
     Stats stats_;
     const std::chrono::steady_clock::time_point started_at_ =
         std::chrono::steady_clock::now();
