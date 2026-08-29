@@ -800,7 +800,18 @@ public:
     }
 
     std::vector<std::uint8_t> encode(const Packet& packet) const override {
-        std::vector<std::uint8_t> output(
+        std::vector<std::uint8_t> output;
+        std::vector<std::uint8_t> mac_input;
+        encode_into(packet, output, mac_input);
+        return output;
+    }
+
+    void encode_into(
+        const Packet& packet,
+        std::vector<std::uint8_t>& output,
+        std::vector<std::uint8_t>& mac_input) const {
+
+        output.resize(
             protocol_header_v3_size + packet.payload.size());
 
         // Bytes 0..31 are authenticated metadata.
@@ -822,7 +833,7 @@ public:
 
         // The tag itself occupies bytes 32..47 and is not part of the MAC
         // input. The complete V3 metadata (0..31) plus payload is covered.
-        std::vector<std::uint8_t> mac_input(32 + packet.payload.size());
+        mac_input.resize(32 + packet.payload.size());
         std::memcpy(mac_input.data(), output.data(), 32);
 
         if (not packet.payload.empty()) {
@@ -852,14 +863,26 @@ public:
                 << " output=" << output.size()
                 << "\n";
         }
-
-        return output;
     }
 
     bool decode(
         const std::uint8_t* data,
         std::size_t size,
         Packet& packet) const override {
+
+        std::vector<std::uint8_t> mac_input;
+        return decode_with_scratch(
+            data,
+            size,
+            packet,
+            mac_input);
+    }
+
+    bool decode_with_scratch(
+        const std::uint8_t* data,
+        std::size_t size,
+        Packet& packet,
+        std::vector<std::uint8_t>& mac_input) const {
 
         if (size < protocol_header_v3_size) {
             return false;
@@ -888,7 +911,7 @@ public:
             return false;
         }
 
-        std::vector<std::uint8_t> mac_input(
+        mac_input.resize(
             32 + size - protocol_header_v3_size);
 
         std::memcpy(mac_input.data(), data, 32);
@@ -1528,6 +1551,7 @@ public:
         }
 
         validate_fragment_capacity();
+        reserve_hot_path_buffers();
 
         drop_privileges();
 
@@ -1569,8 +1593,6 @@ public:
 
         write_stats();
 
-        std::array<std::uint8_t, buffer_size> buffer {};
-
         while (true) {
             pollfd descriptors[2] {};
             descriptors[0].fd = tun_.fd();
@@ -1593,8 +1615,8 @@ public:
             if ((descriptors[0].revents & POLLIN) != 0) {
                 const ssize_t received =
                     tun_.read_packet(
-                        buffer.data(),
-                        buffer.size());
+                        tun_rx_buffer_.data(),
+                        tun_rx_buffer_.size());
 
                 if (received > 0) {
                     const std::size_t packet_size =
@@ -1605,7 +1627,7 @@ public:
 
                     dump_bytes(
                         "TUN read",
-                        buffer.data(),
+                        tun_rx_buffer_.data(),
                         packet_size,
                         20);
 
@@ -1614,7 +1636,7 @@ public:
                         log_info("DROP TUN packet larger than configured MTU");
                     } else {
                         send_data(
-                            buffer.data(),
+                            tun_rx_buffer_.data(),
                             packet_size);
                     }
                 }
@@ -1626,8 +1648,8 @@ public:
 
                 const ssize_t received =
                     udp_.receive(
-                        buffer.data(),
-                        buffer.size(),
+                        udp_rx_buffer_.data(),
+                        udp_rx_buffer_.size(),
                         source,
                         source_length);
 
@@ -1637,7 +1659,7 @@ public:
                         static_cast<std::uint64_t>(received);
 
                     handle_udp_packet(
-                        buffer.data(),
+                        udp_rx_buffer_.data(),
                         static_cast<std::size_t>(received),
                         source,
                         source_length);
@@ -1693,6 +1715,25 @@ protected:
     }
 
 private:
+    void reserve_hot_path_buffers() {
+        const std::size_t maximum_payload =
+            maximum_fragment_payload();
+
+        tun_rx_buffer_.resize(options_.tun_mtu);
+        udp_rx_buffer_.resize(buffer_size);
+
+        tx_logical_packet_.payload.reserve(options_.tun_mtu);
+        tx_fragment_packet_.payload.reserve(maximum_payload);
+        rx_packet_.payload.reserve(options_.tun_mtu);
+        rx_logical_packet_.payload.reserve(options_.tun_mtu);
+
+        tx_encoded_buffer_.reserve(
+            protocol_header_v3_size + maximum_payload);
+        tx_mac_buffer_.reserve(32 + maximum_payload);
+        rx_mac_buffer_.reserve(32 + options_.tun_mtu);
+        reassembled_packet_.reserve(options_.tun_mtu);
+    }
+
     std::size_t maximum_fragment_payload() const {
         const std::size_t overhead =
             udp_.outer_ip_header_size() +
@@ -1726,10 +1767,15 @@ private:
         const std::uint8_t* data,
         std::size_t size) {
 
-        Packet logical_packet;
+        Packet& logical_packet = tx_logical_packet_;
         logical_packet.type = PacketType::data;
         logical_packet.tunnel_id = tunnel_id_;
         logical_packet.protocol_version = protocol_version_v3;
+        logical_packet.sequence = 0;
+        logical_packet.message_id = 0;
+        logical_packet.fragment_offset = 0;
+        logical_packet.original_length =
+            static_cast<std::uint32_t>(size);
         logical_packet.payload.assign(data, data + size);
 
         if (not process(logical_packet, Direction::tun_to_udp)) {
@@ -1763,7 +1809,7 @@ private:
                 plan.base_size +
                 (index < plan.larger_fragments ? 1 : 0);
 
-            Packet fragment;
+            Packet& fragment = tx_fragment_packet_;
             fragment.type = PacketType::data;
             fragment.tunnel_id = tunnel_id_;
             fragment.protocol_version = protocol_version_v3;
@@ -1782,13 +1828,15 @@ private:
                     static_cast<std::ptrdiff_t>(
                         offset + fragment_size));
 
-            const auto encoded =
-                protocol_v3_.encode(fragment);
+            protocol_v3_.encode_into(
+                fragment,
+                tx_encoded_buffer_,
+                tx_mac_buffer_);
 
             const ssize_t sent =
                 udp_.send(
-                    encoded.data(),
-                    encoded.size());
+                    tx_encoded_buffer_.data(),
+                    tx_encoded_buffer_.size());
 
             if (sent < 0) {
                 ++stats_.udp_send_errors;
@@ -1828,7 +1876,9 @@ private:
 
         dump_bytes("UDP recv", data, size, 40);
 
-        Packet packet;
+        Packet& packet = rx_packet_;
+        packet.payload.clear();
+
         const std::uint8_t version =
             size > 6 ? data[6] : 0;
 
@@ -1836,10 +1886,11 @@ private:
 
         if (version == protocol_version_v3) {
             decoded =
-                protocol_v3_.decode(
+                protocol_v3_.decode_with_scratch(
                     data,
                     size,
-                    packet);
+                    packet,
+                    rx_mac_buffer_);
         } else if (
             version == protocol_version_v2 and
             options_.allow_v2) {
@@ -1945,29 +1996,33 @@ private:
         if (packet.protocol_version == protocol_version_v3) {
             ++stats_.fragments_rx;
 
-            std::vector<std::uint8_t> complete_packet;
+            reassembled_packet_.clear();
 
             if (
                 not reassembler_.accept(
                     packet,
-                    complete_packet)) {
+                    reassembled_packet_)) {
 
                 return;
             }
 
-            Packet logical_packet;
+            Packet& logical_packet = rx_logical_packet_;
             logical_packet.type = PacketType::data;
             logical_packet.tunnel_id = tunnel_id_;
             logical_packet.protocol_version = protocol_version_v3;
             logical_packet.sequence = packet.sequence;
             logical_packet.message_id = packet.message_id;
+            logical_packet.fragment_offset = 0;
             logical_packet.original_length =
                 static_cast<std::uint32_t>(
-                    complete_packet.size());
-            logical_packet.payload =
-                std::move(complete_packet);
+                    reassembled_packet_.size());
 
+            logical_packet.payload.swap(reassembled_packet_);
             deliver_to_tun(logical_packet);
+
+            // Recycle the storage used by the completed logical packet.
+            logical_packet.payload.swap(reassembled_packet_);
+            reassembled_packet_.clear();
             return;
         }
 
@@ -2030,13 +2085,15 @@ private:
         packet.sequence = sequence_generator_.next();
         packet.message_id = message_id;
 
-        const auto encoded =
-            protocol_v3_.encode(packet);
+        protocol_v3_.encode_into(
+            packet,
+            tx_encoded_buffer_,
+            tx_mac_buffer_);
 
         const ssize_t sent =
             udp_.send(
-                encoded.data(),
-                encoded.size());
+                tx_encoded_buffer_.data(),
+                tx_encoded_buffer_.size());
 
         if (sent < 0) {
             ++stats_.udp_send_errors;
@@ -2246,6 +2303,22 @@ private:
     SequenceGenerator message_id_generator_;
     ReplayWindow replay_window_;
     Reassembler reassembler_;
+
+    // Hot-path storage is allocated/reserved once during construction and
+    // reused for subsequent packets. This removes allocator churn without
+    // changing Packet/process() semantics or the wire format.
+    std::vector<std::uint8_t> tun_rx_buffer_;
+    std::vector<std::uint8_t> udp_rx_buffer_;
+
+    Packet tx_logical_packet_;
+    Packet tx_fragment_packet_;
+    Packet rx_packet_;
+    Packet rx_logical_packet_;
+
+    std::vector<std::uint8_t> tx_encoded_buffer_;
+    std::vector<std::uint8_t> tx_mac_buffer_;
+    std::vector<std::uint8_t> rx_mac_buffer_;
+    std::vector<std::uint8_t> reassembled_packet_;
 
     std::unordered_map<std::uint64_t, ProbeState> rtt_probes_;
     bool rtt_probe_schedule_active_ = false;
