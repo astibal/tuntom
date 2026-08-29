@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 0077
 
 if (( $# < 2 )); then
     echo "Usage: $0 <id 1..255> <host|user@host> [--snat|--no-snat] [--mss-clamp|--no-mss-clamp]" >&2
@@ -109,6 +110,9 @@ local_stats_file="${run_dir}/${id}c.stats"
 remote_stats_file="${run_dir}/${id}s.stats"
 stats_format="${TUNTOM_STATS_FORMAT:-txt}"
 
+runtime_user="tuntom"
+runtime_group="tuntom"
+
 if [[ ! -f "$source_file" ]]; then
     echo "Missing source file: $source_file" >&2
     exit 1
@@ -124,6 +128,57 @@ if [[ $EUID -eq 0 ]]; then
 else
     root_cmd=(sudo -E)
 fi
+
+ensure_runtime_account_local() {
+    if ! getent group "$runtime_group" >/dev/null 2>&1; then
+        "${root_cmd[@]}" groupadd --system "$runtime_group"
+    fi
+
+    if ! id -u "$runtime_user" >/dev/null 2>&1; then
+        "${root_cmd[@]}" useradd \
+            --system \
+            --gid "$runtime_group" \
+            --no-create-home \
+            --home-dir /nonexistent \
+            --shell /usr/sbin/nologin \
+            "$runtime_user"
+    fi
+
+    local expected_gid actual_gid
+    expected_gid="$(getent group "$runtime_group" | cut -d: -f3)"
+    actual_gid="$(id -g "$runtime_user")"
+
+    if [[ "$actual_gid" != "$expected_gid" ]]; then
+        echo "Runtime user ${runtime_user} does not use group ${runtime_group}" >&2
+        exit 1
+    fi
+}
+
+ensure_runtime_account_remote() {
+    ssh "$remote" "
+        if ! getent group '${runtime_group}' >/dev/null 2>&1; then
+            groupadd --system '${runtime_group}'
+        fi
+
+        if ! id -u '${runtime_user}' >/dev/null 2>&1; then
+            useradd \
+                --system \
+                --gid '${runtime_group}' \
+                --no-create-home \
+                --home-dir /nonexistent \
+                --shell /usr/sbin/nologin \
+                '${runtime_user}'
+        fi
+
+        expected_gid=\$(getent group '${runtime_group}' | cut -d: -f3)
+        actual_gid=\$(id -g '${runtime_user}')
+
+        if [ \"\$actual_gid\" != \"\$expected_gid\" ]; then
+            echo 'Runtime user ${runtime_user} does not use group ${runtime_group}' >&2
+            exit 1
+        fi
+    "
+}
 
 stage_active=1
 
@@ -391,15 +446,25 @@ ssh -o BatchMode=yes "$remote" \
 echo "[3] Deploy network helper"
 ssh "$remote" "cat > '${remote_net_file}' && chmod 700 '${remote_net_file}'" < "$net_file"
 
+ensure_runtime_account_local
+ensure_runtime_account_remote
+
 "${root_cmd[@]}" mkdir -p "$run_dir"
-ssh "$remote" "mkdir -p '${run_dir}'"
+"${root_cmd[@]}" chown root:"$runtime_group" "$run_dir"
+"${root_cmd[@]}" chmod 0770 "$run_dir"
+
+ssh "$remote" "
+    mkdir -p '${run_dir}'
+    chown root:'${runtime_group}' '${run_dir}'
+    chmod 0770 '${run_dir}'
+"
 
 # Up to this point the currently running tunnel is untouched. Only after all
 # preparation succeeds do we perform the short switchover.
 echo "[4] Stop previous processes"
 stop_local_process
 stop_remote_process
-rm -f "$local_stats_file" 2>/dev/null || true
+"${root_cmd[@]}" rm -f "$local_stats_file" 2>/dev/null || true
 ssh "$remote" "rm -f '${remote_stats_file}'" >/dev/null 2>&1 || true
 
 echo "[5] Clean previous networking"
