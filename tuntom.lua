@@ -36,9 +36,16 @@
 --   3 = DATA
 --   4 = PING
 --   5 = PONG
+--   6 = MTU_PROBE
+--   7 = MTU_REPLY
 --
 -- V3 PING/PONG use message_id as the probe_id. fragment_offset and
 -- original_length remain zero and there is no payload.
+--
+-- V3 MTU_PROBE/MTU_REPLY use message_id as the PMTUD probe id and
+-- original_length as the target/observed outer MTU. MTU_PROBE carries
+-- padding so that the complete outer IP packet reaches original_length;
+-- MTU_REPLY has no payload.
 --
 -- V3 DATA fragments are reassembled in Lua. The reassembly key includes
 -- tunnel id, message id and packet direction. Once all byte ranges are
@@ -64,6 +71,8 @@ local packet_type_names = {
     [3] = "DATA",
     [4] = "PING",
     [5] = "PONG",
+    [6] = "MTU_PROBE",
+    [7] = "MTU_REPLY",
 }
 
 local f_magic = ProtoField.string(
@@ -106,6 +115,23 @@ local f_probe_id = ProtoField.uint64(
     "tuntom.probe_id",
     "Probe ID",
     base.DEC
+)
+
+local f_mtu_probe_id = ProtoField.uint64(
+    "tuntom.mtu_probe_id",
+    "PMTUD Probe ID",
+    base.DEC
+)
+
+local f_mtu = ProtoField.uint32(
+    "tuntom.mtu",
+    "Outer MTU",
+    base.DEC
+)
+
+local f_mtu_padding = ProtoField.bytes(
+    "tuntom.mtu_padding",
+    "PMTUD Padding"
 )
 
 local f_fragment_offset = ProtoField.uint32(
@@ -178,6 +204,9 @@ tuntom.fields = {
     f_sequence,
     f_message_id,
     f_probe_id,
+    f_mtu_probe_id,
+    f_mtu,
+    f_mtu_padding,
     f_fragment_offset,
     f_original_length,
     f_fragment_length,
@@ -743,6 +772,20 @@ function tuntom.dissector(buffer, pinfo, tree)
         info = info ..
             ", probe=" ..
             tostring(probe_id)
+    elseif version == 3 and
+           (packet_type == 6 or packet_type == 7) then
+
+        local probe_id =
+            buffer(16, 8):uint64()
+
+        local mtu =
+            buffer(28, 4):uint()
+
+        info = info ..
+            ", pmtud=" ..
+            tostring(probe_id) ..
+            ", mtu=" ..
+            tostring(mtu)
     end
 
     pinfo.cols.info = info
@@ -807,6 +850,11 @@ function tuntom.dissector(buffer, pinfo, tree)
                     f_probe_id,
                     buffer(16, 8)
                 )
+            elseif packet_type == 6 or packet_type == 7 then
+                subtree:add(
+                    f_mtu_probe_id,
+                    buffer(16, 8)
+                )
             else
                 subtree:add(
                     f_message_id,
@@ -819,10 +867,17 @@ function tuntom.dissector(buffer, pinfo, tree)
                 buffer(24, 4)
             )
 
-            subtree:add(
-                f_original_length,
-                buffer(28, 4)
-            )
+            if packet_type == 6 or packet_type == 7 then
+                subtree:add(
+                    f_mtu,
+                    buffer(28, 4)
+                )
+            else
+                subtree:add(
+                    f_original_length,
+                    buffer(28, 4)
+                )
+            end
         end
 
         subtree:add(
@@ -872,6 +927,27 @@ function tuntom.dissector(buffer, pinfo, tree)
             payload_tree
         )
 
+        return buffer:len()
+    end
+
+    if version == 3 and packet_type == 6 then
+        if payload_length > 0 then
+            local padding =
+                buffer(
+                    protocol_header_v3_size,
+                    payload_length
+                )
+
+            subtree:add(
+                f_mtu_padding,
+                padding
+            )
+        end
+
+        return buffer:len()
+    end
+
+    if version == 3 and packet_type == 7 then
         return buffer:len()
     end
 

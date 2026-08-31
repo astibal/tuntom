@@ -49,6 +49,8 @@ constexpr std::size_t buffer_size = 65536;
 constexpr std::size_t default_tun_mtu = 1500;
 constexpr std::size_t default_transport_mtu = 1400;
 constexpr std::size_t min_transport_mtu = 1280;
+constexpr std::size_t pmtud_upper_mtu = 1500;
+constexpr int pmtud_probe_timeout_seconds = 2;
 constexpr std::size_t max_ip_packet_size = 65535;
 
 constexpr int keepalive_seconds = 5;
@@ -226,6 +228,8 @@ enum class PacketType : std::uint8_t {
     data = 3,
     ping = 4,
     pong = 5,
+    mtu_probe = 6,
+    mtu_reply = 7,
 };
 
 enum class Direction {
@@ -255,6 +259,7 @@ struct Options {
     bool allow_v1 = false;
     bool allow_v2 = false;
     bool ttl_compensate = true;
+    bool pmtud_auto = true;
     std::size_t tun_mtu = default_tun_mtu;
     std::size_t transport_mtu = default_transport_mtu;
     std::string stats_file;
@@ -289,6 +294,10 @@ struct Stats {
     double rtt_jitter_ms = 0.0;
     std::uint64_t rtt_samples = 0;
     std::uint64_t rtt_lost = 0;
+
+    std::uint64_t pmtud_probes_sent = 0;
+    std::uint64_t pmtud_probes_ok = 0;
+    std::uint64_t pmtud_probes_lost = 0;
 };
 
 void dump_bytes(
@@ -906,7 +915,9 @@ public:
             type != PacketType::keepalive and
             type != PacketType::data and
             type != PacketType::ping and
-            type != PacketType::pong) {
+            type != PacketType::pong and
+            type != PacketType::mtu_probe and
+            type != PacketType::mtu_reply) {
 
             return false;
         }
@@ -973,6 +984,25 @@ public:
                 packet.message_id == 0 or
                 packet.fragment_offset != 0 or
                 packet.original_length != 0 or
+                not packet.payload.empty()) {
+
+                return false;
+            }
+        } else if (packet.type == PacketType::mtu_probe) {
+            if (
+                packet.message_id == 0 or
+                packet.fragment_offset != 0 or
+                packet.original_length < min_transport_mtu or
+                packet.original_length > max_ip_packet_size) {
+
+                return false;
+            }
+        } else if (packet.type == PacketType::mtu_reply) {
+            if (
+                packet.message_id == 0 or
+                packet.fragment_offset != 0 or
+                packet.original_length < min_transport_mtu or
+                packet.original_length > max_ip_packet_size or
                 not packet.payload.empty()) {
 
                 return false;
@@ -1108,6 +1138,8 @@ public:
                 "setsockopt(SO_REUSEADDR) failed: " + error);
         }
 
+        configure_pmtud_socket(AF_INET6);
+
         int v6_only = 0;
         ::setsockopt(
             fd_,
@@ -1171,6 +1203,7 @@ public:
             }
 
             fd_ = candidate;
+            configure_pmtud_socket(item->ai_family);
             std::memset(&peer_, 0, sizeof(peer_));
             std::memcpy(&peer_, item->ai_addr, item->ai_addrlen);
             peer_length_ = static_cast<socklen_t>(item->ai_addrlen);
@@ -1220,6 +1253,18 @@ public:
         peer_ = peer;
         peer_length_ = peer_length;
         peer_valid_ = true;
+
+        if (peer.ss_family == AF_INET) {
+            outer_ip_header_size_ = ipv4_header_min_size;
+        } else if (peer.ss_family == AF_INET6) {
+            const auto* address =
+                reinterpret_cast<const sockaddr_in6*>(&peer);
+
+            outer_ip_header_size_ =
+                IN6_IS_ADDR_V4MAPPED(&address->sin6_addr)
+                    ? ipv4_header_min_size
+                    : ipv6_header_size;
+        }
     }
 
     ssize_t send(const std::uint8_t* buffer, std::size_t size) {
@@ -1241,6 +1286,44 @@ public:
     }
 
 private:
+    void configure_pmtud_socket(int family) {
+#ifdef IP_MTU_DISCOVER
+        if (family == AF_INET) {
+            int mode = IP_PMTUDISC_DO;
+            if (
+                ::setsockopt(
+                    fd_,
+                    IPPROTO_IP,
+                    IP_MTU_DISCOVER,
+                    &mode,
+                    sizeof(mode)) < 0) {
+
+                throw std::runtime_error(
+                    "setsockopt(IP_MTU_DISCOVER) failed: " +
+                    std::string(std::strerror(errno)));
+            }
+        }
+#endif
+
+#ifdef IPV6_MTU_DISCOVER
+        if (family == AF_INET6) {
+            int mode = IPV6_PMTUDISC_DO;
+            if (
+                ::setsockopt(
+                    fd_,
+                    IPPROTO_IPV6,
+                    IPV6_MTU_DISCOVER,
+                    &mode,
+                    sizeof(mode)) < 0) {
+
+                throw std::runtime_error(
+                    "setsockopt(IPV6_MTU_DISCOVER) failed: " +
+                    std::string(std::strerror(errno)));
+            }
+        }
+#endif
+    }
+
     int fd_ = -1;
     sockaddr_storage peer_ {};
     socklen_t peer_length_ = 0;
@@ -1567,6 +1650,11 @@ public:
             udp_.open_client(remote_host, port);
         }
 
+        active_transport_mtu_ =
+            options_.pmtud_auto
+                ? min_transport_mtu
+                : options_.transport_mtu;
+
         validate_fragment_capacity();
         reserve_hot_path_buffers();
 
@@ -1576,7 +1664,9 @@ public:
             std::cerr
                 << "tuntom id=" << tunnel_id_
                 << " tun-mtu=" << options_.tun_mtu
-                << " transport-mtu=" << options_.transport_mtu
+                << " transport-mtu-configured=" << options_.transport_mtu
+                << " transport-mtu-active=" << active_transport_mtu_
+                << " pmtud=" << (options_.pmtud_auto ? "auto" : "off")
                 << " max-fragment-payload="
                 << maximum_fragment_payload()
                 << " ttl-compensate="
@@ -1600,6 +1690,10 @@ public:
                 started_now +
                 std::chrono::seconds(rtt_probe_interval_seconds);
             rtt_probe_schedule_active_ = true;
+
+            if (options_.pmtud_auto) {
+                start_pmtud();
+            }
         }
 
         auto last_keepalive = started_now;
@@ -1706,6 +1800,10 @@ public:
 
             cleanup_rtt_probes(now);
 
+            if (options_.pmtud_auto) {
+                handle_pmtud_timeout(now);
+            }
+
             if (
                 now - last_reassembly_cleanup >=
                 std::chrono::seconds(1)) {
@@ -1757,12 +1855,12 @@ private:
             udp_header_size +
             protocol_header_v3_size;
 
-        if (options_.transport_mtu <= overhead) {
+        if (active_transport_mtu_ <= overhead) {
             throw std::runtime_error(
                 "Transport MTU is too small for tuntom V3");
         }
 
-        return options_.transport_mtu - overhead;
+        return active_transport_mtu_ - overhead;
     }
 
     void validate_fragment_capacity() const {
@@ -1965,7 +2063,17 @@ private:
         // Server learns/updates the NAT peer only after successful
         // authentication (or accepted V1 when explicitly enabled).
         if (server_mode_) {
+            const bool had_pmtud =
+                pmtud_started_;
+
             udp_.set_peer(source, source_length);
+
+            if (
+                options_.pmtud_auto and
+                not had_pmtud) {
+
+                start_pmtud();
+            }
         }
 
         if (log_enabled(LogLevel::debug)) {
@@ -2003,6 +2111,20 @@ private:
 
         if (packet.type == PacketType::pong) {
             handle_probe_reply(packet.message_id);
+            return;
+        }
+
+        if (packet.type == PacketType::mtu_probe) {
+            if (options_.pmtud_auto) {
+                handle_mtu_probe(packet, size, source);
+            }
+            return;
+        }
+
+        if (packet.type == PacketType::mtu_reply) {
+            if (options_.pmtud_auto) {
+                handle_mtu_reply(packet);
+            }
             return;
         }
 
@@ -2214,6 +2336,237 @@ private:
         }
     }
 
+    std::size_t pmtud_upper_bound() const {
+        return std::max(
+            pmtud_upper_mtu,
+            options_.transport_mtu);
+    }
+
+    std::size_t source_ip_header_size(
+        const sockaddr_storage& source) const {
+
+        if (source.ss_family == AF_INET) {
+            return ipv4_header_min_size;
+        }
+
+        if (source.ss_family == AF_INET6) {
+            const auto* address =
+                reinterpret_cast<const sockaddr_in6*>(&source);
+
+            return
+                IN6_IS_ADDR_V4MAPPED(&address->sin6_addr)
+                    ? ipv4_header_min_size
+                    : ipv6_header_size;
+        }
+
+        return udp_.outer_ip_header_size();
+    }
+
+    void start_pmtud() {
+        if (pmtud_started_) {
+            return;
+        }
+
+        pmtud_started_ = true;
+        pmtud_known_good_ = min_transport_mtu;
+        pmtud_known_bad_ = 0;
+        active_transport_mtu_ = pmtud_known_good_;
+
+        const std::size_t first =
+            std::clamp(
+                options_.transport_mtu,
+                min_transport_mtu + 1,
+                pmtud_upper_bound());
+
+        send_mtu_probe(first);
+    }
+
+    void send_mtu_probe(std::size_t target_mtu) {
+        if (pmtud_probe_pending_) {
+            return;
+        }
+
+        const std::size_t overhead =
+            udp_.outer_ip_header_size() +
+            udp_header_size +
+            protocol_header_v3_size;
+
+        if (target_mtu <= overhead) {
+            return;
+        }
+
+        Packet packet;
+        packet.type = PacketType::mtu_probe;
+        packet.tunnel_id = tunnel_id_;
+        packet.protocol_version = protocol_version_v3;
+        packet.sequence = sequence_generator_.next();
+        packet.message_id = message_id_generator_.next();
+        packet.original_length =
+            static_cast<std::uint32_t>(target_mtu);
+        packet.payload.resize(target_mtu - overhead);
+
+        const auto encoded =
+            protocol_v3_.encode(packet);
+
+        const ssize_t sent =
+            udp_.send(
+                encoded.data(),
+                encoded.size());
+
+        ++stats_.pmtud_probes_sent;
+
+        if (sent < 0) {
+            if (errno == EMSGSIZE) {
+                pmtud_known_bad_ = target_mtu;
+                advance_pmtud_search();
+                return;
+            }
+
+            ++stats_.udp_send_errors;
+            return;
+        }
+
+        ++stats_.udp_tx_packets;
+        stats_.udp_tx_bytes +=
+            static_cast<std::uint64_t>(sent);
+
+        pmtud_probe_pending_ = true;
+        pmtud_probe_id_ = packet.message_id;
+        pmtud_probe_size_ = target_mtu;
+        pmtud_probe_sent_at_ =
+            std::chrono::steady_clock::now();
+    }
+
+    void handle_mtu_probe(
+        const Packet& packet,
+        std::size_t udp_payload_size,
+        const sockaddr_storage& source) {
+
+        const std::size_t observed_outer_size =
+            source_ip_header_size(source) +
+            udp_header_size +
+            udp_payload_size;
+
+        if (
+            observed_outer_size !=
+                static_cast<std::size_t>(packet.original_length)) {
+
+            return;
+        }
+
+        Packet reply;
+        reply.type = PacketType::mtu_reply;
+        reply.tunnel_id = tunnel_id_;
+        reply.protocol_version = protocol_version_v3;
+        reply.sequence = sequence_generator_.next();
+        reply.message_id = packet.message_id;
+        reply.original_length =
+            static_cast<std::uint32_t>(observed_outer_size);
+
+        const auto encoded =
+            protocol_v3_.encode(reply);
+
+        const ssize_t sent =
+            udp_.send(
+                encoded.data(),
+                encoded.size());
+
+        if (sent < 0) {
+            ++stats_.udp_send_errors;
+            return;
+        }
+
+        ++stats_.udp_tx_packets;
+        stats_.udp_tx_bytes +=
+            static_cast<std::uint64_t>(sent);
+    }
+
+    void handle_mtu_reply(const Packet& packet) {
+        if (
+            not pmtud_probe_pending_ or
+            packet.message_id != pmtud_probe_id_ or
+            packet.original_length != pmtud_probe_size_) {
+
+            return;
+        }
+
+        pmtud_probe_pending_ = false;
+        ++stats_.pmtud_probes_ok;
+
+        pmtud_known_good_ =
+            std::max(
+                pmtud_known_good_,
+                pmtud_probe_size_);
+
+        active_transport_mtu_ =
+            pmtud_known_good_;
+
+        advance_pmtud_search();
+    }
+
+    void handle_pmtud_timeout(
+        const std::chrono::steady_clock::time_point& now) {
+
+        if (
+            not pmtud_probe_pending_ or
+            now - pmtud_probe_sent_at_ <
+                std::chrono::seconds(
+                    pmtud_probe_timeout_seconds)) {
+
+            return;
+        }
+
+        pmtud_probe_pending_ = false;
+        ++stats_.pmtud_probes_lost;
+
+        pmtud_known_bad_ =
+            pmtud_probe_size_;
+
+        advance_pmtud_search();
+    }
+
+    void advance_pmtud_search() {
+        if (pmtud_probe_pending_) {
+            return;
+        }
+
+        if (
+            pmtud_known_good_ >= pmtud_upper_bound() or
+            (
+                pmtud_known_bad_ != 0 and
+                pmtud_known_bad_ <=
+                    pmtud_known_good_ + 1)) {
+
+            if (log_enabled(LogLevel::info)) {
+                std::cerr
+                    << "PMTUD complete: outer-mtu="
+                    << active_transport_mtu_
+                    << " max-fragment-payload="
+                    << maximum_fragment_payload()
+                    << "\n";
+            }
+
+            return;
+        }
+
+        std::size_t candidate = 0;
+
+        if (pmtud_known_bad_ == 0) {
+            candidate = pmtud_upper_bound();
+        } else {
+            candidate =
+                pmtud_known_good_ +
+                (pmtud_known_bad_ -
+                 pmtud_known_good_) / 2;
+        }
+
+        if (candidate <= pmtud_known_good_) {
+            candidate = pmtud_known_good_ + 1;
+        }
+
+        send_mtu_probe(candidate);
+    }
+
     void write_stats() {
         if (options_.stats_file.empty()) {
             return;
@@ -2280,7 +2633,15 @@ private:
                 << "rtt_jitter_ms=" << stats_.rtt_jitter_ms << "\n"
                 << std::defaultfloat
                 << "rtt_samples=" << stats_.rtt_samples << "\n"
-                << "rtt_lost=" << stats_.rtt_lost << "\n";
+                << "rtt_lost=" << stats_.rtt_lost << "\n"
+                << "pmtud=" << (options_.pmtud_auto ? "auto" : "off") << "\n"
+                << "transport_mtu_configured=" << options_.transport_mtu << "\n"
+                << "transport_mtu_active=" << active_transport_mtu_ << "\n"
+                << "pmtud_known_good=" << pmtud_known_good_ << "\n"
+                << "pmtud_known_bad=" << pmtud_known_bad_ << "\n"
+                << "pmtud_probes_sent=" << stats_.pmtud_probes_sent << "\n"
+                << "pmtud_probes_ok=" << stats_.pmtud_probes_ok << "\n"
+                << "pmtud_probes_lost=" << stats_.pmtud_probes_lost << "\n";
 
             output.flush();
 
@@ -2338,6 +2699,16 @@ private:
     std::vector<std::uint8_t> reassembled_packet_;
 
     std::unordered_map<std::uint64_t, ProbeState> rtt_probes_;
+
+    std::size_t active_transport_mtu_ = min_transport_mtu;
+    bool pmtud_started_ = false;
+    bool pmtud_probe_pending_ = false;
+    std::size_t pmtud_known_good_ = min_transport_mtu;
+    std::size_t pmtud_known_bad_ = 0;
+    std::uint64_t pmtud_probe_id_ = 0;
+    std::size_t pmtud_probe_size_ = 0;
+    std::chrono::steady_clock::time_point pmtud_probe_sent_at_ {};
+
     bool rtt_probe_schedule_active_ = false;
     std::chrono::steady_clock::time_point next_rtt_probe_ {};
     Stats stats_;
@@ -2355,8 +2726,10 @@ void usage(const char* program_name) {
         << "\n"
         << "Transport options:\n"
         << "  --mtu <n>             TUN/inner MTU (default 1500)\n"
-        << "  --transport-mtu <n>   Maximum outer IP packet MTU "
+        << "  --transport-mtu <n>   Transport MTU / initial PMTUD target "
            "(default 1400)\n"
+        << "  --pmtud               Enable automatic PMTUD (default)\n"
+        << "  --no-pmtud            Disable PMTUD and keep --transport-mtu fixed\n"
         << "  --no-ttl-compensate   Do not compensate the extra "
            "tuntom routing hop\n"
         << "\n"
@@ -2425,6 +2798,10 @@ void parse_options(
             log_level = LogLevel::debug;
         } else if (option == "--quiet") {
             log_level = LogLevel::quiet;
+        } else if (option == "--no-pmtud") {
+            options.pmtud_auto = false;
+        } else if (option == "--pmtud") {
+            options.pmtud_auto = true;
         } else if (option == "--no-ttl-compensate") {
             options.ttl_compensate = false;
         } else if (option == "--ttl-compensate") {
