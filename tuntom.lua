@@ -220,7 +220,7 @@ local function dissect_inner_ip(tvb, pinfo, tree)
     end
 
     local first_byte = tvb(0, 1):uint()
-    local ip_version = bit32.rshift(first_byte, 4)
+    local ip_version = math.floor(first_byte / 16)
 
     if ip_version == 4 and ip_dissector ~= nil then
         ip_dissector:call(tvb, pinfo, tree)
