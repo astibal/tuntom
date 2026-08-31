@@ -1091,6 +1091,23 @@ public:
                 std::string(std::strerror(errno)));
         }
 
+        int reuse_address = 1;
+        if (
+            ::setsockopt(
+                fd_,
+                SOL_SOCKET,
+                SO_REUSEADDR,
+                &reuse_address,
+                sizeof(reuse_address)) < 0) {
+
+            const std::string error = std::strerror(errno);
+            ::close(fd_);
+            fd_ = -1;
+
+            throw std::runtime_error(
+                "setsockopt(SO_REUSEADDR) failed: " + error);
+        }
+
         int v6_only = 0;
         ::setsockopt(
             fd_,
