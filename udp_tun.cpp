@@ -48,7 +48,7 @@ constexpr std::size_t buffer_size = 65536;
 
 constexpr std::size_t default_tun_mtu = 1500;
 constexpr std::size_t default_transport_mtu = 1400;
-constexpr std::size_t min_transport_mtu = 1280;
+constexpr std::size_t min_transport_mtu = 500;
 constexpr std::size_t pmtud_upper_mtu = 1500;
 constexpr int pmtud_probe_timeout_seconds = 2;
 constexpr std::size_t max_ip_packet_size = 65535;
@@ -72,12 +72,18 @@ enum class LogLevel {
 
 LogLevel log_level = LogLevel::info;
 
-bool log_enabled(LogLevel level) {
+[[maybe_unused]] bool log_enabled(LogLevel level) {
     return static_cast<int>(log_level) >= static_cast<int>(level);
 }
 
-void log_info(const std::string& message) {
+[[maybe_unused]] void log_info(const std::string& message) {
     if (log_enabled(LogLevel::info)) {
+        std::cerr << message << "\n";
+    }
+}
+
+[[maybe_unused]] void log_debug(const std::string& message) {
+    if (log_enabled(LogLevel::debug)) {
         std::cerr << message << "\n";
     }
 }
@@ -1246,9 +1252,13 @@ public:
             &source_length);
     }
 
-    void set_peer(
+    bool set_peer(
         const sockaddr_storage& peer,
         socklen_t peer_length) {
+
+        const bool changed =
+            not peer_valid_ or
+            not peer_matches(peer, peer_length);
 
         peer_ = peer;
         peer_length_ = peer_length;
@@ -1265,6 +1275,8 @@ public:
                     ? ipv4_header_min_size
                     : ipv6_header_size;
         }
+
+        return changed;
     }
 
     ssize_t send(const std::uint8_t* buffer, std::size_t size) {
@@ -1286,6 +1298,46 @@ public:
     }
 
 private:
+    bool peer_matches(
+        const sockaddr_storage& peer,
+        socklen_t peer_length) const {
+
+        if (
+            peer_length_ != peer_length or
+            peer_.ss_family != peer.ss_family) {
+
+            return false;
+        }
+
+        if (peer.ss_family == AF_INET) {
+            const auto* current =
+                reinterpret_cast<const sockaddr_in*>(&peer_);
+            const auto* candidate =
+                reinterpret_cast<const sockaddr_in*>(&peer);
+
+            return
+                current->sin_port == candidate->sin_port and
+                current->sin_addr.s_addr == candidate->sin_addr.s_addr;
+        }
+
+        if (peer.ss_family == AF_INET6) {
+            const auto* current =
+                reinterpret_cast<const sockaddr_in6*>(&peer_);
+            const auto* candidate =
+                reinterpret_cast<const sockaddr_in6*>(&peer);
+
+            return
+                current->sin6_port == candidate->sin6_port and
+                current->sin6_scope_id == candidate->sin6_scope_id and
+                std::memcmp(
+                    &current->sin6_addr,
+                    &candidate->sin6_addr,
+                    sizeof(in6_addr)) == 0;
+        }
+
+        return std::memcmp(&peer_, &peer, peer_length) == 0;
+    }
+
     void configure_pmtud_socket(int family) {
 #ifdef IP_MTU_DISCOVER
         if (family == AF_INET) {
@@ -1955,12 +2007,23 @@ private:
 
             if (sent < 0) {
                 ++stats_.udp_send_errors;
+                const int send_error = errno;
+
                 if (log_enabled(LogLevel::info)) {
                     std::cerr
                         << "UDP send failed: "
-                        << std::strerror(errno)
+                        << std::strerror(send_error)
                         << "\n";
                 }
+
+                if (
+                    options_.pmtud_auto and
+                    send_error == EMSGSIZE) {
+
+                    restart_pmtud(
+                        "data datagram exceeded path MTU");
+                }
+
                 return;
             }
 
@@ -2063,16 +2126,14 @@ private:
         // Server learns/updates the NAT peer only after successful
         // authentication (or accepted V1 when explicitly enabled).
         if (server_mode_) {
-            const bool had_pmtud =
-                pmtud_started_;
-
-            udp_.set_peer(source, source_length);
+            const bool peer_changed =
+                udp_.set_peer(source, source_length);
 
             if (
                 options_.pmtud_auto and
-                not had_pmtud) {
+                peer_changed) {
 
-                start_pmtud();
+                restart_pmtud("UDP peer changed");
             }
         }
 
@@ -2364,6 +2425,7 @@ private:
 
     void start_pmtud() {
         if (pmtud_started_) {
+            log_info("PMTUD start skipped: already started");
             return;
         }
 
@@ -2378,11 +2440,49 @@ private:
                 min_transport_mtu + 1,
                 pmtud_upper_bound());
 
+        if (log_enabled(LogLevel::debug)) {
+            std::cerr
+                << "PMTUD start: known-good="
+                << pmtud_known_good_
+                << " first-probe="
+                << first
+                << " upper-bound="
+                << pmtud_upper_bound()
+                << "\n";
+        }
+
         send_mtu_probe(first);
+    }
+
+    void restart_pmtud(const char* reason) {
+        pmtud_started_ = false;
+        pmtud_probe_pending_ = false;
+        pmtud_probe_id_ = 0;
+        pmtud_probe_size_ = 0;
+        pmtud_known_good_ = min_transport_mtu;
+        pmtud_known_bad_ = 0;
+        active_transport_mtu_ = min_transport_mtu;
+
+        if (log_enabled(LogLevel::debug)) {
+            std::cerr
+                << "PMTUD restart: "
+                << reason
+                << "\n";
+        }
+
+        start_pmtud();
     }
 
     void send_mtu_probe(std::size_t target_mtu) {
         if (pmtud_probe_pending_) {
+            if (log_enabled(LogLevel::debug)) {
+                std::cerr
+                    << "PMTUD send skipped: probe pending id="
+                    << pmtud_probe_id_
+                    << " mtu="
+                    << pmtud_probe_size_
+                    << "\n";
+            }
             return;
         }
 
@@ -2392,6 +2492,14 @@ private:
             protocol_header_v3_size;
 
         if (target_mtu <= overhead) {
+            if (log_enabled(LogLevel::debug)) {
+                std::cerr
+                    << "PMTUD send skipped: target-mtu="
+                    << target_mtu
+                    << " overhead="
+                    << overhead
+                    << "\n";
+            }
             return;
         }
 
@@ -2408,27 +2516,76 @@ private:
         const auto encoded =
             protocol_v3_.encode(packet);
 
+        if (log_enabled(LogLevel::debug)) {
+            std::cerr
+                << "PMTUD send probe: id="
+                << packet.message_id
+                << " target-mtu="
+                << target_mtu
+                << " udp-payload="
+                << encoded.size()
+                << " outer-ip-overhead="
+                << (overhead - protocol_header_v3_size)
+                << "\n";
+        }
+
         const ssize_t sent =
             udp_.send(
                 encoded.data(),
                 encoded.size());
 
+        const int send_error =
+            sent < 0 ? errno : 0;
+
         ++stats_.pmtud_probes_sent;
 
         if (sent < 0) {
-            if (errno == EMSGSIZE) {
-                pmtud_known_bad_ = target_mtu;
-                advance_pmtud_search();
-                return;
+            if (log_enabled(LogLevel::info)) {
+                std::cerr
+                    << "PMTUD probe send failed: id="
+                    << packet.message_id
+                    << " target-mtu="
+                    << target_mtu
+                    << " errno="
+                    << send_error
+                    << " ("
+                    << std::strerror(send_error)
+                    << ")\n";
             }
 
             ++stats_.udp_send_errors;
+
+            // Regardless of errno, this process cannot currently transmit
+            // the candidate size. Treat it as unusable and keep searching
+            // below it. In particular, a local firewall can report EPERM
+            // instead of silently dropping an oversized test datagram.
+            pmtud_known_bad_ = target_mtu;
+
+            if (log_enabled(LogLevel::info)) {
+                std::cerr
+                    << "PMTUD continuing below failed mtu="
+                    << target_mtu
+                    << "\n";
+            }
+
+            advance_pmtud_search();
             return;
         }
 
         ++stats_.udp_tx_packets;
         stats_.udp_tx_bytes +=
             static_cast<std::uint64_t>(sent);
+
+        if (log_enabled(LogLevel::debug)) {
+            std::cerr
+                << "PMTUD probe sent: id="
+                << packet.message_id
+                << " target-mtu="
+                << target_mtu
+                << " udp-bytes="
+                << sent
+                << "\n";
+        }
 
         pmtud_probe_pending_ = true;
         pmtud_probe_id_ = packet.message_id;
@@ -2447,10 +2604,24 @@ private:
             udp_header_size +
             udp_payload_size;
 
+        if (log_enabled(LogLevel::debug)) {
+            std::cerr
+                << "PMTUD recv probe: id="
+                << packet.message_id
+                << " declared-mtu="
+                << packet.original_length
+                << " observed-mtu="
+                << observed_outer_size
+                << " udp-bytes="
+                << udp_payload_size
+                << "\n";
+        }
+
         if (
             observed_outer_size !=
                 static_cast<std::size_t>(packet.original_length)) {
 
+            log_info("PMTUD probe ignored: declared/observed MTU mismatch");
             return;
         }
 
@@ -2471,22 +2642,64 @@ private:
                 encoded.data(),
                 encoded.size());
 
+        const int send_error =
+            sent < 0 ? errno : 0;
+
         if (sent < 0) {
             ++stats_.udp_send_errors;
+            if (log_enabled(LogLevel::info)) {
+                std::cerr
+                    << "PMTUD reply send failed: id="
+                    << reply.message_id
+                    << " mtu="
+                    << reply.original_length
+                    << " errno="
+                    << send_error
+                    << " ("
+                    << std::strerror(send_error)
+                    << ")\n";
+            }
             return;
         }
 
         ++stats_.udp_tx_packets;
         stats_.udp_tx_bytes +=
             static_cast<std::uint64_t>(sent);
+
+        if (log_enabled(LogLevel::info)) {
+            std::cerr
+                << "PMTUD reply sent: id="
+                << reply.message_id
+                << " mtu="
+                << reply.original_length
+                << " udp-bytes="
+                << sent
+                << "\n";
+        }
     }
 
     void handle_mtu_reply(const Packet& packet) {
+        if (log_enabled(LogLevel::info)) {
+            std::cerr
+                << "PMTUD recv reply: id="
+                << packet.message_id
+                << " mtu="
+                << packet.original_length
+                << " pending="
+                << (pmtud_probe_pending_ ? "yes" : "no")
+                << " expected-id="
+                << pmtud_probe_id_
+                << " expected-mtu="
+                << pmtud_probe_size_
+                << "\n";
+        }
+
         if (
             not pmtud_probe_pending_ or
             packet.message_id != pmtud_probe_id_ or
             packet.original_length != pmtud_probe_size_) {
 
+            log_info("PMTUD reply ignored: no matching pending probe");
             return;
         }
 
@@ -2500,6 +2713,15 @@ private:
 
         active_transport_mtu_ =
             pmtud_known_good_;
+
+        if (log_enabled(LogLevel::info)) {
+            std::cerr
+                << "PMTUD probe confirmed: id="
+                << packet.message_id
+                << " mtu="
+                << pmtud_known_good_
+                << "\n";
+        }
 
         advance_pmtud_search();
     }
@@ -2521,6 +2743,15 @@ private:
 
         pmtud_known_bad_ =
             pmtud_probe_size_;
+
+        if (log_enabled(LogLevel::info)) {
+            std::cerr
+                << "PMTUD probe timeout: id="
+                << pmtud_probe_id_
+                << " mtu="
+                << pmtud_probe_size_
+                << "\n";
+        }
 
         advance_pmtud_search();
     }

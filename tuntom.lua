@@ -260,6 +260,33 @@ local function dissect_inner_ip(tvb, pinfo, tree)
     end
 end
 
+local function dissect_inner_ip_with_tuntom_info(
+    tvb,
+    pinfo,
+    tree,
+    info_text
+)
+    dissect_inner_ip(tvb, pinfo, tree)
+
+    local inner_info =
+        tostring(pinfo.cols.info)
+
+    -- Keep the native IP/ICMP/TCP/UDP packet-list presentation and append
+    -- tuntom encapsulation metadata without replacing the useful inner title.
+    if inner_info ~= "" then
+        pinfo.cols.info = string.format(
+            "%s [TUNTOM: %s]",
+            inner_info,
+            info_text
+        )
+    else
+        pinfo.cols.info = string.format(
+            "[TUNTOM: %s]",
+            info_text
+        )
+    end
+end
+
 local function direction_key(pinfo)
     return string.format(
         "%s:%s>%s:%s",
@@ -618,7 +645,8 @@ local function dissect_reassembled_raw(
     raw,
     pinfo,
     subtree,
-    original_length
+    original_length,
+    info_text
 )
     local bytes =
         ByteArray.new(raw, true)
@@ -653,10 +681,11 @@ local function dissect_reassembled_raw(
         original_length
     )
 
-    dissect_inner_ip(
+    dissect_inner_ip_with_tuntom_info(
         reassembled_tvb,
         pinfo,
-        reassembled_tree
+        reassembled_tree,
+        info_text
     )
 end
 
@@ -921,10 +950,11 @@ function tuntom.dissector(buffer, pinfo, tree)
                 )
             )
 
-        dissect_inner_ip(
+        dissect_inner_ip_with_tuntom_info(
             payload:tvb(),
             pinfo,
-            payload_tree
+            payload_tree,
+            info
         )
 
         return buffer:len()
@@ -981,10 +1011,11 @@ function tuntom.dissector(buffer, pinfo, tree)
                 )
             )
 
-        dissect_inner_ip(
+        dissect_inner_ip_with_tuntom_info(
             payload:tvb(),
             pinfo,
-            payload_tree
+            payload_tree,
+            info
         )
 
         return buffer:len()
@@ -1052,11 +1083,24 @@ function tuntom.dissector(buffer, pinfo, tree)
     -- ordinary IP dissector over the exact reconstructed bytes.
     --
     if complete_raw ~= nil then
+        local completion_info = info
+
+        if string.find(
+            completion_info,
+            ", reassembled",
+            1,
+            true
+        ) == nil then
+            completion_info =
+                completion_info .. ", reassembled"
+        end
+
         dissect_reassembled_raw(
             complete_raw,
             pinfo,
             subtree,
-            original_length
+            original_length,
+            completion_info
         )
 
         add_generated_field(
