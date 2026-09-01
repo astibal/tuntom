@@ -90,7 +90,10 @@ TUNTOM_TRANSPORT_MTU=1400
 
 `TUNTOM_MTU` is the inner/TUN MTU presented to the surrounding Linux network.
 
-`TUNTOM_TRANSPORT_MTU` is the maximum outer IP packet size used for tuntom UDP transport calculations.
+`TUNTOM_TRANSPORT_MTU` selects the outer IP packet size used for tuntom UDP
+transport calculations. With automatic PMTUD it is the initial probe target,
+not a hard ceiling; the discovered active transport MTU is used for
+fragmentation. With `--no-pmtud` it is the fixed transport MTU.
 
 This separation allows tuntom to remain transparent on networks using either standard Ethernet MTU or jumbo frames.
 
@@ -158,6 +161,10 @@ Packet types remain:
 1  HELLO
 2  KEEPALIVE
 3  DATA
+4  PING
+5  PONG
+6  MTU_PROBE
+7  MTU_REPLY
 ```
 
 For HELLO and KEEPALIVE:
@@ -170,6 +177,12 @@ payload           empty
 ```
 
 For DATA, each UDP datagram represents either the complete inner packet or one tuntom fragment.
+
+`PING` and `PONG` provide authenticated runtime RTT measurements.
+
+For PMTUD messages, `message_id` is the probe ID and `original_length` is the
+candidate/observed outer MTU. `MTU_PROBE` padding makes the outer packet reach
+that size; `MTU_REPLY` has no payload.
 
 ## V3 authentication
 
@@ -302,7 +315,38 @@ v3 header       = 48
 
 The dual-stack server uses the conservative IPv6 overhead when calculating the safe payload size.
 
-This may waste 20 bytes when the peer is actually IPv4-mapped, but avoids exceeding the configured transport MTU.
+This may waste 20 bytes when the peer is actually IPv4-mapped, but avoids exceeding the active transport MTU.
+
+## Automatic path-MTU discovery
+
+Protocol v3 performs authenticated application-level PMTUD by default. It does
+not depend on receiving ICMP Packet Too Big / Fragmentation Needed messages.
+
+At startup the active outer transport MTU is conservatively set to 500 bytes.
+The endpoint sends a padded `MTU_PROBE` whose complete outer IP packet has the
+candidate size. A receiver accepts it only when the declared and observed sizes
+match, then returns an `MTU_REPLY` carrying the same authenticated probe ID and
+size.
+
+The search works as follows:
+
+```text
+known-good start: 500 bytes
+first candidate:  configured --transport-mtu (default 1400)
+upper bound:      max(1500, configured --transport-mtu)
+probe timeout:    2 seconds
+remaining range: binary search between known-good and known-bad
+```
+
+Normal DATA traffic uses the current known-good value throughout discovery. A
+local send failure or missing reply marks that candidate as bad. Discovery is
+restarted when the authenticated UDP peer changes or a DATA send fails.
+
+The UDP socket enables kernel "do not fragment" PMTU behavior where supported.
+Use `--no-pmtud` to disable discovery and use `--transport-mtu` as a fixed value.
+The minimum accepted fixed or discovery MTU is 500 bytes.
+
+The bootstrap script currently leaves PMTUD enabled on both endpoints.
 
 ## Reassembly
 
@@ -557,6 +601,8 @@ Relevant options include:
 ```text
 --mtu <n>
 --transport-mtu <n>
+--pmtud
+--no-pmtud
 --no-ttl-compensate
 --ttl-compensate
 --allow-v2
@@ -564,6 +610,10 @@ Relevant options include:
 --debug
 --quiet
 ```
+
+PMTUD state is included in the text statistics output as
+`transport_mtu_configured`, `transport_mtu_active`, `pmtud_known_good`,
+`pmtud_known_bad`, and the sent/successful/lost probe counters.
 
 The binary sets the requested TUN MTU itself through `SIOCSIFMTU`.
 
@@ -590,6 +640,25 @@ Both values are passed to the local and remote C++ processes.
 `TUNTOM_MTU` is also used when configuring both TUN interfaces.
 
 The same values are exported to lifecycle hooks.
+
+`mk_tunnel.sh` also enables text statistics and writes them atomically under its
+runtime directory as `IDc.stats` and `IDs.stats` (normally
+`/run/tuntom/ID{c,s}.stats`). The format can currently only be `txt` and is
+selected with `TUNTOM_STATS_FORMAT`.
+
+## Testing PMTUD black holes
+
+The repository includes `examples/pmtud-iptables-test.sh` for simulating silent
+loss of oversized IPv4 UDP datagrams:
+
+```bash
+sudo ./examples/pmtud-iptables-test.sh --size 1200 --interface eth0
+sudo ./examples/pmtud-iptables-test.sh --size 1200 --interface eth0 --remove
+```
+
+It installs matching INPUT and OUTPUT length-based DROP rules. Because those
+rules apply to all IPv4 UDP traffic on the interface, they should be removed as
+soon as the test is complete.
 
 ## Lifecycle hooks
 

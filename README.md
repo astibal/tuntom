@@ -15,6 +15,7 @@ The main goal is simplicity:
 - authenticated protocol v3 with replay protection
 - internal balanced fragmentation and reassembly
 - configurable inner/TUN MTU and transport MTU
+- automatic UDP path-MTU discovery (PMTUD)
 - optional compatibility with protocol v2 and v1
 - optional TTL / IPv6 Hop-Limit compensation
 - Wireshark dissector with v3 fragment reassembly
@@ -106,6 +107,22 @@ TUNTOM_TRANSPORT_MTU=1400
 
 The TUN interface therefore behaves like a normal 1500-byte L3 interface even when the path carrying tuntom UDP datagrams requires smaller packets.
 
+Automatic PMTUD is enabled by default. Each endpoint starts with a conservative
+500-byte outer transport MTU, sends authenticated `MTU_PROBE` messages, and uses
+matching `MTU_REPLY` messages to find the largest working datagram size. The
+configured transport MTU is the first probe target; discovery can continue up to
+at least 1500 bytes (or higher when a larger transport MTU is configured).
+
+A missing reply is treated as a failed probe after two seconds and the remaining
+range is searched. Discovery restarts when the UDP peer changes or a data send
+fails. Ordinary traffic continues with the last known-good MTU during discovery.
+
+To use `TUNTOM_TRANSPORT_MTU` as a fixed value, run the C++ binary with:
+
+```text
+--no-pmtud
+```
+
 If an inner packet does not fit into one tuntom UDP datagram, protocol v3 fragments it internally and reassembles it on the receiving side.
 
 Fragmentation is balanced. Instead of sending one maximum-sized fragment followed by a small tail, tuntom divides the packet into approximately equal-sized parts.
@@ -193,6 +210,24 @@ For v3 it displays:
 - reassembly information
 
 The dissector also reassembles fragmented v3 DATA packets and passes the reconstructed packet to Wireshark's normal IPv4 or IPv6 dissector.
+
+It also recognizes `MTU_PROBE` and `MTU_REPLY` packets and displays their probe
+ID, outer MTU, and probe padding.
+
+## PMTUD testing
+
+`examples/pmtud-iptables-test.sh` can simulate a silent IPv4 UDP MTU black hole
+on a selected interface:
+
+```bash
+sudo ./examples/pmtud-iptables-test.sh --size 1200 --interface eth0
+# start or restart the tunnel and inspect its log/statistics
+sudo ./examples/pmtud-iptables-test.sh --size 1200 --interface eth0 --remove
+```
+
+The rules affect all IPv4 UDP traffic larger than the selected size on that
+interface, so remove them after testing. The script is idempotent and requires
+`iptables`.
 
 ## Hooks
 
