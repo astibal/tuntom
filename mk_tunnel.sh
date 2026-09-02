@@ -99,8 +99,8 @@ remote_stage="${remote_bin}.new.$$"
 
 remote_net_file="/tmp/tuntom-net-${id}.sh"
 
-local_log="/tmp/udp_tun-${id}-client.log"
-remote_log="/tmp/udp_tun-${id}-server.log"
+local_log="/tmp/tuntom_${id}c.log"
+remote_log="/tmp/tuntom_${id}s.log"
 
 run_dir="/run/tuntom"
 

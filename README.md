@@ -267,8 +267,8 @@ post/up
 The bootstrap script writes logs to:
 
 ```text
-/tmp/udp_tun-42-client.log
-/tmp/udp_tun-42-server.log
+/tmp/tuntom_42c.log
+/tmp/tuntom_42s.log
 ```
 
 Use `--debug` on the C++ binary for packet and protocol details.
