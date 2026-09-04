@@ -633,6 +633,13 @@ if "${root_cmd[@]}" ping -c 3 "$server_ip"; then
         ipv6_ping=ping6
     fi
 
+    for _ in {1..10}; do
+        if ip -6 route get "$server_ipv6" >/dev/null 2>&1; then
+            break
+        fi
+        sleep 0.1
+    done
+
     if "${root_cmd[@]}" "$ipv6_ping" -c 3 "$server_ipv6"; then
         echo "Tunnel is UP (IPv4 + IPv6)"
     else
