@@ -598,6 +598,7 @@ done
 ssh "$remote" "
     ip address add '${server_ip}' peer '${client_ip}' dev '${server_if}' &&
     ip -6 address add '${server_ipv6}' peer '${client_ipv6}' dev '${server_if}' nodad &&
+    ip -6 route replace '${client_ipv6}/128' dev '${server_if}' metric 256 &&
     ip link set dev '${server_if}' mtu '${mtu}' up
 "
 
@@ -619,6 +620,7 @@ done
 
 "${root_cmd[@]}" ip address add "$client_ip" peer "$server_ip" dev "$client_if"
 "${root_cmd[@]}" ip -6 address add "$client_ipv6" peer "$server_ipv6" dev "$client_if" nodad
+"${root_cmd[@]}" ip -6 route replace "${server_ipv6}/128" dev "$client_if" metric 256
 "${root_cmd[@]}" ip link set dev "$client_if" mtu "$mtu" up
 
 echo "[10] Configure local networking"
@@ -633,17 +635,14 @@ if "${root_cmd[@]}" ping -c 3 "$server_ip"; then
         ipv6_ping=ping6
     fi
 
-    for _ in {1..10}; do
-        if ip -6 route get "$server_ipv6" >/dev/null 2>&1; then
-            break
-        fi
-        sleep 0.1
-    done
-
     if "${root_cmd[@]}" "$ipv6_ping" -c 3 "$server_ipv6"; then
         echo "Tunnel is UP (IPv4 + IPv6)"
     else
         echo "IPv6 ping failed"
+        echo "IPv6 address state:"
+        ip -6 address show dev "$client_if" || true
+        echo "IPv6 route state:"
+        ip -6 route get "$server_ipv6" || true
         echo "Local log:  $local_log"
         echo "Remote log: $remote_log"
         exit 2
