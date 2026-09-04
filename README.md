@@ -68,6 +68,16 @@ sudo -E ./mk_tunnel.sh 42 user@sx2
 
 Tunnel ID determines the interface names, addresses, and UDP port.
 
+The client and server tunnel addresses can be overridden independently. If an
+environment variable is unset, the address derived from the tunnel ID remains
+the default:
+
+```bash
+export TUNTOM_C_ADDRESS=10.254.42.1
+export TUNTOM_S_ADDRESS=10.254.42.2
+sudo -E ./mk_tunnel.sh 42 sx2
+```
+
 For tunnel `42`:
 
 ```text
