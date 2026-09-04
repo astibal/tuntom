@@ -598,8 +598,8 @@ done
 ssh "$remote" "
     ip address add '${server_ip}' peer '${client_ip}' dev '${server_if}' &&
     ip -6 address add '${server_ipv6}' peer '${client_ipv6}' dev '${server_if}' nodad &&
-    ip -6 route replace '${client_ipv6}/128' dev '${server_if}' metric 256 &&
-    ip link set dev '${server_if}' mtu '${mtu}' up
+    ip link set dev '${server_if}' mtu '${mtu}' up &&
+    ip -6 route replace '${client_ipv6}/128' dev '${server_if}' metric 256
 "
 
 echo "[8] Configure remote networking"
@@ -620,8 +620,8 @@ done
 
 "${root_cmd[@]}" ip address add "$client_ip" peer "$server_ip" dev "$client_if"
 "${root_cmd[@]}" ip -6 address add "$client_ipv6" peer "$server_ipv6" dev "$client_if" nodad
-"${root_cmd[@]}" ip -6 route replace "${server_ipv6}/128" dev "$client_if" metric 256
 "${root_cmd[@]}" ip link set dev "$client_if" mtu "$mtu" up
+"${root_cmd[@]}" ip -6 route replace "${server_ipv6}/128" dev "$client_if" metric 256
 
 echo "[10] Configure local networking"
 run_hook_local "$tuntom_pre_hook" pre up local "$client_if" "$client_ip" "$server_ip"
