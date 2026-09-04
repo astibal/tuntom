@@ -105,7 +105,7 @@ transport MTU:            1400
 After setup, this should work:
 
 ```bash
-ping -I ut42c 10.254.42.2
+ping 10.254.42.2
 ```
 
 Loopback testing is supported:
