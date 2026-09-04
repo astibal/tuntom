@@ -3,7 +3,7 @@ set -euo pipefail
 umask 0077
 
 if (( $# < 2 )); then
-    echo "Usage: $0 <id 1..255> <host|user@host> [--snat|--no-snat] [--mss-clamp|--no-mss-clamp]" >&2
+    echo "Usage: $0 <id 1..255> <host|user@host> [--snat|--no-snat] [--mss-clamp|--no-mss-clamp] [--stop]" >&2
     exit 1
 fi
 
@@ -13,6 +13,7 @@ shift 2
 
 tuntom_snat=0
 tuntom_mss_clamp=1
+stop_requested=0
 
 while (( $# > 0 )); do
     case "$1" in
@@ -28,9 +29,12 @@ while (( $# > 0 )); do
         --no-mss-clamp)
             tuntom_mss_clamp=0
             ;;
+        --stop)
+            stop_requested=1
+            ;;
         *)
             echo "Unknown option: $1" >&2
-            echo "Usage: $0 <id 1..255> <host|user@host> [--snat|--no-snat] [--mss-clamp|--no-mss-clamp]" >&2
+            echo "Usage: $0 <id 1..255> <host|user@host> [--snat|--no-snat] [--mss-clamp|--no-mss-clamp] [--stop]" >&2
             exit 1
             ;;
     esac
@@ -47,13 +51,13 @@ if [[ "$remote" != *@* ]]; then
     remote="root@${remote}"
 fi
 
-if [[ -z "${TUNTOM_SECRET:-}" ]]; then
+if (( ! stop_requested )) && [[ -z "${TUNTOM_SECRET:-}" ]]; then
     echo "TUNTOM_SECRET is not set" >&2
     echo "Use a 128-bit key encoded as exactly 32 hex characters." >&2
     exit 1
 fi
 
-if ! [[ "$TUNTOM_SECRET" =~ ^[0-9A-Fa-f]{32}$ ]]; then
+if (( ! stop_requested )) && ! [[ "$TUNTOM_SECRET" =~ ^[0-9A-Fa-f]{32}$ ]]; then
     echo "TUNTOM_SECRET must contain exactly 32 hex characters" >&2
     exit 1
 fi
@@ -64,7 +68,7 @@ if [[ "${TUNTOM_STATS_FORMAT:-txt}" != "txt" ]]; then
     exit 1
 fi
 
-export TUNTOM_SECRET
+export TUNTOM_SECRET="${TUNTOM_SECRET:-}"
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source_file="${script_dir}/udp_tun.cpp"
@@ -466,6 +470,26 @@ net_up_remote() {
         \"
     "
 }
+
+if (( stop_requested )); then
+    echo "Stopping tunnel ${id}"
+    stop_local_process
+    stop_remote_process
+    "${root_cmd[@]}" rm -f "$local_stats_file" 2>/dev/null || true
+    ssh "$remote" "rm -f '${remote_stats_file}'" >/dev/null 2>&1 || true
+
+    hook_pre_down_local
+    hook_pre_down_remote
+    net_down_local
+    net_down_remote
+    hook_post_down_local
+    hook_post_down_remote
+
+    "${root_cmd[@]}" ip link del "$client_if" 2>/dev/null || true
+    ssh "$remote" "ip link del '${server_if}' 2>/dev/null || true"
+    echo "Tunnel ${id} stopped"
+    exit 0
+fi
 
 echo "Tunnel ${id}"
 echo "  remote:     ${remote}"
