@@ -76,8 +76,16 @@ net_file="${script_dir}/tuntom-net.sh"
 
 client_if="ut${id}c"
 server_if="ut${id}s"
-client_ip="${TUNTOM_C_ADDRESS:-10.254.${id}.1}"
-server_ip="${TUNTOM_S_ADDRESS:-10.254.${id}.2}"
+tuntom_prefix16="${TUNTOM_PREFIX16:-10.254}"
+
+if ! [[ "$tuntom_prefix16" =~ ^([0-9]{1,3})\.([0-9]{1,3})$ ]] ||
+   (( 10#${BASH_REMATCH[1]:-999} > 255 || 10#${BASH_REMATCH[2]:-999} > 255 )); then
+    echo "TUNTOM_PREFIX16 must contain two IPv4 octets, for example 10.254" >&2
+    exit 1
+fi
+
+client_ip="${tuntom_prefix16}.${id}.1"
+server_ip="${tuntom_prefix16}.${id}.2"
 mtu="${TUNTOM_MTU:-1500}"
 transport_mtu="${TUNTOM_TRANSPORT_MTU:-1400}"
 udp_port="$((40000 + id))"
