@@ -86,6 +86,11 @@ fi
 
 client_ip="${tuntom_prefix16}.${id}.1"
 server_ip="${tuntom_prefix16}.${id}.2"
+
+ipv6_prefix16="${tuntom_prefix16//./:}"
+client_ipv6="fd42::${ipv6_prefix16}:${id}:1"
+server_ipv6="fd42::${ipv6_prefix16}:${id}:2"
+
 mtu="${TUNTOM_MTU:-1500}"
 transport_mtu="${TUNTOM_TRANSPORT_MTU:-1400}"
 udp_port="$((40000 + id))"
@@ -279,6 +284,8 @@ run_hook_local() {
         TUNTOM_PEER_IP="$peer_ip" \
         TUNTOM_CLIENT_IP="$client_ip" \
         TUNTOM_SERVER_IP="$server_ip" \
+        TUNTOM_CLIENT_IPV6="$client_ipv6" \
+        TUNTOM_SERVER_IPV6="$server_ipv6" \
         TUNTOM_UDP_PORT="$udp_port" \
         TUNTOM_MTU="$mtu" \
         TUNTOM_TRANSPORT_MTU="$transport_mtu" \
@@ -320,6 +327,8 @@ run_hook_remote() {
          TUNTOM_PEER_IP='${peer_ip}' \
          TUNTOM_CLIENT_IP='${client_ip}' \
          TUNTOM_SERVER_IP='${server_ip}' \
+         TUNTOM_CLIENT_IPV6='${client_ipv6}' \
+         TUNTOM_SERVER_IPV6='${server_ipv6}' \
          TUNTOM_UDP_PORT='${udp_port}' \
          TUNTOM_MTU='${mtu}' \
          TUNTOM_TRANSPORT_MTU='${transport_mtu}' \
@@ -503,6 +512,8 @@ echo "Tunnel ${id}"
 echo "  remote:     ${remote}"
 echo "  client if:  ${client_if} ${client_ip} -> ${server_ip}"
 echo "  server if:  ${server_if} ${server_ip} -> ${client_ip}"
+echo "  client IPv6: ${client_ipv6} -> ${server_ipv6}"
+echo "  server IPv6: ${server_ipv6} -> ${client_ipv6}"
 echo "  UDP port:   ${udp_port}"
 echo "  TUN MTU:    ${mtu}"
 echo "  xport MTU:  ${transport_mtu}"
@@ -586,6 +597,7 @@ done
 
 ssh "$remote" "
     ip address add '${server_ip}' peer '${client_ip}' dev '${server_if}' &&
+    ip -6 address add '${server_ipv6}' peer '${client_ipv6}' dev '${server_if}' &&
     ip link set dev '${server_if}' mtu '${mtu}' up
 "
 
@@ -606,6 +618,7 @@ for _ in $(seq 1 20); do
 done
 
 "${root_cmd[@]}" ip address add "$client_ip" peer "$server_ip" dev "$client_if"
+"${root_cmd[@]}" ip -6 address add "$client_ipv6" peer "$server_ipv6" dev "$client_if"
 "${root_cmd[@]}" ip link set dev "$client_if" mtu "$mtu" up
 
 echo "[10] Configure local networking"
@@ -615,7 +628,14 @@ run_hook_local "$tuntom_post_hook" post up local "$client_if" "$client_ip" "$ser
 
 echo "[11] Test"
 if "${root_cmd[@]}" ping -I "$client_if" -c 3 -W 2 "$server_ip"; then
-    echo "Tunnel is UP"
+    if "${root_cmd[@]}" ping -6 -I "$client_if" -c 3 -W 2 "$server_ipv6"; then
+        echo "Tunnel is UP (IPv4 + IPv6)"
+    else
+        echo "IPv6 ping failed"
+        echo "Local log:  $local_log"
+        echo "Remote log: $remote_log"
+        exit 2
+    fi
 else
     echo "Ping failed"
     echo "Local log:  $local_log"

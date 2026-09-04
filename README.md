@@ -79,6 +79,15 @@ sudo -E ./mk_tunnel.sh 42 sx2
 The resulting client and server addresses are `10.10.42.1` and `10.10.42.2`.
 The tunnel ID therefore remains part of every address.
 
+The same value also determines the tunnel's IPv6 addresses. Dots in the IPv4
+prefix are replaced with colons and the result is placed below `fd42::`:
+
+```text
+TUNTOM_PREFIX16=10.10, tunnel 42
+client IPv6: fd42::10:10:42:1
+server IPv6: fd42::10:10:42:2
+```
+
 For tunnel `42`:
 
 ```text
