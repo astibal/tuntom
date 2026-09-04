@@ -628,7 +628,12 @@ run_hook_local "$tuntom_post_hook" post up local "$client_if" "$client_ip" "$ser
 
 echo "[11] Test"
 if "${root_cmd[@]}" ping -c 3 -W 2 "$server_ip"; then
-    if "${root_cmd[@]}" ping -c 3 -W 2 "$server_ipv6"; then
+    ipv6_ping=ping
+    if command -v ping6 >/dev/null 2>&1; then
+        ipv6_ping=ping6
+    fi
+
+    if "${root_cmd[@]}" "$ipv6_ping" -c 3 -W 2 "$server_ipv6"; then
         echo "Tunnel is UP (IPv4 + IPv6)"
     else
         echo "IPv6 ping failed"
