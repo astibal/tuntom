@@ -597,7 +597,7 @@ done
 
 ssh "$remote" "
     ip address add '${server_ip}' peer '${client_ip}' dev '${server_if}' &&
-    ip -6 address add '${server_ipv6}' peer '${client_ipv6}' dev '${server_if}' &&
+    ip -6 address add '${server_ipv6}' peer '${client_ipv6}' dev '${server_if}' nodad &&
     ip link set dev '${server_if}' mtu '${mtu}' up
 "
 
@@ -618,7 +618,7 @@ for _ in $(seq 1 20); do
 done
 
 "${root_cmd[@]}" ip address add "$client_ip" peer "$server_ip" dev "$client_if"
-"${root_cmd[@]}" ip -6 address add "$client_ipv6" peer "$server_ipv6" dev "$client_if"
+"${root_cmd[@]}" ip -6 address add "$client_ipv6" peer "$server_ipv6" dev "$client_if" nodad
 "${root_cmd[@]}" ip link set dev "$client_if" mtu "$mtu" up
 
 echo "[10] Configure local networking"
