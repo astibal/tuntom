@@ -99,27 +99,52 @@ tuntom_net_up() {
     local snat_chain="${TUNTOM_CHAIN}_S"
 
     #
-    # PREROUTING mark handling
+    # PREROUTING connection ownership and reply mark handling
+    #
+    # Every tracked packet received from the TUN makes this tunnel the return
+    # path for its connection, regardless of conntrack state. The most recent
+    # TUN ingress therefore wins if a connection is seen through more than one
+    # tunnel.
+    #
+    # Keep the packet mark clear on the ingress packet itself so it follows
+    # normal routing towards its destination. Only packets in the other
+    # direction restore the connection mark and enter tunnel policy routing.
     #
     iptables_ensure_chain mangle "$mangle_chain"
     iptables_flush_chain mangle "$mangle_chain"
     iptables_ensure_jump mangle PREROUTING "$mangle_chain"
 
     iptables -t mangle -A "$mangle_chain" \
-        -j CONNMARK --restore-mark \
-        --nfmask "$TUNTOM_MARK_MASK" \
-        --ctmask "$TUNTOM_MARK_MASK"
+        -i "$TUNTOM_IF" \
+        -m conntrack --ctstate INVALID,UNTRACKED \
+        -j DROP
 
     iptables -t mangle -A "$mangle_chain" \
         -i "$TUNTOM_IF" \
-        -m conntrack --ctstate NEW \
         -j CONNMARK --set-xmark "${TUNTOM_MARK}/${TUNTOM_MARK_MASK}"
 
     iptables -t mangle -A "$mangle_chain" \
         -i "$TUNTOM_IF" \
+        -j MARK --set-xmark "0/${TUNTOM_MARK_MASK}"
+
+    iptables -t mangle -A "$mangle_chain" \
+        ! -i "$TUNTOM_IF" \
+        -m connmark --mark "${TUNTOM_MARK}/${TUNTOM_MARK_MASK}" \
         -j CONNMARK --restore-mark \
         --nfmask "$TUNTOM_MARK_MASK" \
         --ctmask "$TUNTOM_MARK_MASK"
+
+    if ! iptables -t mangle -C OUTPUT \
+        -m connmark --mark "${TUNTOM_MARK}/${TUNTOM_MARK_MASK}" \
+        -j CONNMARK --restore-mark \
+        --nfmask "$TUNTOM_MARK_MASK" \
+        --ctmask "$TUNTOM_MARK_MASK" 2>/dev/null; then
+        iptables -t mangle -A OUTPUT \
+            -m connmark --mark "${TUNTOM_MARK}/${TUNTOM_MARK_MASK}" \
+            -j CONNMARK --restore-mark \
+            --nfmask "$TUNTOM_MARK_MASK" \
+            --ctmask "$TUNTOM_MARK_MASK"
+    fi
 
     #
     # FORWARD helpers
@@ -182,6 +207,18 @@ tuntom_net_down() {
 
     iptables_delete_jump mangle PREROUTING "$mangle_chain"
     iptables_delete_chain mangle "$mangle_chain"
+
+    while iptables -t mangle -C OUTPUT \
+        -m connmark --mark "${TUNTOM_MARK}/${TUNTOM_MARK_MASK}" \
+        -j CONNMARK --restore-mark \
+        --nfmask "$TUNTOM_MARK_MASK" \
+        --ctmask "$TUNTOM_MARK_MASK" 2>/dev/null; do
+        iptables -t mangle -D OUTPUT \
+            -m connmark --mark "${TUNTOM_MARK}/${TUNTOM_MARK_MASK}" \
+            -j CONNMARK --restore-mark \
+            --nfmask "$TUNTOM_MARK_MASK" \
+            --ctmask "$TUNTOM_MARK_MASK"
+    done
 
     iptables_delete_jump mangle FORWARD "$forward_chain"
     iptables_delete_chain mangle "$forward_chain"

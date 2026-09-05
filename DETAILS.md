@@ -755,6 +755,20 @@ This separation is intentional.
 
 The tunnel transports packets. Linux decides where they go.
 
+The optional `tuntom-net.sh` helper makes the ingress tunnel authoritative for
+connection return routing. Every tracked packet received from a TUN interface
+overwrites the tuntom-owned bits of its conntrack mark, regardless of whether
+conntrack classifies it as `NEW`, `ESTABLISHED`, or `RELATED`. If the same
+connection is observed through multiple tunnels, the most recent TUN ingress
+wins.
+
+The ingress packet keeps those bits clear in its packet mark and therefore uses
+normal destination routing. Forwarded replies restore the connection mark in
+`mangle/PREROUTING`; locally generated replies restore it in `mangle/OUTPUT`.
+The resulting fwmark selects the tunnel-specific routing table. Packets arriving
+from the TUN as `INVALID` or `UNTRACKED` are dropped because no persistent return
+path can be associated with them.
+
 ## Honeynet use case
 
 One important deployment model is:
