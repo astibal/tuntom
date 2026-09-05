@@ -229,8 +229,9 @@ public:
     }
 
     ProtocolV4(std::uint16_t tunnel_id, const ascon::key_type& tx,
-               const ascon::key_type& rx)
-        : tunnel_id_(tunnel_id), tx_key_(tx), rx_key_(rx) {}
+               const ascon::key_type& rx, bool encrypt = false)
+        : tunnel_id_(tunnel_id), tx_key_(tx), rx_key_(rx), encrypt_(encrypt),
+          tx_aead_(tx), rx_aead_(rx) {}
 
     std::uint8_t version() const override {
         return protocol_version_v4;
@@ -255,11 +256,20 @@ public:
         store_be32(output.data() + 0, protocol_magic);
         store_be16(output.data() + 4, packet.tunnel_id);
         output[6] = protocol_version_v4;
-        output[7] = static_cast<std::uint8_t>(packet.type);
+        output[7] = static_cast<std::uint8_t>(packet.type) | (encrypt_ ? 0x80 : 0);
         store_be64(output.data() + 8, packet.sequence);
         store_be64(output.data() + 16, packet.message_id);
         store_be32(output.data() + 24, packet.fragment_offset);
         store_be32(output.data() + 28, packet.original_length);
+
+        if (encrypt_) {
+            std::array<std::uint8_t, 16> nonce {};
+            store_be64(nonce.data() + 8, packet.sequence);
+            tx_aead_.encrypt(nonce.data(), output.data(), 32,
+                packet.payload.data(), packet.payload.size(),
+                output.data() + protocol_header_v4_size, output.data() + 32);
+            return;
+        }
 
         if (not packet.payload.empty()) {
             std::memcpy(
@@ -337,7 +347,8 @@ public:
             return false;
         }
 
-        const auto type = static_cast<PacketType>(data[7]);
+        if (bool(data[7] & 0x80) != encrypt_) return false;
+        const auto type = static_cast<PacketType>(data[7] & 0x7f);
         if (
             type != PacketType::hello and
             type != PacketType::keepalive and
@@ -352,33 +363,43 @@ public:
             return false;
         }
 
-        mac_input.resize(
-            32 + size - protocol_header_v4_size);
+        if (encrypt_) {
+            std::array<std::uint8_t, 16> nonce {};
+            std::memcpy(nonce.data() + 8, data + 8, 8);
+            mac_input.resize(size - protocol_header_v4_size);
+            if (not rx_aead_.decrypt(nonce.data(), data, 32,
+                    data + protocol_header_v4_size, mac_input.size(), data + 32,
+                    mac_input.data())) return false;
+            packet.payload.swap(mac_input);
+        } else {
+            mac_input.resize(
+                32 + size - protocol_header_v4_size);
 
-        std::memcpy(mac_input.data(), data, 32);
+            std::memcpy(mac_input.data(), data, 32);
 
-        if (size > protocol_header_v4_size) {
-            std::memcpy(
-                mac_input.data() + 32,
-                data + protocol_header_v4_size,
-                size - protocol_header_v4_size);
-        }
+            if (size > protocol_header_v4_size) {
+                std::memcpy(
+                    mac_input.data() + 32,
+                    data + protocol_header_v4_size,
+                    size - protocol_header_v4_size);
+            }
 
-        ascon::tag_type expected_tag {};
-        ascon::mac(
-            rx_key_,
-            tunnel_id_,
-            mac_input.data(),
-            mac_input.size(),
-            expected_tag);
+            ascon::tag_type expected_tag {};
+            ascon::mac(
+                rx_key_,
+                tunnel_id_,
+                mac_input.data(),
+                mac_input.size(),
+                expected_tag);
 
-        if (
-            not ascon::constant_time_equal(
-                data + 32,
-                expected_tag.data(),
-                expected_tag.size())) {
+            if (
+                not ascon::constant_time_equal(
+                    data + 32,
+                    expected_tag.data(),
+                    expected_tag.size())) {
 
-            return false;
+                return false;
+            }
         }
 
         packet.type = type;
@@ -388,15 +409,15 @@ public:
         packet.message_id = load_be64(data + 16);
         packet.fragment_offset = load_be32(data + 24);
         packet.original_length = load_be32(data + 28);
-        packet.payload.assign(data + protocol_header_v4_size, data + size);
+        if (not encrypt_) packet.payload.assign(data + protocol_header_v4_size, data + size);
 
         if (type == PacketType::init or type == PacketType::response) {
             const std::size_t expected = type == PacketType::init ? 36 : 68;
             if (packet.sequence != 0 or packet.message_id == 0 or
                 packet.fragment_offset != 0 or packet.original_length != 0 or
                 packet.payload.size() != expected) return false;
-            // Suite 0 and an absent DH share are the only supported mode.
-            if (load_be16(packet.payload.data() + expected - 4) != 0 or
+            // Supported suites have no DH share.
+            if (load_be16(packet.payload.data() + expected - 4) > 1 or
                 load_be16(packet.payload.data() + expected - 2) != 0) return false;
         } else if (type == PacketType::confirm or type == PacketType::confirm_ack) {
             if (packet.message_id == 0 or packet.fragment_offset != 0 or
@@ -467,6 +488,8 @@ private:
     std::uint16_t tunnel_id_ = 0;
     ascon::key_type tx_key_ {};
     ascon::key_type rx_key_ {};
+    bool encrypt_ = false;
+    ascon::Aead128 tx_aead_ {tx_key_}, rx_aead_ {rx_key_};
 };
 
 } // namespace tuntom

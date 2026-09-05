@@ -75,6 +75,94 @@ inline void permute(std::array<std::uint64_t, 5>& state, int rounds) {
     }
 }
 
+// NIST SP 800-232 Ascon-AEAD128: little-endian lanes, 16-byte rate.
+// memcpy permits unaligned inputs and compiles to native loads/stores.
+inline std::uint64_t load_le64(const std::uint8_t* p) {
+    std::uint64_t x;
+    std::memcpy(&x, p, 8);
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    x = __builtin_bswap64(x);
+#endif
+    return x;
+}
+inline void store_le64(std::uint8_t* p, std::uint64_t x) {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    x = __builtin_bswap64(x);
+#endif
+    std::memcpy(p, &x, 8);
+}
+
+class Aead128 {
+public:
+    explicit Aead128(const key_type& key)
+        : k0_(load_le64(key.data())), k1_(load_le64(key.data() + 8)) {}
+
+    // Input/output may alias. No allocation, padding buffer, or second MAC pass.
+    void encrypt(const std::uint8_t* nonce, const std::uint8_t* ad,
+                 std::size_t ad_size, const std::uint8_t* input,
+                 std::size_t size, std::uint8_t* output, std::uint8_t* tag) const {
+        crypt<false>(nonce, ad, ad_size, input, size, output, tag);
+    }
+    // On failure, wipe candidate plaintext; callers must not publish it earlier.
+    bool decrypt(const std::uint8_t* nonce, const std::uint8_t* ad,
+                 std::size_t ad_size, const std::uint8_t* input,
+                 std::size_t size, const std::uint8_t* tag, std::uint8_t* output) const {
+        tag_type expected {};
+        crypt<true>(nonce, ad, ad_size, input, size, output, expected.data());
+        std::uint8_t difference = 0;
+        for (std::size_t i = 0; i < tag_size; ++i) difference |= static_cast<std::uint8_t>(expected[i] ^ tag[i]);
+        if (difference == 0) return true;
+        volatile std::uint8_t* wipe = output;
+        for (std::size_t i = 0; i < size; ++i) wipe[i] = 0;
+        return false;
+    }
+private:
+    template<bool decrypting>
+    void crypt(const std::uint8_t* nonce, const std::uint8_t* ad,
+               std::size_t ad_size, const std::uint8_t* input,
+               std::size_t size, std::uint8_t* output, std::uint8_t* tag) const {
+        std::array<std::uint64_t, 5> s {
+            0x00001000808c0001ULL, k0_, k1_,
+            load_le64(nonce), load_le64(nonce + 8)};
+        permute(s, 12);
+        s[3] ^= k0_; s[4] ^= k1_;
+        if (ad_size) {
+            while (ad_size >= 16) {
+                s[0] ^= load_le64(ad); s[1] ^= load_le64(ad + 8);
+                permute(s, 8);
+                ad += 16; ad_size -= 16;
+            }
+            for (std::size_t i = 0; i < ad_size; ++i)
+                s[i / 8] ^= std::uint64_t(ad[i]) << (8 * (i % 8));
+            s[ad_size / 8] ^= std::uint64_t(1) << (8 * (ad_size % 8));
+            permute(s, 8);
+        }
+        s[4] ^= 0x8000000000000000ULL;
+        while (size >= 16) {
+            const auto a = load_le64(input), b = load_le64(input + 8);
+            store_le64(output, s[0] ^ a); store_le64(output + 8, s[1] ^ b);
+            if constexpr (decrypting) { s[0] = a; s[1] = b; }
+            else { s[0] ^= a; s[1] ^= b; }
+            permute(s, 8);
+            input += 16; output += 16; size -= 16;
+        }
+        for (std::size_t i = 0; i < size; ++i) {
+            const auto in = input[i];
+            const auto shift = 8 * (i % 8);
+            output[i] = static_cast<std::uint8_t>((s[i / 8] >> shift) ^ in);
+            if constexpr (decrypting)
+                s[i / 8] = (s[i / 8] & ~(std::uint64_t(255) << shift)) |
+                           (std::uint64_t(in) << shift);
+            else s[i / 8] ^= std::uint64_t(in) << shift;
+        }
+        s[size / 8] ^= std::uint64_t(1) << (8 * (size % 8));
+        s[2] ^= k0_; s[3] ^= k1_;
+        permute(s, 12);
+        store_le64(tag, s[3] ^ k0_); store_le64(tag + 8, s[4] ^ k1_);
+    }
+    std::uint64_t k0_, k1_;
+};
+
 inline void mac(
     const key_type& key,
     std::uint16_t tunnel_id,

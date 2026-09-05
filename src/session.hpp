@@ -38,8 +38,8 @@ public:
         std::vector<std::uint8_t> init, response;
         Session(std::uint16_t id, const ascon::key_type& tx,
                 const ascon::key_type& rx, std::uint16_t h,
-                std::uint64_t ex, std::size_t mtu)
-            : codec(id, tx, rx), reassembly(mtu), hint(h), exchange(ex) {}
+                std::uint64_t ex, std::size_t mtu, bool encrypt)
+            : codec(id, tx, rx, encrypt), reassembly(mtu), hint(h), exchange(ex) {}
     };
     struct Received {
         bool data = false;
@@ -52,12 +52,14 @@ public:
     };
 
     SessionProtocol(std::uint16_t id, const ascon::key_type& master,
-                    bool server, std::size_t mtu = default_tun_mtu)
-        : id_(id), master_(master), server_(server), mtu_(mtu),
+                    bool server, std::size_t mtu = default_tun_mtu, bool encrypt = false)
+        : id_(id), master_(master), server_(server), mtu_(mtu), encrypt_(encrypt),
           handshake_(id, master, server) {}
 
+    // Bound suite-1 key use independently of the 48-bit wire counter.
+    // At UDP packet sizes this stays below 2^48 bytes per directional key.
     bool ready() const {
-        return active_ and active_->next_counter <= counter_mask;
+        return active_ and active_->next_counter <= (encrypt_ ? 0xffffffffULL : counter_mask);
     }
 
     // Expansion is the existing AMAC with explicit, NUL-delimited domains.
@@ -82,6 +84,7 @@ public:
         Packet init = control(PacketType::init, random_id());
         init.payload.resize(36);
         random_bytes(init.payload.data(), 32);
+        store_be16(init.payload.data() + 32, encrypt_ ? 1 : 0);
         client_init_ = handshake_.encode(init);
         client_exchange_ = init.message_id;
         flight_ = client_init_;
@@ -131,7 +134,7 @@ public:
         if (previous_ and now >= previous_until_) previous_.reset();
         if (pending_ and now >= pending_until_) pending_.reset();
         if (size < protocol_header_v4_size) return result;
-        const auto type = static_cast<PacketType>(wire[7]);
+        const auto type = static_cast<PacketType>(wire[7] & 0x7f);
         if (not server_ and not flight_.empty() and
             now - flight_started_ >= pending_lifetime and
             (type == PacketType::response or type == PacketType::confirm_ack)) return result;
@@ -139,6 +142,8 @@ public:
             if ((server_ and type != PacketType::init) or
                 (not server_ and type != PacketType::response)) return result;
             if (not handshake_.decode_with_scratch(wire, size, packet, scratch)) return result;
+            if (load_be16(packet.payload.data() + packet.payload.size() - 4) !=
+                (encrypt_ ? 1 : 0)) return result;
             std::vector<std::uint8_t> encoded(wire, wire + size);
             if (server_) {
                 result.control = true;
@@ -162,6 +167,7 @@ public:
                 response.payload = commitment(master_, id_, encoded);
                 response.payload.resize(68);
                 random_bytes(response.payload.data() + 32, 32);
+                store_be16(response.payload.data() + 64, encrypt_ ? 1 : 0);
                 auto response_wire = handshake_.encode(response);
                 previous_.reset(); // At most two candidate session keys.
                 pending_ = derive(encoded, response_wire, packet.message_id);
@@ -266,7 +272,7 @@ private:
         const auto s2c = expand(master_, id_, "V4-SESSION-S2C", transcript);
         const auto hint = expand(master_, id_, "V4-SESSION-HINT", transcript);
         auto result = std::make_unique<Session>(id_, server_ ? s2c : c2s,
-            server_ ? c2s : s2c, load_be16(hint.data()), exchange, mtu_);
+            server_ ? c2s : s2c, load_be16(hint.data()), exchange, mtu_, encrypt_);
         result->init = init;
         result->response = response;
         return result;
@@ -307,6 +313,7 @@ private:
     ascon::key_type master_;
     bool server_;
     std::size_t mtu_;
+    bool encrypt_;
     ProtocolV4 handshake_;
     std::unique_ptr<Session> active_, previous_, pending_;
     Time previous_until_ {}, pending_until_ {}, last_received_ {};

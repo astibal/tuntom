@@ -3,7 +3,7 @@ set -euo pipefail
 umask 0077
 
 if (( $# < 2 )); then
-    echo "Usage: $0 <id 1..255> <host|user@host> [--snat|--no-snat] [--mss-clamp|--no-mss-clamp] [--stop]" >&2
+    echo "Usage: $0 <id 1..255> <host|user@host> [--snat|--no-snat] [--mss-clamp|--no-mss-clamp] [--encrypt-ascon] [--stop]" >&2
     exit 1
 fi
 
@@ -14,6 +14,7 @@ shift 2
 tuntom_snat=0
 tuntom_mss_clamp=1
 stop_requested=0
+encrypt_option=""
 
 while (( $# > 0 )); do
     case "$1" in
@@ -29,12 +30,15 @@ while (( $# > 0 )); do
         --no-mss-clamp)
             tuntom_mss_clamp=0
             ;;
+        --encrypt-ascon)
+            encrypt_option="--encrypt-ascon"
+            ;;
         --stop)
             stop_requested=1
             ;;
         *)
             echo "Unknown option: $1" >&2
-            echo "Usage: $0 <id 1..255> <host|user@host> [--snat|--no-snat] [--mss-clamp|--no-mss-clamp] [--stop]" >&2
+            echo "Usage: $0 <id 1..255> <host|user@host> [--snat|--no-snat] [--mss-clamp|--no-mss-clamp] [--encrypt-ascon] [--stop]" >&2
             exit 1
             ;;
     esac
@@ -593,7 +597,7 @@ printf '%s\n' "$TUNTOM_SECRET" | ssh "$remote" "
         --mtu '${mtu}' \
         --transport-mtu '${transport_mtu}' \
         --stats-format '${stats_format}' \
-        --stats-file '${remote_stats_file}' \
+        --stats-file '${remote_stats_file}' ${encrypt_option} \
         >'${remote_log}' 2>&1 </dev/null &
     echo \$! > '${remote_pid_file}'
 "
@@ -619,7 +623,7 @@ run_hook_remote "$tuntom_post_hook" post up remote "$server_if" "$server_ip" "$c
 
 echo "[9] Start local client"
 "${root_cmd[@]}" sh -c \
-    "nohup '${local_bin}' client '${id}' '${client_if}' '${remote#*@}' --mtu '${mtu}' --transport-mtu '${transport_mtu}' --stats-format '${stats_format}' --stats-file '${local_stats_file}' >'${local_log}' 2>&1 </dev/null & echo \$! > '${local_pid_file}'"
+    "nohup '${local_bin}' client '${id}' '${client_if}' '${remote#*@}' --mtu '${mtu}' --transport-mtu '${transport_mtu}' --stats-format '${stats_format}' --stats-file '${local_stats_file}' ${encrypt_option} >'${local_log}' 2>&1 </dev/null & echo \$! > '${local_pid_file}'"
 
 for _ in $(seq 1 20); do
     if "${root_cmd[@]}" ip link show "$client_if" >/dev/null 2>&1; then

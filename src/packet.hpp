@@ -48,6 +48,7 @@ enum class StatsFormat {
 };
 
 struct Options {
+    bool encrypt_ascon = false;
     bool allow_v1 = false;
     bool allow_v2 = false;
     bool ttl_compensate = true;

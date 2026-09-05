@@ -39,7 +39,7 @@ public:
           tun_(interface_name, options.tun_mtu),
           master_key_(parse_master_key()),
           protocol_v2_(tunnel_id, master_key_),
-          protocol_v4_(tunnel_id, master_key_, server_mode, options.tun_mtu) {
+          protocol_v4_(tunnel_id, master_key_, server_mode, options.tun_mtu, options.encrypt_ascon) {
 
         const std::uint16_t port =
             static_cast<std::uint16_t>(40000 + tunnel_id_);
@@ -66,6 +66,7 @@ public:
                 << " tun-mtu=" << options_.tun_mtu
                 << " transport-mtu-configured=" << options_.transport_mtu
                 << " transport-mtu-active=" << active_transport_mtu_
+                << " encryption=" << (options_.encrypt_ascon ? "ascon-aead128" : "off")
                 << " pmtud=" << (options_.pmtud_auto ? "auto" : "off")
                 << " max-fragment-payload="
                 << maximum_fragment_payload()
@@ -464,7 +465,7 @@ private:
             decoded = true;
         } else if (
             version == protocol_version_v2 and
-            options_.allow_v2) {
+            options_.allow_v2 and not options_.encrypt_ascon) {
 
             decoded =
                 protocol_v2_.decode(
@@ -473,7 +474,7 @@ private:
                     packet);
         } else if (
             version == protocol_version_v1 and
-            options_.allow_v1) {
+            options_.allow_v1 and not options_.encrypt_ascon) {
 
             decoded =
                 protocol_v1_.decode(

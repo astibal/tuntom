@@ -30,6 +30,9 @@ inline void usage(const char* program_name) {
         << "  --stats-file <path>    Export runtime statistics to file\n"
         << "  --stats-format <fmt>   Statistics format; currently: txt\n"
         << "\n"
+        << "Encryption (optional):\n"
+        << "  --encrypt-ascon       Require Ascon-AEAD128 payload encryption\n"
+        << "\n"
         << "Compatibility:\n"
         << "  --allow-v2            Accept legacy authenticated V2 "
            "packets\n"
@@ -83,7 +86,9 @@ inline void parse_options(
     for (int i = first_option; i < argc; ++i) {
         const std::string option = argv[i];
 
-        if (option == "--allow-v1") {
+        if (option == "--encrypt-ascon") {
+            options.encrypt_ascon = true;
+        } else if (option == "--allow-v1") {
             options.allow_v1 = true;
         } else if (option == "--allow-v2") {
             options.allow_v2 = true;
@@ -154,6 +159,8 @@ inline void parse_options(
                 "Unknown option: " + option);
         }
     }
+    if (options.encrypt_ascon and (options.allow_v1 or options.allow_v2))
+        throw std::runtime_error("--encrypt-ascon cannot be combined with legacy protocols");
 }
 
 inline std::uint16_t parse_tunnel_id(const char* value) {

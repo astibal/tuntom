@@ -32,3 +32,14 @@ These are regression checks, not a security proof of the custom MAC.
 
 `pmtud-iptables-test.sh` is a separate, manual integration helper that changes
 firewall rules and requires root. It is deliberately not run by `run.sh`.
+
+- `aead_test.cpp`: all 1,089 official Ascon-AEAD128 known-answer vectors,
+  in-place operation, modified ciphertext/tags, and failure wiping.
+  `ascon-kat.txt` comes from the Ascon team's public reference repository:
+  https://github.com/ascon/ascon-c/blob/main/crypto_aead/asconaead128/LWC_AEAD_KAT_128_128.txt
+- `encrypted_session_test.cpp`: both modes, mode mismatch/downgrade rejection,
+  encrypted fragments/control packets, tampering, retransmission, restart,
+  reflection, replay, counter exhaustion and CLI compatibility.
+- `aead_bench.cpp`: optional allocation-reusing codec microbenchmark (MB/s):
+  `g++ -std=c++17 -O3 -march=native tests/aead_bench.cpp -o /tmp/aead-bench && /tmp/aead-bench`.
+  Results include header handling and authentication; they are not tunnel throughput.

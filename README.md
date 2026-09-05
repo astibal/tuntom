@@ -201,11 +201,15 @@ and server-to-client authentication keys to reject reflected outbound packets.
 The 48-byte DATA header layout is unchanged, but the version byte is now 4.
 INIT / RESPONSE / CONFIRM / CONFIRM_ACK establish fresh directional session
 keys. SEQ contains a 16-bit session hint and a 48-bit per-direction counter.
-Only suite 0 with absent DH is implemented: payloads are authenticated but
-**not encrypted**. Handshake normally adds one RTT before the client can send
+By default, suite 0 authenticates payloads without encryption. Enable
+`--encrypt-ascon` on **both endpoints** for standard Ascon-AEAD128 (suite 1).
+`./mk_tunnel.sh <id> <host> --encrypt-ascon` configures both ends.
+The option rejects legacy `--allow-v1` / `--allow-v2`; mismatched modes fail
+the handshake without falling back to plaintext. Encryption adds no wire bytes.
+Neither suite provides forward secrecy (no DH). Handshake normally adds one RTT before the client can send
 DATA; DATA reaching the server before CONFIRM is dropped. The ACK is retried
 without resetting session counters. Initial TUN traffic is not buffered.
-See [the V4 wire specification](PROTOCOL_V4.md) for layouts and timeouts.
+See [the V4 wire specification](docs/PROTOCOL_V4.md) for layouts and timeouts.
 Update both endpoints together (the bootstrap script builds both ends).
 Pre-handshake v4 builds are also incompatible: update both endpoints together.
 V3 receive compatibility and automatic downgrade are not supported.

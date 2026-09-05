@@ -1,4 +1,4 @@
-# tuntom V4: AMAC sessions, suite 0
+# tuntom V4: AMAC sessions and optional Ascon-AEAD128
 
 This is the implemented, pre-production V4 wire format. Both endpoints must
 be upgraded together. Earlier V4 builds using static DATA keys are incompatible.
@@ -14,12 +14,12 @@ All integers are unsigned, big-endian. The UDP payload starts with 48 bytes:
 | 0 | 4 | Magic `UTUN` |
 | 4 | 2 | Tunnel ID |
 | 6 | 1 | Version = 4 |
-| 7 | 1 | Message type |
+| 7 | 1 | Message type in bits 0–6; bit 7 = AEAD session packet |
 | 8 | 8 | SEQ: upper 16 bits session hint, lower 48 bits counter |
 | 16 | 8 | Message ID / handshake exchange ID |
 | 24 | 4 | Fragment offset (DATA only) |
 | 28 | 4 | Original packet length (DATA), outer MTU (PMTUD) |
-| 32 | 16 | AMAC |
+| 32 | 16 | AMAC or Ascon-AEAD128 tag |
 | 48 | variable | Payload |
 
 AMAC is the project's existing custom Ascon-permutation MAC, **not HMAC** or
@@ -40,15 +40,32 @@ All four messages share the client's nonzero random 64-bit exchange ID in
 fresh random bytes from Linux `getrandom`, with errors failing closed.
 Retransmissions preserve the exact original bytes, nonces and exchange ID.
 
-Only **suite 0 with dh_length = 0** is implemented. There are no DH bytes,
-not an all-zero public key. Payload lengths must be exact. Unsupported suites,
-nonempty DH, trailing bytes, invalid metadata and wrong directions are rejected.
-The authenticated combination of suite 0 and absent DH authorizes plaintext
-operation on each side. No timeout fallback selects plaintext automatically.
+Suite **0** (default) authenticates plaintext using AMAC. Suite **1** requires
+`--encrypt-ascon` on both endpoints and uses standard NIST SP 800-232
+Ascon-AEAD128. Both require `dh_length = 0`, exact payload lengths and matching
+local configuration. Unsupported suites and nonempty DH are rejected. There
+is no negotiation, timeout fallback, or forward secrecy.
 
-DH, AEAD, cipher negotiation and forward secrecy are not implemented. A future
-suite must specify all of them, including public-key validation, key-use limits
-and unique per-packet AEAD nonces, before it can be enabled.
+INIT/RESPONSE remain plaintext AMAC packets with bit 7 clear. Their authenticated
+suite fields are also bound into the session-key transcript. All subsequent
+suite-1 packets, including CONFIRM/ACK and PMTUD, set bit 7 and use AEAD:
+
+- Key: the existing fresh 128-bit directional session key derived below.
+- Nonce: eight zero bytes followed by the exact eight wire SEQ bytes.
+- Associated data: exact header bytes 0 through 31 (including bit 7).
+- Ciphertext: payload at offset 48; full 128-bit tag at offset 32.
+- The standard's internal lanes are little-endian; wire integers remain big-endian.
+
+Directional keys prevent cross-direction nonce reuse. Each fragment/control
+packet consumes a fresh counter. Counter zero is used only by the fixed
+CONFIRM/ACK in its respective direction; retries reproduce the identical packet.
+Suite 1 stops sending after counter `2^32 - 1` and establishes a fresh session,
+well before 48-bit wrap. With UDP datagrams below 64 KiB this also bounds traffic
+to less than `2^48` bytes per directional key. Mode-bit changes fail authentication;
+wrong modes are rejected, and legacy receive flags cannot accompany encryption.
+No plaintext is delivered before verification; failed candidate plaintext is wiped.
+
+Reference: [NIST SP 800-232](https://doi.org/10.6028/NIST.SP.800-232).
 
 ## Key derivation and binding
 
@@ -84,7 +101,7 @@ hint  = first two bytes of expand("V4-SESSION-HINT", T), big-endian
 `init_hash` retains the design's field name but is a **keyed 32-byte AMAC
 commitment**, not SHA-256 or an unkeyed hash. Two independently labeled AMAC
 outputs do not imply a claim of 256-bit security: the master key is 128 bits.
-The fixed suite-0 message lengths make transcript concatenation unambiguous.
+The fixed handshake message lengths make transcript concatenation unambiguous.
 
 CONFIRM and CONFIRM_ACK use S_c2s and S_s2c, respectively. All ordinary traffic
 (DATA, HELLO, KEEPALIVE, PING/PONG, MTU_PROBE/REPLY) uses these session keys.
@@ -142,8 +159,8 @@ ordinary replay processing only for their idempotent ACK behavior.
 
 Counters never wrap. Once the 48-bit counter is exhausted, transmission stops;
 the client initiates a fresh handshake. If the server exhausts first, the client
-recovers via the authenticated-traffic timeout. Future AEAD suites will need
-earlier key-rotation limits independent of counter capacity.
+recovers via the authenticated-traffic timeout. Suite 1 uses the earlier
+32-bit transmission limit described above.
 
 DATA fragmentation uses the unchanged 48-byte header and a distinct sequence
 for every fragment. Reassembly tables belong to sessions, so identical message
@@ -154,3 +171,6 @@ Wireshark exposes handshake fields, suite, DH length, session hint and counter.
 It does not verify AMAC. Its best-effort reassembly includes protocol version
 and session hint in the key; collisions between sessions with the same hint
 cannot be resolved without cryptographic session keys.
+
+Wireshark labels AEAD packets as encrypted and never reassembles or dissects
+their ciphertext as inner IP. It does not decrypt or verify AEAD tags.

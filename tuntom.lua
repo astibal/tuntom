@@ -58,7 +58,7 @@
 --
 -- V4 handshake: INIT(8), RESPONSE(9), CONFIRM(10), CONFIRM_ACK(11).
 -- SEQ splits into a 16-bit session hint and a 48-bit counter.
--- Only suite 0 with absent DH is currently implemented; payload is plaintext.
+-- Suite 0 is plaintext AMAC; suite 1 uses Ascon-AEAD128, with absent DH.
 -- This dissector does not verify the Ascon authentication tag.
 --
 -- By default it registers for UDP ports 40001..40255, matching:
@@ -207,7 +207,7 @@ local f_session_hint = ProtoField.uint16("tuntom.session_hint", "Session Hint", 
 local f_counter = ProtoField.uint64("tuntom.counter", "Session Packet Counter", base.DEC)
 local f_nonce = ProtoField.bytes("tuntom.nonce", "Handshake Nonce")
 local f_init_hash = ProtoField.bytes("tuntom.init_hash", "INIT Binding (keyed AMAC commitment)")
-local f_suite = ProtoField.uint16("tuntom.suite", "Suite", base.DEC, {[0] = "AMAC, no encryption"})
+local f_suite = ProtoField.uint16("tuntom.suite", "Suite", base.DEC, {[0] = "AMAC, no encryption", [1] = "Ascon-AEAD128"})
 local f_dh_length = ProtoField.uint16("tuntom.dh_length", "DH Public Key Length", base.DEC)
 local f_dh = ProtoField.bytes("tuntom.dh", "DH Public Key")
 local e_handshake = ProtoExpert.new("tuntom.handshake_error", "Invalid/unsupported handshake",
@@ -732,6 +732,9 @@ function tuntom.dissector(buffer, pinfo, tree)
     local packet_type =
         buffer(7, 1):uint()
 
+    local encrypted = version == 4 and packet_type >= 128
+    if encrypted then packet_type = packet_type - 128 end
+
     local header_size
 
     if version == 1 then
@@ -876,7 +879,7 @@ function tuntom.dissector(buffer, pinfo, tree)
 
     subtree:add(
         f_type,
-        buffer(7, 1)
+        buffer(7, 1), packet_type
     )
 
     if version == 2 then
@@ -943,6 +946,14 @@ function tuntom.dissector(buffer, pinfo, tree)
         )
     end
 
+    if encrypted then
+        pinfo.cols.info:append(", Ascon-AEAD128 encrypted")
+        subtree:add(f_session_hint, buffer(8, 2))
+        subtree:add(f_counter, buffer(10, 6))
+        if payload_length > 0 then subtree:add(f_payload, buffer(header_size)) end
+        return buffer:len()
+    end
+
     if version == 4 then
         subtree:add(f_session_hint, buffer(8, 2))
         subtree:add(f_counter, buffer(10, 6))
@@ -964,14 +975,14 @@ function tuntom.dissector(buffer, pinfo, tree)
                 local remaining = buffer:len() - fields_end
                 if remaining > 0 then subtree:add(f_dh, buffer(fields_end, remaining)) end
                 bad = bad or buffer(8, 8):uint64() ~= UInt64(0, 0) or
-                    buffer(nonce_offset + 32, 2):uint() ~= 0 or
+                    buffer(nonce_offset + 32, 2):uint() > 1 or
                     dh_length ~= 0 or remaining ~= dh_length
             else
                 bad = bad or payload_length ~= 0 or buffer(10, 6):uint64() ~= UInt64(0, 0)
             end
             if bad then
                 subtree:add_proto_expert_info(e_handshake,
-                    "Expected suite 0, absent DH, zero control metadata and exact message length")
+                    "Expected suite 0 or 1, absent DH, zero control metadata and exact message length")
             end
             return buffer:len()
         end
