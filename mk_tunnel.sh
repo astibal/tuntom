@@ -481,6 +481,10 @@ net_up_remote() {
         TUNTOM_IF='${server_if}' \
         TUNTOM_SNAT='${tuntom_snat}' \
         TUNTOM_MSS_CLAMP='${tuntom_mss_clamp}' \
+        TUNTOM_MARK='${tuntom_mark}' \
+        TUNTOM_MARK_MASK='${tuntom_mark_mask}' \
+        TUNTOM_TABLE='${tuntom_table}' \
+        TUNTOM_CHAIN='${tuntom_chain}' \
         bash -c \"
             source '${remote_net_file}'
             tuntom_net_up
