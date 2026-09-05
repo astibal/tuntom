@@ -538,6 +538,11 @@ local function accept_fragment_first_pass(
             complete_raw
         )
 
+        -- Redissection uses frame_info, which now holds the completed
+        -- packet and fragment links. Keep this table for incomplete
+        -- messages only so completed traffic cannot exhaust its limit.
+        remove_reassembly_entry(key)
+
         return complete_raw, nil
     end
 
