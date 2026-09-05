@@ -17,6 +17,7 @@ set -euo pipefail
 #   TUNTOM_CHAIN       default: TUNTOM_<id>
 #   TUNTOM_MSS_CLAMP   default: 1
 #   TUNTOM_SNAT        default: 0
+#   TUNTOM_XTABLES_WAIT default: 5 seconds
 #
 # This file is meant to be sourced by mk_tunnel.sh or custom hooks.
 #
@@ -39,12 +40,26 @@ TUNTOM_CHAIN="${TUNTOM_CHAIN:-TUNTOM_${TUNTOM_ID}}"
 # - MASQUERADE OFF
 TUNTOM_MSS_CLAMP="${TUNTOM_MSS_CLAMP:-1}"
 TUNTOM_SNAT="${TUNTOM_SNAT:-0}"
+TUNTOM_XTABLES_WAIT="${TUNTOM_XTABLES_WAIT:-5}"
+
+iptables() {
+    command iptables -w "$TUNTOM_XTABLES_WAIT" "$@"
+}
 
 iptables_ensure_chain() {
     local table="$1"
     local chain="$2"
 
-    iptables -t "$table" -N "$chain" 2>/dev/null || true
+    if iptables -t "$table" -nL "$chain" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if iptables -t "$table" -N "$chain"; then
+        return 0
+    fi
+
+    # Another process may have created it between the check and -N.
+    iptables -t "$table" -nL "$chain" >/dev/null 2>&1
 }
 
 iptables_flush_chain() {
