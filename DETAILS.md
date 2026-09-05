@@ -243,12 +243,24 @@ seq = max(current_time_ns, previous_seq + 1)
 
 The receiver keeps a small runtime replay window:
 
-- highest accepted sequence number
-- 64-bit bitmap representing the previous 64 sequence values
+- the 64 highest accepted sequence values, stored in descending order
+- duplicate rejection for retained values and rejection below a full window
 
-This permits normal UDP packet reordering while rejecting duplicates and sufficiently old packets.
+This permits UDP packet reordering even when sequence timestamps differ by
+microseconds or more. A bitmap indexed by timestamp differences would cover
+only 64 nanoseconds, not 64 packets. Storage is fixed at 64 sequence values,
+with no per-packet allocation. Once full, the window's lower bound can only
+move forward. Before it fills, any unseen nonzero sequence can be accepted.
 
-Replay state is not persisted across process restarts.
+The wire format and timestamp generator are unchanged, so this receive-side
+fix works with existing v2/v3 senders. It does not add a time-based expiry or
+a session handshake.
+
+Replay state is not persisted across receiver process restarts. A sender
+restart normally continues with newer timestamps; a backward system-clock
+adjustment can leave its traffic below the receiver's window until the clock
+catches up. Preventing replay across receiver restarts and handling clock
+rollback require a separate authenticated session design.
 
 `message_id` is separate from the transport sequence number.
 
@@ -834,6 +846,22 @@ tuntom.fragment_of
 The Lua dissector does not verify the Ascon authentication tag.
 
 ## Debugging
+
+### Replay regression tests
+
+Run the replay tests without root privileges or a live tunnel:
+
+```bash
+g++ -std=c++17 -O2 -Wall -Wextra -pedantic tests/replay_test.cpp -o /tmp/tuntom-replay-test
+/tmp/tuntom-replay-test
+```
+
+The tests cover sparse timestamp reordering, duplicates, window eviction,
+integer boundaries, and a 9000-byte v3 packet received as 64 fragments in
+reverse order. They exercise the receive path's protocol, replay, and
+reassembly components, but do not establish the security of the MAC.
+
+### Logging
 
 Default logging is informational.
 

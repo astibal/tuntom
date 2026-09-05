@@ -559,42 +559,41 @@ public:
             return false;
         }
 
-        if (highest_sequence_ == 0) {
-            highest_sequence_ = sequence;
-            bitmap_ = 1;
-            return true;
-        }
+        // V2/V3 sequences are timestamps, not consecutive packet counters.
+        // Keep the highest accepted values in descending order so the
+        // window is bounded by received packets rather than nanoseconds.
+        const auto end = sequences_.begin() +
+            static_cast<std::ptrdiff_t>(sequence_count_);
+        const auto position = std::lower_bound(
+            sequences_.begin(), end, sequence,
+            [](std::uint64_t accepted, std::uint64_t candidate) {
+                return accepted > candidate;
+            });
 
-        if (sequence > highest_sequence_) {
-            const std::uint64_t shift = sequence - highest_sequence_;
-
-            if (shift >= 64) {
-                bitmap_ = 1;
-            } else {
-                bitmap_ = (bitmap_ << shift) | 1ULL;
-            }
-
-            highest_sequence_ = sequence;
-            return true;
-        }
-
-        const std::uint64_t distance = highest_sequence_ - sequence;
-        if (distance >= 64) {
+        if (position != end and *position == sequence) {
             return false;
         }
 
-        const std::uint64_t mask = 1ULL << distance;
-        if ((bitmap_ & mask) != 0) {
+        const std::size_t index =
+            static_cast<std::size_t>(position - sequences_.begin());
+        if (index == sequences_.size()) {
+            // Once full, values below the retained window stay rejected,
+            // including duplicates whose entries have been evicted.
             return false;
         }
 
-        bitmap_ |= mask;
+        for (std::size_t i = std::min(sequence_count_, sequences_.size() - 1);
+             i > index; --i) {
+            sequences_[i] = sequences_[i - 1];
+        }
+        sequences_[index] = sequence;
+        sequence_count_ = std::min(sequence_count_ + 1, sequences_.size());
         return true;
     }
 
 private:
-    std::uint64_t highest_sequence_ = 0;
-    std::uint64_t bitmap_ = 0;
+    std::array<std::uint64_t, 64> sequences_ {};
+    std::size_t sequence_count_ = 0;
 };
 
 class Protocol {
