@@ -1010,3 +1010,32 @@ processing; sum both directions for RTT processing. For fragmented traffic RX
 work is spread over multiple datagrams, so this simple sum no longer applies.
 The existing `rtt_*` control probes remain unchanged. Protocol V4 wire format is
 unchanged, and no processing samples are collected without a stats file.
+
+
+### Tunnel throughput statistics
+
+With `--stats-file`, the following rates are exported in bits per second:
+
+```text
+tun_rx_bps_5s / tun_rx_bps_1m
+tun_tx_bps_5s / tun_tx_bps_1m
+udp_rx_bps_5s / udp_rx_bps_1m
+udp_tx_bps_5s / udp_tx_bps_1m
+```
+
+Directions match the existing byte counters: `tun_rx` reads local IP packets
+for transmission through the tunnel; `tun_tx` writes received IP packets to TUN.
+`udp_tx` sends to the peer and `udp_rx` receives from it. TUN counts include inner
+IP headers; UDP counts include tuntom framing and control traffic but exclude
+outer UDP/IP and link-layer headers. These are interface byte rates, not confirmed
+application goodput; packets subsequently dropped can be included.
+
+Counters are observed each event-loop iteration, using its existing monotonic
+clock reading. Deltas are assigned to the observation's fixed five-second bucket.
+A delayed observation belongs to its current bucket; historical arrival times
+cannot be recovered from counters. `_5s` reports the last completed bucket
+(bytes times 8 divided by 5); `_1m` averages the last twelve completed buckets.
+The current partial bucket is excluded. Idle buckets count as zero. During startup,
+only available completed buckets are averaged, with zero rates before the first
+bucket completes. `throughput_bucket_seconds=5` and `throughput_window_buckets`
+(0–12) expose the interval and available history. All history resets on restart.

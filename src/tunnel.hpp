@@ -7,6 +7,7 @@
 #include "ip.hpp"
 #include "fragmentation.hpp"
 #include "processing_stats.hpp"
+#include "throughput_stats.hpp"
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
@@ -81,6 +82,10 @@ public:
     void run() {
         const auto started_now =
             std::chrono::steady_clock::now();
+
+        throughput_.update(started_now, {
+            stats_.tun_rx_bytes, stats_.tun_tx_bytes,
+            stats_.udp_rx_bytes, stats_.udp_tx_bytes});
 
         if (not server_mode_) {
             send_handshake(protocol_v4_.begin(started_now));
@@ -177,6 +182,11 @@ public:
             }
 
             const auto now = std::chrono::steady_clock::now();
+            if (not options_.stats_file.empty()) {
+                throughput_.update(now, {
+                    stats_.tun_rx_bytes, stats_.tun_tx_bytes,
+                    stats_.udp_rx_bytes, stats_.udp_tx_bytes});
+            }
             send_handshake(protocol_v4_.tick(now));
 
             if (
@@ -1266,6 +1276,7 @@ private:
                 << "pmtud_probes_lost=" << stats_.pmtud_probes_lost << "\n";
 
             output << "processing_sample_interval=" << ProcessingStats::sample_interval << "\n";
+            throughput_.write(output);
             tx_processing_.write(output, "tx_processing");
             rx_processing_.write(output, "rx_processing");
             reassembly_span_.write(output, "reassembly_span");
@@ -1322,6 +1333,7 @@ private:
     std::vector<std::uint8_t> rx_mac_buffer_;
     std::vector<std::uint8_t> reassembled_packet_;
 
+    ThroughputStats throughput_;
     ProcessingStats tx_processing_;
     ProcessingStats rx_processing_;
     ProcessingStats reassembly_span_;
