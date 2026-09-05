@@ -18,10 +18,10 @@
 --   16..31 auth_tag         16 bytes
 --   32..   payload
 --
--- Protocol v3:
+-- Protocol v3/v4 (same layout; v4 uses directional keys):
 --   0..3   magic            "UTUN"
 --   4..5   tunnel_id        uint16 BE
---   6      version          3
+--   6      version          3 or 4
 --   7      type
 --   8..15  sequence         uint64 BE
 --   16..23 message_id       uint64 BE
@@ -56,6 +56,9 @@
 -- On later passes/clicks, cached completion metadata and reassembled bytes
 -- are reused. proto.init() clears all state when the capture is reloaded.
 --
+-- V4 handshake: INIT(8), RESPONSE(9), CONFIRM(10), CONFIRM_ACK(11).
+-- SEQ splits into a 16-bit session hint and a 48-bit counter.
+-- Only suite 0 with absent DH is currently implemented; payload is plaintext.
 -- This dissector does not verify the Ascon authentication tag.
 --
 -- By default it registers for UDP ports 40001..40255, matching:
@@ -73,6 +76,10 @@ local packet_type_names = {
     [5] = "PONG",
     [6] = "MTU_PROBE",
     [7] = "MTU_REPLY",
+    [8] = "INIT",
+    [9] = "RESPONSE",
+    [10] = "CONFIRM",
+    [11] = "CONFIRM_ACK",
 }
 
 local f_magic = ProtoField.string(
@@ -196,7 +203,19 @@ local f_payload = ProtoField.bytes(
     "Payload"
 )
 
+local f_session_hint = ProtoField.uint16("tuntom.session_hint", "Session Hint", base.HEX)
+local f_counter = ProtoField.uint64("tuntom.counter", "Session Packet Counter", base.DEC)
+local f_nonce = ProtoField.bytes("tuntom.nonce", "Handshake Nonce")
+local f_init_hash = ProtoField.bytes("tuntom.init_hash", "INIT Binding (keyed AMAC commitment)")
+local f_suite = ProtoField.uint16("tuntom.suite", "Suite", base.DEC, {[0] = "AMAC, no encryption"})
+local f_dh_length = ProtoField.uint16("tuntom.dh_length", "DH Public Key Length", base.DEC)
+local f_dh = ProtoField.bytes("tuntom.dh", "DH Public Key")
+local e_handshake = ProtoExpert.new("tuntom.handshake_error", "Invalid/unsupported handshake",
+    expert.group.MALFORMED, expert.severity.ERROR)
+tuntom.experts = {e_handshake}
+
 tuntom.fields = {
+    f_session_hint, f_counter, f_nonce, f_init_hash, f_suite, f_dh_length, f_dh,
     f_magic,
     f_tunnel_id,
     f_version,
@@ -300,13 +319,17 @@ end
 local function message_key(
     pinfo,
     tunnel_id,
-    message_id
+    message_id,
+    version,
+    hint
 )
+    -- Hints are not unique/authenticated here: collisions cannot be resolved
+    -- without session keys. This is best-effort capture reassembly only.
     return string.format(
-        "%s|tun=%u|msg=%s",
+        "%s|tun=%u|msg=%s|v=%u|hint=%u",
         direction_key(pinfo),
         tunnel_id,
-        tostring(message_id)
+        tostring(message_id), version, hint
     )
 end
 
@@ -715,7 +738,7 @@ function tuntom.dissector(buffer, pinfo, tree)
         header_size = 8
     elseif version == 2 then
         header_size = 32
-    elseif version == 3 then
+    elseif (version == 3 or version == 4) then
         header_size = 48
     else
         return 0
@@ -744,7 +767,7 @@ function tuntom.dissector(buffer, pinfo, tree)
         type_name
     )
 
-    if version == 3 and
+    if (version == 3 or version == 4) and
        packet_type == 3 then
 
         local fragment_offset =
@@ -797,7 +820,7 @@ function tuntom.dissector(buffer, pinfo, tree)
         end
     end
 
-    if version == 3 and
+    if (version == 3 or version == 4) and
        (packet_type == 4 or packet_type == 5) then
 
         local probe_id =
@@ -806,7 +829,7 @@ function tuntom.dissector(buffer, pinfo, tree)
         info = info ..
             ", probe=" ..
             tostring(probe_id)
-    elseif version == 3 and
+    elseif (version == 3 or version == 4) and
            (packet_type == 6 or packet_type == 7) then
 
         local probe_id =
@@ -866,7 +889,7 @@ function tuntom.dissector(buffer, pinfo, tree)
             f_auth_tag,
             buffer(16, 16)
         )
-    elseif version == 3 then
+    elseif (version == 3 or version == 4) then
         subtree:add(
             f_sequence,
             buffer(8, 8)
@@ -920,6 +943,40 @@ function tuntom.dissector(buffer, pinfo, tree)
         )
     end
 
+    if version == 4 then
+        subtree:add(f_session_hint, buffer(8, 2))
+        subtree:add(f_counter, buffer(10, 6))
+        if packet_type >= 8 and packet_type <= 11 then
+            local bad = buffer(16, 8):uint64() == UInt64(0, 0) or
+                buffer(24, 4):uint() ~= 0 or buffer(28, 4):uint() ~= 0
+            if packet_type == 8 or packet_type == 9 then
+                local nonce_offset = packet_type == 8 and 48 or 80
+                local fields_end = nonce_offset + 36
+                if buffer:len() < fields_end then
+                    subtree:add_proto_expert_info(e_handshake, "Truncated handshake payload")
+                    return buffer:len()
+                end
+                if packet_type == 9 then subtree:add(f_init_hash, buffer(48, 32)) end
+                subtree:add(f_nonce, buffer(nonce_offset, 32))
+                subtree:add(f_suite, buffer(nonce_offset + 32, 2))
+                subtree:add(f_dh_length, buffer(nonce_offset + 34, 2))
+                local dh_length = buffer(nonce_offset + 34, 2):uint()
+                local remaining = buffer:len() - fields_end
+                if remaining > 0 then subtree:add(f_dh, buffer(fields_end, remaining)) end
+                bad = bad or buffer(8, 8):uint64() ~= UInt64(0, 0) or
+                    buffer(nonce_offset + 32, 2):uint() ~= 0 or
+                    dh_length ~= 0 or remaining ~= dh_length
+            else
+                bad = bad or payload_length ~= 0 or buffer(10, 6):uint64() ~= UInt64(0, 0)
+            end
+            if bad then
+                subtree:add_proto_expert_info(e_handshake,
+                    "Expected suite 0, absent DH, zero control metadata and exact message length")
+            end
+            return buffer:len()
+        end
+    end
+
     add_reassembly_links(
         subtree,
         pinfo
@@ -944,7 +1001,7 @@ function tuntom.dissector(buffer, pinfo, tree)
     --
     -- V1/V2 DATA is always a complete inner IP packet.
     --
-    if version ~= 3 then
+    if (version ~= 3 and version ~= 4) then
         local payload_tree =
             subtree:add(
                 tuntom,
@@ -965,7 +1022,7 @@ function tuntom.dissector(buffer, pinfo, tree)
         return buffer:len()
     end
 
-    if version == 3 and packet_type == 6 then
+    if (version == 3 or version == 4) and packet_type == 6 then
         if payload_length > 0 then
             local padding =
                 buffer(
@@ -982,7 +1039,7 @@ function tuntom.dissector(buffer, pinfo, tree)
         return buffer:len()
     end
 
-    if version == 3 and packet_type == 7 then
+    if (version == 3 or version == 4) and packet_type == 7 then
         return buffer:len()
     end
 
@@ -1047,7 +1104,9 @@ function tuntom.dissector(buffer, pinfo, tree)
         message_key(
             pinfo,
             tunnel_id,
-            message_id
+            message_id,
+            version,
+            version == 4 and buffer(8, 2):uint() or 0
         )
 
     local complete_raw = nil

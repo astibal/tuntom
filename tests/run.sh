@@ -5,9 +5,15 @@ tests_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 build_dir="$(mktemp -d "${TMPDIR:-/tmp}/tuntom-tests.XXXXXXXX")"
 trap 'rm -rf -- "$build_dir"' EXIT
 
-for name in replay_test mac_test; do
+for name in replay_test mac_test session_test; do
     echo "Building ${name}"
     "${CXX:-g++}" -std=c++17 -O2 -Wall -Wextra -Wconversion -pedantic \
         "${tests_dir}/${name}.cpp" -o "${build_dir}/${name}"
     "${build_dir}/${name}"
 done
+
+if command -v tshark >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+    python3 "${tests_dir}/dissector_test.py"
+else
+    echo "SKIP: Wireshark dissector tests require tshark and python3"
+fi

@@ -11,6 +11,7 @@
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
+#include <sys/random.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -35,11 +36,11 @@ namespace {
 constexpr std::uint32_t protocol_magic = 0x5554554e; // "UTUN"
 constexpr std::uint8_t protocol_version_v1 = 1;
 constexpr std::uint8_t protocol_version_v2 = 2;
-constexpr std::uint8_t protocol_version_v3 = 3;
+constexpr std::uint8_t protocol_version_v4 = 4;
 
 constexpr std::size_t protocol_header_v1_size = 8;
 constexpr std::size_t protocol_header_v2_size = 32;
-constexpr std::size_t protocol_header_v3_size = 48;
+constexpr std::size_t protocol_header_v4_size = 48;
 
 constexpr std::size_t udp_header_size = 8;
 constexpr std::size_t ipv4_header_min_size = 20;
@@ -236,6 +237,10 @@ enum class PacketType : std::uint8_t {
     pong = 5,
     mtu_probe = 6,
     mtu_reply = 7,
+    init = 8,
+    response = 9,
+    confirm = 10,
+    confirm_ack = 11,
 };
 
 enum class Direction {
@@ -246,10 +251,10 @@ enum class Direction {
 struct Packet {
     PacketType type = PacketType::data;
     std::uint16_t tunnel_id = 0;
-    std::uint8_t protocol_version = protocol_version_v3;
+    std::uint8_t protocol_version = protocol_version_v4;
     std::uint64_t sequence = 0;
 
-    // V3 DATA uses fragment metadata. PING/PONG use message_id as probe_id.
+    // V4 DATA uses fragment metadata. PING/PONG use message_id as probe_id.
     std::uint64_t message_id = 0;
     std::uint32_t fragment_offset = 0;
     std::uint32_t original_length = 0;
@@ -456,6 +461,21 @@ key_type derive_node_key(const key_type& master_key, std::uint16_t tunnel_id) {
     return node_key;
 }
 
+// Distinct domains bind the key to both the wire version and traffic direction.
+key_type derive_direction_key(
+    const key_type& master_key,
+    std::uint16_t tunnel_id,
+    bool client_to_server) {
+    static constexpr char c2s[] = "TUNTOM-V4-CLIENT-TO-SERVER";
+    static constexpr char s2c[] = "TUNTOM-V4-SERVER-TO-CLIENT";
+    const char* label = client_to_server ? c2s : s2c;
+    key_type key {};
+    mac(master_key, tunnel_id,
+        reinterpret_cast<const std::uint8_t*>(label),
+        std::strlen(label), key);
+    return key;
+}
+
 bool constant_time_equal(const std::uint8_t* a, const std::uint8_t* b, std::size_t size) {
     std::uint8_t difference = 0;
     for (std::size_t i = 0; i < size; ++i) {
@@ -560,7 +580,7 @@ public:
             return false;
         }
 
-        // V2/V3 sequences are timestamps, not consecutive packet counters.
+        // V2/V4 sequences are timestamps, not consecutive packet counters.
         // Keep the highest accepted values in descending order so the
         // window is bounded by received packets rather than nanoseconds.
         const auto end = sequences_.begin() +
@@ -801,17 +821,23 @@ private:
     ascon::key_type node_key_ {};
 };
 
-class ProtocolV3 final : public Protocol {
+class ProtocolV4 final : public Protocol {
 public:
-    ProtocolV3(
+    ProtocolV4(
         std::uint16_t tunnel_id,
-        const ascon::key_type& master_key)
+        const ascon::key_type& master_key,
+        bool server_mode)
         : tunnel_id_(tunnel_id),
-          node_key_(ascon::derive_node_key(master_key, tunnel_id)) {
+          tx_key_(ascon::derive_direction_key(master_key, tunnel_id, not server_mode)),
+          rx_key_(ascon::derive_direction_key(master_key, tunnel_id, server_mode)) {
     }
 
+    ProtocolV4(std::uint16_t tunnel_id, const ascon::key_type& tx,
+               const ascon::key_type& rx)
+        : tunnel_id_(tunnel_id), tx_key_(tx), rx_key_(rx) {}
+
     std::uint8_t version() const override {
-        return protocol_version_v3;
+        return protocol_version_v4;
     }
 
     std::vector<std::uint8_t> encode(const Packet& packet) const override {
@@ -827,12 +853,12 @@ public:
         std::vector<std::uint8_t>& mac_input) const {
 
         output.resize(
-            protocol_header_v3_size + packet.payload.size());
+            protocol_header_v4_size + packet.payload.size());
 
         // Bytes 0..31 are authenticated metadata.
         store_be32(output.data() + 0, protocol_magic);
         store_be16(output.data() + 4, packet.tunnel_id);
-        output[6] = protocol_version_v3;
+        output[6] = protocol_version_v4;
         output[7] = static_cast<std::uint8_t>(packet.type);
         store_be64(output.data() + 8, packet.sequence);
         store_be64(output.data() + 16, packet.message_id);
@@ -841,13 +867,13 @@ public:
 
         if (not packet.payload.empty()) {
             std::memcpy(
-                output.data() + protocol_header_v3_size,
+                output.data() + protocol_header_v4_size,
                 packet.payload.data(),
                 packet.payload.size());
         }
 
         // The tag itself occupies bytes 32..47 and is not part of the MAC
-        // input. The complete V3 metadata (0..31) plus payload is covered.
+        // input. The complete V4 metadata (0..31) plus payload is covered.
         mac_input.resize(32 + packet.payload.size());
         std::memcpy(mac_input.data(), output.data(), 32);
 
@@ -860,7 +886,7 @@ public:
 
         ascon::tag_type tag {};
         ascon::mac(
-            node_key_,
+            tx_key_,
             tunnel_id_,
             mac_input.data(),
             mac_input.size(),
@@ -870,7 +896,7 @@ public:
 
         if (log_enabled(LogLevel::debug)) {
             std::cerr
-                << "ENCODE v3 seq=" << packet.sequence
+                << "ENCODE v4 seq=" << packet.sequence
                 << " msg=" << packet.message_id
                 << " offset=" << packet.fragment_offset
                 << " original=" << packet.original_length
@@ -899,13 +925,13 @@ public:
         Packet& packet,
         std::vector<std::uint8_t>& mac_input) const {
 
-        if (size < protocol_header_v3_size) {
+        if (size < protocol_header_v4_size) {
             return false;
         }
 
         if (
             load_be32(data + 0) != protocol_magic or
-            data[6] != protocol_version_v3) {
+            data[6] != protocol_version_v4) {
 
             return false;
         }
@@ -923,26 +949,28 @@ public:
             type != PacketType::ping and
             type != PacketType::pong and
             type != PacketType::mtu_probe and
-            type != PacketType::mtu_reply) {
+            type != PacketType::mtu_reply and
+            type != PacketType::init and type != PacketType::response and
+            type != PacketType::confirm and type != PacketType::confirm_ack) {
 
             return false;
         }
 
         mac_input.resize(
-            32 + size - protocol_header_v3_size);
+            32 + size - protocol_header_v4_size);
 
         std::memcpy(mac_input.data(), data, 32);
 
-        if (size > protocol_header_v3_size) {
+        if (size > protocol_header_v4_size) {
             std::memcpy(
                 mac_input.data() + 32,
-                data + protocol_header_v3_size,
-                size - protocol_header_v3_size);
+                data + protocol_header_v4_size,
+                size - protocol_header_v4_size);
         }
 
         ascon::tag_type expected_tag {};
         ascon::mac(
-            node_key_,
+            rx_key_,
             tunnel_id_,
             mac_input.data(),
             mac_input.size(),
@@ -959,14 +987,26 @@ public:
 
         packet.type = type;
         packet.tunnel_id = tunnel_id;
-        packet.protocol_version = protocol_version_v3;
+        packet.protocol_version = protocol_version_v4;
         packet.sequence = load_be64(data + 8);
         packet.message_id = load_be64(data + 16);
         packet.fragment_offset = load_be32(data + 24);
         packet.original_length = load_be32(data + 28);
-        packet.payload.assign(data + protocol_header_v3_size, data + size);
+        packet.payload.assign(data + protocol_header_v4_size, data + size);
 
-        if (packet.type == PacketType::data) {
+        if (type == PacketType::init or type == PacketType::response) {
+            const std::size_t expected = type == PacketType::init ? 36 : 68;
+            if (packet.sequence != 0 or packet.message_id == 0 or
+                packet.fragment_offset != 0 or packet.original_length != 0 or
+                packet.payload.size() != expected) return false;
+            // Suite 0 and an absent DH share are the only supported mode.
+            if (load_be16(packet.payload.data() + expected - 4) != 0 or
+                load_be16(packet.payload.data() + expected - 2) != 0) return false;
+        } else if (type == PacketType::confirm or type == PacketType::confirm_ack) {
+            if (packet.message_id == 0 or packet.fragment_offset != 0 or
+                packet.original_length != 0 or not packet.payload.empty() or
+                (packet.sequence & 0x0000ffffffffffffULL) != 0) return false;
+        } else if (packet.type == PacketType::data) {
             if (
                 packet.message_id == 0 or
                 packet.original_length == 0 or
@@ -1029,7 +1069,8 @@ public:
 
 private:
     std::uint16_t tunnel_id_ = 0;
-    ascon::key_type node_key_ {};
+    ascon::key_type tx_key_ {};
+    ascon::key_type rx_key_ {};
 };
 
 class TunDevice {
@@ -1277,6 +1318,12 @@ public:
         }
 
         return changed;
+    }
+
+    ssize_t send_to(const std::uint8_t* buffer, std::size_t size,
+                    const sockaddr_storage& destination, socklen_t length) {
+        return ::sendto(fd_, buffer, size, 0,
+            reinterpret_cast<const sockaddr*>(&destination), length);
     }
 
     ssize_t send(const std::uint8_t* buffer, std::size_t size) {
@@ -1535,6 +1582,306 @@ private:
     std::size_t total_bytes_ = 0;
 };
 
+// V4 session state is independent of sockets/TUN; callers supply a monotonic
+// clock so timeout and reordering behavior can be tested without sleeping.
+class SessionProtocol {
+public:
+    using Clock = std::chrono::steady_clock;
+    using Time = Clock::time_point;
+    static constexpr std::uint64_t counter_mask = 0x0000ffffffffffffULL;
+    static constexpr auto retry_interval = std::chrono::seconds(1);
+    static constexpr auto pending_lifetime = std::chrono::seconds(10);
+    static constexpr auto old_lifetime = std::chrono::seconds(3);
+    static constexpr auto idle_restart = std::chrono::seconds(20);
+
+    struct Session {
+        ProtocolV4 codec;
+        ReplayWindow replay;
+        Reassembler reassembly;
+        std::uint16_t hint;
+        std::uint64_t next_counter = 1;
+        std::uint64_t exchange;
+        std::vector<std::uint8_t> init, response;
+        Session(std::uint16_t id, const ascon::key_type& tx,
+                const ascon::key_type& rx, std::uint16_t h,
+                std::uint64_t ex, std::size_t mtu)
+            : codec(id, tx, rx), reassembly(mtu), hint(h), exchange(ex) {}
+    };
+    struct Received {
+        bool data = false;
+        bool control = false;
+        bool replay_drop = false;
+        bool activated = false;
+        bool update_peer = false;
+        Session* session = nullptr;
+        std::vector<std::uint8_t> reply;
+    };
+
+    SessionProtocol(std::uint16_t id, const ascon::key_type& master,
+                    bool server, std::size_t mtu = default_tun_mtu)
+        : id_(id), master_(master), server_(server), mtu_(mtu),
+          handshake_(id, master, server) {}
+
+    bool ready() const {
+        return active_ and active_->next_counter <= counter_mask;
+    }
+
+    // Expansion is the existing AMAC with explicit, NUL-delimited domains.
+    // init_hash is a 32-byte keyed commitment (two independent AMAC domains),
+    // not an unkeyed hash or a standardized Ascon hash profile.
+    static std::vector<std::uint8_t> commitment(
+        const ascon::key_type& master, std::uint16_t id,
+        const std::vector<std::uint8_t>& init) {
+        auto a = expand(master, id, "V4-INIT-BIND-0", init);
+        auto b = expand(master, id, "V4-INIT-BIND-1", init);
+        std::vector<std::uint8_t> result(a.begin(), a.end());
+        result.insert(result.end(), b.begin(), b.end());
+        return result;
+    }
+
+    std::vector<std::uint8_t> begin(Time now) {
+        if (server_) return {};
+        previous_.reset();
+        pending_.reset();
+        waiting_ack_ = false;
+        Packet init = control(PacketType::init, random_id());
+        init.payload.resize(36);
+        random_bytes(init.payload.data(), 32);
+        client_init_ = handshake_.encode(init);
+        client_exchange_ = init.message_id;
+        flight_ = client_init_;
+        flight_started_ = last_retry_ = now;
+        return flight_;
+    }
+
+    std::vector<std::uint8_t> tick(Time now) {
+        if (previous_ and now >= previous_until_) previous_.reset();
+        if (pending_ and now >= pending_until_) pending_.reset();
+        if (server_) return {};
+        if (not flight_.empty()) {
+            if (now - flight_started_ >= pending_lifetime) {
+                // An unconfirmed candidate must not remain usable forever.
+                if (waiting_ack_) active_ = std::move(previous_);
+                return begin(now);
+            }
+            if (now - last_retry_ >= retry_interval) {
+                last_retry_ = now;
+                return flight_;
+            }
+            return {};
+        }
+        if (not ready() or now - last_received_ >= idle_restart) return begin(now);
+        return {};
+    }
+
+    bool encode_into(Packet& packet, std::vector<std::uint8_t>& output,
+                     std::vector<std::uint8_t>& scratch) {
+        output.clear();
+        if (not ready()) return false;
+        packet.sequence = (std::uint64_t(active_->hint) << 48) |
+                          active_->next_counter++;
+        active_->codec.encode_into(packet, output, scratch);
+        return true;
+    }
+
+    std::vector<std::uint8_t> encode(Packet& packet) {
+        std::vector<std::uint8_t> output, scratch;
+        encode_into(packet, output, scratch);
+        return output;
+    }
+
+    Received receive(const std::uint8_t* wire, std::size_t size, Packet& packet,
+                     std::vector<std::uint8_t>& scratch, Time now) {
+        Received result;
+        if (previous_ and now >= previous_until_) previous_.reset();
+        if (pending_ and now >= pending_until_) pending_.reset();
+        if (size < protocol_header_v4_size) return result;
+        const auto type = static_cast<PacketType>(wire[7]);
+        if (not server_ and not flight_.empty() and
+            now - flight_started_ >= pending_lifetime and
+            (type == PacketType::response or type == PacketType::confirm_ack)) return result;
+        if (type == PacketType::init or type == PacketType::response) {
+            if ((server_ and type != PacketType::init) or
+                (not server_ and type != PacketType::response)) return result;
+            if (not handshake_.decode_with_scratch(wire, size, packet, scratch)) return result;
+            std::vector<std::uint8_t> encoded(wire, wire + size);
+            if (server_) {
+                result.control = true;
+                if (active_ and active_->init == encoded) {
+                    result.reply = active_->response;
+                    return result;
+                }
+                if (pending_) {
+                    // A duplicate doesn't extend the fixed deadline; another
+                    // INIT cannot evict the one pending authenticated exchange.
+                    if (pending_->init == encoded) result.reply = pending_->response;
+                    return result;
+                }
+                // Don't let a captured INIT repeatedly monopolize the pending
+                // slot after its deadline. Bounded recent history is per boot.
+                if (std::find(recent_inits_.begin(), recent_inits_.end(), encoded) !=
+                    recent_inits_.end()) return result;
+                if (recent_inits_.size() == 64) recent_inits_.erase(recent_inits_.begin());
+                recent_inits_.push_back(encoded);
+                Packet response = control(PacketType::response, packet.message_id);
+                response.payload = commitment(master_, id_, encoded);
+                response.payload.resize(68);
+                random_bytes(response.payload.data() + 32, 32);
+                auto response_wire = handshake_.encode(response);
+                previous_.reset(); // At most two candidate session keys.
+                pending_ = derive(encoded, response_wire, packet.message_id);
+                pending_until_ = now + pending_lifetime;
+                result.reply = std::move(response_wire);
+                return result;
+            }
+            if (client_init_.empty() or packet.message_id != client_exchange_) return result;
+            const auto binding = commitment(master_, id_, client_init_);
+            if (not ascon::constant_time_equal(binding.data(), packet.payload.data(), 32)) return result;
+            result.control = true;
+            if (waiting_ack_) {
+                // Never reset counters/replay state on a repeated response.
+                if (active_ and active_->response == encoded) result.reply = flight_;
+                return result;
+            }
+            auto candidate = derive(client_init_, encoded, client_exchange_);
+            previous_ = std::move(active_);
+            previous_until_ = now + old_lifetime;
+            active_ = std::move(candidate);
+            waiting_ack_ = true;
+            flight_ = confirmation(*active_, PacketType::confirm);
+            flight_started_ = last_retry_ = now;
+            result.reply = flight_;
+            return result;
+        }
+
+        const auto hint = static_cast<std::uint16_t>(load_be64(wire + 8) >> 48);
+        Session* matched = nullptr;
+        for (Session* candidate : {active_.get(), pending_.get(), previous_.get()}) {
+            if (candidate and candidate->hint == hint and
+                candidate->codec.decode_with_scratch(wire, size, packet, scratch)) {
+                matched = candidate;
+                break;
+            }
+        }
+        if (not matched) return result;
+        if (type == PacketType::confirm) {
+            if (not server_ or packet.message_id != matched->exchange) return result;
+            result.control = true;
+            if (matched == pending_.get()) {
+                previous_ = std::move(active_);
+                previous_until_ = now + old_lifetime;
+                active_ = std::move(pending_);
+                result.activated = result.update_peer = true;
+            }
+            if (matched == active_.get()) {
+                result.reply = confirmation(*matched, PacketType::confirm_ack);
+            }
+            return result;
+        }
+        if (type == PacketType::confirm_ack) {
+            if (server_ or matched != active_.get() or
+                packet.message_id != matched->exchange) return result;
+            result.control = true;
+            if (not waiting_ack_) return result;
+            waiting_ack_ = false;
+            flight_.clear();
+            client_init_.clear();
+            last_received_ = now;
+            result.activated = true;
+            return result;
+        }
+        // No DATA before server-side CONFIRM. Counter zero belongs exclusively
+        // to CONFIRM/ACK and is never inserted into the DATA replay window.
+        if (matched == pending_.get()) return result;
+        if (not matched->replay.accept(packet.sequence & counter_mask)) {
+            result.replay_drop = true;
+            return result;
+        }
+        if (matched == active_.get()) {
+            last_received_ = now;
+            result.update_peer = server_;
+        }
+        result.data = true;
+        result.session = matched;
+        return result;
+    }
+
+    void cleanup() {
+        if (active_) active_->reassembly.cleanup_expired();
+        if (previous_) previous_->reassembly.cleanup_expired();
+    }
+
+private:
+    static ascon::key_type expand(const ascon::key_type& master, std::uint16_t id,
+                                  const char* label,
+                                  const std::vector<std::uint8_t>& transcript) {
+        std::vector<std::uint8_t> input(label, label + std::strlen(label) + 1);
+        input.insert(input.end(), transcript.begin(), transcript.end());
+        ascon::key_type output {};
+        ascon::mac(master, id, input.data(), input.size(), output);
+        return output;
+    }
+
+    std::unique_ptr<Session> derive(const std::vector<std::uint8_t>& init,
+                                    const std::vector<std::uint8_t>& response,
+                                    std::uint64_t exchange) const {
+        auto transcript = init;
+        transcript.insert(transcript.end(), response.begin(), response.end());
+        const auto c2s = expand(master_, id_, "V4-SESSION-C2S", transcript);
+        const auto s2c = expand(master_, id_, "V4-SESSION-S2C", transcript);
+        const auto hint = expand(master_, id_, "V4-SESSION-HINT", transcript);
+        auto result = std::make_unique<Session>(id_, server_ ? s2c : c2s,
+            server_ ? c2s : s2c, load_be16(hint.data()), exchange, mtu_);
+        result->init = init;
+        result->response = response;
+        return result;
+    }
+
+    Packet control(PacketType type, std::uint64_t exchange) const {
+        Packet packet;
+        packet.type = type;
+        packet.tunnel_id = id_;
+        packet.message_id = exchange;
+        return packet;
+    }
+    std::vector<std::uint8_t> confirmation(Session& session, PacketType type) const {
+        auto packet = control(type, session.exchange);
+        packet.sequence = std::uint64_t(session.hint) << 48;
+        return session.codec.encode(packet);
+    }
+    static void random_bytes(std::uint8_t* output, std::size_t size) {
+        while (size != 0) {
+            const auto n = ::getrandom(output, size, 0);
+            if (n < 0 and errno == EINTR) continue;
+            if (n <= 0) throw std::runtime_error("getrandom failed");
+            output += n;
+            size -= static_cast<std::size_t>(n);
+        }
+    }
+    static std::uint64_t random_id() {
+        std::array<std::uint8_t, 8> bytes {};
+        std::uint64_t value = 0;
+        while (value == 0) {
+            random_bytes(bytes.data(), bytes.size());
+            value = load_be64(bytes.data());
+        }
+        return value;
+    }
+
+    std::uint16_t id_;
+    ascon::key_type master_;
+    bool server_;
+    std::size_t mtu_;
+    ProtocolV4 handshake_;
+    std::unique_ptr<Session> active_, previous_, pending_;
+    Time previous_until_ {}, pending_until_ {}, last_received_ {};
+    Time flight_started_ {}, last_retry_ {};
+    bool waiting_ack_ = false;
+    std::uint64_t client_exchange_ = 0;
+    std::vector<std::uint8_t> client_init_, flight_;
+    std::vector<std::vector<std::uint8_t>> recent_inits_;
+};
+
 std::uint16_t ipv4_header_checksum(
     const std::uint8_t* data,
     std::size_t size) {
@@ -1690,8 +2037,7 @@ public:
           tun_(interface_name, options.tun_mtu),
           master_key_(parse_master_key()),
           protocol_v2_(tunnel_id, master_key_),
-          protocol_v3_(tunnel_id, master_key_),
-          reassembler_(options.tun_mtu) {
+          protocol_v4_(tunnel_id, master_key_, server_mode, options.tun_mtu) {
 
         const std::uint16_t port =
             static_cast<std::uint16_t>(40000 + tunnel_id_);
@@ -1736,16 +2082,12 @@ public:
             std::chrono::steady_clock::now();
 
         if (not server_mode_) {
-            send_control(PacketType::hello);
-            send_rtt_probe();
+            send_handshake(protocol_v4_.begin(started_now));
             next_rtt_probe_ =
                 started_now +
                 std::chrono::seconds(rtt_probe_interval_seconds);
             rtt_probe_schedule_active_ = true;
 
-            if (options_.pmtud_auto) {
-                start_pmtud();
-            }
         }
 
         auto last_keepalive = started_now;
@@ -1830,6 +2172,7 @@ public:
             }
 
             const auto now = std::chrono::steady_clock::now();
+            send_handshake(protocol_v4_.tick(now));
 
             if (
                 not server_mode_ and
@@ -1860,7 +2203,7 @@ public:
                 now - last_reassembly_cleanup >=
                 std::chrono::seconds(1)) {
 
-                reassembler_.cleanup_expired();
+                protocol_v4_.cleanup();
                 last_reassembly_cleanup = now;
             }
 
@@ -1882,6 +2225,27 @@ protected:
     }
 
 private:
+    void send_handshake(const std::vector<std::uint8_t>& wire,
+                        const sockaddr_storage* source = nullptr,
+                        socklen_t source_length = 0) {
+        if (wire.empty()) return;
+        const auto n = source ? udp_.send_to(wire.data(), wire.size(), *source, source_length)
+                              : udp_.send(wire.data(), wire.size());
+        if (n < 0) { ++stats_.udp_send_errors; return; }
+        ++stats_.udp_tx_packets;
+        stats_.udp_tx_bytes += static_cast<std::uint64_t>(n);
+    }
+
+    void session_activated() {
+        log_info("V4 session confirmed (AMAC, plaintext payload)");
+        rtt_probes_.clear();
+        send_rtt_probe();
+        next_rtt_probe_ = std::chrono::steady_clock::now() +
+            std::chrono::seconds(rtt_probe_interval_seconds);
+        rtt_probe_schedule_active_ = true;
+        if (options_.pmtud_auto) restart_pmtud("session confirmed");
+    }
+
     void reserve_hot_path_buffers() {
         const std::size_t maximum_payload =
             maximum_fragment_payload();
@@ -1895,7 +2259,7 @@ private:
         rx_logical_packet_.payload.reserve(options_.tun_mtu);
 
         tx_encoded_buffer_.reserve(
-            protocol_header_v3_size + maximum_payload);
+            protocol_header_v4_size + maximum_payload);
         tx_mac_buffer_.reserve(32 + maximum_payload);
         rx_mac_buffer_.reserve(32 + options_.tun_mtu);
         reassembled_packet_.reserve(options_.tun_mtu);
@@ -1905,11 +2269,11 @@ private:
         const std::size_t overhead =
             udp_.outer_ip_header_size() +
             udp_header_size +
-            protocol_header_v3_size;
+            protocol_header_v4_size;
 
         if (active_transport_mtu_ <= overhead) {
             throw std::runtime_error(
-                "Transport MTU is too small for tuntom V3");
+                "Transport MTU is too small for tuntom V4");
         }
 
         return active_transport_mtu_ - overhead;
@@ -1934,10 +2298,11 @@ private:
         const std::uint8_t* data,
         std::size_t size) {
 
+        if (not protocol_v4_.ready()) return;
         Packet& logical_packet = tx_logical_packet_;
         logical_packet.type = PacketType::data;
         logical_packet.tunnel_id = tunnel_id_;
-        logical_packet.protocol_version = protocol_version_v3;
+        logical_packet.protocol_version = protocol_version_v4;
         logical_packet.sequence = 0;
         logical_packet.message_id = 0;
         logical_packet.fragment_offset = 0;
@@ -1979,8 +2344,7 @@ private:
             Packet& fragment = tx_fragment_packet_;
             fragment.type = PacketType::data;
             fragment.tunnel_id = tunnel_id_;
-            fragment.protocol_version = protocol_version_v3;
-            fragment.sequence = sequence_generator_.next();
+            fragment.protocol_version = protocol_version_v4;
             fragment.message_id = message_id;
             fragment.fragment_offset =
                 static_cast<std::uint32_t>(offset);
@@ -1995,10 +2359,8 @@ private:
                     static_cast<std::ptrdiff_t>(
                         offset + fragment_size));
 
-            protocol_v3_.encode_into(
-                fragment,
-                tx_encoded_buffer_,
-                tx_mac_buffer_);
+            if (not protocol_v4_.encode_into(
+                fragment, tx_encoded_buffer_, tx_mac_buffer_)) return;
 
             const ssize_t sent =
                 udp_.send(
@@ -2061,14 +2423,27 @@ private:
             size > 6 ? data[6] : 0;
 
         bool decoded = false;
+        SessionProtocol::Session* receive_session = nullptr;
+        bool v4_update_peer = false;
+        bool v4_activated = false;
 
-        if (version == protocol_version_v3) {
-            decoded =
-                protocol_v3_.decode_with_scratch(
-                    data,
-                    size,
-                    packet,
-                    rx_mac_buffer_);
+        if (version == protocol_version_v4) {
+            auto result = protocol_v4_.receive(data, size, packet, rx_mac_buffer_,
+                                               std::chrono::steady_clock::now());
+            // Replies to unconfirmed INIT go directly to its source, without
+            // changing the active return path. Clients retain their configured peer.
+            send_handshake(result.reply, server_mode_ ? &source : nullptr, source_length);
+            v4_update_peer = result.update_peer;
+            v4_activated = result.activated;
+            if (v4_activated and v4_update_peer) udp_.set_peer(source, source_length);
+            if (v4_activated) session_activated();
+            if (not result.data) {
+                if (result.replay_drop) ++stats_.drops_replay;
+                else if (not result.control) ++stats_.drops_protocol;
+                return;
+            }
+            receive_session = result.session;
+            decoded = true;
         } else if (
             version == protocol_version_v2 and
             options_.allow_v2) {
@@ -2110,7 +2485,7 @@ private:
             return;
         }
 
-        if (packet.protocol_version >= protocol_version_v2) {
+        if (packet.protocol_version == protocol_version_v2) {
             if (not replay_window_.accept(packet.sequence)) {
                 ++stats_.drops_replay;
                 if (log_enabled(LogLevel::info)) {
@@ -2125,7 +2500,8 @@ private:
 
         // Server learns/updates the NAT peer only after successful
         // authentication (or accepted V1 when explicitly enabled).
-        if (server_mode_) {
+        if (server_mode_ and
+            (packet.protocol_version != protocol_version_v4 or v4_update_peer)) {
             const bool peer_changed =
                 udp_.set_peer(source, source_length);
 
@@ -2193,13 +2569,13 @@ private:
             return;
         }
 
-        if (packet.protocol_version == protocol_version_v3) {
+        if (packet.protocol_version == protocol_version_v4) {
             ++stats_.fragments_rx;
 
             reassembled_packet_.clear();
 
             if (
-                not reassembler_.accept(
+                not receive_session->reassembly.accept(
                     packet,
                     reassembled_packet_)) {
 
@@ -2209,7 +2585,7 @@ private:
             Packet& logical_packet = rx_logical_packet_;
             logical_packet.type = PacketType::data;
             logical_packet.tunnel_id = tunnel_id_;
-            logical_packet.protocol_version = protocol_version_v3;
+            logical_packet.protocol_version = protocol_version_v4;
             logical_packet.sequence = packet.sequence;
             logical_packet.message_id = packet.message_id;
             logical_packet.fragment_offset = 0;
@@ -2281,14 +2657,11 @@ private:
         Packet packet;
         packet.type = type;
         packet.tunnel_id = tunnel_id_;
-        packet.protocol_version = protocol_version_v3;
-        packet.sequence = sequence_generator_.next();
+        packet.protocol_version = protocol_version_v4;
         packet.message_id = message_id;
 
-        protocol_v3_.encode_into(
-            packet,
-            tx_encoded_buffer_,
-            tx_mac_buffer_);
+        if (not protocol_v4_.encode_into(
+            packet, tx_encoded_buffer_, tx_mac_buffer_)) return false;
 
         const ssize_t sent =
             udp_.send(
@@ -2474,6 +2847,7 @@ private:
     }
 
     void send_mtu_probe(std::size_t target_mtu) {
+        if (not protocol_v4_.ready()) return;
         if (pmtud_probe_pending_) {
             if (log_enabled(LogLevel::debug)) {
                 std::cerr
@@ -2489,7 +2863,7 @@ private:
         const std::size_t overhead =
             udp_.outer_ip_header_size() +
             udp_header_size +
-            protocol_header_v3_size;
+            protocol_header_v4_size;
 
         if (target_mtu <= overhead) {
             if (log_enabled(LogLevel::debug)) {
@@ -2506,15 +2880,14 @@ private:
         Packet packet;
         packet.type = PacketType::mtu_probe;
         packet.tunnel_id = tunnel_id_;
-        packet.protocol_version = protocol_version_v3;
-        packet.sequence = sequence_generator_.next();
+        packet.protocol_version = protocol_version_v4;
         packet.message_id = message_id_generator_.next();
         packet.original_length =
             static_cast<std::uint32_t>(target_mtu);
         packet.payload.resize(target_mtu - overhead);
 
-        const auto encoded =
-            protocol_v3_.encode(packet);
+        const auto encoded = protocol_v4_.encode(packet);
+        if (encoded.empty()) return;
 
         if (log_enabled(LogLevel::debug)) {
             std::cerr
@@ -2525,7 +2898,7 @@ private:
                 << " udp-payload="
                 << encoded.size()
                 << " outer-ip-overhead="
-                << (overhead - protocol_header_v3_size)
+                << (overhead - protocol_header_v4_size)
                 << "\n";
         }
 
@@ -2628,14 +3001,13 @@ private:
         Packet reply;
         reply.type = PacketType::mtu_reply;
         reply.tunnel_id = tunnel_id_;
-        reply.protocol_version = protocol_version_v3;
-        reply.sequence = sequence_generator_.next();
+        reply.protocol_version = protocol_version_v4;
         reply.message_id = packet.message_id;
         reply.original_length =
             static_cast<std::uint32_t>(observed_outer_size);
 
-        const auto encoded =
-            protocol_v3_.encode(reply);
+        const auto encoded = protocol_v4_.encode(reply);
+        if (encoded.empty()) return;
 
         const ssize_t sent =
             udp_.send(
@@ -2906,12 +3278,10 @@ private:
     const ascon::key_type master_key_;
     ProtocolV1 protocol_v1_;
     ProtocolV2 protocol_v2_;
-    ProtocolV3 protocol_v3_;
+    SessionProtocol protocol_v4_;
 
-    SequenceGenerator sequence_generator_;
     SequenceGenerator message_id_generator_;
     ReplayWindow replay_window_;
-    Reassembler reassembler_;
 
     // Hot-path storage is allocated/reserved once during construction and
     // reused for subsequent packets. This removes allocator churn without

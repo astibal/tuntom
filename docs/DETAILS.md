@@ -43,10 +43,10 @@ remote g++
 /tmp/udp_tun-ID-server
 ```
 
-`mk_tunnel.sh`:
+`../mk_tunnel.sh`:
 
 1. compiles the client locally
-2. sends `udp_tun.cpp` over SSH
+2. sends `../udp_tun.cpp` over SSH
 3. compiles it remotely
 4. stops the previous instance
 5. starts the server
@@ -133,13 +133,14 @@ transport MTU: 1500
 
 The systems behind the tunnel still see MTU 9000.
 
-## Protocol v3
+## Protocol v4
 
-Protocol v3 is the default protocol.
+Protocol v4 is the default protocol.
 
-It extends authenticated v2 with message and fragmentation metadata.
+It retains the v3 fragmentation layout and introduces session-specific directional keys.
+The version byte is 4; v3 packets are rejected. Both endpoints must be upgraded.
 
-The fixed v3 header is 48 bytes:
+The fixed v4 header is 48 bytes:
 
 ```text
 offset  size  field
@@ -155,7 +156,7 @@ offset  size  field
 48      ...   payload
 ```
 
-Packet types remain:
+Packet types are:
 
 ```text
 1  HELLO
@@ -165,6 +166,10 @@ Packet types remain:
 5  PONG
 6  MTU_PROBE
 7  MTU_REPLY
+8  INIT
+9  RESPONSE
+10 CONFIRM
+11 CONFIRM_ACK
 ```
 
 For HELLO and KEEPALIVE:
@@ -184,9 +189,9 @@ For PMTUD messages, `message_id` is the probe ID and `original_length` is the
 candidate/observed outer MTU. `MTU_PROBE` padding makes the outer packet reach
 that size; `MTU_REPLY` has no payload.
 
-## V3 authentication
+## V4 authentication
 
-Each v3 datagram is authenticated independently.
+Each v4 datagram is authenticated independently.
 
 The authenticated data is:
 
@@ -215,7 +220,7 @@ A fragment cannot therefore be moved to a different offset, message, or original
 
 The implementation has no OpenSSL dependency.
 
-It contains a compact keyed construction based on the Ascon permutation directly inside `udp_tun.cpp`.
+It contains a compact keyed construction based on the Ascon permutation directly inside `../udp_tun.cpp`.
 
 The master secret is supplied through:
 
@@ -225,7 +230,22 @@ TUNTOM_SECRET
 
 It must currently be exactly 128 bits represented by 32 hexadecimal characters.
 
-A node-specific key is derived using the tunnel ID. This allows the same master secret to be shared across a deployment while producing a different effective authentication domain for each tunnel ID.
+V4 derives two keys directly from the master secret using the existing MAC:
+
+```text
+K_c2s = MAC(master, tunnel_id, "TUNTOM-V4-CLIENT-TO-SERVER")
+K_s2c = MAC(master, tunnel_id, "TUNTOM-V4-SERVER-TO-CLIENT")
+```
+
+Labels are ASCII bytes without a trailing NUL. The client sends with K_c2s and
+verifies with K_s2c; the server does the reverse. The version, direction label,
+and tunnel ID separate the authentication domains. An endpoint cannot accept
+its own outbound datagram as inbound traffic.
+Legacy v2 retains its old node key and reflection risk; leave `--allow-v2`
+disabled in production. V3 is not accepted, and there is no automatic fallback.
+These long-term direction keys authenticate only INIT and RESPONSE. DATA and
+CONFIRM/ACK use session-specific direction keys derived from both complete
+handshake messages; see the wire specification.
 
 The authentication tag is 128 bits.
 
@@ -235,7 +255,7 @@ The permutation uses bitwise complement and AND (`~` and `&`) on 64-bit words.
 The complement of the tunnel ID in MAC initialization is also bitwise.
 Earlier builds incorrectly used C++ logical `not`/`and`, reducing these values
 to booleans and allowing forged tags. The fix changes both derived keys and
-v2/v3 tags: deploy it on both endpoints together. No verification fallback
+legacy v2/v3 tags: deploy it on both endpoints together. No verification fallback
 to the old construction is provided, including with `--allow-v2`.
 
 Tests compare p[8] and p[12] against an independent lookup implementation of
@@ -243,40 +263,37 @@ the [Ascon v1.2 specification, section 2.6](https://ascon.isec.tugraz.at/files/a
 This validates the permutation and the specific regression, not the security
 of the project's custom MAC mode.
 
-## Sequence numbers and replay protection
+## Session handshake, sequence numbers and replay protection
 
-Each transmitted v3 UDP datagram, including every fragment, gets its own sequence number.
+The exact layouts, domain labels and state transitions are specified in
+[PROTOCOL_V4.md](PROTOCOL_V4.md). V4 establishes fresh session keys through
+INIT / RESPONSE / CONFIRM / CONFIRM_ACK before accepting DATA. Only suite 0
+with empty DH is supported; the payload remains plaintext.
 
-Sequence numbers are based on current system time at nanosecond resolution. During one process lifetime the generator also guarantees monotonicity:
+The 64-bit SEQ field consists of a 16-bit transcript-derived session hint and
+an independent 48-bit packet counter for each direction. Counter zero is
+reserved for CONFIRM/ACK; ordinary traffic starts at one. The hint selects
+candidate keys; AMAC determines the actual session. A collision is supported.
 
-```text
-seq = max(current_time_ns, previous_seq + 1)
-```
+Every session has its own 64-value replay window and reassembly table. Only
+counter bits enter the replay window, after successful AMAC verification.
+The first ordinary packet need not have counter one: reordering is allowed.
+Replayed confirmations never reset these structures. Old session receive keys
+remain valid for a three-second overlap; previous-session packets cannot
+change the current peer. There are at most two candidate session keys.
 
-The receiver keeps a small runtime replay window:
+Restarted receivers have no active session. Replaying an old INIT may elicit
+an authenticated response containing a new server nonce, but cannot restore
+old keys or authorize old DATA. The client restarts the handshake after 20
+seconds without authenticated active-session traffic. No wall clock is used
+for V4 packet sequencing. Exhausted 48-bit counters never wrap.
 
-- the 64 highest accepted sequence values, stored in descending order
-- duplicate rejection for retained values and rejection below a full window
+Legacy v2 retains its timestamp generator semantics and runtime-only replay
+protection. Enabling legacy receive explicitly bypasses the V4 session model.
 
-This permits UDP packet reordering even when sequence timestamps differ by
-microseconds or more. A bitmap indexed by timestamp differences would cover
-only 64 nanoseconds, not 64 packets. Storage is fixed at 64 sequence values,
-with no per-packet allocation. Once full, the window's lower bound can only
-move forward. Before it fills, any unseen nonzero sequence can be accepted.
-
-The wire format and timestamp generator are unchanged, so this receive-side
-fix works with existing v2/v3 senders. It does not add a time-based expiry or
-a session handshake.
-
-Replay state is not persisted across receiver process restarts. A sender
-restart normally continues with newer timestamps; a backward system-clock
-adjustment can leave its traffic below the receiver's window until the clock
-catches up. Preventing replay across receiver restarts and handling clock
-rollback require a separate authenticated session design.
-
-`message_id` is separate from the transport sequence number.
-
-All fragments belonging to one original inner packet share one `message_id`, but each fragment has its own replay-protected `sequence`.
+`message_id` remains separate from SEQ. All fragments of one original IP
+packet share it, while each datagram uses a distinct counter. Message IDs
+still use the monotonic timestamp generator and are scoped by session.
 
 ## Balanced fragmentation
 
@@ -311,14 +328,14 @@ The receiver does not depend on equal fragment sizes. Reassembly uses authentica
 
 ## Transport payload calculation
 
-For protocol v3:
+For protocol v4:
 
 ```text
 max_fragment_payload =
     transport_mtu
     - outer_ip_header
     - UDP_header
-    - v3_header
+    - v4_header
 ```
 
 For IPv4 transport:
@@ -326,7 +343,7 @@ For IPv4 transport:
 ```text
 outer IP header = 20
 UDP header      = 8
-v3 header       = 48
+v4 header       = 48
 ```
 
 For IPv6 transport:
@@ -334,7 +351,7 @@ For IPv6 transport:
 ```text
 outer IP header = 40
 UDP header      = 8
-v3 header       = 48
+v4 header       = 48
 ```
 
 The dual-stack server uses the conservative IPv6 overhead when calculating the safe payload size.
@@ -343,7 +360,7 @@ This may waste 20 bytes when the peer is actually IPv4-mapped, but avoids exceed
 
 ## Automatic path-MTU discovery
 
-Protocol v3 performs authenticated application-level PMTUD by default. It does
+Protocol v4 performs authenticated application-level PMTUD by default. It does
 not depend on receiving ICMP Packet Too Big / Fragmentation Needed messages.
 
 At startup the active outer transport MTU is conservatively set to 500 bytes.
@@ -374,9 +391,9 @@ The bootstrap script currently leaves PMTUD enabled on both endpoints.
 
 ## Reassembly
 
-The receiver authenticates and replay-checks every fragment before it is considered for reassembly.
+The receiver identifies the session, authenticates and replay-checks every fragment before it is considered for reassembly.
 
-Reassembly is keyed by `message_id`.
+Reassembly is keyed by `message_id` within each session.
 
 Each reassembly entry contains:
 
@@ -541,7 +558,7 @@ A random unauthenticated UDP packet therefore cannot simply redirect the server'
 
 ## Protocol versions
 
-Protocol v3 is the default transmit protocol.
+Protocol v4 is the default transmit protocol.
 
 Legacy receive compatibility is explicit:
 
@@ -568,7 +585,7 @@ The important classes are roughly:
 Protocol
 ProtocolV1
 ProtocolV2
-ProtocolV3
+ProtocolV4
 TunDevice
 UdpEndpoint
 Reassembler
@@ -583,7 +600,7 @@ This is particularly useful for integrating the tunnel directly into software su
 
 ## Using the code in another program
 
-The easiest integration path is to copy the relevant classes from `udp_tun.cpp` and derive from `Tunnel`.
+The easiest integration path is to copy the relevant classes from `../udp_tun.cpp` and derive from `Tunnel`.
 
 For example, conceptually:
 
@@ -611,7 +628,7 @@ The current source does not introduce an abstraction for that yet. This is delib
 
 ## Using the binary without the bootstrap script
 
-The C++ binary supports client/server roles independently of `mk_tunnel.sh`.
+The C++ binary supports client/server roles independently of `../mk_tunnel.sh`.
 
 Examples:
 
@@ -645,7 +662,7 @@ The bootstrap script also sets the interface MTU explicitly using `ip link`. Thi
 
 ## Bootstrap MTU configuration
 
-`mk_tunnel.sh` uses:
+`../mk_tunnel.sh` uses:
 
 ```text
 TUNTOM_MTU
@@ -665,7 +682,7 @@ Both values are passed to the local and remote C++ processes.
 
 The same values are exported to lifecycle hooks.
 
-`mk_tunnel.sh` also enables text statistics and writes them atomically under its
+`../mk_tunnel.sh` also enables text statistics and writes them atomically under its
 runtime directory as `IDc.stats` and `IDs.stats` (normally
 `/run/tuntom/ID{c,s}.stats`). The format can currently only be `txt` and is
 selected with `TUNTOM_STATS_FORMAT`.
@@ -779,7 +796,7 @@ This separation is intentional.
 
 The tunnel transports packets. Linux decides where they go.
 
-The optional `tuntom-net.sh` helper makes the ingress tunnel authoritative for
+The optional `../tuntom-net.sh` helper makes the ingress tunnel authoritative for
 connection return routing. Every tracked packet received from a TUN interface
 overwrites the tuntom-owned bits of its conntrack mark, regardless of whether
 conntrack classifies it as `NEW`, `ESTABLISHED`, or `RELATED`. If the same
@@ -821,9 +838,9 @@ Together these features make tuntom useful as a small transport primitive for ge
 
 ## Wireshark dissector
 
-`tuntom.lua` understands protocol v1, v2, and v3.
+`tuntom.lua` understands protocol v1, v2, v3, and v4.
 
-For v3 it exposes fields including:
+For v4 it exposes fields including:
 
 ```text
 tuntom.sequence
@@ -836,13 +853,14 @@ tuntom.fragmented
 tuntom.auth_tag
 ```
 
-The dissector also performs its own v3 fragment reassembly.
+The dissector also performs its own v4 fragment reassembly.
 
 The reassembly key includes:
 
 - tunnel ID
 - message ID
 - packet direction
+- protocol version and session hint (v4; hint collisions cannot be resolved without keys)
 
 Once all ranges are available, the Lua dissector creates a synthetic Tvb containing the original IP packet and hands it to Wireshark's normal IPv4 or IPv6 dissector.
 
@@ -869,7 +887,7 @@ g++ -std=c++17 -O2 -Wall -Wextra -pedantic tests/replay_test.cpp -o /tmp/tuntom-
 ```
 
 The tests cover sparse timestamp reordering, duplicates, window eviction,
-integer boundaries, and a 9000-byte v3 packet received as 64 fragments in
+integer boundaries, and a 9000-byte v4 packet received as 64 fragments in
 reverse order. They exercise the receive path's protocol, replay, and
 reassembly components, but do not establish the security of the MAC.
 
@@ -881,7 +899,7 @@ g++ -std=c++17 -O2 -Wall -Wextra -pedantic tests/mac_test.cpp -o /tmp/tuntom-mac
 ```
 
 These cover reference permutation comparisons, project-specific MAC vectors
-at block and padding boundaries, v2/v3 round trips, wrong keys/tunnel IDs,
+at block and padding boundaries, v2/v4 round trips, wrong keys/tunnel IDs,
 single-bit changes throughout each datagram, and the previous XOR forgery.
 The MAC vectors are for tuntom's custom construction, not standardized
 Ascon-Mac test vectors.
@@ -902,10 +920,10 @@ Useful log messages include:
 
 ```text
 TUN read ...
-ENCODE v3 ...
+ENCODE v4 ...
 FRAGMENT 1/2 ...
 UDP recv ...
-ACCEPT v3 ...
+ACCEPT v4 ...
 TUN write ...
 ```
 

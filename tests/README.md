@@ -13,7 +13,17 @@ live tunnel, or network access are needed.
 - `replay_test.cpp`: reordered timestamps, duplicates, window eviction,
   integer boundaries, and reassembly of 64 fragments received in reverse order.
 - `mac_test.cpp`: independent Ascon permutation comparisons, custom MAC
-  vectors, v2/v3 tampering checks, and the XOR forgery regression.
+  vectors, v2/v4 tampering checks, both traffic directions, reflection rejection
+  for ordinary v4 message types, legacy v3 rejection, and the XOR forgery regression.
+
+- `session_test.cpp`: full handshake, lost INIT/ACK, duplicate control messages,
+  reordering, restart replay, expired pending state, previous-session overlap,
+  hint collisions, per-session reassembly, counter exhaustion, tampering and
+  rejection of unsupported suites/nonempty DH. Uses a simulated clock.
+- `dissector_test.py`: offline synthetic capture with handshake fields,
+  split counters, malformed messages, v3 compatibility and fragment separation
+  across different hints. Run automatically if `tshark` and `python3` are
+  installed, otherwise explicitly skipped. No global Wireshark settings change.
 
 These are regression checks, not a security proof of the custom MAC.
 

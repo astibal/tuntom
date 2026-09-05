@@ -12,13 +12,13 @@ The main goal is simplicity:
 - source is copied to the remote host through SSH, compiled there, and started
 - NAT-friendly client/server model
 - Linux TUN interfaces on both ends
-- authenticated protocol v3 with replay protection
+- authenticated protocol v4 with session handshake and replay protection
 - internal balanced fragmentation and reassembly
 - configurable inner/TUN MTU and transport MTU
 - automatic UDP path-MTU discovery (PMTUD)
 - optional compatibility with protocol v2 and v1
 - optional TTL / IPv6 Hop-Limit compensation
-- Wireshark dissector with v3 fragment reassembly
+- Wireshark dissector with v4 fragment reassembly
 
 The tunnel is intentionally small and dumb.
 
@@ -143,7 +143,7 @@ To use `TUNTOM_TRANSPORT_MTU` as a fixed value, run the C++ binary with:
 --no-pmtud
 ```
 
-If an inner packet does not fit into one tuntom UDP datagram, protocol v3 fragments it internally and reassembles it on the receiving side.
+If an inner packet does not fit into one tuntom UDP datagram, protocol v4 fragments it internally and reassembles it on the receiving side.
 
 Fragmentation is balanced. Instead of sending one maximum-sized fragment followed by a small tail, tuntom divides the packet into approximately equal-sized parts.
 
@@ -196,13 +196,19 @@ This is a known limitation and an intentional KISS tradeoff. The administrator o
 
 ## Protocol compatibility
 
-The MAC operator fix changes v2/v3 authentication tags and derived tunnel keys.
+Protocol v4 is the default transmit protocol. It uses separate client-to-server
+and server-to-client authentication keys to reject reflected outbound packets.
+The 48-byte DATA header layout is unchanged, but the version byte is now 4.
+INIT / RESPONSE / CONFIRM / CONFIRM_ACK establish fresh directional session
+keys. SEQ contains a 16-bit session hint and a 48-bit per-direction counter.
+Only suite 0 with absent DH is implemented: payloads are authenticated but
+**not encrypted**. Handshake normally adds one RTT before the client can send
+DATA; DATA reaching the server before CONFIRM is dropped. The ACK is retried
+without resetting session counters. Initial TUN traffic is not buffered.
+See [the V4 wire specification](PROTOCOL_V4.md) for layouts and timeouts.
 Update both endpoints together (the bootstrap script builds both ends).
-Fixed and pre-fix binaries cannot authenticate each other's traffic, even
-though their packet layouts and version numbers are unchanged. There is no
-fallback to the broken MAC; legacy receive flags do not restore it.
-
-Protocol v3 is the default transmit protocol.
+Pre-handshake v4 builds are also incompatible: update both endpoints together.
+V3 receive compatibility and automatic downgrade are not supported.
 
 Legacy receive compatibility can be enabled explicitly:
 
@@ -211,7 +217,8 @@ Legacy receive compatibility can be enabled explicitly:
 --allow-v1
 ```
 
-There is no automatic downgrade.
+Legacy v2 does not separate direction keys and remains vulnerable to reflection.
+Keep legacy receive flags disabled for production. There is no automatic downgrade.
 
 Protocol v1 is unauthenticated and should only be enabled when compatibility is explicitly required.
 
@@ -223,9 +230,9 @@ The project includes a Wireshark Lua dissector:
 tuntom.lua
 ```
 
-It understands protocol versions v1, v2, and v3.
+It understands protocol versions v1, v2, v3, and v4.
 
-For v3 it displays:
+For v4 it displays:
 
 - sequence number
 - message ID
@@ -235,7 +242,7 @@ For v3 it displays:
 - authentication tag
 - reassembly information
 
-The dissector also reassembles fragmented v3 DATA packets and passes the reconstructed packet to Wireshark's normal IPv4 or IPv6 dissector.
+The dissector also reassembles fragmented v4 DATA packets and passes the reconstructed packet to Wireshark's normal IPv4 or IPv6 dissector.
 
 It also recognizes `MTU_PROBE` and `MTU_REPLY` packets and displays their probe
 ID, outer MTU, and probe padding.

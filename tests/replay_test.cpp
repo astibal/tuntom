@@ -64,7 +64,8 @@ void test_integer_boundaries() {
 
 void test_fragment_receive_path() {
     ascon::key_type key {};
-    ProtocolV3 protocol(42, key);
+    ProtocolV4 sender(42, key, false);
+    ProtocolV4 receiver(42, key, true);
     ReplayWindow replay;
     Reassembler reassembler(9000);
     std::vector<std::uint8_t> original(9000);
@@ -85,7 +86,7 @@ void test_fragment_receive_path() {
         fragment.fragment_offset = static_cast<std::uint32_t>(offset);
         const auto size = plan.base_size + (i < plan.larger_fragments ? 1 : 0);
         fragment.payload.assign(original.begin() + offset, original.begin() + offset + size);
-        datagrams.push_back(protocol.encode(fragment));
+        datagrams.push_back(sender.encode(fragment));
         offset += size;
     }
     std::reverse(datagrams.begin(), datagrams.end());
@@ -93,7 +94,7 @@ void test_fragment_receive_path() {
     std::size_t completions = 0;
     for (const auto& datagram : datagrams) {
         Packet decoded;
-        require(protocol.decode(datagram.data(), datagram.size(), decoded), "decode failed");
+        require(receiver.decode(datagram.data(), datagram.size(), decoded), "decode failed");
         require(replay.accept(decoded.sequence), "reordered fragment rejected");
         require(not replay.accept(decoded.sequence), "duplicate fragment accepted");
         if (reassembler.accept(decoded, complete)) {

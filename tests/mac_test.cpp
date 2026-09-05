@@ -83,7 +83,7 @@ void test_mac_vectors() {
     }
 }
 
-void test_protocol(const Protocol& protocol, const Protocol& wrong_key,
+void test_protocol(const Protocol& sender, const Protocol& protocol, const Protocol& wrong_key,
                    const Protocol& wrong_tunnel) {
     Packet packet;
     packet.tunnel_id = 42;
@@ -91,7 +91,7 @@ void test_protocol(const Protocol& protocol, const Protocol& wrong_key,
     packet.message_id = 1234;
     packet.original_length = 64;
     packet.payload.resize(64, 0x45);
-    auto encoded = protocol.encode(packet);
+    auto encoded = sender.encode(packet);
     Packet decoded;
     require(protocol.decode(encoded.data(), encoded.size(), decoded), "valid packet rejected");
     require(decoded.payload == packet.payload, "payload mismatch");
@@ -113,7 +113,7 @@ void test_protocol(const Protocol& protocol, const Protocol& wrong_key,
             variant.sequence += i * 1024;
             if (i & 1) variant.payload[1] ^= static_cast<std::uint8_t>(trial);
             if (i & 2) variant.payload[2] ^= static_cast<std::uint8_t>(trial);
-            inputs[i] = protocol.encode(variant);
+            inputs[i] = sender.encode(variant);
         }
         auto forged = inputs[0];
         for (std::size_t i = 0; i < forged.size(); ++i) {
@@ -123,13 +123,64 @@ void test_protocol(const Protocol& protocol, const Protocol& wrong_key,
     }
 }
 
+void test_direction_separation() {
+    ascon::key_type key {};
+    const auto c2s = ascon::derive_direction_key(key, 42, true);
+    const auto s2c = ascon::derive_direction_key(key, 42, false);
+    require(c2s != s2c, "direction keys equal");
+    require(c2s != ascon::derive_node_key(key, 42), "legacy key reused");
+    require(c2s != ascon::derive_direction_key(key, 43, true), "tunnel keys equal");
+    for (bool server_mode : {false, true}) {
+        ProtocolV4 sender(42, key, server_mode);
+        ProtocolV4 receiver(42, key, not server_mode);
+        for (auto type : {PacketType::hello, PacketType::keepalive,
+                          PacketType::data, PacketType::ping, PacketType::pong,
+                          PacketType::mtu_probe, PacketType::mtu_reply}) {
+            Packet packet;
+            packet.tunnel_id = 42;
+            packet.type = type;
+            packet.sequence = 1000;
+            if (type != PacketType::hello && type != PacketType::keepalive)
+                packet.message_id = 1234;
+            if (type == PacketType::data) {
+                packet.original_length = 64;
+                packet.fragment_offset = 16;
+                packet.payload.resize(32, 0x45);
+            } else if (type == PacketType::mtu_probe || type == PacketType::mtu_reply) {
+                packet.original_length = 1400;
+                if (type == PacketType::mtu_probe) packet.payload.resize(1324);
+            }
+            auto encoded = sender.encode(packet);
+            Packet decoded;
+            require(encoded[6] == 4, "wrong wire version");
+            require(receiver.decode(encoded.data(), encoded.size(), decoded), "peer rejected packet");
+            require(not sender.decode(encoded.data(), encoded.size(), decoded), "reflection accepted");
+
+            // A correctly MACed legacy v3 packet must still be rejected.
+            encoded[6] = 3;
+            std::vector<std::uint8_t> input(encoded.begin(), encoded.begin() + 32);
+            input.insert(input.end(), encoded.begin() + 48, encoded.end());
+            ascon::tag_type tag {};
+            ascon::mac(ascon::derive_node_key(key, 42), 42, input.data(), input.size(), tag);
+            std::copy(tag.begin(), tag.end(), encoded.begin() + 32);
+            require(not receiver.decode(encoded.data(), encoded.size(), decoded), "legacy v3 accepted");
+        }
+    }
+}
+
 int main() {
     log_level = LogLevel::quiet;
     test_permutation();
     test_mac_vectors();
     ascon::key_type key {}, other {};
     other[0] = 1;
-    test_protocol(ProtocolV2(42, key), ProtocolV2(42, other), ProtocolV2(43, key));
-    test_protocol(ProtocolV3(42, key), ProtocolV3(42, other), ProtocolV3(43, key));
-    std::cout << "PASS: reference permutations, MAC vectors, v2/v3 tampering and XOR forgery rejection\n";
+    test_protocol(ProtocolV2(42, key), ProtocolV2(42, key), ProtocolV2(42, other), ProtocolV2(43, key));
+    for (bool server_mode : {false, true}) {
+        test_protocol(ProtocolV4(42, key, server_mode),
+                      ProtocolV4(42, key, not server_mode),
+                      ProtocolV4(42, other, not server_mode),
+                      ProtocolV4(43, key, not server_mode));
+    }
+    test_direction_separation();
+    std::cout << "PASS: reference permutations, MAC vectors, v2/v4 tampering, directional reflection and XOR forgery rejection\n";
 }

@@ -526,7 +526,7 @@ echo "  MSS clamp:  ${tuntom_mss_clamp}"
 echo "  stats:      ${stats_format} -> ${run_dir}/${id}{c,s}.stats"
 echo "  pre hook:   ${tuntom_pre_hook} (local file, runs local+remote)"
 echo "  post hook:  ${tuntom_post_hook} (local file, runs local+remote)"
-echo "  protocol:   v3 / Ascon auth + replay protection + fragmentation"
+echo "  protocol:   v4 / Ascon auth + replay protection + fragmentation"
 
 echo "[1] Compile local staging binary"
 rm -f "$local_stage"
