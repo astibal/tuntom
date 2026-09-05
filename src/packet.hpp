@@ -57,6 +57,7 @@ struct Options {
     bool pmtud_auto = true;
     std::size_t tun_mtu = default_tun_mtu;
     std::size_t transport_mtu = default_transport_mtu;
+    bool stats_disabled = false;
     std::string stats_file;
     StatsFormat stats_format = StatsFormat::txt;
 };

@@ -54,3 +54,10 @@ firewall rules and requires root. It is deliberately not run by `run.sh`.
   DH/lengths, suite isolation, lost flights, periodic DH rekey under continuous
   traffic, previous-session expiry, restart and counter limits. The encrypted
   session tests also run with PFS, including every control type and fragmentation.
+- `session_stats_test.cpp`: serialized suite/session gauges, both-side handshake
+  completion boundaries, duplicate flights, retries/timeouts, rekey counts,
+  and authenticated suite/DH rejection counters. Runs without TUN or root.
+
+- `stats_control_test.cpp`: `--no-stats` argument-order independence and path
+  preservation, real SIGUSR1 toggle / SIGUSR2 snapshot handling, pending signals, snapshot
+  write gating while disabled, and handler restoration.

@@ -318,6 +318,36 @@ The bootstrap script writes logs to:
 
 Use `--debug` on the C++ binary for packet and protocol details.
 
+## Session statistics
+
+Use `./mk_tunnel.sh <id> <host> --no-stats` to start both endpoints without
+stats file writes or optional latency/throughput sampling. The destination path
+is retained, so the standalone processes can be controlled without restarting:
+
+```sh
+sudo kill -USR1 <pid>  # toggle automatic stats on/off
+sudo kill -USR2 <pid>  # write one snapshot, even with --no-stats
+```
+
+Signals affect only the addressed process. The bootstrap stores PIDs in
+`/run/tuntom/<id>{c,s}.pid` on the respective hosts. When running the binary
+directly, supply `--stats-file <path>` even with `--no-stats` if you want to enable
+writing or take snapshots later; no path means no output. `--no-stats` wins regardless of CLI order.
+Disabling leaves the last stats file unchanged (check `updated_unix` for age).
+Cumulative counters continue; latency sampling pauses, and throughput windows
+start fresh on re-enable to exclude traffic during the pause. `USR2` writes
+current cumulative counters without changing automatic mode; optional latency
+and throughput values reflect the last collected history while paused.
+`stats_enabled=0/1` identifies the automatic mode at snapshot time.
+
+
+The bootstrap's `/run/tuntom/<id>{c,s}.stats` files also show `suite`,
+`suite_active`, `pfs`, `session_ready`, `session_age_seconds`, `handshake_state`,
+and handshake/rekey counters. `rekey_completed` counts confirmed exchanges
+after the initial connection; retransmitted CONFIRM/ACK packets do not inflate
+it. See [field definitions](docs/DETAILS.md#session-suite-and-rekey-statistics)
+for retries, timeouts and rejection counters.
+
 ## Building and editing
 
 Open this directory as a CMake project in CLion. The local build compiles

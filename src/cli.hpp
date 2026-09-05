@@ -27,6 +27,8 @@ inline void usage(const char* program_name) {
            "tuntom routing hop\n"
         << "\n"
         << "Statistics:\n"
+        << "  --no-stats             Disable stats writes and optional sampling\n"
+        << "  SIGUSR1 / SIGUSR2       Toggle stats / snapshot now (needs --stats-file)\n"
         << "  --stats-file <path>    Export runtime statistics to file\n"
         << "  --stats-format <fmt>   Statistics format; currently: txt\n"
         << "\n"
@@ -136,6 +138,8 @@ inline void parse_options(
                     argv[i],
                     min_transport_mtu,
                     max_ip_packet_size);
+        } else if (option == "--no-stats") {
+            options.stats_disabled = true;
         } else if (option == "--stats-file") {
             if (++i >= argc) {
                 throw std::runtime_error(

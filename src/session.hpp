@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <ostream>
 #include <map>
 #include <set>
 #include <limits>
@@ -48,6 +49,40 @@ public:
                 std::uint64_t ex, std::size_t mtu, bool encrypt)
             : codec(id, tx, rx, encrypt), reassembly(mtu), hint(h), exchange(ex) {}
     };
+    struct Counters {
+        std::uint64_t handshake_started = 0, handshake_completed = 0;
+        std::uint64_t rekey_started = 0, rekey_completed = 0;
+        std::uint64_t handshake_retries = 0, handshake_timeouts = 0;
+        std::uint64_t handshake_suite_mismatch = 0, handshake_dh_rejected = 0;
+    };
+    const Counters& counters() const { return counters_; }
+
+    // Gauges describe local state; counters count protocol events, not UDP sends.
+    void write_stats(std::ostream& out, Time now) const {
+        const char* state = server_ ? (pending_ ? "wait_confirm" : "idle") :
+            (waiting_ack_ ? "wait_ack" : (!flight_.empty() ? "wait_response" : "idle"));
+        out << "suite=" << suite() << "\n"
+            << "suite_active=" << (active_ ? static_cast<int>(suite()) : -1) << "\n"
+            << "encryption=" << (encrypt_ ? "ascon-aead128" : "off") << "\n"
+            << "pfs=" << (pfs_ ? 1 : 0) << "\n"
+            << "session_ready=" << (ready() ? 1 : 0) << "\n"
+            << "session_confirmed=" << (active_ and not waiting_ack_ ? 1 : 0) << "\n"
+            << "session_age_seconds=" << (active_ ? age(now, active_->created) : -1) << "\n"
+            << "session_tx_counter=" << (active_ ? active_->next_counter - 1 : 0) << "\n"
+            << "handshake_state=" << state << "\n"
+            << "handshake_started=" << counters_.handshake_started << "\n"
+            << "handshake_completed=" << counters_.handshake_completed << "\n"
+            << "handshake_retries=" << counters_.handshake_retries << "\n"
+            << "handshake_timeouts=" << counters_.handshake_timeouts << "\n"
+            << "handshake_suite_mismatch=" << counters_.handshake_suite_mismatch << "\n"
+            << "handshake_dh_rejected=" << counters_.handshake_dh_rejected << "\n"
+            << "handshake_last_age_seconds="
+            << (counters_.handshake_completed ? age(now, last_completed_) : -1) << "\n"
+            << "rekey_started=" << counters_.rekey_started << "\n"
+            << "rekey_completed=" << counters_.rekey_completed << "\n"
+            << "rekey_interval_seconds=" << (pfs_ ? std::chrono::duration_cast<std::chrono::seconds>(rekey_interval).count() : 0) << "\n";
+    }
+
     struct Received {
         bool data = false;
         bool control = false;
@@ -120,20 +155,23 @@ public:
         client_exchange_ = init.message_id;
         flight_ = client_init_;
         flight_started_ = last_retry_ = now;
+        started();
         return flight_;
     }
 
     std::vector<std::uint8_t> tick(Time now, std::int64_t wall = wall_seconds()) {
         if (previous_ and now >= previous_until_) previous_.reset();
-        if (pending_ and now >= pending_until_) pending_.reset();
+        expire_pending(now);
         if (server_) return {};
         if (not flight_.empty()) {
             if (now - flight_started_ >= pending_lifetime) {
+                ++counters_.handshake_timeouts;
                 // An unconfirmed candidate must not remain usable forever.
                 if (waiting_ack_) active_ = std::move(previous_);
                 return begin(now, wall);
             }
             if (now - last_retry_ >= retry_interval) {
+                ++counters_.handshake_retries;
                 if (not waiting_ack_) return begin(now, wall);
                 last_retry_ = now;
                 return flight_;
@@ -166,7 +204,7 @@ public:
                      std::int64_t wall = wall_seconds()) {
         Received result;
         if (previous_ and now >= previous_until_) previous_.reset();
-        if (pending_ and now >= pending_until_) pending_.reset();
+        expire_pending(now);
         if (size < protocol_header_v4_size) return result;
         const auto type = static_cast<PacketType>(wire[7] & 0x7f);
         if (not server_ and not flight_.empty() and
@@ -177,7 +215,10 @@ public:
                 (not server_ and type != PacketType::response)) return result;
             if (not handshake_.decode_with_scratch(wire, size, packet, scratch)) return result;
             if (load_be16(packet.payload.data() + (type == PacketType::init ? 40 : 64)) !=
-                suite()) return result;
+                suite()) {
+                ++counters_.handshake_suite_mismatch;
+                return result;
+            }
             std::vector<std::uint8_t> encoded(wire, wire + size);
             if (server_) {
                 result.control = true;
@@ -222,7 +263,10 @@ public:
                     random_bytes(secret.bytes.data(), 32);
                     x25519::Bytes peer {}, pub {};
                     std::copy_n(packet.payload.begin() + 44, 32, peer.begin());
-                    if (not x25519::shared(dh.bytes, secret.bytes, peer)) return result;
+                    if (not x25519::shared(dh.bytes, secret.bytes, peer)) {
+                        ++counters_.handshake_dh_rejected;
+                        return result;
+                    }
                     x25519::public_key(pub, secret.bytes);
                     store_be16(response.payload.data() + 66, 32);
                     std::copy(pub.begin(), pub.end(), response.payload.begin() + 68);
@@ -231,6 +275,7 @@ public:
                 previous_.reset(); // At most two candidate session keys.
                 pending_ = derive(encoded, response_wire, packet.message_id, dh.bytes, now);
                 pending_until_ = now + pending_lifetime;
+                started();
                 result.reply = std::move(response_wire);
                 return result;
             }
@@ -240,14 +285,20 @@ public:
             result.control = true;
             if (waiting_ack_) {
                 // Never reset counters/replay state on a repeated response.
-                if (active_ and active_->response == encoded) result.reply = flight_;
+                if (active_ and active_->response == encoded) {
+                    ++counters_.handshake_retries;
+                    result.reply = flight_;
+                }
                 return result;
             }
             Secret<32> dh;
             if (pfs_) {
                 x25519::Bytes peer {};
                 std::copy_n(packet.payload.begin() + 68, 32, peer.begin());
-                if (not x25519::shared(dh.bytes, client_secret_.bytes, peer)) return result;
+                if (not x25519::shared(dh.bytes, client_secret_.bytes, peer)) {
+                    ++counters_.handshake_dh_rejected;
+                    return result;
+                }
             }
             auto candidate = derive(client_init_, encoded, client_exchange_, dh.bytes, now);
             client_secret_.clear();
@@ -278,9 +329,11 @@ public:
                 previous_ = std::move(active_);
                 previous_until_ = now + old_lifetime;
                 active_ = std::move(pending_);
+                completed(now);
                 result.activated = result.update_peer = true;
             }
             if (matched == active_.get()) {
+                if (not result.activated) ++counters_.handshake_retries;
                 result.reply = confirmation(*matched, PacketType::confirm_ack);
             }
             return result;
@@ -294,6 +347,7 @@ public:
             flight_.clear();
             client_init_.clear();
             last_received_ = now;
+            completed(now);
             result.activated = true;
             return result;
         }
@@ -319,6 +373,25 @@ public:
     }
 
 private:
+    static std::int64_t age(Time now, Time since) {
+        return std::max<std::int64_t>(0,
+            std::chrono::duration_cast<std::chrono::seconds>(now - since).count());
+    }
+    void started() {
+        ++counters_.handshake_started;
+        if (counters_.handshake_completed) ++counters_.rekey_started;
+    }
+    void completed(Time now) {
+        if (counters_.handshake_completed) ++counters_.rekey_completed;
+        ++counters_.handshake_completed;
+        last_completed_ = now;
+    }
+    void expire_pending(Time now) {
+        if (pending_ and now >= pending_until_) {
+            ++counters_.handshake_timeouts;
+            pending_.reset();
+        }
+    }
     std::uint16_t suite() const { return pfs_ ? 2 : (encrypt_ ? 1 : 0); }
 
     static ascon::key_type expand(const ascon::key_type& master, std::uint16_t id,
@@ -387,6 +460,8 @@ private:
         return value;
     }
 
+    Counters counters_;
+    Time last_completed_ {};
     std::uint16_t id_;
     ascon::key_type master_;
     bool server_;

@@ -1,5 +1,6 @@
 #include "cli.hpp"
 #include "tunnel.hpp"
+#include "stats_control.hpp"
 
 int main(int argc, char** argv) {
     using namespace tuntom;
@@ -22,6 +23,7 @@ int main(int argc, char** argv) {
                 4,
                 options);
 
+            StatsSignals stats_signals;
             Tunnel tunnel(
                 tunnel_id,
                 true,
@@ -46,6 +48,7 @@ int main(int argc, char** argv) {
                 5,
                 options);
 
+            StatsSignals stats_signals;
             Tunnel tunnel(
                 tunnel_id,
                 false,

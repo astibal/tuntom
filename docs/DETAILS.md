@@ -1040,3 +1040,70 @@ The current partial bucket is excluded. Idle buckets count as zero. During start
 only available completed buckets are averaged, with zero rates before the first
 bucket completes. `throughput_bucket_seconds=5` and `throughput_window_buckets`
 (0–12) expose the interval and available history. All history resets on restart.
+
+### Session, suite and rekey statistics
+
+The text stats file includes local session gauges and lifetime event counters.
+They reset on process restart. This is an additive change to stats format 1;
+the wire protocol is unchanged. Counters live in `SessionProtocol`, so socket
+send failures do not change their meaning: they count protocol events and
+prepared messages, not successful UDP sends.
+
+| Field | Meaning |
+|---|---|
+| `suite` | Configured suite: 0 = AMAC plaintext, 1 = Ascon-AEAD128, 2 = X25519 + AKDF + Ascon-AEAD128. |
+| `suite_active` | Suite of the current DATA codec, or -1 if absent. On the client this includes a candidate waiting for ACK. |
+| `encryption` | Configured `off` or `ascon-aead128`. |
+| `pfs` | Configured PFS: 0 or 1. |
+| `session_ready` | 1 when local DATA encoding is possible, including client wait-ACK; 0 otherwise (including exhausted TX counter). |
+| `session_confirmed` | 1 when the current session has completed the local handshake; this does not prove current peer reachability. |
+| `session_age_seconds` | Age of the current candidate/session since key derivation; -1 if absent. |
+| `session_tx_counter` | Last ordinary sequence counter allocated for encoding, excluding the session hint; 0 before any DATA/control encoding. Resets on each new session, and does not assert successful sending. |
+| `handshake_state` | `idle`, `wait_response` (client), `wait_confirm` (server), or `wait_ack` (client). `idle` can mean either connected or not yet started: inspect session gauges too. |
+| `handshake_started` | Client INIT attempts generated, or server pending sessions created after validation. Fresh client INIT retries count as new attempts; INITs ignored by a busy server do not. |
+| `handshake_completed` | Local completions: valid CONFIRM activates server, valid ACK completes client. Duplicate confirmations/ACKs do not increment this. |
+| `handshake_retries` | Client fresh INIT retries, timer/duplicate-RESPONSE CONFIRM retries, or server ACK replies to duplicate active CONFIRMs. These are generated messages, not successful sends. |
+| `handshake_timeouts` | Server pending candidate expiration, or client five-second flight expiration. Each is counted once. Normal one-second fresh INIT retries supersede attempts without counting a five-second timeout. |
+| `handshake_suite_mismatch` | Authenticated, structurally valid INIT/RESPONSE packets with a supported suite different from local configuration. Unknown suites and invalid lengths remain protocol drops. |
+| `handshake_dh_rejected` | Authenticated suite-2 exchanges that reach DH validation and yield an all-zero X25519 result. |
+| `handshake_last_age_seconds` | Seconds since most recent local completion; -1 before the first. |
+| `rekey_started` | Subset of handshake attempts started after at least one successful local handshake in this process. Includes retries and idle recovery, not only periodic PFS. |
+| `rekey_completed` | Successful local handshakes after the first; includes idle recovery. For uninterrupted PFS traffic this directly counts completed periodic key rotations. |
+| `rekey_interval_seconds` | Configured periodic client DH interval: 120 with PFS, 0 otherwise. Server shows the same suite policy but does not initiate rotations. |
+
+Ages use the monotonic clock and are whole seconds. Client/server attempt and
+retry counts need not match (loss, validation, pending-slot occupancy and ACK
+loss differ at each side). Completion counts can also temporarily differ while
+ACK is outstanding. Counters disclose no private keys or DH/KDF secrets.
+
+### Disabling and controlling statistics
+
+`--no-stats` disables periodic file creation/replacement, processing-latency
+sampling, reassembly-span sampling and throughput bucket updates. It preserves
+`--stats-file`, regardless of argument order. Basic packet/byte/drop counters,
+session/rekey counters and operational RTT/PMTUD control remain active.
+`mk_tunnel.sh ... --no-stats` passes the option to both processes, retaining their
+normal stats paths for later activation.
+
+The standalone binary installs SIGUSR1 (toggle automatic statistics) and
+SIGUSR2 (one immediate snapshot, even while disabled) handlers.
+They only update `sig_atomic_t` flags; I/O and state updates happen in the
+normal event loop. Both signals are blocked briefly when consuming flags to
+avoid losing requests. Two delivered USR1 signals cancel each other; multiple
+USR2 requests before consumption produce one snapshot. Standard signals may
+coalesce before delivery, so do not use rapid repeated signals as a reliable queue. An already running iteration/write
+may finish before a disable request takes effect. No output path means enabling
+has no output effect. Existing files remain untouched while disabled unless
+USR2 requests a snapshot. Snapshotting does not toggle automatic mode or resume
+sampling. The snapshot includes `stats_enabled=0/1`; cumulative counters are
+current, while optional latency and throughput fields retain their last
+collected history when disabled. No SIGHUP handler is installed; periodic rekey
+remains unchanged.
+
+On re-enable, writing resumes immediately in the loop. Throughput windows are
+reset and baseline byte counters are captured, so disabled traffic is never
+reported as a burst. Processing sample counts/windows resume their old history;
+they contain only samples collected while enabled (a completed fragmented packet
+may have started during the pause). Lifetime counters are never reset by these
+signals. Signal handlers are installed only by `main`, so embedding `Tunnel` does
+not install process-global handlers automatically.

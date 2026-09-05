@@ -8,6 +8,7 @@
 #include "fragmentation.hpp"
 #include "processing_stats.hpp"
 #include "throughput_stats.hpp"
+#include "stats_control.hpp"
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
@@ -79,7 +80,7 @@ public:
                 << " ttl-compensate="
                 << (options_.ttl_compensate ? "yes" : "no")
                 << " stats="
-                << (options_.stats_file.empty() ? "off" : options_.stats_file)
+                << (stats_enabled() ? options_.stats_file : "off")
                 << "\n";
         }
     }
@@ -112,6 +113,7 @@ public:
         write_stats();
 
         while (true) {
+            update_stats_control();
             pollfd descriptors[2] {};
             descriptors[0].fd = tun_.fd();
             descriptors[0].events = POLLIN;
@@ -137,7 +139,7 @@ public:
                         tun_rx_buffer_.size());
 
                 if (received > 0) {
-                    tx_sample_active_ = not options_.stats_file.empty() and tx_processing_.select();
+                    tx_sample_active_ = stats_enabled() and tx_processing_.select();
                     if (tx_sample_active_) tx_sample_start_ = ProcessingStats::Clock::now();
                     const std::size_t packet_size =
                         static_cast<std::size_t>(received);
@@ -174,7 +176,7 @@ public:
                         source_length);
 
                 if (received > 0) {
-                    rx_sample_active_ = not options_.stats_file.empty() and rx_processing_.select();
+                    rx_sample_active_ = stats_enabled() and rx_processing_.select();
                     if (rx_sample_active_) rx_sample_start_ = ProcessingStats::Clock::now();
                     ++stats_.udp_rx_packets;
                     stats_.udp_rx_bytes +=
@@ -189,7 +191,7 @@ public:
             }
 
             const auto now = std::chrono::steady_clock::now();
-            if (not options_.stats_file.empty()) {
+            if (stats_enabled()) {
                 throughput_.update(now, {
                     stats_.tun_rx_bytes, stats_.tun_tx_bytes,
                     stats_.udp_rx_bytes, stats_.udp_tx_bytes});
@@ -637,7 +639,7 @@ private:
                 not receive_session->reassembly.accept(
                     packet,
                     reassembled_packet_,
-                    options_.stats_file.empty() ? nullptr : &reassembly_span_)) {
+                    stats_enabled() ? &reassembly_span_ : nullptr)) {
 
                 return;
             }
@@ -1230,10 +1232,29 @@ private:
         send_mtu_probe(candidate);
     }
 
-    void write_stats() {
-        if (options_.stats_file.empty()) {
-            return;
+    bool stats_enabled() const {
+        return not options_.stats_disabled and not options_.stats_file.empty();
+    }
+
+    void update_stats_control() {
+        const auto request = take_stats_requests();
+        if (request.toggle) {
+            options_.stats_disabled = not options_.stats_disabled;
+            if (stats_enabled()) {
+                // Exclude bytes accumulated while sampling was paused.
+                throughput_ = ThroughputStats {};
+                throughput_.update(std::chrono::steady_clock::now(), {
+                    stats_.tun_rx_bytes, stats_.tun_tx_bytes,
+                    stats_.udp_rx_bytes, stats_.udp_tx_bytes});
+            }
         }
+        if (request.snapshot or (request.toggle and stats_enabled()))
+            write_stats(request.snapshot);
+    }
+
+    void write_stats(bool snapshot = false) {
+        if (not stats_write_requested(not options_.stats_file.empty(),
+                                      options_.stats_disabled, snapshot)) return;
 
         const auto now_steady = std::chrono::steady_clock::now();
         const auto uptime =
@@ -1269,6 +1290,7 @@ private:
                 << "mode=" << (server_mode_ ? "server" : "client") << "\n"
                 << "updated_unix=" << updated_unix << "\n"
                 << "uptime_seconds=" << uptime << "\n"
+                << "stats_enabled=" << (stats_enabled() ? 1 : 0) << "\n"
                 << "tun_rx_packets=" << stats_.tun_rx_packets << "\n"
                 << "tun_rx_bytes=" << stats_.tun_rx_bytes << "\n"
                 << "tun_tx_packets=" << stats_.tun_tx_packets << "\n"
@@ -1308,6 +1330,7 @@ private:
                 << "pmtud_probes_ok=" << stats_.pmtud_probes_ok << "\n"
                 << "pmtud_probes_lost=" << stats_.pmtud_probes_lost << "\n";
 
+            protocol_v4_.write_stats(output, now_steady);
             output << "processing_sample_interval=" << ProcessingStats::sample_interval << "\n";
             throughput_.write(output);
             tx_processing_.write(output, "tx_processing");
