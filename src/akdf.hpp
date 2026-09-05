@@ -22,12 +22,13 @@ inline void extract(ascon::key_type& prk, const ascon::key_type& psk,
 inline void expand(ascon::key_type& output, const ascon::key_type& prk,
                    std::uint16_t id, const char* label,
                    const std::vector<std::uint8_t>& transcript) {
-    const auto n = std::strlen(label) + 1;
-    std::vector<std::uint8_t> input(n + 8 + transcript.size() + 1);
-    std::memcpy(input.data(), label, n);
-    ascon::store_be64(input.data() + n, transcript.size());
-    std::copy(transcript.begin(), transcript.end(), input.data() + n + 8);
-    input.back() = 1;
+    std::vector<std::uint8_t> input(label, label + std::strlen(label));
+    input.push_back(0);
+    std::array<std::uint8_t, 8> length {};
+    ascon::store_be64(length.data(), transcript.size());
+    input.insert(input.end(), length.begin(), length.end());
+    input.insert(input.end(), transcript.begin(), transcript.end());
+    input.push_back(1);
     ascon::mac(prk, id, input.data(), input.size(), output);
 }
 } // namespace tuntom::akdf
