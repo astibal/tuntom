@@ -10,6 +10,9 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <map>
+#include <set>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 #include <sys/random.h>
@@ -17,14 +20,14 @@
 namespace tuntom {
 
 // V4 session state is independent of sockets/TUN; callers supply a monotonic
-// clock so timeout and reordering behavior can be tested without sleeping.
+// clock for timeouts and an optional Unix time for INIT freshness tests.
 class SessionProtocol {
 public:
     using Clock = std::chrono::steady_clock;
     using Time = Clock::time_point;
     static constexpr std::uint64_t counter_mask = 0x0000ffffffffffffULL;
     static constexpr auto retry_interval = std::chrono::seconds(1);
-    static constexpr auto pending_lifetime = std::chrono::seconds(10);
+    static constexpr auto pending_lifetime = std::chrono::seconds(5);
     static constexpr auto old_lifetime = std::chrono::seconds(3);
     static constexpr auto idle_restart = std::chrono::seconds(20);
 
@@ -47,14 +50,26 @@ public:
         bool replay_drop = false;
         bool activated = false;
         bool update_peer = false;
+        bool timestamp_rejected = false;
+        bool clock_warning = false;
+        bool nonce_capacity = false;
+        std::int64_t clock_offset = 0;
         Session* session = nullptr;
         std::vector<std::uint8_t> reply;
     };
 
     SessionProtocol(std::uint16_t id, const ascon::key_type& master,
-                    bool server, std::size_t mtu = default_tun_mtu, bool encrypt = false)
+                    bool server, std::size_t mtu = default_tun_mtu, bool encrypt = false, std::size_t init_window = 300)
         : id_(id), master_(master), server_(server), mtu_(mtu), encrypt_(encrypt),
-          handshake_(id, master, server) {}
+          handshake_(id, master, server), init_window_(init_window) {
+        if (init_window < 2 or init_window > 86400 or init_window % 2 != 0)
+            throw std::runtime_error("INIT window must be even and in range 2..86400 seconds");
+    }
+
+    static std::int64_t wall_seconds() {
+        return std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+    }
 
     // Bound suite-1 key use independently of the 48-bit wire counter.
     // At UDP packet sizes this stays below 2^48 bytes per directional key.
@@ -76,15 +91,16 @@ public:
         return result;
     }
 
-    std::vector<std::uint8_t> begin(Time now) {
+    std::vector<std::uint8_t> begin(Time now, std::int64_t wall = wall_seconds()) {
         if (server_) return {};
         previous_.reset();
         pending_.reset();
         waiting_ack_ = false;
         Packet init = control(PacketType::init, random_id());
-        init.payload.resize(36);
+        init.payload.resize(44);
         random_bytes(init.payload.data(), 32);
-        store_be16(init.payload.data() + 32, encrypt_ ? 1 : 0);
+        store_be64(init.payload.data() + 32, static_cast<std::uint64_t>(std::max<std::int64_t>(0, wall)));
+        store_be16(init.payload.data() + 40, encrypt_ ? 1 : 0);
         client_init_ = handshake_.encode(init);
         client_exchange_ = init.message_id;
         flight_ = client_init_;
@@ -92,7 +108,7 @@ public:
         return flight_;
     }
 
-    std::vector<std::uint8_t> tick(Time now) {
+    std::vector<std::uint8_t> tick(Time now, std::int64_t wall = wall_seconds()) {
         if (previous_ and now >= previous_until_) previous_.reset();
         if (pending_ and now >= pending_until_) pending_.reset();
         if (server_) return {};
@@ -100,15 +116,16 @@ public:
             if (now - flight_started_ >= pending_lifetime) {
                 // An unconfirmed candidate must not remain usable forever.
                 if (waiting_ack_) active_ = std::move(previous_);
-                return begin(now);
+                return begin(now, wall);
             }
             if (now - last_retry_ >= retry_interval) {
+                if (not waiting_ack_) return begin(now, wall);
                 last_retry_ = now;
                 return flight_;
             }
             return {};
         }
-        if (not ready() or now - last_received_ >= idle_restart) return begin(now);
+        if (not ready() or now - last_received_ >= idle_restart) return begin(now, wall);
         return {};
     }
 
@@ -129,7 +146,8 @@ public:
     }
 
     Received receive(const std::uint8_t* wire, std::size_t size, Packet& packet,
-                     std::vector<std::uint8_t>& scratch, Time now) {
+                     std::vector<std::uint8_t>& scratch, Time now,
+                     std::int64_t wall = wall_seconds()) {
         Received result;
         if (previous_ and now >= previous_until_) previous_.reset();
         if (pending_ and now >= pending_until_) pending_.reset();
@@ -147,22 +165,37 @@ public:
             std::vector<std::uint8_t> encoded(wire, wire + size);
             if (server_) {
                 result.control = true;
-                if (active_ and active_->init == encoded) {
-                    result.reply = active_->response;
+                // Never move acceptance time backwards: expired nonce entries
+                // must not become replayable after a wall-clock rollback.
+                wall_high_water_ = std::max(wall_high_water_, std::max<std::int64_t>(0, wall));
+                const auto stamp = load_be64(packet.payload.data() + 32);
+                const auto current = static_cast<std::uint64_t>(wall_high_water_);
+                const auto half = init_window_ / 2;
+                const auto distance = stamp > current ? stamp - current : current - stamp;
+                const auto magnitude = static_cast<std::int64_t>(std::min<std::uint64_t>(
+                    distance, static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())));
+                result.clock_offset = stamp >= current ? magnitude : -magnitude;
+                result.timestamp_rejected = distance > half;
+                result.clock_warning = distance >= (half * 4 + 4) / 5;
+                if (result.timestamp_rejected) return result;
+                while (not nonce_expiry_.empty() and nonce_expiry_.begin()->first < current) {
+                    seen_nonces_.erase(nonce_expiry_.begin()->second);
+                    nonce_expiry_.erase(nonce_expiry_.begin());
+                }
+                Nonce nonce {};
+                std::copy_n(packet.payload.begin(), nonce.size(), nonce.begin());
+                if (seen_nonces_.count(nonce)) {
+                    result.replay_drop = true;
                     return result;
                 }
-                if (pending_) {
-                    // A duplicate doesn't extend the fixed deadline; another
-                    // INIT cannot evict the one pending authenticated exchange.
-                    if (pending_->init == encoded) result.reply = pending_->response;
+                if (seen_nonces_.size() >= nonce_capacity) {
+                    result.nonce_capacity = true;
                     return result;
                 }
-                // Don't let a captured INIT repeatedly monopolize the pending
-                // slot after its deadline. Bounded recent history is per boot.
-                if (std::find(recent_inits_.begin(), recent_inits_.end(), encoded) !=
-                    recent_inits_.end()) return result;
-                if (recent_inits_.size() == 64) recent_inits_.erase(recent_inits_.begin());
-                recent_inits_.push_back(encoded);
+                seen_nonces_.insert(nonce);
+                nonce_expiry_.emplace(stamp + half, nonce);
+                // Fresh retries cannot evict an exchange awaiting CONFIRM.
+                if (pending_) return result;
                 Packet response = control(PacketType::response, packet.message_id);
                 response.payload = commitment(master_, id_, encoded);
                 response.payload.resize(68);
@@ -321,7 +354,12 @@ private:
     bool waiting_ack_ = false;
     std::uint64_t client_exchange_ = 0;
     std::vector<std::uint8_t> client_init_, flight_;
-    std::vector<std::vector<std::uint8_t>> recent_inits_;
+    using Nonce = std::array<std::uint8_t, 32>;
+    static constexpr std::size_t nonce_capacity = 65536;
+    std::set<Nonce> seen_nonces_;
+    std::multimap<std::uint64_t, Nonce> nonce_expiry_;
+    std::size_t init_window_;
+    std::int64_t wall_high_water_ = 0;
 };
 
 } // namespace tuntom

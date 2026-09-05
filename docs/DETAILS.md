@@ -286,11 +286,12 @@ Replayed confirmations never reset these structures. Old session receive keys
 remain valid for a three-second overlap; previous-session packets cannot
 change the current peer. There are at most two candidate session keys.
 
-Restarted receivers have no active session. Replaying an old INIT may elicit
+Restarted receivers have no active session. Replaying a still-time-valid old INIT may elicit
 an authenticated response containing a new server nonce, but cannot restore
 old keys or authorize old DATA. The client restarts the handshake after 20
-seconds without authenticated active-session traffic. No wall clock is used
-for V4 packet sequencing. Exhausted 48-bit counters never wrap.
+seconds without authenticated active-session traffic. INIT freshness uses an authenticated Unix timestamp and the configurable total
+`--init-window` (default 300 seconds, +/-150). Nonces are remembered for their
+full remaining validity. No wall clock is used for V4 DATA packet sequencing. Exhausted 48-bit counters never wrap.
 
 Legacy v2 retains its timestamp generator semantics and runtime-only replay
 protection. Enabling legacy receive explicitly bypasses the V4 session model.

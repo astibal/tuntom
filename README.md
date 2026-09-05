@@ -347,3 +347,12 @@ README.md       quick usage
 DETAILS.md      implementation notes
 LICENSE.md      BSD 3-Clause license
 ```
+
+### INIT freshness
+
+V4 peers must both support the timestamped 92-byte INIT layout. Synchronize both
+host clocks. `--init-window 300` configures a total 300-second acceptance window
+(+/-150 seconds); use an even value from 2 to 86400. The server rejects expired
+INITs and previously seen nonces. Authenticated clock differences approaching
+the limit produce rate-limited warnings; `--quiet` suppresses them. See
+[protocol details](docs/PROTOCOL_V4.md) for retry, restart and capacity limits.

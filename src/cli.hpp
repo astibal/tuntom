@@ -33,6 +33,7 @@ inline void usage(const char* program_name) {
         << "Encryption (optional):\n"
         << "  --encrypt-ascon       Require Ascon-AEAD128 payload encryption\n"
         << "\n"
+        << "  --init-window <s>     Total INIT time window, even 2..86400 (default 300 = +/-150s)\n"
         << "Compatibility:\n"
         << "  --allow-v2            Accept legacy authenticated V2 "
            "packets\n"
@@ -88,6 +89,11 @@ inline void parse_options(
 
         if (option == "--encrypt-ascon") {
             options.encrypt_ascon = true;
+        } else if (option == "--init-window") {
+            if (++i >= argc) throw std::runtime_error("--init-window requires a value");
+            options.init_window = parse_size_option(option, argv[i], 2, 86400);
+            if (options.init_window % 2 != 0)
+                throw std::runtime_error("--init-window must be an even number of seconds");
         } else if (option == "--allow-v1") {
             options.allow_v1 = true;
         } else if (option == "--allow-v2") {

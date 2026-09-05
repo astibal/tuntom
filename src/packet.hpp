@@ -49,6 +49,7 @@ enum class StatsFormat {
 
 struct Options {
     bool encrypt_ascon = false;
+    std::size_t init_window = 300;
     bool allow_v1 = false;
     bool allow_v2 = false;
     bool ttl_compensate = true;
@@ -75,6 +76,8 @@ struct Stats {
     std::uint64_t drops_protocol = 0;
     std::uint64_t drops_tunnel_id = 0;
     std::uint64_t drops_replay = 0;
+    std::uint64_t init_timestamp_rejected = 0;
+    std::uint64_t init_nonce_capacity_rejected = 0;
     std::uint64_t drops_mtu = 0;
     std::uint64_t drops_process = 0;
     std::uint64_t udp_send_errors = 0;

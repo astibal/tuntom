@@ -412,7 +412,7 @@ public:
         if (not encrypt_) packet.payload.assign(data + protocol_header_v4_size, data + size);
 
         if (type == PacketType::init or type == PacketType::response) {
-            const std::size_t expected = type == PacketType::init ? 36 : 68;
+            const std::size_t expected = type == PacketType::init ? 44 : 68;
             if (packet.sequence != 0 or packet.message_id == 0 or
                 packet.fragment_offset != 0 or packet.original_length != 0 or
                 packet.payload.size() != expected) return false;

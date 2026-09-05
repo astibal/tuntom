@@ -22,6 +22,7 @@
 #include <unordered_map>
 #include <vector>
 #include <poll.h>
+#include <netdb.h>
 
 namespace tuntom {
 
@@ -39,7 +40,7 @@ public:
           tun_(interface_name, options.tun_mtu),
           master_key_(parse_master_key()),
           protocol_v2_(tunnel_id, master_key_),
-          protocol_v4_(tunnel_id, master_key_, server_mode, options.tun_mtu, options.encrypt_ascon) {
+          protocol_v4_(tunnel_id, master_key_, server_mode, options.tun_mtu, options.encrypt_ascon, options.init_window) {
 
         const std::uint16_t port =
             static_cast<std::uint16_t>(40000 + tunnel_id_);
@@ -449,6 +450,30 @@ private:
         if (version == protocol_version_v4) {
             auto result = protocol_v4_.receive(data, size, packet, rx_mac_buffer_,
                                                std::chrono::steady_clock::now());
+            if (result.timestamp_rejected) ++stats_.init_timestamp_rejected;
+            if (result.nonce_capacity) ++stats_.init_nonce_capacity_rejected;
+            if (result.clock_warning or result.nonce_capacity) {
+                const auto now = std::chrono::steady_clock::now();
+                if (init_warning_next_ == SessionProtocol::Time{} or now >= init_warning_next_) {
+                    if (log_level != LogLevel::quiet) {
+                        char host[NI_MAXHOST] {}, service[NI_MAXSERV] {};
+                        ::getnameinfo(reinterpret_cast<const sockaddr*>(&source), source_length,
+                            host, sizeof(host), service, sizeof(service), NI_NUMERICHOST | NI_NUMERICSERV);
+                        std::cerr << "WARN INIT tunnel=" << packet.tunnel_id
+                            << " peer=[" << host << "]:" << service
+                            << " observed_clock_offset=" << result.clock_offset
+                            << "s allowed=+/-" << options_.init_window / 2 << "s"
+                            << " rejected=" << (result.timestamp_rejected or result.nonce_capacity)
+                            << " nonce_capacity=" << result.nonce_capacity
+                            << " suppressed=" << init_warning_suppressed_
+                            << (result.nonce_capacity ? "; nonce history full; handshake may fail;"
+                                : "; handshake may fail; check clock synchronization on both peers;")
+                            << " delayed/replayed INITs can also cause clock warnings\n";
+                    }
+                    init_warning_suppressed_ = 0;
+                    init_warning_next_ = now + std::chrono::seconds(30);
+                } else ++init_warning_suppressed_;
+            }
             // Replies to unconfirmed INIT go directly to its source, without
             // changing the active return path. Clients retain their configured peer.
             send_handshake(result.reply, server_mode_ ? &source : nullptr, source_length);
@@ -1254,6 +1279,8 @@ private:
                 << "drops_protocol=" << stats_.drops_protocol << "\n"
                 << "drops_tunnel_id=" << stats_.drops_tunnel_id << "\n"
                 << "drops_replay=" << stats_.drops_replay << "\n"
+                << "init_timestamp_rejected=" << stats_.init_timestamp_rejected << "\n"
+                << "init_nonce_capacity_rejected=" << stats_.init_nonce_capacity_rejected << "\n"
                 << "drops_mtu=" << stats_.drops_mtu << "\n"
                 << "drops_process=" << stats_.drops_process << "\n"
                 << "udp_send_errors=" << stats_.udp_send_errors << "\n"
@@ -1314,6 +1341,8 @@ private:
     ProtocolV1 protocol_v1_;
     ProtocolV2 protocol_v2_;
     SessionProtocol protocol_v4_;
+    SessionProtocol::Time init_warning_next_ {};
+    std::uint64_t init_warning_suppressed_ = 0;
 
     SequenceGenerator message_id_generator_;
     ReplayWindow replay_window_;

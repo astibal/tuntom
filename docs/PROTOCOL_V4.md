@@ -30,7 +30,7 @@ the tag itself is excluded. No extra session-ID bytes are added to DATA.
 
 | Type | Direction | SEQ | Payload | Total UDP payload |
 |---|---|---|---|---:|
-| INIT (8) | C → S | 0 | nonce_C[32], suite[2], dh_length[2], DH_C[dh_length] | 84 B |
+| INIT (8) | C → S | 0 | nonce_C[32], timestamp[8], suite[2], dh_length[2], DH_C[dh_length] | 92 B |
 | RESPONSE (9) | S → C | 0 | init_hash[32], nonce_S[32], suite[2], dh_length[2], DH_S[dh_length] | 116 B |
 | CONFIRM (10) | C → S | hint << 48 | empty | 48 B |
 | CONFIRM_ACK (11) | S → C | hint << 48 | empty | 48 B |
@@ -130,13 +130,38 @@ never resets counters, replay/reassembly state or the peer address. The client
 keeps its configured destination. Authenticated ordinary active-session traffic
 can still update the server's NAT peer. Previous-session traffic cannot.
 
-The client retransmits INIT or CONFIRM every second, with a ten-second flight
-deadline. Expiry starts a fresh INIT. The server has one pending exchange with
-a fixed ten-second deadline; duplicates resend RESPONSE without extending it.
-An unrelated INIT cannot evict the pending exchange or the active session.
-The server remembers up to 64 accepted INIT byte strings during the process
-lifetime to avoid reopening an expired exchange repeatedly. This is bounded
-DoS mitigation, not unlimited handshake replay history or traffic rate limiting.
+INIT contains an AMAC-authenticated unsigned big-endian Unix timestamp in seconds
+at payload offset 32. This layout is incompatible with the earlier 84-byte INIT;
+upgrade both endpoints together. `--init-window 300` sets the **total** acceptance
+window in seconds (default 300, tolerance +/-150). Values must be even, 2..86400.
+The receiving server enforces its own setting; settings are not negotiated.
+
+The client retries INIT every second with fresh nonce, timestamp and exchange ID;
+responses to superseded attempts are ignored. CONFIRM retries retain their bytes
+and have a five-second flight deadline. The server has one pending exchange with a
+fixed five-second deadline. No INIT can evict it or the active session. Losing a
+RESPONSE can therefore delay recovery until the pending deadline.
+
+After authentication and time validation, the server records each nonce, including
+INITs ignored while pending. Repeated nonces are silently dropped, even if their
+timestamp or exchange ID differs. An exact set avoids Bloom-filter false positives.
+Entries remain through timestamp + half-window, including that final second.
+The per-process, per-tunnel set holds up to 65536 nonces; saturation rejects new
+INITs instead of evicting live entries. Expired entries are removed on the next
+time-valid authenticated INIT. Acceptance time never moves backwards within a
+process, so a local wall-clock rollback cannot resurrect expired entries; a large
+clock correction can consequently prevent handshakes until clocks catch up.
+
+Authenticated INITs at 80% of the tolerance trigger a clock warning; out-of-window
+INITs are rejected. Warnings include source, tunnel ID, observed timestamp offset,
+tolerance and suppressed-event count, limited to one per 30 seconds per tunnel
+(and suppressed by --quiet). The offset is relative to the server's nondecreasing
+acceptance clock, and can reflect delay/replay as well as clock skew. Statistics
+include `init_timestamp_rejected` and `init_nonce_capacity_rejected`.
+
+This limits replay age, not packet rate or fresh captured INIT attacks. History
+is not persisted: after restart a still-time-valid captured INIT can reserve the
+pending slot again. There is no stateless cookie in this revision.
 
 The previous active receive session is retained for three seconds after a
 replacement. Starting another pending exchange discards older overlap state,
