@@ -28,16 +28,17 @@ This makes the tunnel useful as a small remote L3 ingress primitive rather than 
 
 ## Deployment model
 
-The project intentionally uses a single C++ source file.
-
-This is not especially beautiful as source-tree architecture, but it makes deployment trivial:
+The implementation lives in ordinary C++ headers and `../src/main.cpp`.
+Both local and remote builds compile these directly. For deployment the source
+directory is streamed as a tar archive and extracted into a private temporary
+directory on the remote host:
 
 ```text
-udp_tun.cpp
+src/ -> tar
     |
     | SSH stdin
     v
-remote g++
+temporary src/ -> remote g++ -> remove temporary src/
     |
     v
 /tmp/udp_tun-ID-server
@@ -45,9 +46,9 @@ remote g++
 
 `../mk_tunnel.sh`:
 
-1. compiles the client locally
-2. sends `../udp_tun.cpp` over SSH
-3. compiles it remotely
+1. compiles the client locally from `../src/main.cpp`
+2. sends `../src/` as a tar stream over SSH into a temporary directory
+3. compiles it remotely and cleans up the temporary source directory
 4. stops the previous instance
 5. starts the server
 6. creates/configures the server TUN interface
@@ -220,7 +221,8 @@ A fragment cannot therefore be moved to a different offset, message, or original
 
 The implementation has no OpenSSL dependency.
 
-It contains a compact keyed construction based on the Ascon permutation directly inside `../udp_tun.cpp`.
+It contains a compact keyed construction based on the Ascon permutation in
+`../src/ascon.hpp`.
 
 The master secret is supplied through:
 
@@ -600,7 +602,8 @@ This is particularly useful for integrating the tunnel directly into software su
 
 ## Using the code in another program
 
-The easiest integration path is to copy the relevant classes from `../udp_tun.cpp` and derive from `Tunnel`.
+The easiest integration path is to include `../src/tunnel.hpp` and derive from
+`tuntom::Tunnel`.
 
 For example, conceptually:
 

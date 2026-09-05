@@ -1,7 +1,8 @@
-#define main tuntom_program_main
-#include "../udp_tun.cpp"
-#undef main
+#include "../src/protocol.hpp"
+
 #include <random>
+
+using namespace tuntom;
 
 void require(bool ok, const char* message) {
     if (not ok) throw std::runtime_error(message);

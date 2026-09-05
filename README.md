@@ -6,7 +6,7 @@ It was written by **Ales Stibal and ChatGPT** :)
 
 The main goal is simplicity:
 
-- one C++17 source file
+- compact C++17 implementation
 - one bootstrap shell script
 - no external runtime dependencies
 - source is copied to the remote host through SSH, compiled there, and started
@@ -306,10 +306,34 @@ The bootstrap script writes logs to:
 
 Use `--debug` on the C++ binary for packet and protocol details.
 
+## Building and editing
+
+Open this directory as a CMake project in CLion. The local build compiles
+`src/main.cpp` with ordinary, self-contained `.hpp` headers:
+
+```bash
+cmake -S . -B /tmp/tuntom-build -DCMAKE_BUILD_TYPE=Release
+cmake --build /tmp/tuntom-build
+ctest --test-dir /tmp/tuntom-build --output-on-failure
+```
+
+You can also compile directly without CMake:
+
+```bash
+g++ -std=c++17 -O2 -Wall -Wextra -pedantic src/main.cpp -o /tmp/tuntom
+```
+
+`mk_tunnel.sh` compiles locally from `src/main.cpp` and streams the `src/`
+directory as a tar archive over SSH. The remote host extracts it into a private
+temporary directory, compiles the staging binary and removes the source directory
+on exit, including compilation failure. Deployment requires `tar` on both hosts
+and `mktemp` on the remote host; CMake is not required there.
+
 ## Files
 
 ```text
-udp_tun.cpp     self-contained C++17 implementation
+src/           C++17 implementation with normal headers and main.cpp
+CMakeLists.txt local build, CLion project and C++ tests
 mk_tunnel.sh    build/deploy/start helper
 tuntom-net.sh   optional per-tunnel Linux routing/NAT helper
 tuntom.lua      Wireshark dissector

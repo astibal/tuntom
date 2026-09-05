@@ -7,6 +7,9 @@ bash /path/to/tuntom/tests/run.sh
 ```
 
 Requires a C++17 compiler (`g++` by default; override with `CXX=clang++`).
+The runner checks that each header compiles on its own, then compiles
+`src/main.cpp`. The regression tests include the real `src/` headers.
+The C++ tests are also available through CMake/CTest in CLion.
 Builds use a temporary directory that is removed on exit. No root privileges,
 live tunnel, or network access are needed.
 

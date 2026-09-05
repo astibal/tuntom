@@ -71,7 +71,7 @@ fi
 export TUNTOM_SECRET="${TUNTOM_SECRET:-}"
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-source_file="${script_dir}/udp_tun.cpp"
+source_dir="${script_dir}/src"
 net_file="${script_dir}/tuntom-net.sh"
 
 client_if="ut${id}c"
@@ -129,11 +129,6 @@ stats_format="${TUNTOM_STATS_FORMAT:-txt}"
 
 runtime_user="tuntom"
 runtime_group="tuntom"
-
-if [[ ! -f "$source_file" ]]; then
-    echo "Missing source file: $source_file" >&2
-    exit 1
-fi
 
 if [[ ! -f "$net_file" ]]; then
     echo "Missing network helper: $net_file" >&2
@@ -530,14 +525,25 @@ echo "  protocol:   v4 / Ascon auth + replay protection + fragmentation"
 
 echo "[1] Compile local staging binary"
 rm -f "$local_stage"
-g++ -std=c++17 -O2 -Wall -Wextra -pedantic "$source_file" -o "$local_stage"
+g++ -std=c++17 -O2 -Wall -Wextra -pedantic "$source_dir/main.cpp" -o "$local_stage"
 test -x "$local_stage"
 
 echo "[2] Compile remote staging binary"
 ssh -o BatchMode=yes "$remote" "rm -f '${remote_stage}'"
-ssh -o BatchMode=yes "$remote" \
-    "g++ -x c++ -std=c++17 -O2 -Wall -Wextra -pedantic -o '${remote_stage}' - && test -x '${remote_stage}'" \
-    < "$source_file"
+remote_build_command=$(cat <<'REMOTE_BUILD'
+set -eu
+build_dir=$(mktemp -d /tmp/tuntom-build.XXXXXXXX)
+trap 'rm -rf -- "$build_dir"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+tar -xf - -C "$build_dir"
+g++ -std=c++17 -O2 -Wall -Wextra -pedantic "$build_dir/src/main.cpp" -o "$stage"
+test -x "$stage"
+REMOTE_BUILD
+)
+tar -C "$script_dir" -cf - src | \
+    ssh -o BatchMode=yes "$remote" "stage='${remote_stage}'; ${remote_build_command}"
 
 echo "[3] Deploy network helper"
 ssh "$remote" "cat > '${remote_net_file}' && chmod 700 '${remote_net_file}'" < "$net_file"

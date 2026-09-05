@@ -1,10 +1,13 @@
 // No TUN device, root privileges, or network access needed.
-#define main tuntom_program_main
-#include "../udp_tun.cpp"
-#undef main
+#include "../src/protocol.hpp"
+#include "../src/replay.hpp"
+#include "../src/reassembly.hpp"
+#include "../src/fragmentation.hpp"
 
 #include <limits>
 #include <random>
+
+using namespace tuntom;
 
 void require(bool condition, const char* message) {
     if (not condition) {
