@@ -233,6 +233,11 @@ public:
         : tunnel_id_(tunnel_id), tx_key_(tx), rx_key_(rx), encrypt_(encrypt),
           tx_aead_(tx), rx_aead_(rx) {}
 
+    ~ProtocolV4() override {
+        secure_zero(tx_key_.data(), tx_key_.size());
+        secure_zero(rx_key_.data(), rx_key_.size());
+    }
+
     std::uint8_t version() const override {
         return protocol_version_v4;
     }
@@ -415,10 +420,11 @@ public:
             const std::size_t expected = type == PacketType::init ? 44 : 68;
             if (packet.sequence != 0 or packet.message_id == 0 or
                 packet.fragment_offset != 0 or packet.original_length != 0 or
-                packet.payload.size() != expected) return false;
-            // Supported suites have no DH share.
-            if (load_be16(packet.payload.data() + expected - 4) > 1 or
-                load_be16(packet.payload.data() + expected - 2) != 0) return false;
+                packet.payload.size() < expected) return false;
+            const auto suite = load_be16(packet.payload.data() + expected - 4);
+            const auto dh_size = load_be16(packet.payload.data() + expected - 2);
+            if (suite > 2 or dh_size != (suite == 2 ? 32 : 0) or
+                packet.payload.size() != expected + dh_size) return false;
         } else if (type == PacketType::confirm or type == PacketType::confirm_ack) {
             if (packet.message_id == 0 or packet.fragment_offset != 0 or
                 packet.original_length != 0 or not packet.payload.empty() or

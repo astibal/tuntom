@@ -1,6 +1,8 @@
 #pragma once
 
 #include "protocol.hpp"
+#include "akdf.hpp"
+#include "x25519.hpp"
 #include "replay.hpp"
 #include "reassembly.hpp"
 #include <algorithm>
@@ -29,6 +31,7 @@ public:
     static constexpr auto retry_interval = std::chrono::seconds(1);
     static constexpr auto pending_lifetime = std::chrono::seconds(5);
     static constexpr auto old_lifetime = std::chrono::seconds(3);
+    static constexpr auto rekey_interval = std::chrono::minutes(2);
     static constexpr auto idle_restart = std::chrono::seconds(20);
 
     struct Session {
@@ -36,6 +39,7 @@ public:
         ReplayWindow replay;
         Reassembler reassembly;
         std::uint16_t hint;
+        Time created {};
         std::uint64_t next_counter = 1;
         std::uint64_t exchange;
         std::vector<std::uint8_t> init, response;
@@ -59,19 +63,22 @@ public:
     };
 
     SessionProtocol(std::uint16_t id, const ascon::key_type& master,
-                    bool server, std::size_t mtu = default_tun_mtu, bool encrypt = false, std::size_t init_window = 300)
-        : id_(id), master_(master), server_(server), mtu_(mtu), encrypt_(encrypt),
+                    bool server, std::size_t mtu = default_tun_mtu, bool encrypt = false,
+                    std::size_t init_window = 300, bool pfs = false)
+        : id_(id), master_(master), server_(server), mtu_(mtu), encrypt_(encrypt or pfs), pfs_(pfs),
           handshake_(id, master, server), init_window_(init_window) {
         if (init_window < 2 or init_window > 86400 or init_window % 2 != 0)
             throw std::runtime_error("INIT window must be even and in range 2..86400 seconds");
     }
+
+    ~SessionProtocol() { secure_zero(master_.data(), master_.size()); }
 
     static std::int64_t wall_seconds() {
         return std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
     }
 
-    // Bound suite-1 key use independently of the 48-bit wire counter.
+    // Bound encrypted-suite key use independently of the 48-bit wire counter.
     // At UDP packet sizes this stays below 2^48 bytes per directional key.
     bool ready() const {
         return active_ and active_->next_counter <= (encrypt_ ? 0xffffffffULL : counter_mask);
@@ -97,10 +104,18 @@ public:
         pending_.reset();
         waiting_ack_ = false;
         Packet init = control(PacketType::init, random_id());
-        init.payload.resize(44);
+        client_secret_.clear();
+        init.payload.resize(pfs_ ? 76 : 44);
         random_bytes(init.payload.data(), 32);
         store_be64(init.payload.data() + 32, static_cast<std::uint64_t>(std::max<std::int64_t>(0, wall)));
-        store_be16(init.payload.data() + 40, encrypt_ ? 1 : 0);
+        store_be16(init.payload.data() + 40, suite());
+        if (pfs_) {
+            random_bytes(client_secret_.bytes.data(), 32);
+            x25519::Bytes pub {};
+            x25519::public_key(pub, client_secret_.bytes);
+            store_be16(init.payload.data() + 42, 32);
+            std::copy(pub.begin(), pub.end(), init.payload.begin() + 44);
+        }
         client_init_ = handshake_.encode(init);
         client_exchange_ = init.message_id;
         flight_ = client_init_;
@@ -125,7 +140,8 @@ public:
             }
             return {};
         }
-        if (not ready() or now - last_received_ >= idle_restart) return begin(now, wall);
+        if (not ready() or now - last_received_ >= idle_restart or
+            (pfs_ and now - active_->created >= rekey_interval)) return begin(now, wall);
         return {};
     }
 
@@ -160,8 +176,8 @@ public:
             if ((server_ and type != PacketType::init) or
                 (not server_ and type != PacketType::response)) return result;
             if (not handshake_.decode_with_scratch(wire, size, packet, scratch)) return result;
-            if (load_be16(packet.payload.data() + packet.payload.size() - 4) !=
-                (encrypt_ ? 1 : 0)) return result;
+            if (load_be16(packet.payload.data() + (type == PacketType::init ? 40 : 64)) !=
+                suite()) return result;
             std::vector<std::uint8_t> encoded(wire, wire + size);
             if (server_) {
                 result.control = true;
@@ -198,12 +214,22 @@ public:
                 if (pending_) return result;
                 Packet response = control(PacketType::response, packet.message_id);
                 response.payload = commitment(master_, id_, encoded);
-                response.payload.resize(68);
+                response.payload.resize(pfs_ ? 100 : 68);
                 random_bytes(response.payload.data() + 32, 32);
-                store_be16(response.payload.data() + 64, encrypt_ ? 1 : 0);
+                store_be16(response.payload.data() + 64, suite());
+                Secret<32> secret, dh;
+                if (pfs_) {
+                    random_bytes(secret.bytes.data(), 32);
+                    x25519::Bytes peer {}, pub {};
+                    std::copy_n(packet.payload.begin() + 44, 32, peer.begin());
+                    if (not x25519::shared(dh.bytes, secret.bytes, peer)) return result;
+                    x25519::public_key(pub, secret.bytes);
+                    store_be16(response.payload.data() + 66, 32);
+                    std::copy(pub.begin(), pub.end(), response.payload.begin() + 68);
+                }
                 auto response_wire = handshake_.encode(response);
                 previous_.reset(); // At most two candidate session keys.
-                pending_ = derive(encoded, response_wire, packet.message_id);
+                pending_ = derive(encoded, response_wire, packet.message_id, dh.bytes, now);
                 pending_until_ = now + pending_lifetime;
                 result.reply = std::move(response_wire);
                 return result;
@@ -217,7 +243,14 @@ public:
                 if (active_ and active_->response == encoded) result.reply = flight_;
                 return result;
             }
-            auto candidate = derive(client_init_, encoded, client_exchange_);
+            Secret<32> dh;
+            if (pfs_) {
+                x25519::Bytes peer {};
+                std::copy_n(packet.payload.begin() + 68, 32, peer.begin());
+                if (not x25519::shared(dh.bytes, client_secret_.bytes, peer)) return result;
+            }
+            auto candidate = derive(client_init_, encoded, client_exchange_, dh.bytes, now);
+            client_secret_.clear();
             previous_ = std::move(active_);
             previous_until_ = now + old_lifetime;
             active_ = std::move(candidate);
@@ -286,6 +319,8 @@ public:
     }
 
 private:
+    std::uint16_t suite() const { return pfs_ ? 2 : (encrypt_ ? 1 : 0); }
+
     static ascon::key_type expand(const ascon::key_type& master, std::uint16_t id,
                                   const char* label,
                                   const std::vector<std::uint8_t>& transcript) {
@@ -298,14 +333,24 @@ private:
 
     std::unique_ptr<Session> derive(const std::vector<std::uint8_t>& init,
                                     const std::vector<std::uint8_t>& response,
-                                    std::uint64_t exchange) const {
+                                    std::uint64_t exchange, const x25519::Bytes& dh, Time now) const {
         auto transcript = init;
         transcript.insert(transcript.end(), response.begin(), response.end());
-        const auto c2s = expand(master_, id_, "V4-SESSION-C2S", transcript);
-        const auto s2c = expand(master_, id_, "V4-SESSION-S2C", transcript);
-        const auto hint = expand(master_, id_, "V4-SESSION-HINT", transcript);
-        auto result = std::make_unique<Session>(id_, server_ ? s2c : c2s,
-            server_ ? c2s : s2c, load_be16(hint.data()), exchange, mtu_, encrypt_);
+        Secret<16> c2s, s2c, hint;
+        if (pfs_) {
+            Secret<16> prk;
+            akdf::extract(prk.bytes, master_, id_, dh);
+            akdf::expand(c2s.bytes, prk.bytes, id_, "TUNTOM-AKDF-v1-C2S", transcript);
+            akdf::expand(s2c.bytes, prk.bytes, id_, "TUNTOM-AKDF-v1-S2C", transcript);
+            akdf::expand(hint.bytes, prk.bytes, id_, "TUNTOM-AKDF-v1-HINT", transcript);
+        } else {
+            c2s.bytes = expand(master_, id_, "V4-SESSION-C2S", transcript);
+            s2c.bytes = expand(master_, id_, "V4-SESSION-S2C", transcript);
+            hint.bytes = expand(master_, id_, "V4-SESSION-HINT", transcript);
+        }
+        auto result = std::make_unique<Session>(id_, server_ ? s2c.bytes : c2s.bytes,
+            server_ ? c2s.bytes : s2c.bytes, load_be16(hint.bytes.data()), exchange, mtu_, encrypt_);
+        result->created = now;
         result->init = init;
         result->response = response;
         return result;
@@ -347,6 +392,8 @@ private:
     bool server_;
     std::size_t mtu_;
     bool encrypt_;
+    bool pfs_;
+    Secret<32> client_secret_;
     ProtocolV4 handshake_;
     std::unique_ptr<Session> active_, previous_, pending_;
     Time previous_until_ {}, pending_until_ {}, last_received_ {};

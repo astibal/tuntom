@@ -58,7 +58,7 @@
 --
 -- V4 handshake: INIT(8), RESPONSE(9), CONFIRM(10), CONFIRM_ACK(11).
 -- SEQ splits into a 16-bit session hint and a 48-bit counter.
--- Suite 0 is plaintext AMAC; suite 1 uses Ascon-AEAD128, with absent DH.
+-- Suites 0/1 have absent DH; suite 2 uses X25519 + AKDF + Ascon-AEAD128.
 -- This dissector does not verify the Ascon authentication tag.
 --
 -- By default it registers for UDP ports 40001..40255, matching:
@@ -208,7 +208,7 @@ local f_counter = ProtoField.uint64("tuntom.counter", "Session Packet Counter", 
 local f_init_timestamp = ProtoField.uint64("tuntom.init_timestamp", "INIT Unix Timestamp (seconds)", base.DEC)
 local f_nonce = ProtoField.bytes("tuntom.nonce", "Handshake Nonce")
 local f_init_hash = ProtoField.bytes("tuntom.init_hash", "INIT Binding (keyed AMAC commitment)")
-local f_suite = ProtoField.uint16("tuntom.suite", "Suite", base.DEC, {[0] = "AMAC, no encryption", [1] = "Ascon-AEAD128"})
+local f_suite = ProtoField.uint16("tuntom.suite", "Suite", base.DEC, {[0] = "AMAC, no encryption", [1] = "Ascon-AEAD128", [2] = "X25519 + AKDF + Ascon-AEAD128"})
 local f_dh_length = ProtoField.uint16("tuntom.dh_length", "DH Public Key Length", base.DEC)
 local f_dh = ProtoField.bytes("tuntom.dh", "DH Public Key")
 local e_handshake = ProtoExpert.new("tuntom.handshake_error", "Invalid/unsupported handshake",
@@ -977,15 +977,17 @@ function tuntom.dissector(buffer, pinfo, tree)
                 local dh_length = buffer(suite_offset + 2, 2):uint()
                 local remaining = buffer:len() - fields_end
                 if remaining > 0 then subtree:add(f_dh, buffer(fields_end, remaining)) end
+                local suite = buffer(suite_offset, 2):uint()
+                local expected_dh = suite == 2 and 32 or 0
                 bad = bad or buffer(8, 8):uint64() ~= UInt64(0, 0) or
-                    buffer(suite_offset, 2):uint() > 1 or
-                    dh_length ~= 0 or remaining ~= dh_length
+                    suite > 2 or
+                    dh_length ~= expected_dh or remaining ~= dh_length
             else
                 bad = bad or payload_length ~= 0 or buffer(10, 6):uint64() ~= UInt64(0, 0)
             end
             if bad then
                 subtree:add_proto_expert_info(e_handshake,
-                    "Expected suite 0 or 1, absent DH, zero control metadata and exact message length")
+                    "Expected suite 0/1 without DH or suite 2 with 32-byte DH, zero control metadata and exact message length")
             end
             return buffer:len()
         end

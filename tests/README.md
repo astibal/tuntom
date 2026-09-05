@@ -43,3 +43,14 @@ firewall rules and requires root. It is deliberately not run by `run.sh`.
 - `aead_bench.cpp`: optional allocation-reusing codec microbenchmark (MB/s):
   `g++ -std=c++17 -O3 -march=native tests/aead_bench.cpp -o /tmp/aead-bench && /tmp/aead-bench`.
   Results include header handling and authentication; they are not tunnel throughput.
+
+- `x25519_test.cpp`: RFC 7748 public/shared secrets and 1/1000-iteration
+  vectors, scalar clamping, noncanonical/high-bit public inputs, low-order rejection.
+- `akdf_test.cpp`: exact AKDF framing and fixed known-answer vectors, domain
+  separation, full DH/PSK/context binding and exception-path buffer wiping.
+  `python3 tests/akdf_vectors.py` regenerates vectors with an independent,
+  test-only lookup-S-box AMAC implementation.
+- `pfs_session_test.cpp`: suite-2 exchange, tampering, authenticated malformed
+  DH/lengths, suite isolation, lost flights, periodic DH rekey under continuous
+  traffic, previous-session expiry, restart and counter limits. The encrypted
+  session tests also run with PFS, including every control type and fragmentation.

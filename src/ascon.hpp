@@ -1,4 +1,5 @@
 #pragma once
+#include "secret.hpp"
 
 #include <algorithm>
 #include <array>
@@ -97,6 +98,8 @@ public:
     explicit Aead128(const key_type& key)
         : k0_(load_le64(key.data())), k1_(load_le64(key.data() + 8)) {}
 
+    ~Aead128() { secure_zero(&k0_, sizeof(k0_)); secure_zero(&k1_, sizeof(k1_)); }
+
     // Input/output may alias. No allocation, padding buffer, or second MAC pass.
     void encrypt(const std::uint8_t* nonce, const std::uint8_t* ad,
                  std::size_t ad_size, const std::uint8_t* input,
@@ -124,6 +127,7 @@ private:
         std::array<std::uint64_t, 5> s {
             0x00001000808c0001ULL, k0_, k1_,
             load_le64(nonce), load_le64(nonce + 8)};
+        WipeGuard wipe_state(s.data(), sizeof(s));
         permute(s, 12);
         s[3] ^= k0_; s[4] ^= k1_;
         if (ad_size) {
@@ -170,8 +174,9 @@ inline void mac(
     std::size_t size,
     tag_type& tag) {
 
-    const std::uint64_t k0 = load_be64(key.data());
-    const std::uint64_t k1 = load_be64(key.data() + 8);
+    std::uint64_t k0 = load_be64(key.data());
+    std::uint64_t k1 = load_be64(key.data() + 8);
+    WipeGuard wipe_k0(&k0, sizeof(k0)), wipe_k1(&k1, sizeof(k1));
 
     // Compact Ascon-p[12]/p[8]-based keyed sponge MAC.
     // Kept self-contained for the single-file deployment model.
@@ -183,6 +188,7 @@ inline void mac(
         ~static_cast<std::uint64_t>(tunnel_id),
     };
 
+    WipeGuard wipe_state(state.data(), sizeof(state));
     permute(state, 12);
     state[3] ^= k0;
     state[4] ^= k1;
@@ -195,6 +201,7 @@ inline void mac(
     }
 
     std::array<std::uint8_t, 8> final_block {};
+    WipeGuard wipe_block(final_block.data(), final_block.size());
     if (size > 0) {
         std::memcpy(final_block.data(), data, size);
     }

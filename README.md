@@ -206,7 +206,15 @@ By default, suite 0 authenticates payloads without encryption. Enable
 `./mk_tunnel.sh <id> <host> --encrypt-ascon` configures both ends.
 The option rejects legacy `--allow-v1` / `--allow-v2`; mismatched modes fail
 the handshake without falling back to plaintext. Encryption adds no wire bytes.
-Neither suite provides forward secrecy (no DH). Handshake normally adds one RTT before the client can send
+Suites 0/1 do not provide forward secrecy. Use `--pfs` on **both endpoints**
+for suite 2: ephemeral X25519 + project-specific AMAC-based AKDF + Ascon-AEAD128.
+`./mk_tunnel.sh <id> <host> --pfs` configures both ends and implies encryption.
+The client performs a fresh DH exchange every two minutes, even with continuous
+traffic. Old receive keys overlap for up to three seconds. Suite mismatch fails
+closed. X25519 is vendored from Monocypher; no external libraries are needed.
+AKDF is our custom construction, not HKDF or a standardized Ascon KDF; its
+security assumptions are described in the wire specification.
+Handshake normally adds one RTT before the client can send
 DATA; DATA reaching the server before CONFIRM is dropped. The ACK is retried
 without resetting session counters. Initial TUN traffic is not buffered.
 See [the V4 wire specification](docs/PROTOCOL_V4.md) for layouts and timeouts.
@@ -350,7 +358,7 @@ LICENSE.md      BSD 3-Clause license
 
 ### INIT freshness
 
-V4 peers must both support the timestamped 92-byte INIT layout. Synchronize both
+V4 peers must both support the timestamped INIT layout (92 bytes for suites 0/1, 124 for suite 2). Synchronize both
 host clocks. `--init-window 300` configures a total 300-second acceptance window
 (+/-150 seconds); use an even value from 2 to 86400. The server rejects expired
 INITs and previously seen nonces. Authenticated clock differences approaching

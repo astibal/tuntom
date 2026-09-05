@@ -26,3 +26,8 @@ from multiple translation units.
 `../mk_tunnel.sh` sends this directory as a tar stream over SSH, compiles
 `main.cpp` remotely and removes the temporary sources on exit. No generated
 source file or custom include processing is needed.
+
+PFS implementation: `x25519.hpp` wraps the pinned `vendor/x25519.hpp` extraction;
+`akdf.hpp` defines project-specific AMAC extract/expand; `secret.hpp` owns wiping
+helpers. `--pfs` selects suite 2, implies Ascon encryption and enables periodic DH
+rekey. See `docs/PROTOCOL_V4.md` for exact derivation and security assumptions.

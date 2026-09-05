@@ -31,6 +31,7 @@ inline void usage(const char* program_name) {
         << "  --stats-format <fmt>   Statistics format; currently: txt\n"
         << "\n"
         << "Encryption (optional):\n"
+        << "  --pfs                 Require X25519 + AKDF + Ascon-AEAD128 (suite 2)\n"
         << "  --encrypt-ascon       Require Ascon-AEAD128 payload encryption\n"
         << "\n"
         << "  --init-window <s>     Total INIT time window, even 2..86400 (default 300 = +/-150s)\n"
@@ -87,7 +88,9 @@ inline void parse_options(
     for (int i = first_option; i < argc; ++i) {
         const std::string option = argv[i];
 
-        if (option == "--encrypt-ascon") {
+        if (option == "--pfs") {
+            options.pfs = options.encrypt_ascon = true;
+        } else if (option == "--encrypt-ascon") {
             options.encrypt_ascon = true;
         } else if (option == "--init-window") {
             if (++i >= argc) throw std::runtime_error("--init-window requires a value");

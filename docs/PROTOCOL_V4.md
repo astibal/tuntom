@@ -30,8 +30,8 @@ the tag itself is excluded. No extra session-ID bytes are added to DATA.
 
 | Type | Direction | SEQ | Payload | Total UDP payload |
 |---|---|---|---|---:|
-| INIT (8) | C → S | 0 | nonce_C[32], timestamp[8], suite[2], dh_length[2], DH_C[dh_length] | 92 B |
-| RESPONSE (9) | S → C | 0 | init_hash[32], nonce_S[32], suite[2], dh_length[2], DH_S[dh_length] | 116 B |
+| INIT (8) | C → S | 0 | nonce_C[32], timestamp[8], suite[2], dh_length[2], DH_C[dh_length] | 92 B (124 B in suite 2) |
+| RESPONSE (9) | S → C | 0 | init_hash[32], nonce_S[32], suite[2], dh_length[2], DH_S[dh_length] | 116 B (148 B in suite 2) |
 | CONFIRM (10) | C → S | hint << 48 | empty | 48 B |
 | CONFIRM_ACK (11) | S → C | hint << 48 | empty | 48 B |
 
@@ -42,13 +42,17 @@ Retransmissions preserve the exact original bytes, nonces and exchange ID.
 
 Suite **0** (default) authenticates plaintext using AMAC. Suite **1** requires
 `--encrypt-ascon` on both endpoints and uses standard NIST SP 800-232
-Ascon-AEAD128. Both require `dh_length = 0`, exact payload lengths and matching
-local configuration. Unsupported suites and nonempty DH are rejected. There
-is no negotiation, timeout fallback, or forward secrecy.
+Ascon-AEAD128. Both require `dh_length = 0`; neither has forward secrecy.
+Suite **2** requires `--pfs` on both endpoints and implies encryption. It uses
+Ascon-AEAD128 with ephemeral X25519 and the AKDF-v1 construction below.
+Its `dh_length` must be 32, giving exact payload sizes of 76/100 bytes for
+INIT/RESPONSE. All suites require exact lengths and matching local configuration.
+Unknown suites, wrong DH lengths and zero DH shared results are rejected.
+There is no negotiation or timeout fallback.
 
 INIT/RESPONSE remain plaintext AMAC packets with bit 7 clear. Their authenticated
 suite fields are also bound into the session-key transcript. All subsequent
-suite-1 packets, including CONFIRM/ACK and PMTUD, set bit 7 and use AEAD:
+suite-1/2 packets, including CONFIRM/ACK and PMTUD, set bit 7 and use AEAD:
 
 - Key: the existing fresh 128-bit directional session key derived below.
 - Nonce: eight zero bytes followed by the exact eight wire SEQ bytes.
@@ -59,7 +63,7 @@ suite-1 packets, including CONFIRM/ACK and PMTUD, set bit 7 and use AEAD:
 Directional keys prevent cross-direction nonce reuse. Each fragment/control
 packet consumes a fresh counter. Counter zero is used only by the fixed
 CONFIRM/ACK in its respective direction; retries reproduce the identical packet.
-Suite 1 stops sending after counter `2^32 - 1` and establishes a fresh session,
+Suites 1/2 stop sending after counter `2^32 - 1` and establishes a fresh session,
 well before 48-bit wrap. With UDP datagrams below 64 KiB this also bounds traffic
 to less than `2^48` bytes per directional key. Mode-bit changes fail authentication;
 wrong modes are rejected, and legacy receive flags cannot accompany encryption.
@@ -82,7 +86,7 @@ H_s2c = AMAC(master, id, "TUNTOM-V4-SERVER-TO-CLIENT")
 INIT is tagged with H_c2s; RESPONSE is tagged with H_s2c. Session DATA cannot
 be authenticated with these keys, even if the direction matches.
 
-Define the domain-separated expansion below. Here, labels **include one
+For suites 0/1, define the domain-separated expansion below. Here, labels **include one
 trailing NUL byte** before the transcript:
 
 ```text
@@ -102,6 +106,64 @@ hint  = first two bytes of expand("V4-SESSION-HINT", T), big-endian
 commitment**, not SHA-256 or an unkeyed hash. Two independently labeled AMAC
 outputs do not imply a claim of 256-bit security: the master key is 128 bits.
 The fixed handshake message lengths make transcript concatenation unambiguous.
+
+Suite 2 retains the same handshake keys and `init_hash` commitment, but
+replaces the session-key derivation as follows.
+
+### Suite 2: X25519 and AKDF-v1
+
+Each new attempt generates a fresh 32-byte private scalar with `getrandom`.
+X25519 clamps the scalar internally and masks the peer public key's high bit
+as required by RFC 7748. Both endpoints reject an all-zero raw DH result.
+X25519 comes from a pinned Monocypher 4.0.3 extraction; see
+[`src/vendor/README.md`](../src/vendor/README.md) for provenance and reproduction.
+No system crypto library is used.
+
+Let `Z` be the full 32-byte X25519 result, `I` the full authenticated INIT
+(124 bytes), and `R` the full authenticated RESPONSE (148 bytes). `T = I || R`
+is exactly 272 bytes. It binds the tunnel ID, version, suite, exchange ID,
+client/server positions, nonces, timestamp, both DH public keys and handshake
+AMACs. All string labels below are ASCII and include exactly one trailing NUL.
+`BE64` encodes an unsigned 64-bit integer in big-endian order.
+
+```text
+PRK = AMAC(master, id, "TUNTOM-AKDF-v1-EXTRACT" || NUL || Z)
+
+AKDF_expand(label) = AMAC(PRK, id,
+    ASCII(label) || NUL || BE64(len(T)) || T || 0x01)
+
+S_c2s = AKDF_expand("TUNTOM-AKDF-v1-C2S")
+S_s2c = AKDF_expand("TUNTOM-AKDF-v1-S2C")
+hint  = first two bytes of AKDF_expand("TUNTOM-AKDF-v1-HINT"), big-endian
+```
+
+AKDF is HKDF-like in its extract/expand structure; it is **not HKDF** and
+not a standardized Ascon KDF. It uses only the existing 16-byte AMAC. Each
+expansion is one block, independently labeled; no general variable-length
+output API is defined. The 16-byte PRK and output keys cap claimed strength
+at 128 bits. In particular, PFS relies on the unproven assumption that this
+AMAC extraction hides high-entropy DH input even when the master key later
+becomes known, as well as on X25519 and the remaining protocol assumptions.
+Regression vectors and tests are not a proof or independent protocol audit.
+
+The raw DH secret and PRK are never sent. Server private scalars and DH/KDF
+temporaries are wiped after candidate derivation, including exception paths.
+The client wipes its private scalar after derivation or replacement of an INIT
+attempt. A new INIT retry uses a new scalar/nonce/exchange ID; CONFIRM/ACK retries
+reuse the same encoded bytes and do not require retaining the scalar. Repeated
+RESPONSEs only trigger a CONFIRM retry when byte-identical to the accepted one.
+Session key arrays and cached AEAD keys are wiped on session destruction;
+MAC/AEAD state buffers and AKDF secret input buffers are also wiped. This does
+not guarantee removal of compiler-created register copies, core dumps or VM
+snapshots.
+
+The client starts a fresh DH handshake after two minutes measured from candidate
+creation, even when authenticated traffic continues. The current session remains
+usable while INIT is pending. Existing confirmation timeout, counter limits and
+three-second previous-session receive overlap apply. Idle restart remains 20
+seconds. The server does not independently initiate handshakes. Compromise of
+live session keys exposes that session, and compromise of the PSK permits future
+impersonation; forward secrecy concerns past erased sessions.
 
 CONFIRM and CONFIRM_ACK use S_c2s and S_s2c, respectively. All ordinary traffic
 (DATA, HELLO, KEEPALIVE, PING/PONG, MTU_PROBE/REPLY) uses these session keys.
@@ -184,7 +246,7 @@ ordinary replay processing only for their idempotent ACK behavior.
 
 Counters never wrap. Once the 48-bit counter is exhausted, transmission stops;
 the client initiates a fresh handshake. If the server exhausts first, the client
-recovers via the authenticated-traffic timeout. Suite 1 uses the earlier
+recovers via the authenticated-traffic timeout. Suites 1/2 use the earlier
 32-bit transmission limit described above.
 
 DATA fragmentation uses the unchanged 48-byte header and a distinct sequence

@@ -40,7 +40,11 @@ public:
           tun_(interface_name, options.tun_mtu),
           master_key_(parse_master_key()),
           protocol_v2_(tunnel_id, master_key_),
-          protocol_v4_(tunnel_id, master_key_, server_mode, options.tun_mtu, options.encrypt_ascon, options.init_window) {
+          protocol_v4_(tunnel_id, master_key_, server_mode, options.tun_mtu, options.encrypt_ascon, options.init_window, options.pfs) {
+
+        options_.encrypt_ascon = options_.encrypt_ascon or options_.pfs;
+        if (options_.encrypt_ascon and (options_.allow_v1 or options_.allow_v2))
+            throw std::runtime_error("Encryption/PFS cannot be combined with legacy protocols");
 
         const std::uint16_t port =
             static_cast<std::uint16_t>(40000 + tunnel_id_);
@@ -67,6 +71,7 @@ public:
                 << " tun-mtu=" << options_.tun_mtu
                 << " transport-mtu-configured=" << options_.transport_mtu
                 << " transport-mtu-active=" << active_transport_mtu_
+                << " pfs=" << (options_.pfs ? "x25519-akdf" : "off")
                 << " encryption=" << (options_.encrypt_ascon ? "ascon-aead128" : "off")
                 << " pmtud=" << (options_.pmtud_auto ? "auto" : "off")
                 << " max-fragment-payload="

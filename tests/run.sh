@@ -15,7 +15,7 @@ echo "Building application"
 "${CXX:-g++}" -std=c++17 -O2 -Wall -Wextra -Wconversion -pedantic \
     "${tests_dir}/../src/main.cpp" -o "${build_dir}/tuntom"
 
-for name in replay_test mac_test aead_test encrypted_session_test session_test; do
+for name in x25519_test akdf_test pfs_session_test replay_test mac_test aead_test encrypted_session_test session_test; do
     echo "Building ${name}"
     "${CXX:-g++}" -std=c++17 -O2 -Wall -Wextra -Wconversion -pedantic \
         "${tests_dir}/${name}.cpp" -o "${build_dir}/${name}"

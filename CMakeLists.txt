@@ -10,7 +10,7 @@ target_compile_options(tuntom PRIVATE -Wall -Wextra -pedantic)
 
 include(CTest)
 if(BUILD_TESTING)
-    foreach(name replay_test mac_test aead_test encrypted_session_test session_test processing_stats_test throughput_stats_test)
+    foreach(name x25519_test akdf_test pfs_session_test replay_test mac_test aead_test encrypted_session_test session_test processing_stats_test throughput_stats_test)
         add_executable(${name} tests/${name}.cpp)
         target_compile_options(${name} PRIVATE -Wall -Wextra -Wconversion -pedantic)
         add_test(NAME ${name} COMMAND ${name})
