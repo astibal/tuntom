@@ -74,7 +74,7 @@ iptables_ensure_jump() {
     local parent="$2"
     local child="$3"
 
-    if ! iptables -t "$table" -C "$parent" -j "$child" 2>/dev/null; then
+    if ! iptables -t "$table" -C "$parent" -j "$child" >/dev/null 2>&1; then
         iptables -t "$table" -A "$parent" -j "$child"
     fi
 }
@@ -84,7 +84,7 @@ iptables_delete_jump() {
     local parent="$2"
     local child="$3"
 
-    while iptables -t "$table" -C "$parent" -j "$child" 2>/dev/null; do
+    while iptables -t "$table" -C "$parent" -j "$child" >/dev/null 2>&1; do
         iptables -t "$table" -D "$parent" -j "$child"
     done
 }
@@ -102,7 +102,7 @@ ip_rule_delete() {
     local mask="$2"
     local table="$3"
 
-    while ip rule del fwmark "${mark}/${mask}" table "$table" 2>/dev/null; do
+    while ip rule del fwmark "${mark}/${mask}" table "$table" >/dev/null 2>&1; do
         :
     done
 }
@@ -153,7 +153,7 @@ tuntom_net_up() {
         -m connmark --mark "${TUNTOM_MARK}/${TUNTOM_MARK_MASK}" \
         -j CONNMARK --restore-mark \
         --nfmask "$TUNTOM_MARK_MASK" \
-        --ctmask "$TUNTOM_MARK_MASK" 2>/dev/null; then
+        --ctmask "$TUNTOM_MARK_MASK" >/dev/null 2>&1; then
         iptables -t mangle -A OUTPUT \
             -m connmark --mark "${TUNTOM_MARK}/${TUNTOM_MARK_MASK}" \
             -j CONNMARK --restore-mark \
@@ -227,7 +227,7 @@ tuntom_net_down() {
         -m connmark --mark "${TUNTOM_MARK}/${TUNTOM_MARK_MASK}" \
         -j CONNMARK --restore-mark \
         --nfmask "$TUNTOM_MARK_MASK" \
-        --ctmask "$TUNTOM_MARK_MASK" 2>/dev/null; do
+        --ctmask "$TUNTOM_MARK_MASK" >/dev/null 2>&1; do
         iptables -t mangle -D OUTPUT \
             -m connmark --mark "${TUNTOM_MARK}/${TUNTOM_MARK_MASK}" \
             -j CONNMARK --restore-mark \
