@@ -6,6 +6,7 @@
 #include "session.hpp"
 #include "ip.hpp"
 #include "fragmentation.hpp"
+#include "processing_stats.hpp"
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
@@ -124,6 +125,8 @@ public:
                         tun_rx_buffer_.size());
 
                 if (received > 0) {
+                    tx_sample_active_ = not options_.stats_file.empty() and tx_processing_.select();
+                    if (tx_sample_active_) tx_sample_start_ = ProcessingStats::Clock::now();
                     const std::size_t packet_size =
                         static_cast<std::size_t>(received);
 
@@ -159,6 +162,8 @@ public:
                         source_length);
 
                 if (received > 0) {
+                    rx_sample_active_ = not options_.stats_file.empty() and rx_processing_.select();
+                    if (rx_sample_active_) rx_sample_start_ = ProcessingStats::Clock::now();
                     ++stats_.udp_rx_packets;
                     stats_.udp_rx_bytes +=
                         static_cast<std::uint64_t>(received);
@@ -389,6 +394,9 @@ private:
                 return;
             }
 
+            if (tx_sample_active_ and index + 1 == plan.count) {
+                tx_processing_.finish(tx_sample_start_);
+            }
             ++stats_.udp_tx_packets;
             stats_.udp_tx_bytes +=
                 static_cast<std::uint64_t>(sent);
@@ -569,6 +577,16 @@ private:
             return;
         }
 
+        // Include decode time captured at receive, but exclude control traffic.
+        struct RxMeasurement {
+            Tunnel& tunnel;
+            ~RxMeasurement() {
+                if (tunnel.rx_sample_active_) {
+                    tunnel.rx_processing_.finish(tunnel.rx_sample_start_);
+                }
+            }
+        } measurement { *this };
+
         if (packet.protocol_version == protocol_version_v4) {
             ++stats_.fragments_rx;
 
@@ -577,7 +595,8 @@ private:
             if (
                 not receive_session->reassembly.accept(
                     packet,
-                    reassembled_packet_)) {
+                    reassembled_packet_,
+                    options_.stats_file.empty() ? nullptr : &reassembly_span_)) {
 
                 return;
             }
@@ -1246,6 +1265,10 @@ private:
                 << "pmtud_probes_ok=" << stats_.pmtud_probes_ok << "\n"
                 << "pmtud_probes_lost=" << stats_.pmtud_probes_lost << "\n";
 
+            output << "processing_sample_interval=" << ProcessingStats::sample_interval << "\n";
+            tx_processing_.write(output, "tx_processing");
+            rx_processing_.write(output, "rx_processing");
+            reassembly_span_.write(output, "reassembly_span");
             output.flush();
 
             if (not output) {
@@ -1299,6 +1322,13 @@ private:
     std::vector<std::uint8_t> rx_mac_buffer_;
     std::vector<std::uint8_t> reassembled_packet_;
 
+    ProcessingStats tx_processing_;
+    ProcessingStats rx_processing_;
+    ProcessingStats reassembly_span_;
+    bool tx_sample_active_ = false;
+    bool rx_sample_active_ = false;
+    ProcessingStats::Clock::time_point tx_sample_start_ {};
+    ProcessingStats::Clock::time_point rx_sample_start_ {};
     std::unordered_map<std::uint64_t, ProbeState> rtt_probes_;
 
     std::size_t active_transport_mtu_ = min_transport_mtu;

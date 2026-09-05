@@ -327,7 +327,9 @@ g++ -std=c++17 -O2 -Wall -Wextra -pedantic src/main.cpp -o /tmp/tuntom
 directory as a tar archive over SSH. The remote host extracts it into a private
 temporary directory, compiles the staging binary and removes the source directory
 on exit, including compilation failure. Deployment requires `tar` on both hosts
-and `mktemp` on the remote host; CMake is not required there.
+and `mktemp` on the remote host; CMake is not required there. Both deployment
+builds use `-O2 -march=native -mtune=native`, targeting the CPU visible on each
+host independently (inside a VM, the guest-visible CPU).
 
 ## Files
 

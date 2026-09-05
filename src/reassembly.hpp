@@ -1,6 +1,7 @@
 #pragma once
 
 #include "packet.hpp"
+#include "processing_stats.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
@@ -23,6 +24,7 @@ struct ReassemblyEntry {
     std::vector<FragmentRange> ranges;
     std::size_t received_bytes = 0;
     std::chrono::steady_clock::time_point last_update {};
+    std::chrono::steady_clock::time_point first_seen {};
 };
 
 class Reassembler {
@@ -33,7 +35,8 @@ public:
 
     bool accept(
         const Packet& fragment,
-        std::vector<std::uint8_t>& complete_packet) {
+        std::vector<std::uint8_t>& complete_packet,
+        ProcessingStats* span_stats = nullptr) {
 
         complete_packet.clear();
 
@@ -83,6 +86,7 @@ public:
             entry.original_length = fragment.original_length;
             entry.buffer.resize(fragment.original_length);
             entry.last_update = std::chrono::steady_clock::now();
+            entry.first_seen = entry.last_update;
 
             total_bytes_ += entry.buffer.size();
 
@@ -128,6 +132,10 @@ public:
             return false;
         }
 
+        if (span_stats != nullptr and span_stats->select()) {
+            span_stats->record(std::chrono::duration<double, std::micro>(
+                entry.last_update - entry.first_seen).count());
+        }
         complete_packet = std::move(entry.buffer);
         total_bytes_ -= entry.original_length;
         entries_.erase(iterator);

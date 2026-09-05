@@ -29,7 +29,9 @@ This makes the tunnel useful as a small remote L3 ingress primitive rather than 
 ## Deployment model
 
 The implementation lives in ordinary C++ headers and `../src/main.cpp`.
-Both local and remote builds compile these directly. For deployment the source
+Both local and remote builds compile these directly with
+`-O2 -march=native -mtune=native`, targeting each host independently.
+For deployment the source
 directory is streamed as a tar archive and extracted into a private temporary
 directory on the remote host:
 
@@ -973,3 +975,38 @@ Linux networking
 ```
 
 Transport complexity should stay inside that boundary. Routing and deployment policy should stay outside it.
+
+
+### Processing latency statistics
+
+When `--stats-file` is enabled, tuntom samples the first and then every 1024th
+TUN packet / UDP datagram using `std::chrono::steady_clock`. The stats file adds
+`processing_sample_interval=1024` and these prefixes:
+
+- `tx_processing`: elapsed microseconds from after a successful TUN read through
+  the last successful UDP send, including processing, encoding and fragmentation.
+  Failed or dropped transmissions do not produce a sample.
+- `rx_processing`: elapsed microseconds from after a successful UDP receive through
+  DATA handling, including decoding, reassembly work and TUN write if completed.
+  This is **per datagram**, not per reconstructed packet. Validated DATA that
+  subsequently gets dropped or awaits more fragments is included; control traffic
+  and packets rejected before DATA handling are excluded. Selection happens before
+  decoding, so these exclusions can reduce the effective sample count.
+- `reassembly_span`: elapsed microseconds from first fragment entering reassembly
+  to final accepted fragment, sampled every 1024th completed fragmented packet.
+  Includes time between arrivals and processing; it is not pure CPU time or an
+  additional duration to add to RX processing. Unfragmented packets are excluded.
+
+Each prefix has `_samples`, `_window_samples`, `_avg_us`, `_max_us`, `_p95_us`
+and `_p99_us`. Average and maximum cover all samples since process start;
+p95/p99 are nearest-rank percentiles of the most recent 4096 samples. Zero samples
+means no measurement yet. Statistics reset on restart. No per-packet log is added.
+
+These measurements cover application elapsed time and sending syscalls, not input
+kernel queues or scheduling before the read. Descheduling inside a measured region
+is included. Debug logging and the measurement itself can affect the results.
+For unfragmented traffic, TX on A plus RX on B estimates one-way application
+processing; sum both directions for RTT processing. For fragmented traffic RX
+work is spread over multiple datagrams, so this simple sum no longer applies.
+The existing `rtt_*` control probes remain unchanged. Protocol V4 wire format is
+unchanged, and no processing samples are collected without a stats file.
