@@ -231,6 +231,18 @@ The authentication tag is 128 bits.
 
 The current construction is intentionally small and self-contained. It uses the Ascon permutation, but it should not be described as a drop-in implementation of a specific standardized NIST Ascon MAC profile.
 
+The permutation uses bitwise complement and AND (`~` and `&`) on 64-bit words.
+The complement of the tunnel ID in MAC initialization is also bitwise.
+Earlier builds incorrectly used C++ logical `not`/`and`, reducing these values
+to booleans and allowing forged tags. The fix changes both derived keys and
+v2/v3 tags: deploy it on both endpoints together. No verification fallback
+to the old construction is provided, including with `--allow-v2`.
+
+Tests compare p[8] and p[12] against an independent lookup implementation of
+the [Ascon v1.2 specification, section 2.6](https://ascon.isec.tugraz.at/files/asconv12-nist.pdf).
+This validates the permutation and the specific regression, not the security
+of the project's custom MAC mode.
+
 ## Sequence numbers and replay protection
 
 Each transmitted v3 UDP datagram, including every fragment, gets its own sequence number.
@@ -860,6 +872,19 @@ The tests cover sparse timestamp reordering, duplicates, window eviction,
 integer boundaries, and a 9000-byte v3 packet received as 64 fragments in
 reverse order. They exercise the receive path's protocol, replay, and
 reassembly components, but do not establish the security of the MAC.
+
+### MAC regression tests
+
+```bash
+g++ -std=c++17 -O2 -Wall -Wextra -pedantic tests/mac_test.cpp -o /tmp/tuntom-mac-test
+/tmp/tuntom-mac-test
+```
+
+These cover reference permutation comparisons, project-specific MAC vectors
+at block and padding boundaries, v2/v3 round trips, wrong keys/tunnel IDs,
+single-bit changes throughout each datagram, and the previous XOR forgery.
+The MAC vectors are for tuntom's custom construction, not standardized
+Ascon-Mac test vectors.
 
 ### Logging
 

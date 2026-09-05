@@ -367,11 +367,12 @@ void permute(std::array<std::uint64_t, 5>& state, int rounds) {
         state[4] ^= state[3];
         state[2] ^= state[1];
 
-        const std::uint64_t t0 = not state[0] and state[1];
-        const std::uint64_t t1 = not state[1] and state[2];
-        const std::uint64_t t2 = not state[2] and state[3];
-        const std::uint64_t t3 = not state[3] and state[4];
-        const std::uint64_t t4 = not state[4] and state[0];
+        // These are bitwise operations on 64 parallel S-boxes.
+        const std::uint64_t t0 = ~state[0] & state[1];
+        const std::uint64_t t1 = ~state[1] & state[2];
+        const std::uint64_t t2 = ~state[2] & state[3];
+        const std::uint64_t t3 = ~state[3] & state[4];
+        const std::uint64_t t4 = ~state[4] & state[0];
 
         state[0] ^= t1;
         state[1] ^= t2;
@@ -382,7 +383,7 @@ void permute(std::array<std::uint64_t, 5>& state, int rounds) {
         state[1] ^= state[0];
         state[0] ^= state[4];
         state[3] ^= state[2];
-        state[2] = not state[2];
+        state[2] = ~state[2];
 
         state[0] ^= rotate_right(state[0], 19) ^ rotate_right(state[0], 28);
         state[1] ^= rotate_right(state[1], 61) ^ rotate_right(state[1], 39);
@@ -409,7 +410,7 @@ void mac(
         k0,
         k1,
         static_cast<std::uint64_t>(tunnel_id),
-        not static_cast<std::uint64_t>(tunnel_id),
+        ~static_cast<std::uint64_t>(tunnel_id),
     };
 
     permute(state, 12);

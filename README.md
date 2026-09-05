@@ -196,6 +196,12 @@ This is a known limitation and an intentional KISS tradeoff. The administrator o
 
 ## Protocol compatibility
 
+The MAC operator fix changes v2/v3 authentication tags and derived tunnel keys.
+Update both endpoints together (the bootstrap script builds both ends).
+Fixed and pre-fix binaries cannot authenticate each other's traffic, even
+though their packet layouts and version numbers are unchanged. There is no
+fallback to the broken MAC; legacy receive flags do not restore it.
+
 Protocol v3 is the default transmit protocol.
 
 Legacy receive compatibility can be enabled explicitly:
