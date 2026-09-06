@@ -56,7 +56,9 @@ The switch sends `SWITCH` to a destination tuntom port after a successful rule
 lookup. That tuntom transmits the opaque payload through its authenticated V5
 session. Labels are IPC metadata and do not change the V5 wire format.
 
-On a lookup miss, `--default-back=on` changes the opcode to `EXIT` and returns
+Routes whose destination was declared with `--exit-port <port-id>` change the
+opcode to `EXIT` before delivery. On a lookup miss, `--default-back=on` also
+changes the opcode to `EXIT` and returns
 the otherwise unchanged frame to its input port. A tuntom instance accepts
 `EXIT` only with `--switch-exit-node`; it writes only that payload to its TUN.
 
@@ -81,6 +83,7 @@ a reconnect with the same ID replaces the previous connection:
 ```bash
 tuntom-switch \
   --socket /run/tuntom/switch.sock \
+  --exit-port internet \
   --route honeypot:17=proxy:83 \
   --route proxy:91=honeypot:44 \
   --default-back=off
@@ -95,5 +98,9 @@ If the listener disappears, tuntom keeps its UDP control plane alive, drops DATA
 fail-closed, and retries connection and registration once per second. The
 switch may therefore be restarted without restarting established tunnels.
 
-Remote transports, dynamic control-plane updates, a native switch exit adapter
-and exit-flow caching are outside protocol v1.
+`tuntom-switch-adapter` consumes `EXIT`, writes its IP payload to a TUN and
+caches the reverse label stack. TUN return packets use L4, then L3 lookup and
+are emitted as `SWITCH`; cache misses are dropped. Cache mechanics are local to
+the adapter and do not change this wire format.
+
+Remote transports and dynamic control-plane updates are outside protocol v1.

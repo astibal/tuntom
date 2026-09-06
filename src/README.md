@@ -25,6 +25,10 @@ from multiple translation units.
 | `switch_client.hpp` | Tuntom-side Unix switch connection |
 | `ipc/switch_protocol.hpp` | Shared `SWITCH` / `EXIT` frame codec |
 | `switch/main.cpp` | Standalone label-switch executable |
+| `adapter/ip_flow.hpp` | Safe IPv4/IPv6 L3 and TCP/UDP tuple parsing |
+| `adapter/lru_cache.hpp` | Capacity and idle-time bounded LRU cache |
+| `adapter/exit_adapter.hpp` | Reverse L3/L4 label learning and lookup |
+| `adapter/main.cpp` | Standalone TUN exit-adapter executable |
 
 `../mk_tunnel.sh` sends this directory as a tar stream over SSH, compiles
 `main.cpp` remotely and removes the temporary sources on exit. No generated

@@ -50,6 +50,8 @@ def main():
             binary,
             "--socket", path,
             "--route", "a:17=b:83",
+            "--route", "a:18=exit:84",
+            "--exit-port", "exit",
             "--default-back=on",
         ])
         try:
@@ -58,6 +60,8 @@ def main():
             b = connect(path)
             register(a, "a")
             register(b, "b")
+            exit_peer = connect(path)
+            register(exit_peer, "exit")
             time.sleep(0.05)
 
             payload = b"\x45\x00\x00\x14"
@@ -65,6 +69,11 @@ def main():
             expected = frame(1, [83, 200], payload)
             if b.recv(65535) != expected:
                 raise RuntimeError("label swap or stack preservation failed")
+
+            a.sendall(frame(1, [18, 200], payload))
+            expected_exit_route = frame(2, [84, 200], payload)
+            if exit_peer.recv(65535) != expected_exit_route:
+                raise RuntimeError("route to exit port did not produce EXIT")
 
             replacement_b = connect(path)
             register(replacement_b, "b")
@@ -82,13 +91,14 @@ def main():
             a.close()
             b.close()
             replacement_b.close()
+            exit_peer.close()
             stop(process)
         finally:
             if process.poll() is None:
                 process.kill()
                 process.wait()
 
-    print("PASS: one-listener registration, reconnect, label swap and default-back")
+    print("PASS: registration, reconnect, label swap, exit routes and default-back")
 
 
 if __name__ == "__main__":

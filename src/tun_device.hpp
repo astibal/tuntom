@@ -65,6 +65,30 @@ public:
         return ::write(fd_, buffer, size);
     }
 
+    void set_up() {
+        const int socket_fd = ::socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+        if (socket_fd < 0) {
+            throw std::runtime_error(
+                "Cannot create interface ioctl socket: " +
+                std::string(std::strerror(errno)));
+        }
+
+        ifreq request {};
+        std::strncpy(request.ifr_name, interface_name_.c_str(), IFNAMSIZ - 1);
+        if (::ioctl(socket_fd, SIOCGIFFLAGS, &request) < 0) {
+            const std::string error = std::strerror(errno);
+            ::close(socket_fd);
+            throw std::runtime_error("SIOCGIFFLAGS failed: " + error);
+        }
+        request.ifr_flags = static_cast<short>(request.ifr_flags | IFF_UP);
+        if (::ioctl(socket_fd, SIOCSIFFLAGS, &request) < 0) {
+            const std::string error = std::strerror(errno);
+            ::close(socket_fd);
+            throw std::runtime_error("SIOCSIFFLAGS failed: " + error);
+        }
+        ::close(socket_fd);
+    }
+
 private:
     void set_mtu(std::size_t mtu) {
         const int socket_fd = ::socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);

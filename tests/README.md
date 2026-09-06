@@ -68,8 +68,11 @@ firewall rules and requires root. It is deliberately not run by `run.sh`.
 - `switch_protocol_test.cpp`: switch frame layout, label stacks, top-label swap,
   truncation and malformed-header rejection.
 - `switch_options_test.cpp`: switch CLI dependencies and label parsing.
+- `exit_adapter_test.cpp`: reverse L3/L4 learning, fragment fallback, cache miss,
+  idle expiry and LRU eviction.
 - `switch_test.py`: one-listener Unix `SOCK_SEQPACKET` registration and reconnect,
-  label swap, stack preservation and default-back `EXIT` behavior.
+  label swap, stack preservation, explicit exit-port routes and default-back
+  `EXIT` behavior.
 - `switch_tunnel_test.py`: two unprivileged tuntom processes carrying an opaque
   payload through a live UDP session and the label switch without creating TUNs.
 

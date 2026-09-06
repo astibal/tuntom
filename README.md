@@ -191,6 +191,28 @@ tuntom-switch \
   --default-back=off
 ```
 
+The standalone exit adapter is a switch client backed by a Linux TUN:
+
+```bash
+tuntom-switch-adapter exit0 \
+  --switch-socket /run/tuntom/switch.sock \
+  --switch-port-id internet
+
+tuntom-switch --socket /run/tuntom/switch.sock \
+  --exit-port internet \
+  --route client-42:17=internet:1001 \
+  --route internet:1001=client-42:44
+```
+
+The adapter creates the named TUN and brings its link state up. IP addresses,
+routes, forwarding and any NAT rules remain explicit host configuration.
+
+Routes targeting an `--exit-port` are delivered as `EXIT`. The adapter learns
+the reverse label stack from every valid IPv4/IPv6 packet, using an L4 LRU cache
+with an L3 fallback for fragments and non-port protocols. Return traffic from
+the TUN is sent as `SWITCH`; packets missing both caches are dropped. The
+adapter performs no NAT, TCP state tracking or default-label routing.
+
 On a route miss, `--default-back=on` returns an `EXIT` frame to the ingress
 port. The IPC format and exact fail-closed behavior are specified in
 [switch protocol v1](docs/SWITCH_PROTOCOL_V1.md).

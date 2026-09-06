@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <poll.h>
 #include <sys/socket.h>
@@ -57,6 +58,7 @@ void usage(const char* program) {
         << "Usage:\n"
         << "  " << program << " --socket <unix-path>\n"
         << "      [--route <in-port>:<label>=<out-port>:<label> ...]\n"
+        << "      [--exit-port <port-id> ...]\n"
         << "      [--default-back=off|on]\n\n"
         << "Each client registers a stable port ID after connecting.\n";
 }
@@ -139,6 +141,7 @@ int main(int argc, char** argv) {
     std::vector<Connection> connections;
     try {
         std::unordered_map<RouteKey, RouteTarget, RouteKeyHash> routes;
+        std::unordered_set<std::string> exit_ports;
         bool default_back = false;
 
         for (int index = 1; index < argc; ++index) {
@@ -156,6 +159,12 @@ int main(int argc, char** argv) {
                         RouteKey {input.first, input.second},
                         RouteTarget {output.first, output.second}).second)
                     throw std::runtime_error("Duplicate switch route");
+            } else if (option == "--exit-port") {
+                if (++index >= argc) throw std::runtime_error("--exit-port requires a value");
+                const std::string port = argv[index];
+                if (port.empty() or port.size() > tuntom::switch_max_port_id_size or
+                    not exit_ports.insert(port).second)
+                    throw std::runtime_error("Invalid or duplicate exit port: " + port);
             } else if (option == "--default-back=on") {
                 default_back = true;
             } else if (option == "--default-back=off") {
@@ -254,6 +263,8 @@ int main(int argc, char** argv) {
                     auto* target = find_connection(connections, route->second.port);
                     if (target == nullptr) continue;
                     tuntom::replace_top_switch_label(output, route->second.label);
+                    if (exit_ports.count(route->second.port) != 0)
+                        tuntom::set_switch_opcode(output, SwitchOpcode::exit_packet);
                     send_frame(target->fd, output);
                 } else if (default_back) {
                     tuntom::set_switch_opcode(output, SwitchOpcode::exit_packet);
