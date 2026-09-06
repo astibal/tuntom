@@ -6,16 +6,17 @@ build_dir="$(mktemp -d "${TMPDIR:-/tmp}/tuntom-tests.XXXXXXXX")"
 trap 'rm -rf -- "$build_dir"' EXIT
 
 echo "Checking self-contained headers"
-for header in "${tests_dir}/../src/"*.hpp; do
+while IFS= read -r relative_header; do
+    header="${tests_dir}/../${relative_header}"
     printf '#include "%s"\n' "$header" | \
         "${CXX:-g++}" -x c++ -std=c++17 -Wall -Wextra -pedantic -fsyntax-only -
-done
+done < <(cd "${tests_dir}/.." && rg --files src -g '*.hpp' | sort)
 
 echo "Building application"
 "${CXX:-g++}" -std=c++17 -O2 -Wall -Wextra -Wconversion -pedantic \
     "${tests_dir}/../src/main.cpp" -o "${build_dir}/tuntom"
 "${CXX:-g++}" -std=c++17 -O2 -Wall -Wextra -Wconversion -pedantic \
-    "${tests_dir}/../src/switch_main.cpp" -o "${build_dir}/tuntom-switch"
+    "${tests_dir}/../src/switch/main.cpp" -o "${build_dir}/tuntom-switch"
 
 if command -v python3 >/dev/null 2>&1; then
     python3 "${tests_dir}/switch_test.py" "${build_dir}/tuntom-switch"

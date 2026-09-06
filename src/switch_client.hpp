@@ -13,9 +13,9 @@
 
 namespace tuntom {
 
-class SwitchEndpoint {
+class SwitchClient {
 public:
-    explicit SwitchEndpoint(const std::string& path) {
+    explicit SwitchClient(const std::string& path) {
         if (path.size() >= sizeof(sockaddr_un::sun_path)) {
             throw std::runtime_error("Switch socket path is too long");
         }
@@ -51,7 +51,7 @@ public:
         }
     }
 
-    ~SwitchEndpoint() {
+    ~SwitchClient() {
         if (fd_ >= 0) ::close(fd_);
     }
 

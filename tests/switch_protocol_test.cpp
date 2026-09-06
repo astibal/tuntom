@@ -1,4 +1,4 @@
-#include "../src/switch_protocol.hpp"
+#include "../src/ipc/switch_protocol.hpp"
 #include <iostream>
 #include <stdexcept>
 #include <vector>

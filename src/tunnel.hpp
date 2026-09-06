@@ -3,8 +3,8 @@
 #include "privileges.hpp"
 #include "tun_device.hpp"
 #include "udp_endpoint.hpp"
-#include "switch_endpoint.hpp"
-#include "switch_protocol.hpp"
+#include "switch_client.hpp"
+#include "ipc/switch_protocol.hpp"
 #include "session.hpp"
 #include "ip.hpp"
 #include "fragmentation.hpp"
@@ -59,7 +59,7 @@ public:
             tun_ = std::make_unique<TunDevice>(interface_name, options_.tun_mtu);
         }
         if (not options_.switch_socket.empty()) {
-            switch_ = std::make_unique<SwitchEndpoint>(options_.switch_socket);
+            switch_ = std::make_unique<SwitchClient>(options_.switch_socket);
         }
 
         active_transport_mtu_ =
@@ -1406,7 +1406,7 @@ private:
 
     std::unique_ptr<TunDevice> tun_;
     UdpEndpoint udp_;
-    std::unique_ptr<SwitchEndpoint> switch_;
+    std::unique_ptr<SwitchClient> switch_;
 
     const ascon::key_type master_key_;
     SessionProtocol protocol_v5_;

@@ -8,7 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_executable(tuntom src/main.cpp)
 target_compile_options(tuntom PRIVATE -Wall -Wextra -pedantic)
 
-add_executable(tuntom-switch src/switch_main.cpp)
+add_executable(tuntom-switch src/switch/main.cpp)
 target_compile_options(tuntom-switch PRIVATE -Wall -Wextra -pedantic)
 
 include(CTest)

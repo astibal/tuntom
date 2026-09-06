@@ -1,6 +1,6 @@
 #pragma once
 
-#include "wire.hpp"
+#include "../wire.hpp"
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>

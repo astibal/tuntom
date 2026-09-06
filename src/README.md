@@ -22,6 +22,9 @@ from multiple translation units.
 | `fragmentation.hpp` | Fragment sizing and probe state |
 | `tunnel.hpp` | Event loop, forwarding, RTT, PMTUD and stats |
 | `cli.hpp` | Usage and argument parsing |
+| `switch_client.hpp` | Tuntom-side Unix switch connection |
+| `ipc/switch_protocol.hpp` | Shared `SWITCH` / `EXIT` frame codec |
+| `switch/main.cpp` | Standalone label-switch executable |
 
 `../mk_tunnel.sh` sends this directory as a tar stream over SSH, compiles
 `main.cpp` remotely and removes the temporary sources on exit. No generated

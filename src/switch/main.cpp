@@ -1,4 +1,4 @@
-#include "switch_protocol.hpp"
+#include "../ipc/switch_protocol.hpp"
 #include <cerrno>
 #include <csignal>
 #include <cstddef>
