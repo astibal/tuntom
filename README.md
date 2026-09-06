@@ -1,357 +1,300 @@
 # tuntom
 
-`tuntom` is a tiny self-contained TUN-over-UDP tunnel for Linux.
+**Linux IP tunneling over UDP, with authenticated sessions, optional encryption,
+and SSH deployment.**
 
-It was written by **Ales Stibal and ChatGPT** :)
-
-The main goal is simplicity:
-
-- compact C++17 implementation
-- one bootstrap shell script
-- no external runtime dependencies
-- source is copied to the remote host through SSH, compiled there, and started
-- NAT-friendly client/server model
-- Linux TUN interfaces on both ends
-- authenticated protocol v4 with session handshake and replay protection
-- internal balanced fragmentation and reassembly
-- configurable inner/TUN MTU and transport MTU
-- automatic UDP path-MTU discovery (PMTUD)
-- optional compatibility with protocol v2 and v1
-- optional TTL / IPv6 Hop-Limit compensation
-- Wireshark dissector with v4 fragment reassembly
-
-The tunnel is intentionally small and dumb.
-
-Routing, policy routing, firewalling, transparent proxying, integration, and similar logic are left to normal Linux networking.
-
-## Requirements
-
-Both hosts need:
-
-- Linux
-- `g++` with C++17 support
-- `iproute2`
-- `/dev/net/tun`
-
-The local machine also needs:
-
-- `ssh`
-- working SSH key authentication to the remote host
-
-The default remote SSH user is `root`.
-
-## Usage
-
-Set a shared 128-bit secret:
-
-```bash
-export TUNTOM_SECRET=0123456789abcdef0123456789abcdef
-```
-
-Create tunnel 42 to host `sx2`:
-
-```bash
-sudo -E ./mk_tunnel.sh 42 sx2
-```
-
-This is equivalent to connecting to:
+`tuntom` connects two Linux TUN interfaces and carries IPv4 and IPv6 traffic
+between them. It combines a self-contained C++17 tunnel engine with a bootstrap
+script that builds, deploys, and configures both endpoints. Protocol v4 provides
+replay protection, automatic path-MTU discovery, and internal fragmentation;
+optional Ascon encryption and X25519 rekeying add confidentiality and forward
+secrecy.
 
 ```text
-root@sx2
+      local / client                         remote / server
+   +-------------------+                  +-------------------+
+   | Linux networking  |                  | Linux networking  |
+   +---------+---------+                  +---------+---------+
+          ut42c                                   ut42s
+       10.254.42.1                            10.254.42.2
+             |                                      |
+             +---------- UDP / port 40042 ----------+
+                  authenticated v4 session
+                  optional encryption + PFS
 ```
 
-You can also specify a user explicitly:
+Written by **Ales Stibal and ChatGPT**. Licensed under [BSD 3-Clause](LICENSE.md).
+
+[Quick start](#quick-start) · [Configuration](#configuration) ·
+[Security and compatibility](#security-and-compatibility) ·
+[Operations](#operations) · [Build and test](#build-and-test)
+
+## At a glance
+
+| Area | What tuntom provides |
+| --- | --- |
+| Tunnel | IPv4/IPv6 TUN traffic over UDP, NAT-friendly client/server model |
+| Sessions | Authenticated v4 handshake, directional keys, replay protection |
+| Encryption | Optional Ascon-AEAD128; optional X25519 PFS with periodic rekey |
+| MTU | Independent inner/outer MTUs, automatic PMTUD, balanced fragmentation |
+| Deployment | Local and remote compilation, staged restart, start/stop helper |
+| Networking | IPv4 policy routing, connection marks, MSS clamping, optional SNAT, lifecycle hooks |
+| Observability | Text statistics, signal-controlled snapshots, logs, Wireshark dissector |
+| Runtime | No external crypto libraries; drops privileges to `tuntom:tuntom` |
+
+The tunnel engine handles transport. Linux networking and the included
+`tuntom-net.sh` helper handle routing and firewall policy; custom routes and
+DNAT rules can be added through hooks.
+
+## Quick start
+
+### Requirements
+
+For the bootstrap workflow, both hosts need:
+
+- Linux with `/dev/net/tun` and root access.
+- `g++` with C++17 support, Bash, `iproute2`, and `iptables`.
+- Standard system utilities, including `tar`, `mktemp`, `getent`, `useradd`, and `groupadd`.
+- Synchronized clocks for the v4 handshake.
+
+The caller also needs `ssh`, working SSH key authentication, and `flock`.
+When started as a normal local user, the script uses `sudo -E` for privileged
+local operations. The remote SSH account must already have root privileges:
+remote commands do not use `sudo`. A bare hostname selects `root@host`.
+The server's UDP port (`40000 + tunnel ID`) must be reachable from the client.
+
+### Start a tunnel
+
+Set a random 128-bit shared secret as exactly 32 hex characters. For example,
+if OpenSSL is installed locally:
 
 ```bash
-sudo -E ./mk_tunnel.sh 42 user@sx2
+export TUNTOM_SECRET="$(openssl rand -hex 16)"
 ```
 
-Tunnel ID determines the interface names, addresses, and UDP port.
-
-The `/16` prefix used for tunnel addresses is configurable. If the environment
-variable is unset, `10.254` remains the default:
+From the repository directory, create tunnel `42` to `sx2`:
 
 ```bash
-export TUNTOM_PREFIX16=10.10
-sudo -E ./mk_tunnel.sh 42 sx2
+./mk_tunnel.sh 42 sx2 --pfs
 ```
 
-The resulting client and server addresses are `10.10.42.1` and `10.10.42.2`.
-The tunnel ID therefore remains part of every address.
+This builds both endpoints, passes the secret over SSH, creates the runtime
+account, configures networking, and starts the processes in the background.
+`--pfs` enables encryption and forward secrecy on both ends. Omitting it uses
+**authentication without encryption**; see the [mode table](#security-and-compatibility).
 
-The same value also determines the tunnel's IPv6 addresses. Dots in the IPv4
-prefix are replaced with colons and the result is placed below `fd42::`:
+| Tunnel 42 | Local / client | Remote / server |
+| --- | --- | --- |
+| Interface | `ut42c` | `ut42s` |
+| IPv4 | `10.254.42.1` | `10.254.42.2` |
+| IPv6 | `fd42::10:254:42:1` | `fd42::10:254:42:2` |
+| UDP port | Server destination: `40042` | Listen: `40042` |
 
-```text
-TUNTOM_PREFIX16=10.10, tunnel 42
-client IPv6: fd42::10:10:42:1
-server IPv6: fd42::10:10:42:2
-```
-
-For tunnel `42`:
-
-```text
-local/client interface:   ut42c
-remote/server interface:  ut42s
-
-local/client address:     10.254.42.1
-remote/server address:    10.254.42.2
-
-UDP port:                 40042
-TUN MTU:                  1500
-transport MTU:            1400
-```
-
-After setup, this should work:
+Once the session is established:
 
 ```bash
 ping 10.254.42.2
+ping -6 fd42::10:254:42:2
 ```
 
-Loopback testing is supported:
+Run the same start command again to rebuild and restart the tunnel. Both staged
+builds finish before the running tunnel is stopped; the switchover briefly
+interrupts traffic. Keep the secret and desired options when restarting.
 
 ```bash
-sudo -E ./mk_tunnel.sh 42 localhost
+./mk_tunnel.sh 42 sx2 --stop
 ```
 
-## MTU and fragmentation
+Stopping removes both processes, interfaces, statistics files, and the helper's
+per-tunnel networking rules. It does not require `TUNTOM_SECRET`.
+For a local smoke test, use `localhost` as the host (root SSH access is still required).
 
-`tuntom` separates the MTU visible on the TUN interface from the MTU used by the underlying UDP transport.
+## Configuration
 
-Defaults:
+Tunnel IDs range from **1 to 255** and determine interface names, addresses,
+and the server UDP port.
 
-```text
-TUNTOM_MTU=1500
-TUNTOM_TRANSPORT_MTU=1400
-```
+### Bootstrap options
 
-The TUN interface therefore behaves like a normal 1500-byte L3 interface even when the path carrying tuntom UDP datagrams requires smaller packets.
+| Option | Effect |
+| --- | --- |
+| `--pfs` | Require X25519 + AKDF + Ascon-AEAD128 on both endpoints |
+| `--encrypt-ascon` | Require Ascon-AEAD128 without PFS |
+| `--no-stats` | Disable automatic statistics writes and optional sampling |
+| `--snat` / `--no-snat` | Enable / disable IPv4 MASQUERADE; default: off |
+| `--mss-clamp` / `--no-mss-clamp` | Enable / disable TCP MSS clamping; default: on |
+| `--stop` | Stop and clean up the tunnel on both hosts |
 
-Automatic PMTUD is enabled by default. Each endpoint starts with a conservative
-500-byte outer transport MTU, sends authenticated `MTU_PROBE` messages, and uses
-matching `MTU_REPLY` messages to find the largest working datagram size. The
-configured transport MTU is the first probe target; discovery can continue up to
-at least 1500 bytes (or higher when a larger transport MTU is configured).
+### Environment
 
-A missing reply is treated as a failed probe after two seconds and the remaining
-range is searched. Discovery restarts when the UDP peer changes or a data send
-fails. Ordinary traffic continues with the last known-good MTU during discovery.
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `TUNTOM_SECRET` | Required to start | 128-bit master key, 32 hex characters |
+| `TUNTOM_PREFIX16` | `10.254` | First two IPv4 octets; also used in IPv6 addresses |
+| `TUNTOM_MTU` | `1500` | Inner/TUN MTU |
+| `TUNTOM_TRANSPORT_MTU` | `1400` | Outer IP MTU / initial PMTUD target |
+| `TUNTOM_STATS_FORMAT` | `txt` | Statistics format; currently only `txt` |
+| `TUNTOM_PRE_HOOK` | `/etc/tuntom/tuntom-pre.sh` | Local source for pre-action hooks |
+| `TUNTOM_POST_HOOK` | `/etc/tuntom/tuntom-post.sh` | Local source for post-action hooks |
 
-To use `TUNTOM_TRANSPORT_MTU` as a fixed value, run the C++ binary with:
-
-```text
---no-pmtud
-```
-
-If an inner packet does not fit into one tuntom UDP datagram, protocol v4 fragments it internally and reassembles it on the receiving side.
-
-Fragmentation is balanced. Instead of sending one maximum-sized fragment followed by a small tail, tuntom divides the packet into approximately equal-sized parts.
-
-Example:
-
-```text
-1500 bytes -> 750 + 750
-1401 bytes -> 701 + 700
-```
-
-This avoids exposing a smaller TUN MTU to systems behind the tunnel and also avoids a characteristic large-fragment/small-tail pattern.
-
-The values can be overridden when using the bootstrap script:
+For example:
 
 ```bash
-TUNTOM_MTU=9000 \
-TUNTOM_TRANSPORT_MTU=1500 \
-sudo -E ./mk_tunnel.sh 42 sx2
+TUNTOM_PREFIX16=10.10 TUNTOM_MTU=9000 TUNTOM_TRANSPORT_MTU=1500 \
+    ./mk_tunnel.sh 42 sx2 --pfs
 ```
 
-In this example, the tunnel presents MTU 9000 while transparently fragmenting the traffic over a 1500-byte transport path.
+This uses `10.10.42.1` / `10.10.42.2` and
+`fd42::10:10:42:1` / `fd42::10:10:42:2`, with a 9000-byte inner MTU.
+IPv6 addresses use the prefix text with dots replaced by colons.
 
-## TTL / Hop-Limit compensation
+Advanced networking overrides are `TUNTOM_MARK`, `TUNTOM_MARK_MASK`,
+`TUNTOM_TABLE`, and `TUNTOM_CHAIN`; see [the helper](tuntom-net.sh).
 
-By default, tuntom compensates one routing hop when writing a received packet into the TUN interface.
+### MTU and fragmentation
 
-For IPv4 it increments TTL by one and recomputes the IPv4 header checksum.
-
-For IPv6 it increments Hop Limit by one.
-
-This is useful when tuntom connects two routing points and should behave like one logical routed hop rather than exposing both tuntom endpoints as separate hops.
-
-The compensation can be disabled in the C++ binary using:
+The TUN MTU is independent of the outer IP MTU, which includes IP, UDP, and
+tuntom headers. Oversized inner packets are split into balanced fragments and
+reassembled at the receiving endpoint:
 
 ```text
---no-ttl-compensate
+1500-byte inner packet -> 750 + 750 bytes of fragment payload
+1401-byte inner packet -> 701 + 700 bytes of fragment payload
 ```
 
-### Known limitation
+Automatic PMTUD starts at a conservative 500-byte outer MTU. Authenticated
+`MTU_PROBE` / `MTU_REPLY` messages search for a working size, first targeting the
+configured transport MTU and exploring up to at least 1500 bytes (higher if
+configured). A probe times out after two seconds. Discovery restarts when the
+peer changes or a data send fails; traffic continues at the last known-good MTU.
 
-TTL / Hop-Limit compensation assumes that traffic entering tuntom was forwarded by the sending host before it reached the TUN interface.
+The standalone binary accepts `--no-pmtud` to keep `--transport-mtu` fixed.
+The bootstrap does not forward arbitrary binary options.
 
-Locally generated traffic is different: it has not yet consumed a forwarding hop.
+### TTL / Hop-Limit compensation
 
-`tuntom` deliberately does not try to detect this case because doing so would require additional kernel metadata, packet marking, address classification, or protocol flags.
+By default, received IPv4 TTL / IPv6 Hop Limit is incremented by one; the IPv4
+header checksum is updated. This compensates for an extra forwarding hop when
+connecting routing points. Locally generated packets have not consumed that
+hop and may therefore arrive with a value one higher than expected.
+Use `--no-ttl-compensate` when running the binary directly to disable this.
 
-As a result, locally generated traffic such as a ping originating directly on a tuntom endpoint may appear with TTL / Hop Limit one higher than expected on the remote side.
+## Security and compatibility
 
-This is a known limitation and an intentional KISS tradeoff. The administrator of the tuntom endpoint already knows that the tunnel exists.
+All current modes use the v4 session handshake and a shared master secret.
+Both endpoints must select the same mode.
 
-## Protocol compatibility
+| Mode | Suite | Payload encryption | Forward secrecy |
+| --- | --- | --- | --- |
+| Default | 0 | No; authentication only | No |
+| `--encrypt-ascon` | 1 | Ascon-AEAD128 | No |
+| `--pfs` | 2 | Ascon-AEAD128 | X25519 exchange, rekey every two minutes |
 
-Protocol v4 is the default transmit protocol. It uses separate client-to-server
-and server-to-client authentication keys to reject reflected outbound packets.
-The 48-byte DATA header layout is unchanged, but the version byte is now 4.
-INIT / RESPONSE / CONFIRM / CONFIRM_ACK establish fresh directional session
-keys. SEQ contains a 16-bit session hint and a 48-bit per-direction counter.
-By default, suite 0 authenticates payloads without encryption. Enable
-`--encrypt-ascon` on **both endpoints** for standard Ascon-AEAD128 (suite 1).
-`./mk_tunnel.sh <id> <host> --encrypt-ascon` configures both ends.
-The option rejects legacy `--allow-v1` / `--allow-v2`; mismatched modes fail
-the handshake without falling back to plaintext. Encryption adds no wire bytes.
-Suites 0/1 do not provide forward secrecy. Use `--pfs` on **both endpoints**
-for suite 2: ephemeral X25519 + project-specific AMAC-based AKDF + Ascon-AEAD128.
-`./mk_tunnel.sh <id> <host> --pfs` configures both ends and implies encryption.
-The client performs a fresh DH exchange every two minutes, even with continuous
-traffic. Old receive keys overlap for up to three seconds. Suite mismatch fails
-closed. X25519 is vendored from Monocypher; no external libraries are needed.
-AKDF is our custom construction, not HKDF or a standardized Ascon KDF; its
-security assumptions are described in the wire specification.
-Handshake normally adds one RTT before the client can send
-DATA; DATA reaching the server before CONFIRM is dropped. The ACK is retried
-without resetting session counters. Initial TUN traffic is not buffered.
-See [the V4 wire specification](docs/PROTOCOL_V4.md) for layouts and timeouts.
-Update both endpoints together (the bootstrap script builds both ends).
-Pre-handshake v4 builds are also incompatible: update both endpoints together.
-V3 receive compatibility and automatic downgrade are not supported.
+Suite 2 uses a **project-specific AMAC-based AKDF**, not HKDF or a standardized
+Ascon KDF. X25519 is vendored from Monocypher. Construction details and security
+assumptions are documented in the [v4 wire specification](docs/PROTOCOL_V4.md).
+Encryption adds no wire bytes. Mode mismatches fail the handshake without
+falling back to plaintext; old receive keys overlap for up to three seconds
+during PFS rekeying.
 
-Legacy receive compatibility can be enabled explicitly:
+The handshake normally takes one RTT before the client can send DATA. Initial
+TUN traffic is not buffered, and DATA arriving before CONFIRM is dropped.
+Timestamped INITs require synchronized clocks: the default acceptance window is
+300 seconds total (±150 seconds). The binary's `--init-window` accepts an even
+value from 2 to 86400 seconds. Expired INITs and previously seen nonces are rejected.
 
-```text
---allow-v2
---allow-v1
-```
+**Update both endpoints together.** Older v4 builds with incompatible handshake
+layouts cannot interoperate. There is no automatic downgrade and no v3 receive
+compatibility. The standalone binary can explicitly accept legacy traffic with
+`--allow-v2` or `--allow-v1`: v2 lacks directional key separation and is vulnerable
+to reflection; v1 is unauthenticated. Both are disabled by default and rejected
+with encryption enabled.
 
-Legacy v2 does not separate direction keys and remains vulnerable to reflection.
-Keep legacy receive flags disabled for production. There is no automatic downgrade.
+Processes start as root to initialize networking, then drop privileges to
+`tuntom:tuntom`, disable core dumps, and set `no_new_privs`.
 
-Protocol v1 is unauthenticated and should only be enabled when compatibility is explicitly required.
+## Operations
 
-## Wireshark
+### Logs and statistics
 
-The project includes a Wireshark Lua dissector:
+Files live on the respective endpoint hosts:
 
-```text
-tuntom.lua
-```
-
-It understands protocol versions v1, v2, v3, and v4.
-
-For v4 it displays:
-
-- sequence number
-- message ID
-- fragment offset
-- original packet length
-- fragment length
-- authentication tag
-- reassembly information
-
-The dissector also reassembles fragmented v4 DATA packets and passes the reconstructed packet to Wireshark's normal IPv4 or IPv6 dissector.
-
-It also recognizes `MTU_PROBE` and `MTU_REPLY` packets and displays their probe
-ID, outer MTU, and probe padding.
-
-## PMTUD testing
-
-`examples/pmtud-iptables-test.sh` can simulate a silent IPv4 UDP MTU black hole
-on a selected interface:
+| File | Client | Server |
+| --- | --- | --- |
+| Log | `/tmp/tuntom_42c.log` | `/tmp/tuntom_42s.log` |
+| PID | `/run/tuntom/42c.pid` | `/run/tuntom/42s.pid` |
+| Statistics | `/run/tuntom/42c.stats` | `/run/tuntom/42s.stats` |
 
 ```bash
-sudo ./examples/pmtud-iptables-test.sh --size 1200 --interface eth0
-# start or restart the tunnel and inspect its log/statistics
-sudo ./examples/pmtud-iptables-test.sh --size 1200 --interface eth0 --remove
+sudo tail -f /tmp/tuntom_42c.log
+sudo cat /run/tuntom/42c.stats
 ```
 
-The rules affect all IPv4 UDP traffic larger than the selected size on that
-interface, so remove them after testing. The script is idempotent and requires
-`iptables`.
+Statistics include traffic counters, throughput, sampled processing latency,
+PMTUD state, active suite, session readiness, and handshake/rekey counters.
+See [statistics field definitions](docs/DETAILS.md#session-suite-and-rekey-statistics).
+The standalone binary also accepts `--debug` and `--quiet` for logging.
 
-## Hooks
+Start with `--no-stats` to pause automatic writes and optional latency/throughput
+sampling. Control each running process separately using its PID:
 
-`mk_tunnel.sh` supports local pre/post lifecycle hooks.
+```bash
+sudo kill -USR1 <pid>  # toggle automatic statistics
+sudo kill -USR2 <pid>  # write one snapshot, even when disabled
+```
 
-By default:
+The bootstrap retains the stats destination when disabled. For direct binary
+use, supply `--stats-file <path>` even with `--no-stats` to allow later writes.
+Cumulative counters continue while paused; the last file stays unchanged, so
+check `updated_unix` for age. `stats_enabled` records the automatic mode.
+Throughput windows restart when enabled; snapshots while paused retain the
+last optional sampling history.
+
+### Networking and hooks
+
+The bootstrap runs `tuntom-net.sh` on both hosts to set up IPv4 connection
+marking, policy routing for replies, forwarding rules, MSS clamping, and optional
+MASQUERADE. Configure the routes, forwarding sysctls, and application-specific
+policy needed by your topology; IPv6 forwarding/firewall policy is separate.
+
+Optional hook files exist on the caller only. Their content runs locally and
+is streamed over SSH for remote execution. Missing hooks are skipped.
 
 ```text
-/etc/tuntom/tuntom-pre.sh
-/etc/tuntom/tuntom-post.sh
+pre/down -> network cleanup -> post/down
+pre/up   -> network setup   -> post/up
 ```
 
-The hook files only need to exist on the local/caller host.
+Hooks receive `TUNTOM_SIDE=local|remote`, `TUNTOM_ACTION=up|down`,
+`TUNTOM_PHASE=pre|post`, plus tunnel addresses, interface names, and networking
+settings. Use `post/up` to add custom routes or DNAT rules.
+See [hook context](docs/DETAILS.md#lifecycle-hooks) and the
+[honeynet example](examples/tuntom-honeynet-hook.example.sh).
 
-The same hook content is executed locally and streamed over SSH to the remote host.
+### Wireshark
 
-Hook context uses:
+[tuntom.lua](tuntom.lua) dissects v1, v2, v3, and v4 captures, including handshake
+fields, session hints, sequence counters, fragments, authentication tags, and
+PMTUD probes. It reassembles unencrypted v4 DATA and passes inner packets to the
+IPv4/IPv6 dissector. Encrypted payloads remain encrypted in the capture.
 
-```text
-TUNTOM_SIDE=local
-TUNTOM_SIDE=remote
+### PMTUD black-hole test
+
+The manual helper simulates silently dropped IPv4 UDP packets above a selected
+outer size:
+
+```bash
+sudo bash tests/pmtud-iptables-test.sh --size 1200 --interface eth0
+# Start or restart the tunnel and inspect logs/statistics.
+sudo bash tests/pmtud-iptables-test.sh --size 1200 --interface eth0 --remove
 ```
 
-Typical hook phases are:
+These rules affect **all IPv4 UDP traffic** above that size on the selected
+interface. Remove them after testing.
 
-```text
-pre/down
-post/down
-pre/up
-post/up
-```
+## Build and test
 
-`post/up` is especially useful for adding routes, DNAT rules, or other per-tunnel policy after tuntom networking has been created.
-
-## Logs
-
-The bootstrap script writes logs to:
-
-```text
-/tmp/tuntom_42c.log
-/tmp/tuntom_42s.log
-```
-
-Use `--debug` on the C++ binary for packet and protocol details.
-
-## Session statistics
-
-Use `./mk_tunnel.sh <id> <host> --no-stats` to start both endpoints without
-stats file writes or optional latency/throughput sampling. The destination path
-is retained, so the standalone processes can be controlled without restarting:
-
-```sh
-sudo kill -USR1 <pid>  # toggle automatic stats on/off
-sudo kill -USR2 <pid>  # write one snapshot, even with --no-stats
-```
-
-Signals affect only the addressed process. The bootstrap stores PIDs in
-`/run/tuntom/<id>{c,s}.pid` on the respective hosts. When running the binary
-directly, supply `--stats-file <path>` even with `--no-stats` if you want to enable
-writing or take snapshots later; no path means no output. `--no-stats` wins regardless of CLI order.
-Disabling leaves the last stats file unchanged (check `updated_unix` for age).
-Cumulative counters continue; latency sampling pauses, and throughput windows
-start fresh on re-enable to exclude traffic during the pause. `USR2` writes
-current cumulative counters without changing automatic mode; optional latency
-and throughput values reflect the last collected history while paused.
-`stats_enabled=0/1` identifies the automatic mode at snapshot time.
-
-
-The bootstrap's `/run/tuntom/<id>{c,s}.stats` files also show `suite`,
-`suite_active`, `pfs`, `session_ready`, `session_age_seconds`, `handshake_state`,
-and handshake/rekey counters. `rekey_completed` counts confirmed exchanges
-after the initial connection; retransmitted CONFIRM/ACK packets do not inflate
-it. See [field definitions](docs/DETAILS.md#session-suite-and-rekey-statistics)
-for retries, timeouts and rejection counters.
-
-## Building and editing
-
-Open this directory as a CMake project in CLion. The local build compiles
-`src/main.cpp` with ordinary, self-contained `.hpp` headers:
+Build with CMake (3.16+) or open this directory as a CMake project in CLion:
 
 ```bash
 cmake -S . -B /tmp/tuntom-build -DCMAKE_BUILD_TYPE=Release
@@ -359,38 +302,40 @@ cmake --build /tmp/tuntom-build
 ctest --test-dir /tmp/tuntom-build --output-on-failure
 ```
 
-You can also compile directly without CMake:
+Or compile directly:
 
 ```bash
 g++ -std=c++17 -O2 -Wall -Wextra -pedantic src/main.cpp -o /tmp/tuntom
 ```
 
-`mk_tunnel.sh` compiles locally from `src/main.cpp` and streams the `src/`
-directory as a tar archive over SSH. The remote host extracts it into a private
-temporary directory, compiles the staging binary and removes the source directory
-on exit, including compilation failure. Deployment requires `tar` on both hosts
-and `mktemp` on the remote host; CMake is not required there. Both deployment
-builds use `-O2 -march=native -mtune=native`, targeting the CPU visible on each
-host independently (inside a VM, the guest-visible CPU).
+The regression runner also checks header self-containment and runs the dissector
+test when `tshark` and `python3` are available. It requires no root or live tunnel:
 
-## Files
-
-```text
-src/           C++17 implementation with normal headers and main.cpp
-CMakeLists.txt local build, CLion project and C++ tests
-mk_tunnel.sh    build/deploy/start helper
-tuntom-net.sh   optional per-tunnel Linux routing/NAT helper
-tuntom.lua      Wireshark dissector
-README.md       quick usage
-DETAILS.md      implementation notes
-LICENSE.md      BSD 3-Clause license
+```bash
+bash tests/run.sh
 ```
 
-### INIT freshness
+See [test coverage](tests/README.md) and
+[standalone binary setup](docs/DETAILS.md#using-the-binary-without-the-bootstrap-script).
+Direct execution requires the `tuntom` user/group and root at startup.
 
-V4 peers must both support the timestamped INIT layout (92 bytes for suites 0/1, 124 for suite 2). Synchronize both
-host clocks. `--init-window 300` configures a total 300-second acceptance window
-(+/-150 seconds); use an even value from 2 to 86400. The server rejects expired
-INITs and previously seen nonces. Authenticated clock differences approaching
-the limit produce rate-limited warnings; `--quiet` suppresses them. See
-[protocol details](docs/PROTOCOL_V4.md) for retry, restart and capacity limits.
+The bootstrap compiles with `-O2 -march=native -mtune=native` independently on
+each host. It streams `src/` as a tar archive and removes remote temporary
+sources on exit, including compilation failure. CMake is not required for
+deployment.
+
+## Project map
+
+| Path | Contents |
+| --- | --- |
+| [src/](src/README.md) | C++17 engine, ordinary headers, and `main.cpp` |
+| [src/vendor/](src/vendor/README.md) | Vendored X25519 implementation and provenance |
+| [mk_tunnel.sh](mk_tunnel.sh) | Build, deploy, start, restart, and stop |
+| [tuntom-net.sh](tuntom-net.sh) | Linux routing and firewall helper |
+| [tuntom.lua](tuntom.lua) | Wireshark Lua dissector |
+| [examples/](examples/) | Lifecycle hook example |
+| [tests/](tests/README.md) | Regression tests, vectors, and manual PMTUD helper |
+| [docs/DETAILS.md](docs/DETAILS.md) | Implementation and operating details |
+| [docs/PROTOCOL_V4.md](docs/PROTOCOL_V4.md) | Wire format, handshake, and cryptographic constructions |
+| [CMakeLists.txt](CMakeLists.txt) | Local build and CTest targets |
+| [LICENSE.md](LICENSE.md) | BSD 3-Clause license |
