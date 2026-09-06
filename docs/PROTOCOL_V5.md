@@ -1,48 +1,63 @@
-> Historical specification. Current implementation: [V5](PROTOCOL_V5.md).
+# tuntom V5: compact AMAC sessions and optional Ascon-AEAD128
 
-# tuntom V4: AMAC sessions and optional Ascon-AEAD128
-
-This is the implemented, pre-production V4 wire format. Both endpoints must be
-upgraded together. Earlier V4 builds using static DATA keys are incompatible.
-There is no V3 receive path or automatic downgrade. Explicit legacy V1/V2
-receive flags bypass the session security model and should remain disabled.
+V5 is the only supported wire protocol. Upgrade both endpoints together; V1–V4
+packets are rejected and there is no automatic downgrade. The Wireshark
+dissector can still inspect historical captures.
 
 ## Common header
 
-All integers are unsigned, big-endian. The UDP payload starts with 48 bytes:
+All integers are unsigned, big-endian. No magic or tunnel ID is transmitted. The
+UDP socket selects the configured tunnel; its ID remains an input to all
+existing key derivations. Version 5 is transmitted only in INIT/RESPONSE.
 
 | Offset | Bytes | Field |
 |---:|---:|---|
-| 0 | 4 | Magic `UTUN` |
-| 4 | 2 | Tunnel ID |
-| 6 | 1 | Version = 4 |
-| 7 | 1 | Message type in bits 0–6; bit 7 = AEAD session packet |
-| 8 | 8 | SEQ: upper 16 bits session hint, lower 48 bits counter |
-| 16 | 8 | Message ID / handshake exchange ID |
-| 24 | 4 | Fragment offset (DATA only) |
-| 28 | 4 | Original packet length (DATA), outer MTU (PMTUD) |
-| 32 | 16 | AMAC or Ascon-AEAD128 tag |
-| 48 | variable | Payload |
+| 0 | 1 | Type in bits 0–3; bits 4–5 reserved (zero), bit 6 = fragmented DATA, bit 7 = AEAD |
+| 1 | 8 | SEQ: upper 16 bits session hint, lower 48 bits counter |
+| 9 | variable | Type-specific extension below |
+| M | 16 | AMAC or Ascon-AEAD128 tag; M = 9 + extension size |
+| M + 16 | variable | Payload |
+
+
+| Type | Extension at offset 9 | Total header |
+|---|---|---:|
+| DATA (3), no fragment flag | none | 25 B |
+| HELLO (1), KEEPALIVE (2) | none | 25 B |
+| DATA (3), fragment flag set | message_id[8], offset[2], original_length[2] | 37 B |
+| PING (4), PONG (5) | probe_id[8] | 33 B |
+| MTU_PROBE (6), MTU_REPLY (7) | probe_id[8], outer_mtu[2] | 35 B |
+| INIT (8), RESPONSE (9) | version[1] = 5, exchange_id[8] | 34 B |
+| CONFIRM (10), CONFIRM_ACK (11) | exchange_id[8] | 33 B |
 
 
 The MAC construction is specified in [AMAC v1](AMAC_V1.md). Its input is
-`header[0:32] || payload`; the tag itself is excluded. No extra session-ID bytes
-are added to DATA.
+`wire[0:M] || payload`; the tag is excluded. AEAD authenticates the same
+metadata as associated data. All flags and extensions are authenticated.
+Reserved bits, unknown types, wrong handshake versions and fragment flags on
+control packets are rejected.
+
+Unfragmented DATA derives its length from the UDP payload; it carries no message
+ID or fragmentation fields. Internally its sequence supplies the nonzero ID for
+the complete-packet reassembly fast path. Fragment offset and original length
+must fit 16 bits (maximum inner packet 65535 bytes); redundant complete-packet
+fragment extensions are rejected. Fragment IDs remain 64 bits. HELLO, KEEPALIVE,
+PING, PONG, MTU_REPLY and confirmations have no payload. MTU_PROBE carries
+padding.
 
 ## Handshake messages
 
 | Type | Direction | SEQ | Payload | Total UDP payload |
 |---|---|---|---|---:|
-| INIT (8) | C → S | 0 | nonce_C[32], timestamp[8], suite[2], dh_length[2], DH_C[dh_length] | 92 B (124 B in suite 2) |
-| RESPONSE (9) | S → C | 0 | init_hash[32], nonce_S[32], suite[2], dh_length[2], DH_S[dh_length] | 116 B (148 B in suite 2) |
-| CONFIRM (10) | C → S | hint << 48 | empty | 48 B |
-| CONFIRM_ACK (11) | S → C | hint << 48 | empty | 48 B |
+| INIT (8) | C → S | 0 | nonce_C[32], timestamp[8], suite[2], dh_length[2], DH_C[dh_length] | 78 B (110 B in suite 2) |
+| RESPONSE (9) | S → C | 0 | init_hash[32], nonce_S[32], suite[2], dh_length[2], DH_S[dh_length] | 102 B (134 B in suite 2) |
+| CONFIRM (10) | C → S | hint << 48 | empty | 33 B |
+| CONFIRM_ACK (11) | S → C | hint << 48 | empty | 33 B |
 
 
 All four messages share the client's nonzero random 64-bit exchange ID in
-`message_id`; fragment offset and original length are zero. Nonces are 32 fresh
-random bytes from Linux `getrandom`, with errors failing closed. Retransmissions
-preserve the exact original bytes, nonces and exchange ID.
+`message_id`; fragment offset and original length are absent. Nonces are 32
+fresh random bytes from Linux `getrandom`, with errors failing closed.
+Retransmissions preserve the exact original bytes, nonces and exchange ID.
 
 Suite **0** (default) authenticates plaintext using AMAC. Suite **1** requires
 `--encrypt-ascon` on both endpoints and uses standard NIST SP 800-232
@@ -61,8 +76,9 @@ AEAD:
 
 - Key: the existing fresh 128-bit directional session key derived below.
 - Nonce: eight zero bytes followed by the exact eight wire SEQ bytes.
-- Associated data: exact header bytes 0 through 31 (including bit 7).
-- Ciphertext: payload at offset 48; full 128-bit tag at offset 32.
+- Associated data: exact header bytes before the tag, `wire[0:M]` (including
+  both flags).
+- Ciphertext: payload at offset `M + 16`; full 128-bit tag at offset `M`.
 - The standard's internal lanes are little-endian; wire integers remain
   big-endian.
 
@@ -72,13 +88,17 @@ CONFIRM/ACK in its respective direction; retries reproduce the identical packet.
 Suites 1/2 stop sending after counter `2^32 - 1` and establishes a fresh
 session, well before 48-bit wrap. With UDP datagrams below 64 KiB this also
 bounds traffic to less than `2^48` bytes per directional key. Mode-bit changes
-fail authentication; wrong modes are rejected, and legacy receive flags cannot
-accompany encryption. No plaintext is delivered before verification; failed
-candidate plaintext is wiped.
+fail authentication; wrong modes and legacy receive flags are rejected. No
+plaintext is delivered before verification; failed candidate plaintext is wiped.
 
 Reference: [NIST SP 800-232](https://doi.org/10.6028/NIST.SP.800-232).
 
 ## Key derivation and binding
+
+All derivation labels (including historical `V4` names) and configured tunnel-ID
+inputs remain unchanged. The authenticated V5 handshake bytes, including
+version, are bound into the transcript; new wire framing therefore produces
+fresh session keys.
 
 Below, `AMAC(K, id, bytes)` is the existing 16-byte function `ascon::mac`. `||`
 is byte concatenation. The master secret is 16 bytes.
@@ -126,14 +146,14 @@ comes from a pinned Monocypher 4.0.3 extraction; see
 [`src/vendor/README.md`](../src/vendor/README.md) for provenance and
 reproduction. No system crypto library is used.
 
-Let `Z` be the full 32-byte X25519 result, `I` the full authenticated INIT (124
-bytes), and `R` the full authenticated RESPONSE (148 bytes). `T = I || R` is
-exactly 272 bytes. It binds the tunnel ID, version, suite, exchange ID,
-client/server positions, nonces, timestamp, both DH public keys and handshake
-AMACs. Extraction and expansion framing, regression vectors and security
-assumptions are specified in [AKDF v1](AKDF_V1.md). The protocol applies that
-construction as follows; labels are ASCII bytes without a trailing NUL (the
-expansion function appends it):
+Let `Z` be the full 32-byte X25519 result, `I` the full authenticated INIT (110
+bytes), and `R` the full authenticated RESPONSE (134 bytes). `T = I || R` is
+exactly 244 bytes. The tunnel ID is bound through AKDF's separate `id` input.
+The transcript binds the version, suite, exchange ID, client/server positions,
+nonces, timestamp, both DH public keys and handshake AMACs. Extraction and
+expansion framing, regression vectors and security assumptions are specified in
+[AKDF v1](AKDF_V1.md). The protocol applies that construction as follows; labels
+are ASCII bytes without a trailing NUL (the expansion function appends it):
 
 ```text
 PRK = Extract(master, id, Z)
@@ -257,10 +277,10 @@ the client initiates a fresh handshake. If the server exhausts first, the client
 recovers via the authenticated-traffic timeout. Suites 1/2 use the earlier
 32-bit transmission limit described above.
 
-DATA fragmentation uses the unchanged 48-byte header and a distinct sequence for
-every fragment. Reassembly tables belong to sessions, so identical message IDs
-in overlapping sessions cannot mix. Existing per-table limits remain; overlap
-may temporarily hold two bounded tables.
+Fragmented DATA uses a 37-byte header and a distinct sequence for every
+fragment. Reassembly tables belong to sessions, so identical message IDs in
+overlapping sessions cannot mix. Existing per-table limits remain; overlap may
+temporarily hold two bounded tables.
 
 Wireshark exposes handshake fields, suite, DH length, session hint and counter.
 It does not verify AMAC. Its best-effort reassembly includes protocol version

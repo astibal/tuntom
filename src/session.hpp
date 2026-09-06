@@ -22,7 +22,7 @@
 
 namespace tuntom {
 
-// V4 session state is independent of sockets/TUN; callers supply a monotonic
+// V5 session state is independent of sockets/TUN; callers supply a monotonic
 // clock for timeouts and an optional Unix time for INIT freshness tests.
 class SessionProtocol {
 public:
@@ -36,7 +36,7 @@ public:
     static constexpr auto idle_restart = std::chrono::seconds(20);
 
     struct Session {
-        ProtocolV4 codec;
+        ProtocolV5 codec;
         ReplayWindow replay;
         Reassembler reassembly;
         std::uint16_t hint;
@@ -205,8 +205,8 @@ public:
         Received result;
         if (previous_ and now >= previous_until_) previous_.reset();
         expire_pending(now);
-        if (size < protocol_header_v4_size) return result;
-        const auto type = static_cast<PacketType>(wire[7] & 0x7f);
+        if (size < protocol_header_v5_size) return result;
+        const auto type = static_cast<PacketType>(wire[0] & 0x0f);
         if (not server_ and not flight_.empty() and
             now - flight_started_ >= pending_lifetime and
             (type == PacketType::response or type == PacketType::confirm_ack)) return result;
@@ -312,7 +312,7 @@ public:
             return result;
         }
 
-        const auto hint = static_cast<std::uint16_t>(load_be64(wire + 8) >> 48);
+        const auto hint = static_cast<std::uint16_t>(load_be64(wire + 1) >> 48);
         Session* matched = nullptr;
         for (Session* candidate : {active_.get(), pending_.get(), previous_.get()}) {
             if (candidate and candidate->hint == hint and
@@ -469,7 +469,7 @@ private:
     bool encrypt_;
     bool pfs_;
     Secret<32> client_secret_;
-    ProtocolV4 handshake_;
+    ProtocolV5 handshake_;
     std::unique_ptr<Session> active_, previous_, pending_;
     Time previous_until_ {}, pending_until_ {}, last_received_ {};
     Time flight_started_ {}, last_retry_ {};

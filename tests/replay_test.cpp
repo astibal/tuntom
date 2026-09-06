@@ -67,8 +67,8 @@ void test_integer_boundaries() {
 
 void test_fragment_receive_path() {
     ascon::key_type key {};
-    ProtocolV4 sender(42, key, false);
-    ProtocolV4 receiver(42, key, true);
+    ProtocolV5 sender(42, key, false);
+    ProtocolV5 receiver(42, key, true);
     ReplayWindow replay;
     Reassembler reassembler(9000);
     std::vector<std::uint8_t> original(9000);

@@ -24,25 +24,25 @@ struct Pair {
     Wire init, response, confirm, ack;
     void handshake(SP::Time now = start) {
         init = c.begin(now, wall); response = recv(s, init, now).reply;
-        require(init.size() == 124 && response.size() == 148, "PFS wire sizes");
-        require(load_be16(init.data()+88) == 2 && load_be16(init.data()+90) == 32, "INIT suite/DH");
-        require(load_be16(response.data()+112) == 2 && load_be16(response.data()+114) == 32, "RESPONSE suite/DH");
+        require(init.size() == 110 && response.size() == 134, "PFS wire sizes");
+        require(load_be16(init.data()+74) == 2 && load_be16(init.data()+76) == 32, "INIT suite/DH");
+        require(load_be16(response.data()+98) == 2 && load_be16(response.data()+100) == 32, "RESPONSE suite/DH");
         confirm = recv(c, response, now).reply;
-        require(confirm.size() == 48 && confirm[7] == 0x8a, "encrypted CONFIRM");
+        require(confirm.size() == 33 && confirm[0] == 0x8a, "encrypted CONFIRM");
         require(!recv(s, data(c), now).data, "pre-confirm DATA");
         ack = recv(s, confirm, now).reply;
-        require(ack.size() == 48 && ack[7] == 0x8b, "encrypted ACK");
+        require(ack.size() == 33 && ack[0] == 0x8b, "encrypted ACK");
         require(recv(c, ack, now).activated, "client activation");
     }
 };
 Wire retag(Wire w, bool from_server) {
     // Test attacker knows PSK: authenticate deliberately malformed exchanges.
     const auto h = ascon::derive_direction_key(key, 42, !from_server);
-    Wire input(w.begin(), w.begin() + 32);
-    input.insert(input.end(), w.begin() + 48, w.end());
+    Wire input(w.begin(), w.begin() + 18);
+    input.insert(input.end(), w.begin() + 34, w.end());
     ascon::tag_type tag {};
     ascon::mac(h, 42, input.data(), input.size(), tag);
-    std::copy(tag.begin(), tag.end(), w.begin() + 32);
+    std::copy(tag.begin(), tag.end(), w.begin() + 18);
     return w;
 }
 int main() {
@@ -63,25 +63,25 @@ int main() {
     const std::string label("V4-SESSION-C2S\0", 15);
     Wire legacy_input(label.begin(), label.end()); legacy_input.insert(legacy_input.end(), transcript.begin(), transcript.end());
     ascon::key_type old_key {}; ascon::mac(key, 42, legacy_input.data(), legacy_input.size(), old_key);
-    ProtocolV4 legacy(42, old_key, old_key, true); Packet packet;
+    ProtocolV5 legacy(42, old_key, old_key, true); Packet packet;
     require(!legacy.decode(wire.data(), wire.size(), packet), "legacy derivation decrypts PFS");
     // Invalid authenticated DH or lengths must not occupy pending state.
     for (int variant = 0; variant < 6; ++variant) {
         Pair q;
         auto init = q.c.begin(start, wall), bad = init;
-        if (variant == 0) std::fill(bad.begin()+92, bad.end(), 0);
-        if (variant == 1) { std::fill(bad.begin()+92, bad.end(), 0); bad[92] = 1; }
-        if (variant == 2) bad[91] = 31;
+        if (variant == 0) std::fill(bad.begin()+78, bad.end(), 0);
+        if (variant == 1) { std::fill(bad.begin()+78, bad.end(), 0); bad[78] = 1; }
+        if (variant == 2) bad[77] = 31;
         if (variant == 3) bad.pop_back();
         if (variant == 4) bad.push_back(0);
-        if (variant == 5) bad[89] = 3;
+        if (variant == 5) bad[75] = 3;
         require(recv(q.s, retag(bad, false)).reply.empty() && !q.s.ready(), "invalid DH/length accepted");
         // Use a fresh nonce: even rejected low-order input consumes its nonce.
         auto fresh = q.c.begin(start, wall);
         auto response = recv(q.s, fresh).reply;
-        require(response.size() == 148, "invalid share occupied pending");
+        require(response.size() == 134, "invalid share occupied pending");
         auto bad_response = response;
-        for (std::size_t i = 116; i < 148; ++i) bad_response.at(i) = 0;
+        for (std::size_t i = 102; i < 134; ++i) bad_response.at(i) = 0;
         require(recv(q.c, retag(bad_response, true)).reply.empty() && !q.c.ready(), "zero server DH");
         require(!recv(q.c, response).reply.empty(), "good response after bad share");
     }
@@ -112,7 +112,7 @@ int main() {
         auto init = q.c.begin(start, wall);
         auto lost = recv(q.s, init).reply;
         auto retry = q.c.tick(start + std::chrono::seconds(1), wall);
-        require(!retry.empty() && !std::equal(init.begin()+92, init.end(), retry.begin()+92), "fresh retry DH");
+        require(!retry.empty() && !std::equal(init.begin()+78, init.end(), retry.begin()+78), "fresh retry DH");
         require(recv(q.c, lost, start + std::chrono::seconds(1)).reply.empty(), "stale RESPONSE accepted");
         require(recv(q.s, retry, start + std::chrono::seconds(1)).reply.empty(), "pending eviction");
         q.s.tick(start + SP::pending_lifetime, wall);

@@ -44,4 +44,15 @@ inline FragmentPlan make_fragment_plan(
     };
 }
 
+// Whole DATA has no fragment extension; choose the capacity before splitting.
+inline FragmentPlan make_v5_fragment_plan(std::size_t packet_size,
+                                          std::size_t fragment_payload) {
+    constexpr auto extension = protocol_fragment_v5_size - protocol_header_v5_size;
+    if (fragment_payload == 0 or fragment_payload > max_ip_packet_size or
+        packet_size > max_ip_packet_size)
+        throw std::runtime_error("Invalid V5 fragmentation parameters");
+    return make_fragment_plan(packet_size,
+        packet_size <= fragment_payload + extension ? fragment_payload + extension : fragment_payload);
+}
+
 } // namespace tuntom

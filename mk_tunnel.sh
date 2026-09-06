@@ -372,63 +372,71 @@ hook_post_down_remote() {
         echo "WARNING: remote post/down hook failed" >&2
 }
 
-stop_local_process() {
-    if [[ ! -f "$local_pid_file" ]]; then
-        return
-    fi
-
-    local pid
-    pid="$(cat "$local_pid_file" 2>/dev/null || true)"
-
-    if [[ "$pid" =~ ^[0-9]+$ ]]; then
-        local argv0
-        argv0="$("${root_cmd[@]}" sh -c "tr '\\0' '\\n' < '/proc/${pid}/cmdline' 2>/dev/null | head -n 1" || true)"
-
-        if [[ "$argv0" == "$local_bin" ]]; then
-            "${root_cmd[@]}" kill "$pid" 2>/dev/null || true
-            for _ in $(seq 1 20); do
-                if ! "${root_cmd[@]}" kill -0 "$pid" 2>/dev/null; then
-                    break
-                fi
-                sleep 0.05
-            done
-            if "${root_cmd[@]}" kill -0 "$pid" 2>/dev/null; then
-                "${root_cmd[@]}" kill -KILL "$pid" 2>/dev/null || true
-            fi
-        else
-            echo "WARNING: stale local PID file ${local_pid_file}: PID ${pid} is not ${local_bin}" >&2
+# Run this function with the same privileges used to launch the tunnel.
+# PID files are only bookkeeping: older/orphaned instances may not be listed.
+stop_matching_processes() {
+    local binary="$1" role="$2" tunnel_id="$3" interface="$4" pid_file="$5"
+    local proc pid stat rest identity state current attempt
+    local -a argv fields targets=() identities=()
+    for proc in /proc/[0-9]*; do
+        pid="${proc##*/}"
+        argv=()
+        if ! mapfile -d '' -t argv < "$proc/cmdline" 2>/dev/null; then
+            continue
         fi
-    fi
+        [[ "${argv[0]-}" == "$binary" && "${argv[1]-}" == "$role" &&
+           "${argv[2]-}" == "$tunnel_id" && "${argv[3]-}" == "$interface" ]] || continue
+        if ! IFS= read -r stat < "$proc/stat" 2>/dev/null; then continue; fi
+        rest="${stat##*) }"
+        read -r -a fields <<< "$rest"
+        identity="${fields[19]-}"
+        [[ "$identity" =~ ^[0-9]+$ ]] || return 1
+        targets+=("$pid")
+        identities+=("$identity")
+    done
 
-    "${root_cmd[@]}" rm -f "$local_pid_file"
+    # Recheck process start time before signalling, avoiding stale/reused PIDs.
+    for current in "${!targets[@]}"; do
+        pid="${targets[current]}"
+        identity="${identities[current]}"
+        for ((attempt=0; attempt<60; ++attempt)); do
+            if [[ ! -e "/proc/$pid/stat" ]]; then break; fi
+            if ! IFS= read -r stat < "/proc/$pid/stat"; then
+                [[ ! -e "/proc/$pid" ]] && break
+                echo "ERROR: cannot inspect PID $pid" >&2
+                return 1
+            fi
+            rest="${stat##*) }"
+            read -r -a fields <<< "$rest"
+            [[ "${fields[19]-}" == "$identity" ]] || break
+            state="${fields[0]-}"
+            [[ "$state" == Z || "$state" == X ]] && break
+            if (( attempt == 0 )); then
+                echo "Stopping $role tunnel $tunnel_id PID $pid"
+                kill -TERM "$pid" 2>/dev/null || true
+            elif (( attempt == 40 )); then
+                kill -KILL "$pid" 2>/dev/null || true
+            fi
+            sleep 0.05
+        done
+        if (( attempt == 60 )); then
+            echo "ERROR: PID $pid did not stop; refusing to start another instance" >&2
+            return 1
+        fi
+    done
+    rm -f -- "$pid_file"
+}
+
+stop_local_process() {
+    "${root_cmd[@]}" bash -c "$(declare -f stop_matching_processes)
+        stop_matching_processes \"\$@\"" -- \
+        "$local_bin" client "$id" "$client_if" "$local_pid_file"
 }
 
 stop_remote_process() {
-    ssh "$remote" "
-        if [ -f '${remote_pid_file}' ]; then
-            pid=\$(cat '${remote_pid_file}' 2>/dev/null || true)
-            case \"\$pid\" in
-                ''|*[!0-9]*) ;;
-                *)
-                    argv0=\$(tr '\\000' '\\n' < \"/proc/\$pid/cmdline\" 2>/dev/null | head -n 1 || true)
-                    if [ \"\$argv0\" = '${remote_bin}' ]; then
-                        kill \"\$pid\" 2>/dev/null || true
-                        n=0
-                        while kill -0 \"\$pid\" 2>/dev/null && [ \"\$n\" -lt 20 ]; do
-                            sleep 0.05
-                            n=\$((n + 1))
-                        done
-                        if kill -0 \"\$pid\" 2>/dev/null; then
-                            kill -KILL \"\$pid\" 2>/dev/null || true
-                        fi
-                    else
-                        echo \"WARNING: stale remote PID file ${remote_pid_file}: PID \$pid is not ${remote_bin}\" >&2
-                    fi
-                    ;;
-            esac
-            rm -f '${remote_pid_file}'
-        fi
-    "
+    ssh "$remote" "bash -s -- '${remote_bin}' server '${id}' '${server_if}' '${remote_pid_file}'" <<< \
+        "$(declare -f stop_matching_processes)
+        stop_matching_processes \"\$@\""
 }
 
 net_down_local() {
@@ -533,7 +541,7 @@ echo "  MSS clamp:  ${tuntom_mss_clamp}"
 echo "  stats:      ${stats_format} -> ${run_dir}/${id}{c,s}.stats"
 echo "  pre hook:   ${tuntom_pre_hook} (local file, runs local+remote)"
 echo "  post hook:  ${tuntom_post_hook} (local file, runs local+remote)"
-echo "  protocol:   v4 / Ascon auth + replay protection + fragmentation"
+echo "  protocol:   v5 / Ascon auth + replay protection + fragmentation"
 
 echo "[1] Compile local staging binary"
 rm -f "$local_stage"

@@ -34,9 +34,9 @@ Flight handshake(SessionProtocol& client, SessionProtocol& server, Time now = st
     auto r = receive(server, f.init, now);
     require(not r.update_peer and not r.activated, "INIT changed peer/session");
     f.response = r.reply;
-    require(f.init.size() == 92 and f.response.size() == 116, "handshake layout");
+    require(f.init.size() == 78 and f.response.size() == 102, "handshake layout");
     f.confirm = receive(client, f.response, now).reply;
-    require(f.confirm.size() == 48, "confirmation layout");
+    require(f.confirm.size() == 33, "confirmation layout");
     r = receive(server, f.confirm, now);
     require(r.activated and r.update_peer, "CONFIRM did not activate server");
     f.ack = r.reply;
@@ -79,7 +79,7 @@ void test_handshake_reordering_retransmission() {
     Packet ordinary;
     ordinary.tunnel_id = 42;
     ordinary.type = PacketType::keepalive;
-    ProtocolV4 long_term(42, key, false);
+    ProtocolV5 long_term(42, key, false);
     ordinary.sequence = 123;
     require(not receive(server, long_term.encode(ordinary)).data,
             "long-term key authenticated session traffic");
@@ -182,7 +182,7 @@ void test_sessions_reassembly_collision_and_overflow() {
             ascon::mac(key, 42, input.data(), input.size(), out);
             return out;
         };
-        return ProtocolV4(42, derive("V4-SESSION-C2S"), derive("V4-SESSION-S2C"));
+        return ProtocolV5(42, derive("V4-SESSION-C2S"), derive("V4-SESSION-S2C"));
     };
     auto old_wire = make_peer_codec(*old_session).encode(collision);
     auto new_wire = make_peer_codec(*new_session).encode(collision);
@@ -207,10 +207,10 @@ void test_invalid_handshake() {
         bad[i] ^= 1;
         require(receive(s, bad).reply.empty(), "tampered INIT accepted");
     }
-    ProtocolV4 client_codec(42, key, false);
+    ProtocolV5 client_codec(42, key, false);
     Packet packet;
     require(client_codec.decode(init.data(), init.size(), packet) == false, "INIT reflected");
-    ProtocolV4 server_codec(42, key, true);
+    ProtocolV5 server_codec(42, key, true);
     require(server_codec.decode(init.data(), init.size(), packet), "INIT decoding");
     packet.payload[40] = 1;
     require(receive(s, client_codec.encode(packet)).reply.empty(), "unsupported suite accepted");
@@ -244,7 +244,7 @@ void test_init_time_and_nonce() {
         Packet packet; Wire scratch;
         return server.receive(wire.data(), wire.size(), packet, scratch, now, wall);
     };
-    ProtocolV4 encoder(42, key, false), decoder(42, key, true);
+    ProtocolV5 encoder(42, key, false), decoder(42, key, true);
     SessionProtocol client(42, key, false);
     const auto init = client.begin(start, epoch);
     Packet parsed;
@@ -281,7 +281,7 @@ void test_init_time_and_nonce() {
     SessionProtocol restarted(42, key, true);
     require(deliver(restarted, init, start, epoch + 151).timestamp_rejected,
             "restart accepted stale INIT");
-    auto tampered = init; tampered[80] ^= 1;
+    auto tampered = init; tampered.at(protocol_handshake_v5_size + 32) ^= 1;
     auto invalid = deliver(restarted, tampered, start, epoch);
     require(!invalid.clock_warning && !invalid.timestamp_rejected, "unauthenticated clock warning");
     // Saturation must fail closed, and expiry must free capacity.
@@ -327,5 +327,5 @@ int main() {
     test_sessions_reassembly_collision_and_overflow();
     test_invalid_handshake();
     test_init_time_and_nonce();
-    std::cout << "PASS: V4 handshake, retransmits, restart replay, reordering, hint collisions, reassembly, overflow and validation\n";
+    std::cout << "PASS: V5 handshake, retransmits, restart replay, reordering, hint collisions, reassembly, overflow and validation\n";
 }

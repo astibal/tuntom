@@ -7,14 +7,13 @@
 
 namespace tuntom {
 
-inline constexpr std::uint32_t protocol_magic = 0x5554554e; // "UTUN"
-inline constexpr std::uint8_t protocol_version_v1 = 1;
-inline constexpr std::uint8_t protocol_version_v2 = 2;
-inline constexpr std::uint8_t protocol_version_v4 = 4;
+inline constexpr std::uint8_t protocol_version_v5 = 5;
 
-inline constexpr std::size_t protocol_header_v1_size = 8;
-inline constexpr std::size_t protocol_header_v2_size = 32;
-inline constexpr std::size_t protocol_header_v4_size = 48;
+inline constexpr std::size_t protocol_header_v5_size = 25;
+
+inline constexpr std::size_t protocol_fragment_v5_size = 37;
+inline constexpr std::size_t protocol_probe_v5_size = 35;
+inline constexpr std::size_t protocol_handshake_v5_size = 34;
 
 inline constexpr std::size_t udp_header_size = 8;
 inline constexpr std::size_t ipv4_header_min_size = 20;

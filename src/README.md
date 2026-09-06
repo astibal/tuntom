@@ -13,11 +13,11 @@ from multiple translation units.
 | `ascon.hpp` | Ascon permutation, MAC and key derivation |
 | `wire.hpp` | Wire integers and secret parsing |
 | `replay.hpp` | Sequence generation and replay window |
-| `protocol.hpp` | Protocol interface and v1/v2/v4 wire codecs |
+| `protocol.hpp` | Protocol interface and compact v5 wire codec |
 | `tun_device.hpp` | Linux TUN device |
 | `udp_endpoint.hpp` | UDP sockets and peer handling |
 | `reassembly.hpp` | Fragment reassembly |
-| `session.hpp` | V4 handshake and session lifecycle |
+| `session.hpp` | V5 handshake and session lifecycle |
 | `ip.hpp` | IP checksums and hop compensation |
 | `fragmentation.hpp` | Fragment sizing and probe state |
 | `tunnel.hpp` | Event loop, forwarding, RTT, PMTUD and stats |
@@ -28,6 +28,6 @@ from multiple translation units.
 source file or custom include processing is needed.
 
 PFS implementation: `x25519.hpp` wraps the pinned `vendor/x25519.hpp` extraction;
-`akdf.hpp` defines project-specific AMAC extract/expand; `secret.hpp` owns wiping
+`akdf.hpp` implements [AKDF v1](../docs/AKDF_V1.md) extract/expand; `secret.hpp` owns wiping
 helpers. `--pfs` selects suite 2, implies Ascon encryption and enables periodic DH
-rekey. See `docs/PROTOCOL_V4.md` for exact derivation and security assumptions.
+rekey. See `docs/PROTOCOL_V5.md` for exact derivation and security assumptions.

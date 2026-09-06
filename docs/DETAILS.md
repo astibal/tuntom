@@ -2,7 +2,9 @@
 
 ## Motivation
 
-`tuntom` started as a very small requirement: create a lightweight L3 tunnel over UDP without bringing in WireGuard, GRE-over-UDP plumbing, OpenSSL, or a larger VPN stack.
+`tuntom` started as a very small requirement: create a lightweight L3 tunnel
+over UDP without bringing in WireGuard, GRE-over-UDP plumbing, OpenSSL, or a
+larger VPN stack.
 
 The intended model is:
 
@@ -12,7 +14,9 @@ TUN -> UDP -> network/NAT -> UDP -> TUN
 
 The implementation deliberately keeps transport and Linux networking separate.
 
-`tuntom` only moves IP packets between a Linux TUN interface and UDP. What happens to packets after they appear on the remote TUN interface is up to the host:
+`tuntom` only moves IP packets between a Linux TUN interface and UDP. What
+happens to packets after they appear on the remote TUN interface is up to the
+host:
 
 - normal routing
 - policy routing
@@ -24,16 +28,16 @@ The implementation deliberately keeps transport and Linux networking separate.
 - packet capture
 - custom applications
 
-This makes the tunnel useful as a small remote L3 ingress primitive rather than a complete VPN product.
+This makes the tunnel useful as a small remote L3 ingress primitive rather than
+a complete VPN product.
 
 ## Deployment model
 
-The implementation lives in ordinary C++ headers and `../src/main.cpp`.
-Both local and remote builds compile these directly with
-`-O2 -march=native -mtune=native`, targeting each host independently.
-For deployment the source
-directory is streamed as a tar archive and extracted into a private temporary
-directory on the remote host:
+The implementation lives in ordinary C++ headers and `../src/main.cpp`. Both
+local and remote builds compile these directly with
+`-O2 -march=native -mtune=native`, targeting each host independently. For
+deployment the source directory is streamed as a tar archive and extracted into
+a private temporary directory on the remote host:
 
 ```text
 src/ -> tar
@@ -62,7 +66,8 @@ temporary src/ -> remote g++ -> remove temporary src/
 
 For normal remote use, the remote login defaults to `root`.
 
-The current bootstrap mechanism is mainly a convenient deployment/testing tool. The C++ program itself does not depend on SSH.
+The current bootstrap mechanism is mainly a convenient deployment/testing tool.
+The C++ program itself does not depend on SSH.
 
 ## Addressing
 
@@ -94,15 +99,17 @@ TUNTOM_TRANSPORT_MTU=1400
 `TUNTOM_MTU` is the inner/TUN MTU presented to the surrounding Linux network.
 
 `TUNTOM_TRANSPORT_MTU` selects the outer IP packet size used for tuntom UDP
-transport calculations. With automatic PMTUD it is the initial probe target,
-not a hard ceiling; the discovered active transport MTU is used for
-fragmentation. With `--no-pmtud` it is the fixed transport MTU.
+transport calculations. With automatic PMTUD it is the initial probe target, not
+a hard ceiling; the discovered active transport MTU is used for fragmentation.
+With `--no-pmtud` it is the fixed transport MTU.
 
-This separation allows tuntom to remain transparent on networks using either standard Ethernet MTU or jumbo frames.
+This separation allows tuntom to remain transparent on networks using either
+standard Ethernet MTU or jumbo frames.
 
 ## MTU model
 
-The tunnel must not expose its transport limitations through the TUN interface if it can avoid doing so.
+The tunnel must not expose its transport limitations through the TUN interface
+if it can avoid doing so.
 
 The inner MTU and transport MTU are therefore independent:
 
@@ -125,7 +132,8 @@ TUN MTU:       1500
 transport MTU: 1400
 ```
 
-A 1500-byte inner packet is accepted normally by the TUN interface. If it cannot fit into one authenticated tuntom UDP datagram, tuntom fragments it internally.
+A 1500-byte inner packet is accepted normally by the TUN interface. If it cannot
+fit into one authenticated tuntom UDP datagram, tuntom fragments it internally.
 
 Likewise, a jumbo deployment can use for example:
 
@@ -136,28 +144,25 @@ transport MTU: 1500
 
 The systems behind the tunnel still see MTU 9000.
 
-## Protocol v4
+## Protocol v5
 
-Protocol v4 is the default protocol.
-
-It retains the v3 fragmentation layout and introduces session-specific directional keys.
-The version byte is 4; v3 packets are rejected. Both endpoints must be upgraded.
-
-The fixed v4 header is 48 bytes:
+Protocol v5 is the only supported wire protocol. Both endpoints must be
+upgraded. The UDP socket identifies the tunnel; its configured ID still binds
+key derivation. There is no magic, and version is carried only by INIT/RESPONSE.
 
 ```text
 offset  size  field
-0       4     magic
-4       2     tunnel_id
-6       1     version
-7       1     packet_type
-8       8     sequence
-16      8     message_id
-24      4     fragment_offset
-28      4     original_length
-32      16    auth_tag
-48      ...   payload
+0       1     type (bits 0..3), reserved (4..5), fragment (6), encryption (7)
+1       8     sequence (16-bit session hint + 48-bit counter)
+9       ...   type-specific extension
+M       16    auth_tag (M = 9 + extension size)
+M+16    ...   payload
 ```
+
+Headers: DATA/HELLO/KEEPALIVE 25 B; fragmented DATA 37 B; PING/PONG/CONFIRM/ACK
+33 B; PMTUD 35 B; INIT/RESPONSE 34 B. Fragment extensions hold message ID (8 B),
+offset (2 B), original length (2 B). Complete DATA packets carry none of these
+fields. See [wire specification](PROTOCOL_V5.md).
 
 Packet types are:
 
@@ -184,7 +189,8 @@ original_length  = 0
 payload           empty
 ```
 
-For DATA, each UDP datagram represents either the complete inner packet or one tuntom fragment.
+For DATA, each UDP datagram represents either the complete inner packet or one
+tuntom fragment.
 
 `PING` and `PONG` provide authenticated runtime RTT measurements.
 
@@ -192,24 +198,24 @@ For PMTUD messages, `message_id` is the probe ID and `original_length` is the
 candidate/observed outer MTU. `MTU_PROBE` padding makes the outer packet reach
 that size; `MTU_REPLY` has no payload.
 
-## V4 authentication
+## V5 authentication
 
-Each v4 datagram is authenticated independently.
+Each v5 datagram is authenticated independently.
 
 The authenticated data is:
 
 ```text
-header bytes 0..31
+all header bytes before the tag
 +
 payload
 ```
 
-The 16-byte authentication tag at offsets 32..47 is not included in its own MAC input.
+The 16-byte authentication tag following the type-specific extension is not
+included in its own MAC input.
 
 This means the following are authenticated for every fragment:
 
-- tunnel ID
-- protocol version
+- configured tunnel ID through key derivation (not transmitted)
 - packet type
 - transport sequence number
 - message ID
@@ -217,14 +223,15 @@ This means the following are authenticated for every fragment:
 - original packet length
 - fragment payload
 
-A fragment cannot therefore be moved to a different offset, message, or original packet length without invalidating authentication.
+A fragment cannot therefore be moved to a different offset, message, or original
+packet length without invalidating authentication.
 
 ## Authentication construction
 
 The implementation has no OpenSSL dependency.
 
-It contains a compact keyed construction based on the Ascon permutation in
-`../src/ascon.hpp`.
+It uses [AMAC v1](AMAC_V1.md), which specifies the complete MAC algorithm, byte
+order, padding, regression vectors and implementation history.
 
 The master secret is supplied through:
 
@@ -234,7 +241,7 @@ TUNTOM_SECRET
 
 It must currently be exactly 128 bits represented by 32 hexadecimal characters.
 
-V4 derives two keys directly from the master secret using the existing MAC:
+V5 derives two keys directly from the master secret using the existing MAC:
 
 ```text
 K_c2s = MAC(master, tunnel_id, "TUNTOM-V4-CLIENT-TO-SERVER")
@@ -243,74 +250,60 @@ K_s2c = MAC(master, tunnel_id, "TUNTOM-V4-SERVER-TO-CLIENT")
 
 Labels are ASCII bytes without a trailing NUL. The client sends with K_c2s and
 verifies with K_s2c; the server does the reverse. The version, direction label,
-and tunnel ID separate the authentication domains. An endpoint cannot accept
-its own outbound datagram as inbound traffic.
-Legacy v2 retains its old node key and reflection risk; leave `--allow-v2`
-disabled in production. V3 is not accepted, and there is no automatic fallback.
-These long-term direction keys authenticate only INIT and RESPONSE. DATA and
-CONFIRM/ACK use session-specific direction keys derived from both complete
-handshake messages; see the wire specification.
-
-The authentication tag is 128 bits.
-
-The current construction is intentionally small and self-contained. It uses the Ascon permutation, but it should not be described as a drop-in implementation of a specific standardized NIST Ascon MAC profile.
-
-The permutation uses bitwise complement and AND (`~` and `&`) on 64-bit words.
-The complement of the tunnel ID in MAC initialization is also bitwise.
-Earlier builds incorrectly used C++ logical `not`/`and`, reducing these values
-to booleans and allowing forged tags. The fix changes both derived keys and
-legacy v2/v3 tags: deploy it on both endpoints together. No verification fallback
-to the old construction is provided, including with `--allow-v2`.
-
-Tests compare p[8] and p[12] against an independent lookup implementation of
-the [Ascon v1.2 specification, section 2.6](https://ascon.isec.tugraz.at/files/asconv12-nist.pdf).
-This validates the permutation and the specific regression, not the security
-of the project's custom MAC mode.
+and tunnel ID separate the authentication domains. An endpoint cannot accept its
+own outbound datagram as inbound traffic. Legacy packets are rejected; there is
+no fallback. These long-term direction keys authenticate only INIT and RESPONSE.
+DATA and CONFIRM/ACK use session-specific direction keys derived from both
+complete handshake messages; see the wire specification.
 
 ## Session handshake, sequence numbers and replay protection
 
 The exact layouts, domain labels and state transitions are specified in
-[PROTOCOL_V4.md](PROTOCOL_V4.md). V4 establishes fresh session keys through
-INIT / RESPONSE / CONFIRM / CONFIRM_ACK before accepting DATA. Only suite 0
-with empty DH is supported; the payload remains plaintext.
+[PROTOCOL_V5.md](PROTOCOL_V5.md). V5 establishes fresh session keys through INIT
+/ RESPONSE / CONFIRM / CONFIRM_ACK before accepting DATA. Suite 0 authenticates
+plaintext; suites 1/2 encrypt the payload, and suite 2 adds PFS.
 
-The 64-bit SEQ field consists of a 16-bit transcript-derived session hint and
-an independent 48-bit packet counter for each direction. Counter zero is
-reserved for CONFIRM/ACK; ordinary traffic starts at one. The hint selects
-candidate keys; AMAC determines the actual session. A collision is supported.
+The 64-bit SEQ field consists of a 16-bit transcript-derived session hint and an
+independent 48-bit packet counter for each direction. Counter zero is reserved
+for CONFIRM/ACK; ordinary traffic starts at one. The hint selects candidate
+keys; AMAC determines the actual session. A collision is supported.
 
 Every session has its own 64-value replay window and reassembly table. Only
-counter bits enter the replay window, after successful AMAC verification.
-The first ordinary packet need not have counter one: reordering is allowed.
-Replayed confirmations never reset these structures. Old session receive keys
-remain valid for a three-second overlap; previous-session packets cannot
-change the current peer. There are at most two candidate session keys.
+counter bits enter the replay window, after successful AMAC verification. The
+first ordinary packet need not have counter one: reordering is allowed. Replayed
+confirmations never reset these structures. Old session receive keys remain
+valid for a three-second overlap; previous-session packets cannot change the
+current peer. There are at most two candidate session keys.
 
-Restarted receivers have no active session. Replaying a still-time-valid old INIT may elicit
-an authenticated response containing a new server nonce, but cannot restore
-old keys or authorize old DATA. The client restarts the handshake after 20
-seconds without authenticated active-session traffic. INIT freshness uses an authenticated Unix timestamp and the configurable total
-`--init-window` (default 300 seconds, +/-150). Nonces are remembered for their
-full remaining validity. No wall clock is used for V4 DATA packet sequencing. Exhausted 48-bit counters never wrap.
+Restarted receivers have no active session. Replaying a still-time-valid old
+INIT may elicit an authenticated response containing a new server nonce, but
+cannot restore old keys or authorize old DATA. The client restarts the handshake
+after 20 seconds without authenticated active-session traffic. INIT freshness
+uses an authenticated Unix timestamp and the configurable total `--init-window`
+(default 300 seconds, +/-150). Nonces are remembered for their full remaining
+validity. No wall clock is used for V5 DATA packet sequencing. Exhausted 48-bit
+counters never wrap.
 
 Legacy v2 retains its timestamp generator semantics and runtime-only replay
-protection. Enabling legacy receive explicitly bypasses the V4 session model.
+protection. Legacy receive is not supported.
 
-`message_id` remains separate from SEQ. All fragments of one original IP
-packet share it, while each datagram uses a distinct counter. Message IDs
-still use the monotonic timestamp generator and are scoped by session.
+`message_id` remains separate from SEQ. All fragments of one original IP packet
+share it, while each datagram uses a distinct counter. Message IDs still use the
+monotonic timestamp generator and are scoped by session.
 
 ## Balanced fragmentation
 
 Fragmentation is internal to tuntom.
 
-The sender first computes the minimum number of fragments needed for the current transport payload limit:
+The sender first computes the minimum number of fragments needed for the current
+transport payload limit:
 
 ```text
 count = ceil(packet_size / max_fragment_payload)
 ```
 
-It then divides the original packet into approximately equal-sized fragments rather than filling every fragment to the maximum and leaving a small tail.
+It then divides the original packet into approximately equal-sized fragments
+rather than filling every fragment to the maximum and leaving a small tail.
 
 Examples:
 
@@ -329,11 +322,12 @@ This has several useful properties:
 - fragmentation is independent of IPv4/IPv6 fragmentation semantics
 - the original inner IP packet is not modified by fragmentation
 
-The receiver does not depend on equal fragment sizes. Reassembly uses authenticated offsets and original length.
+The receiver does not depend on equal fragment sizes. Reassembly uses
+authenticated offsets and original length.
 
 ## Transport payload calculation
 
-For protocol v4:
+For protocol v5:
 
 ```text
 max_fragment_payload =
@@ -348,7 +342,7 @@ For IPv4 transport:
 ```text
 outer IP header = 20
 UDP header      = 8
-v4 header       = 48
+fragment header = 37
 ```
 
 For IPv6 transport:
@@ -356,16 +350,21 @@ For IPv6 transport:
 ```text
 outer IP header = 40
 UDP header      = 8
-v4 header       = 48
+fragment header = 37
 ```
 
-The dual-stack server uses the conservative IPv6 overhead when calculating the safe payload size.
+Complete DATA uses 25 bytes instead of 37; PMTUD padding uses its own 35-byte
+header.
 
-This may waste 20 bytes when the peer is actually IPv4-mapped, but avoids exceeding the active transport MTU.
+The dual-stack server uses the conservative IPv6 overhead when calculating the
+safe payload size.
+
+This may waste 20 bytes when the peer is actually IPv4-mapped, but avoids
+exceeding the active transport MTU.
 
 ## Automatic path-MTU discovery
 
-Protocol v4 performs authenticated application-level PMTUD by default. It does
+Protocol v5 performs authenticated application-level PMTUD by default. It does
 not depend on receiving ICMP Packet Too Big / Fragmentation Needed messages.
 
 At startup the active outer transport MTU is conservatively set to 500 bytes.
@@ -389,14 +388,15 @@ local send failure or missing reply marks that candidate as bad. Discovery is
 restarted when the authenticated UDP peer changes or a DATA send fails.
 
 The UDP socket enables kernel "do not fragment" PMTU behavior where supported.
-Use `--no-pmtud` to disable discovery and use `--transport-mtu` as a fixed value.
-The minimum accepted fixed or discovery MTU is 500 bytes.
+Use `--no-pmtud` to disable discovery and use `--transport-mtu` as a fixed
+value. The minimum accepted fixed or discovery MTU is 500 bytes.
 
 The bootstrap script currently leaves PMTUD enabled on both endpoints.
 
 ## Reassembly
 
-The receiver identifies the session, authenticates and replay-checks every fragment before it is considered for reassembly.
+The receiver identifies the session, authenticates and replay-checks every
+fragment before it is considered for reassembly.
 
 Reassembly is keyed by `message_id` within each session.
 
@@ -424,11 +424,13 @@ Partial overlaps are rejected.
 
 Duplicate/overlapping byte ranges are not used to advance reassembly.
 
-A packet is released to the TUN side only when all bytes from offset zero through `original_length` have been received.
+A packet is released to the TUN side only when all bytes from offset zero
+through `original_length` have been received.
 
 ## TUN processing boundary
 
-The virtual packet processing hook remains defined on complete logical inner packets.
+The virtual packet processing hook remains defined on complete logical inner
+packets.
 
 Conceptually:
 
@@ -458,7 +460,8 @@ UDP
 -> write complete packet to TUN
 ```
 
-This means users of the processing hook do not need to know that tuntom transport fragmentation exists.
+This means users of the processing hook do not need to know that tuntom
+transport fragmentation exists.
 
 The fragmentation layer is purely an internal transport detail.
 
@@ -472,9 +475,11 @@ sender-side router
 -> receiver-side router
 ```
 
-Without compensation, the hidden transport topology can therefore consume an extra visible IP hop.
+Without compensation, the hidden transport topology can therefore consume an
+extra visible IP hop.
 
-By default, tuntom compensates one hop immediately before writing a received complete packet into the TUN interface.
+By default, tuntom compensates one hop immediately before writing a received
+complete packet into the TUN interface.
 
 IPv4:
 
@@ -501,9 +506,11 @@ decode
 -> write(TUN)
 ```
 
-The TTL is not modified on individual fragments and is not modified merely because a UDP packet was decoded.
+The TTL is not modified on individual fragments and is not modified merely
+because a UDP packet was decoded.
 
-The compensation exists specifically because the packet is about to be injected into a TUN interface and routed again by the receiving kernel.
+The compensation exists specifically because the packet is about to be injected
+into a TUN interface and routed again by the receiving kernel.
 
 It can be disabled using:
 
@@ -513,7 +520,8 @@ It can be disabled using:
 
 ## Known TTL limitation: locally generated traffic
 
-The compensation assumes that the packet entering tuntom was already forwarded by the sending Linux host before it entered the sending TUN interface.
+The compensation assumes that the packet entering tuntom was already forwarded
+by the sending Linux host before it entered the sending TUN interface.
 
 That assumption is correct for the main routed/honeynet use case.
 
@@ -529,9 +537,11 @@ local ping process
 
 The packet has not consumed a forwarding hop before reaching tuntom.
 
-The receiver nevertheless applies its normal `+1` compensation before writing the packet to its TUN.
+The receiver nevertheless applies its normal `+1` compensation before writing
+the packet to its TUN.
 
-As a result, locally generated traffic may appear on the remote side with TTL or Hop Limit one higher than expected.
+As a result, locally generated traffic may appear on the remote side with TTL or
+Hop Limit one higher than expected.
 
 `tuntom` intentionally does not try to detect locally generated traffic.
 
@@ -545,13 +555,15 @@ Reliable detection would require additional complexity such as:
 
 This is considered a known limitation and an intentional KISS tradeoff.
 
-The administrator of a tuntom endpoint is assumed to know that the local machine participates in the tunnel.
+The administrator of a tuntom endpoint is assumed to know that the local machine
+participates in the tunnel.
 
 ## NAT behavior
 
 The client initiates UDP traffic.
 
-The server learns the current client UDP source address and port from valid traffic.
+The server learns the current client UDP source address and port from valid
+traffic.
 
 For authenticated protocol versions, the peer is updated only after:
 
@@ -559,26 +571,13 @@ For authenticated protocol versions, the peer is updated only after:
 - authentication validation
 - replay validation
 
-A random unauthenticated UDP packet therefore cannot simply redirect the server's return path.
+A random unauthenticated UDP packet therefore cannot simply redirect the
+server's return path.
 
 ## Protocol versions
 
-Protocol v4 is the default transmit protocol.
-
-Legacy receive compatibility is explicit:
-
-```text
---allow-v2
---allow-v1
-```
-
-There is no automatic downgrade behavior.
-
-Protocol v2 is authenticated but does not support tuntom fragmentation metadata.
-
-Protocol v1 is unauthenticated.
-
-Compatibility with older protocol versions must therefore be an explicit administrator decision.
+Only V5 is transmitted and accepted. Legacy `--allow-v1` / `--allow-v2` flags
+are rejected.
 
 ## Main classes
 
@@ -588,9 +587,7 @@ The important classes are roughly:
 
 ```text
 Protocol
-ProtocolV1
-ProtocolV2
-ProtocolV4
+ProtocolV5
 TunDevice
 UdpEndpoint
 Reassembler
@@ -599,9 +596,12 @@ Tunnel
 
 `Tunnel` contains the main packet loop.
 
-It also provides the virtual processing hook described above so the transport can later be integrated into another C++ application without rewriting the transport path.
+It also provides the virtual processing hook described above so the transport
+can later be integrated into another C++ application without rewriting the
+transport path.
 
-This is particularly useful for integrating the tunnel directly into software such as smithproxy.
+This is particularly useful for integrating the tunnel directly into software
+such as smithproxy.
 
 ## Using the code in another program
 
@@ -628,9 +628,12 @@ private:
 };
 ```
 
-Another program may eventually want to replace the TUN endpoint entirely and inject packets directly into its own packet-processing engine.
+Another program may eventually want to replace the TUN endpoint entirely and
+inject packets directly into its own packet-processing engine.
 
-The current source does not introduce an abstraction for that yet. This is deliberate. The location is obvious, and the abstraction should be added only when a real integration needs it.
+The current source does not introduce an abstraction for that yet. This is
+deliberate. The location is obvious, and the abstraction should be added only
+when a real integration needs it.
 
 ## Using the binary without the bootstrap script
 
@@ -652,8 +655,6 @@ Relevant options include:
 --no-pmtud
 --no-ttl-compensate
 --ttl-compensate
---allow-v2
---allow-v1
 --debug
 --quiet
 ```
@@ -664,7 +665,9 @@ PMTUD state is included in the text statistics output as
 
 The binary sets the requested TUN MTU itself through `SIOCSIFMTU`.
 
-The bootstrap script also sets the interface MTU explicitly using `ip link`. This is redundant but intentionally harmless: the binary works standalone, while the bootstrap script also asserts the desired Linux interface state.
+The bootstrap script also sets the interface MTU explicitly using `ip link`.
+This is redundant but intentionally harmless: the binary works standalone, while
+the bootstrap script also asserts the desired Linux interface state.
 
 ## Bootstrap MTU configuration
 
@@ -688,8 +691,8 @@ Both values are passed to the local and remote C++ processes.
 
 The same values are exported to lifecycle hooks.
 
-`../mk_tunnel.sh` also enables text statistics and writes them atomically under its
-runtime directory as `IDc.stats` and `IDs.stats` (normally
+`../mk_tunnel.sh` also enables text statistics and writes them atomically under
+its runtime directory as `IDc.stats` and `IDs.stats` (normally
 `/run/tuntom/ID{c,s}.stats`). The format can currently only be `txt` and is
 selected with `TUNTOM_STATS_FORMAT`.
 
@@ -775,11 +778,14 @@ TUNTOM_MANGLE_CHAIN
 TUNTOM_FORWARD_CHAIN
 ```
 
-`post/up` is the natural point for custom routes, DNAT rules, forwarding policy, and other networking that depends on tuntom-created chains/tables.
+`post/up` is the natural point for custom routes, DNAT rules, forwarding policy,
+and other networking that depends on tuntom-created chains/tables.
 
-`pre/down` is the natural point for explicit cleanup of custom routes or rules that must be removed while the TUN and routing table still exist.
+`pre/down` is the natural point for explicit cleanup of custom routes or rules
+that must be removed while the TUN and routing table still exist.
 
-Rules inserted into tuntom-owned per-tunnel chains normally do not need explicit removal because those chains are deleted during tunnel teardown.
+Rules inserted into tuntom-owned per-tunnel chains normally do not need explicit
+removal because those chains are deleted during tunnel teardown.
 
 ## Routing and firewalling
 
@@ -802,19 +808,19 @@ This separation is intentional.
 
 The tunnel transports packets. Linux decides where they go.
 
-The optional `../tuntom-net.sh` helper makes the ingress tunnel authoritative for
-connection return routing. Every tracked packet received from a TUN interface
-overwrites the tuntom-owned bits of its conntrack mark, regardless of whether
-conntrack classifies it as `NEW`, `ESTABLISHED`, or `RELATED`. If the same
-connection is observed through multiple tunnels, the most recent TUN ingress
-wins.
+The optional `../tuntom-net.sh` helper makes the ingress tunnel authoritative
+for connection return routing. Every tracked packet received from a TUN
+interface overwrites the tuntom-owned bits of its conntrack mark, regardless of
+whether conntrack classifies it as `NEW`, `ESTABLISHED`, or `RELATED`. If the
+same connection is observed through multiple tunnels, the most recent TUN
+ingress wins.
 
 The ingress packet keeps those bits clear in its packet mark and therefore uses
 normal destination routing. Forwarded replies restore the connection mark in
 `mangle/PREROUTING`; locally generated replies restore it in `mangle/OUTPUT`.
 The resulting fwmark selects the tunnel-specific routing table. Packets arriving
-from the TUN as `INVALID` or `UNTRACKED` are dropped because no persistent return
-path can be associated with them.
+from the TUN as `INVALID` or `UNTRACKED` are dropped because no persistent
+return path can be associated with them.
 
 ## Honeynet use case
 
@@ -832,21 +838,27 @@ core
 honeynet
 ```
 
-The public probe can DNAT selected public services into the honeynet without SNAT, preserving the original Internet source address.
+The public probe can DNAT selected public services into the honeynet without
+SNAT, preserving the original Internet source address.
 
-The core can use tunnel-specific policy routing to ensure honeynet replies return through the same probe.
+The core can use tunnel-specific policy routing to ensure honeynet replies
+return through the same probe.
 
-Keeping the TUN MTU at the surrounding infrastructure's normal MTU reduces an obvious tunnel fingerprint.
+Keeping the TUN MTU at the surrounding infrastructure's normal MTU reduces an
+obvious tunnel fingerprint.
 
-TTL/Hop-Limit compensation similarly hides one otherwise artificial routing hop for forwarded traffic.
+TTL/Hop-Limit compensation similarly hides one otherwise artificial routing hop
+for forwarded traffic.
 
-Together these features make tuntom useful as a small transport primitive for geographically or logically remote honeynet probes while keeping the honeypot-side network behavior relatively normal.
+Together these features make tuntom useful as a small transport primitive for
+geographically or logically remote honeynet probes while keeping the
+honeypot-side network behavior relatively normal.
 
 ## Wireshark dissector
 
-`tuntom.lua` understands protocol v1, v2, v3, and v4.
+`tuntom.lua` understands protocol v1, v2, v3, v4, and v5.
 
-For v4 it exposes fields including:
+For v5 it exposes fields including:
 
 ```text
 tuntom.sequence
@@ -859,16 +871,19 @@ tuntom.fragmented
 tuntom.auth_tag
 ```
 
-The dissector also performs its own v4 fragment reassembly.
+The dissector also performs its own v5 fragment reassembly.
 
 The reassembly key includes:
 
-- tunnel ID
+- UDP endpoint addresses and ports
 - message ID
 - packet direction
-- protocol version and session hint (v4; hint collisions cannot be resolved without keys)
+- protocol version and session hint (v5; hint collisions cannot be resolved
+  without keys)
 
-Once all ranges are available, the Lua dissector creates a synthetic Tvb containing the original IP packet and hands it to Wireshark's normal IPv4 or IPv6 dissector.
+Once all ranges are available, the Lua dissector creates a synthetic Tvb
+containing the original IP packet and hands it to Wireshark's normal IPv4 or
+IPv6 dissector.
 
 It also exposes reassembly metadata such as:
 
@@ -893,9 +908,9 @@ g++ -std=c++17 -O2 -Wall -Wextra -pedantic tests/replay_test.cpp -o /tmp/tuntom-
 ```
 
 The tests cover sparse timestamp reordering, duplicates, window eviction,
-integer boundaries, and a 9000-byte v4 packet received as 64 fragments in
-reverse order. They exercise the receive path's protocol, replay, and
-reassembly components, but do not establish the security of the MAC.
+integer boundaries, and a 9000-byte v5 packet received as 64 fragments in
+reverse order. They exercise the receive path's protocol, replay, and reassembly
+components, but do not establish the security of the MAC.
 
 ### MAC regression tests
 
@@ -904,11 +919,10 @@ g++ -std=c++17 -O2 -Wall -Wextra -pedantic tests/mac_test.cpp -o /tmp/tuntom-mac
 /tmp/tuntom-mac-test
 ```
 
-These cover reference permutation comparisons, project-specific MAC vectors
-at block and padding boundaries, v2/v4 round trips, wrong keys/tunnel IDs,
-single-bit changes throughout each datagram, and the previous XOR forgery.
-The MAC vectors are for tuntom's custom construction, not standardized
-Ascon-Mac test vectors.
+These cover reference permutation comparisons, project-specific MAC vectors at
+block and padding boundaries, v5 round trips, wrong keys/tunnel IDs, single-bit
+changes throughout each datagram, and the previous XOR forgery. The MAC vectors
+are for tuntom's custom construction, not standardized Ascon-Mac test vectors.
 
 ### Logging
 
@@ -920,20 +934,21 @@ Use:
 --debug
 ```
 
-for packet dumps, protocol details, fragmentation information, and accepted packet metadata.
+for packet dumps, protocol details, fragmentation information, and accepted
+packet metadata.
 
 Useful log messages include:
 
 ```text
 TUN read ...
-ENCODE v4 ...
 FRAGMENT 1/2 ...
 UDP recv ...
-ACCEPT v4 ...
+ACCEPT v5 ...
 TUN write ...
 ```
 
-For an IPv4 packet, valid inner data will normally begin with a first byte whose upper nibble is `4`, commonly:
+For an IPv4 packet, valid inner data will normally begin with a first byte whose
+upper nibble is `4`, commonly:
 
 ```text
 45 ...
@@ -949,7 +964,8 @@ For IPv6, the upper nibble is `6`, commonly:
 
 The main rule is KISS.
 
-Features are accepted when they remove significant operational complexity or preserve useful transparency without turning tuntom into a framework.
+Features are accepted when they remove significant operational complexity or
+preserve useful transparency without turning tuntom into a framework.
 
 Current examples are:
 
@@ -961,7 +977,8 @@ Current examples are:
 - one-hop TTL/Hop-Limit compensation
 - lifecycle hooks
 
-At the same time, tuntom deliberately avoids trying to infer every property of Linux packet origin or replace normal Linux routing/firewall tools.
+At the same time, tuntom deliberately avoids trying to infer every property of
+Linux packet origin or replace normal Linux routing/firewall tools.
 
 The intended boundary remains:
 
@@ -975,7 +992,8 @@ Linux networking
      UDP
 ```
 
-Transport complexity should stay inside that boundary. Routing and deployment policy should stay outside it.
+Transport complexity should stay inside that boundary. Routing and deployment
+policy should stay outside it.
 
 
 ### Processing latency statistics
@@ -985,32 +1003,35 @@ TUN packet / UDP datagram using `std::chrono::steady_clock`. The stats file adds
 `processing_sample_interval=1024` and these prefixes:
 
 - `tx_processing`: elapsed microseconds from after a successful TUN read through
-  the last successful UDP send, including processing, encoding and fragmentation.
-  Failed or dropped transmissions do not produce a sample.
-- `rx_processing`: elapsed microseconds from after a successful UDP receive through
-  DATA handling, including decoding, reassembly work and TUN write if completed.
-  This is **per datagram**, not per reconstructed packet. Validated DATA that
-  subsequently gets dropped or awaits more fragments is included; control traffic
-  and packets rejected before DATA handling are excluded. Selection happens before
-  decoding, so these exclusions can reduce the effective sample count.
-- `reassembly_span`: elapsed microseconds from first fragment entering reassembly
-  to final accepted fragment, sampled every 1024th completed fragmented packet.
-  Includes time between arrivals and processing; it is not pure CPU time or an
-  additional duration to add to RX processing. Unfragmented packets are excluded.
+  the last successful UDP send, including processing, encoding and
+  fragmentation. Failed or dropped transmissions do not produce a sample.
+- `rx_processing`: elapsed microseconds from after a successful UDP receive
+  through DATA handling, including decoding, reassembly work and TUN write if
+  completed. This is **per datagram**, not per reconstructed packet. Validated
+  DATA that subsequently gets dropped or awaits more fragments is included;
+  control traffic and packets rejected before DATA handling are excluded.
+  Selection happens before decoding, so these exclusions can reduce the
+  effective sample count.
+- `reassembly_span`: elapsed microseconds from first fragment entering
+  reassembly to final accepted fragment, sampled every 1024th completed
+  fragmented packet. Includes time between arrivals and processing; it is not
+  pure CPU time or an additional duration to add to RX processing. Unfragmented
+  packets are excluded.
 
 Each prefix has `_samples`, `_window_samples`, `_avg_us`, `_max_us`, `_p95_us`
 and `_p99_us`. Average and maximum cover all samples since process start;
-p95/p99 are nearest-rank percentiles of the most recent 4096 samples. Zero samples
-means no measurement yet. Statistics reset on restart. No per-packet log is added.
+p95/p99 are nearest-rank percentiles of the most recent 4096 samples. Zero
+samples means no measurement yet. Statistics reset on restart. No per-packet log
+is added.
 
-These measurements cover application elapsed time and sending syscalls, not input
-kernel queues or scheduling before the read. Descheduling inside a measured region
-is included. Debug logging and the measurement itself can affect the results.
-For unfragmented traffic, TX on A plus RX on B estimates one-way application
-processing; sum both directions for RTT processing. For fragmented traffic RX
-work is spread over multiple datagrams, so this simple sum no longer applies.
-The existing `rtt_*` control probes remain unchanged. Protocol V4 wire format is
-unchanged, and no processing samples are collected without a stats file.
+These measurements cover application elapsed time and sending syscalls, not
+input kernel queues or scheduling before the read. Descheduling inside a
+measured region is included. Debug logging and the measurement itself can affect
+the results. For unfragmented traffic, TX on A plus RX on B estimates one-way
+application processing; sum both directions for RTT processing. For fragmented
+traffic RX work is spread over multiple datagrams, so this simple sum no longer
+applies. Processing statistics do not add fields to the V5 wire format, and no
+processing samples are collected without a stats file.
 
 
 ### Tunnel throughput statistics
@@ -1024,30 +1045,31 @@ udp_rx_bps_5s / udp_rx_bps_1m
 udp_tx_bps_5s / udp_tx_bps_1m
 ```
 
-Directions match the existing byte counters: `tun_rx` reads local IP packets
-for transmission through the tunnel; `tun_tx` writes received IP packets to TUN.
-`udp_tx` sends to the peer and `udp_rx` receives from it. TUN counts include inner
-IP headers; UDP counts include tuntom framing and control traffic but exclude
-outer UDP/IP and link-layer headers. These are interface byte rates, not confirmed
-application goodput; packets subsequently dropped can be included.
+Directions match the existing byte counters: `tun_rx` reads local IP packets for
+transmission through the tunnel; `tun_tx` writes received IP packets to TUN.
+`udp_tx` sends to the peer and `udp_rx` receives from it. TUN counts include
+inner IP headers; UDP counts include tuntom framing and control traffic but
+exclude outer UDP/IP and link-layer headers. These are interface byte rates, not
+confirmed application goodput; packets subsequently dropped can be included.
 
 Counters are observed each event-loop iteration, using its existing monotonic
-clock reading. Deltas are assigned to the observation's fixed five-second bucket.
-A delayed observation belongs to its current bucket; historical arrival times
-cannot be recovered from counters. `_5s` reports the last completed bucket
+clock reading. Deltas are assigned to the observation's fixed five-second
+bucket. A delayed observation belongs to its current bucket; historical arrival
+times cannot be recovered from counters. `_5s` reports the last completed bucket
 (bytes times 8 divided by 5); `_1m` averages the last twelve completed buckets.
-The current partial bucket is excluded. Idle buckets count as zero. During startup,
-only available completed buckets are averaged, with zero rates before the first
-bucket completes. `throughput_bucket_seconds=5` and `throughput_window_buckets`
-(0–12) expose the interval and available history. All history resets on restart.
+The current partial bucket is excluded. Idle buckets count as zero. During
+startup, only available completed buckets are averaged, with zero rates before
+the first bucket completes. `throughput_bucket_seconds=5` and
+`throughput_window_buckets` (0–12) expose the interval and available history.
+All history resets on restart.
 
 ### Session, suite and rekey statistics
 
 The text stats file includes local session gauges and lifetime event counters.
-They reset on process restart. This is an additive change to stats format 1;
-the wire protocol is unchanged. Counters live in `SessionProtocol`, so socket
-send failures do not change their meaning: they count protocol events and
-prepared messages, not successful UDP sends.
+They reset on process restart. This is an additive change to stats format 1; the
+wire protocol is unchanged. Counters live in `SessionProtocol`, so socket send
+failures do not change their meaning: they count protocol events and prepared
+messages, not successful UDP sends.
 
 | Field | Meaning |
 |---|---|
@@ -1082,28 +1104,28 @@ ACK is outstanding. Counters disclose no private keys or DH/KDF secrets.
 sampling, reassembly-span sampling and throughput bucket updates. It preserves
 `--stats-file`, regardless of argument order. Basic packet/byte/drop counters,
 session/rekey counters and operational RTT/PMTUD control remain active.
-`mk_tunnel.sh ... --no-stats` passes the option to both processes, retaining their
-normal stats paths for later activation.
+`mk_tunnel.sh ... --no-stats` passes the option to both processes, retaining
+their normal stats paths for later activation.
 
-The standalone binary installs SIGUSR1 (toggle automatic statistics) and
-SIGUSR2 (one immediate snapshot, even while disabled) handlers.
-They only update `sig_atomic_t` flags; I/O and state updates happen in the
-normal event loop. Both signals are blocked briefly when consuming flags to
-avoid losing requests. Two delivered USR1 signals cancel each other; multiple
-USR2 requests before consumption produce one snapshot. Standard signals may
-coalesce before delivery, so do not use rapid repeated signals as a reliable queue. An already running iteration/write
-may finish before a disable request takes effect. No output path means enabling
-has no output effect. Existing files remain untouched while disabled unless
-USR2 requests a snapshot. Snapshotting does not toggle automatic mode or resume
-sampling. The snapshot includes `stats_enabled=0/1`; cumulative counters are
-current, while optional latency and throughput fields retain their last
-collected history when disabled. No SIGHUP handler is installed; periodic rekey
-remains unchanged.
+The standalone binary installs SIGUSR1 (toggle automatic statistics) and SIGUSR2
+(one immediate snapshot, even while disabled) handlers. They only update
+`sig_atomic_t` flags; I/O and state updates happen in the normal event loop.
+Both signals are blocked briefly when consuming flags to avoid losing requests.
+Two delivered USR1 signals cancel each other; multiple USR2 requests before
+consumption produce one snapshot. Standard signals may coalesce before delivery,
+so do not use rapid repeated signals as a reliable queue. An already running
+iteration/write may finish before a disable request takes effect. No output path
+means enabling has no output effect. Existing files remain untouched while
+disabled unless USR2 requests a snapshot. Snapshotting does not toggle automatic
+mode or resume sampling. The snapshot includes `stats_enabled=0/1`; cumulative
+counters are current, while optional latency and throughput fields retain their
+last collected history when disabled. No SIGHUP handler is installed; periodic
+rekey remains unchanged.
 
 On re-enable, writing resumes immediately in the loop. Throughput windows are
 reset and baseline byte counters are captured, so disabled traffic is never
 reported as a burst. Processing sample counts/windows resume their old history;
 they contain only samples collected while enabled (a completed fragmented packet
 may have started during the pause). Lifetime counters are never reset by these
-signals. Signal handlers are installed only by `main`, so embedding `Tunnel` does
-not install process-global handlers automatically.
+signals. Signal handlers are installed only by `main`, so embedding `Tunnel`
+does not install process-global handlers automatically.

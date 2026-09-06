@@ -5,7 +5,7 @@ and SSH deployment.**
 
 `tuntom` connects two Linux TUN interfaces and carries IPv4 and IPv6 traffic
 between them. It combines a self-contained C++17 tunnel engine with a bootstrap
-script that builds, deploys, and configures both endpoints. Protocol v4 provides
+script that builds, deploys, and configures both endpoints. Protocol v5 provides
 replay protection, automatic path-MTU discovery, and internal fragmentation;
 optional Ascon encryption and X25519 rekeying add confidentiality and forward
 secrecy.
@@ -19,11 +19,15 @@ secrecy.
        10.254.42.1                            10.254.42.2
              |                                      |
              +---------- UDP / port 40042 ----------+
-                  authenticated v4 session
+                  authenticated v5 session
                   optional encryption + PFS
 ```
 
-Written by **Ales Stibal and ChatGPT**. Licensed under [BSD 3-Clause](LICENSE.md).
+Written by **Ales Stibal <astib@mag0.net>**.   
+Licensed under [BSD 3-Clause](LICENSE.md).
+
+OpenAI Codex has been used in code and documentation development.
+Contributors remain responsible for the changes they submit.
 
 [Quick start](#quick-start) · [Configuration](#configuration) ·
 [Security and compatibility](#security-and-compatibility) ·
@@ -34,7 +38,7 @@ Written by **Ales Stibal and ChatGPT**. Licensed under [BSD 3-Clause](LICENSE.md
 | Area | What tuntom provides |
 | --- | --- |
 | Tunnel | IPv4/IPv6 TUN traffic over UDP, NAT-friendly client/server model |
-| Sessions | Authenticated v4 handshake, directional keys, replay protection |
+| Sessions | Authenticated v5 handshake, directional keys, replay protection |
 | Encryption | Optional Ascon-AEAD128; optional X25519 PFS with periodic rekey |
 | MTU | Independent inner/outer MTUs, automatic PMTUD, balanced fragmentation |
 | Deployment | Local and remote compilation, staged restart, start/stop helper |
@@ -55,7 +59,7 @@ For the bootstrap workflow, both hosts need:
 - Linux with `/dev/net/tun` and root access.
 - `g++` with C++17 support, Bash, `iproute2`, and `iptables`.
 - Standard system utilities, including `tar`, `mktemp`, `getent`, `useradd`, and `groupadd`.
-- Synchronized clocks for the v4 handshake.
+- Synchronized clocks for the v5 handshake.
 
 The caller also needs `ssh`, working SSH key authentication, and `flock`.
 When started as a normal local user, the script uses `sudo -E` for privileged
@@ -181,7 +185,7 @@ Use `--no-ttl-compensate` when running the binary directly to disable this.
 
 ## Security and compatibility
 
-All current modes use the v4 session handshake and a shared master secret.
+All current modes use the v5 session handshake and a shared master secret.
 Both endpoints must select the same mode.
 
 | Mode | Suite | Payload encryption | Forward secrecy |
@@ -190,9 +194,10 @@ Both endpoints must select the same mode.
 | `--encrypt-ascon` | 1 | Ascon-AEAD128 | No |
 | `--pfs` | 2 | Ascon-AEAD128 | X25519 exchange, rekey every two minutes |
 
-Suite 2 uses a **project-specific AMAC-based AKDF**, not HKDF or a standardized
+The authentication primitive is specified in [AMAC v1](docs/AMAC_V1.md).
+Suite 2 uses a **project-specific AMAC-based [AKDF v1](docs/AKDF_V1.md)**, not HKDF or a standardized
 Ascon KDF. X25519 is vendored from Monocypher. Construction details and security
-assumptions are documented in the [v4 wire specification](docs/PROTOCOL_V4.md).
+assumptions are documented in the [v5 wire specification](docs/PROTOCOL_V5.md).
 Encryption adds no wire bytes. Mode mismatches fail the handshake without
 falling back to plaintext; old receive keys overlap for up to three seconds
 during PFS rekeying.
@@ -203,12 +208,10 @@ Timestamped INITs require synchronized clocks: the default acceptance window is
 300 seconds total (±150 seconds). The binary's `--init-window` accepts an even
 value from 2 to 86400 seconds. Expired INITs and previously seen nonces are rejected.
 
-**Update both endpoints together.** Older v4 builds with incompatible handshake
-layouts cannot interoperate. There is no automatic downgrade and no v3 receive
-compatibility. The standalone binary can explicitly accept legacy traffic with
-`--allow-v2` or `--allow-v1`: v2 lacks directional key separation and is vulnerable
-to reflection; v1 is unauthenticated. Both are disabled by default and rejected
-with encryption enabled.
+**Update both endpoints together.** V5 is incompatible with V1–V4. There is no
+legacy receive path or automatic downgrade; `--allow-v1` and `--allow-v2` are
+rejected. DATA headers are 25 bytes, fragmented DATA headers 37 bytes. Tunnel ID
+stays in configuration/key derivation; only INIT/RESPONSE transmit the version.
 
 Processes start as root to initialize networking, then drop privileges to
 `tuntom:tuntom`, disable core dumps, and set `no_new_privs`.
@@ -273,9 +276,9 @@ See [hook context](docs/DETAILS.md#lifecycle-hooks) and the
 
 ### Wireshark
 
-[tuntom.lua](tuntom.lua) dissects v1, v2, v3, and v4 captures, including handshake
+[tuntom.lua](tuntom.lua) dissects v1, v2, v3, v4, and v5 captures, including handshake
 fields, session hints, sequence counters, fragments, authentication tags, and
-PMTUD probes. It reassembles unencrypted v4 DATA and passes inner packets to the
+PMTUD probes. It reassembles unencrypted v5 DATA and passes inner packets to the
 IPv4/IPv6 dissector. Encrypted payloads remain encrypted in the capture.
 
 ### PMTUD black-hole test
@@ -336,6 +339,6 @@ deployment.
 | [examples/](examples/) | Lifecycle hook example |
 | [tests/](tests/README.md) | Regression tests, vectors, and manual PMTUD helper |
 | [docs/DETAILS.md](docs/DETAILS.md) | Implementation and operating details |
-| [docs/PROTOCOL_V4.md](docs/PROTOCOL_V4.md) | Wire format, handshake, and cryptographic constructions |
+| [docs/PROTOCOL_V5.md](docs/PROTOCOL_V5.md) | Wire format, handshake, and cryptographic constructions |
 | [CMakeLists.txt](CMakeLists.txt) | Local build and CTest targets |
 | [LICENSE.md](LICENSE.md) | BSD 3-Clause license |

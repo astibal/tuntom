@@ -718,13 +718,122 @@ local function dissect_reassembled_raw(
     )
 end
 
+-- V5: no magic or tunnel ID on wire. Version occurs only in INIT/RESPONSE.
+-- Base = type/flags(1), sequence(8), type extension, tag(16), payload.
+-- Extensions: fragments(12), ping/confirm(8), PMTUD(10), handshake(9).
+local function dissect_v5(buffer, pinfo, tree)
+    if buffer:len() < 25 then return 0 end
+    local flags = buffer(0, 1):uint()
+    local kind = flags % 16
+    local encrypted = flags >= 128
+    local fragment = math.floor(flags / 64) % 2 == 1
+    if math.floor(flags / 16) % 4 ~= 0 or not packet_type_names[kind] or
+       (fragment and kind ~= 3) then return 0 end
+    local handshake = kind == 8 or kind == 9
+    local meta = 9
+    if fragment then meta = 21
+    elseif handshake then meta = 18
+    elseif kind == 6 or kind == 7 then meta = 19
+    elseif kind >= 4 then meta = 17 end
+    local header = meta + 16
+    if buffer:len() < header then return 0 end
+    local length = buffer:len() - header
+    local info = "v5, " .. packet_type_names[kind]
+    pinfo.cols.protocol = "TUNTOM"
+    pinfo.cols.info = info
+    local subtree = tree:add(tuntom, buffer(), "tuntom " .. info)
+    subtree:add(f_type, buffer(0, 1), kind)
+    subtree:add(f_sequence, buffer(1, 8))
+    subtree:add(f_session_hint, buffer(1, 2))
+    subtree:add(f_counter, buffer(3, 6))
+    subtree:add(f_auth_tag, buffer(meta, 16))
+    if handshake then subtree:add(f_version, buffer(9, 1)) end
+    if meta > 9 then
+        local field = (kind == 4 or kind == 5) and f_probe_id or
+            ((kind == 6 or kind == 7) and f_mtu_probe_id or f_message_id)
+        subtree:add(field, buffer(handshake and 10 or 9, 8))
+    end
+    if kind == 6 or kind == 7 then subtree:add(f_mtu, buffer(17, 2)) end
+    if fragment then
+        subtree:add(f_fragment_offset, buffer(17, 2))
+        subtree:add(f_original_length, buffer(19, 2))
+    end
+    if kind == 3 then add_generated_field(subtree, f_fragmented, fragment) end
+    if handshake then
+        local fields_end = header + (kind == 8 and 44 or 68)
+        if length < (kind == 8 and 44 or 68) then
+            subtree:add_proto_expert_info(e_handshake, "Truncated handshake payload")
+            return buffer:len()
+        end
+        local nonce_offset = header + (kind == 8 and 0 or 32)
+        if kind == 9 then subtree:add(f_init_hash, buffer(header, 32)) end
+        subtree:add(f_nonce, buffer(nonce_offset, 32))
+        if kind == 8 then subtree:add(f_init_timestamp, buffer(header + 32, 8)) end
+        local suite = buffer(fields_end - 4, 2):uint()
+        local dh = buffer(fields_end - 2, 2):uint()
+        subtree:add(f_suite, buffer(fields_end - 4, 2))
+        subtree:add(f_dh_length, buffer(fields_end - 2, 2))
+        if buffer:len() > fields_end then subtree:add(f_dh, buffer(fields_end)) end
+        if buffer(9, 1):uint() ~= 5 or encrypted or
+           buffer(1, 8):uint64() ~= UInt64(0, 0) or
+           buffer(10, 8):uint64() == UInt64(0, 0) or suite > 2 or
+           dh ~= (suite == 2 and 32 or 0) or buffer:len() ~= fields_end + dh then
+            subtree:add_proto_expert_info(e_handshake,
+                "Expected suite 0/1 without DH or suite 2 with 32-byte DH, version 5 and exact message length")
+        end
+        return buffer:len()
+    end
+    if encrypted then
+        pinfo.cols.info:append(", Ascon-AEAD128 encrypted")
+        if length > 0 then subtree:add(f_payload, buffer(header)) end
+        return buffer:len()
+    end
+    if kind == 10 or kind == 11 then
+        if length ~= 0 or buffer(3, 6):uint64() ~= UInt64(0, 0) or
+           buffer(9, 8):uint64() == UInt64(0, 0) then
+            subtree:add_proto_expert_info(e_handshake, "Invalid confirmation")
+        end
+        return buffer:len()
+    end
+    if length == 0 then return buffer:len() end
+    local payload = buffer(header)
+    if kind ~= 3 then
+        subtree:add(kind == 6 and f_mtu_padding or f_payload, payload)
+        return buffer:len()
+    end
+    if not fragment then
+        dissect_inner_ip_with_tuntom_info(payload:tvb(), pinfo, subtree, info)
+        return buffer:len()
+    end
+    local offset = buffer(17, 2):uint()
+    local original = buffer(19, 2):uint()
+    subtree:add(f_payload, payload)
+    add_generated_field(subtree, f_fragment_length, length)
+    add_generated_field(subtree, f_fragment_end, offset + length)
+    -- UDP endpoints identify the tunnel; no tunnel ID is inferred from payload.
+    local key = message_key(pinfo, 0, buffer(9, 8):uint64(), 5, buffer(1, 2):uint())
+    local raw, err
+    if not pinfo.visited then
+        raw, err = accept_fragment_first_pass(pinfo, key, offset, original, payload)
+    elseif frame_info[pinfo.number] then
+        raw = frame_info[pinfo.number].complete_raw
+    end
+    if err then subtree:add("Reassembly: " .. err) end
+    add_reassembly_links(subtree, pinfo)
+    if raw then
+        dissect_reassembled_raw(raw, pinfo, subtree, original, info .. ", reassembled")
+        add_generated_field(subtree, f_reassembled_in, pinfo.number)
+    end
+    return buffer:len()
+end
+
 function tuntom.dissector(buffer, pinfo, tree)
     if buffer:len() < 8 then
         return 0
     end
 
     if buffer(0, 4):string() ~= "UTUN" then
-        return 0
+        return dissect_v5(buffer, pinfo, tree)
     end
 
     local version =

@@ -14,7 +14,7 @@ void run(bool encrypted, bool pfs = false) {
     SessionProtocol c(42, key, false, 1500, encrypted, 300, pfs), s(42, key, true, 1500, encrypted, 300, pfs);
     Packet decoded;
     auto init = c.begin(now);
-    require(load_be16(init.data() + 88) == (pfs ? 2 : (encrypted ? 1 : 0)), "INIT suite");
+    require(load_be16(init.data() + 74) == (pfs ? 2 : (encrypted ? 1 : 0)), "INIT suite");
     auto response = recv(s, init, decoded).reply;
     auto confirm = recv(c, response, decoded).reply;
     require(recv(c, response, decoded).reply == confirm, "confirm retransmission");
@@ -32,15 +32,15 @@ void run(bool encrypted, bool pfs = false) {
             (type == PacketType::mtu_probe || type == PacketType::mtu_reply) ? 1400 : 0;
         if (type == PacketType::data || type == PacketType::mtu_probe) p.payload.resize(1324, 0x45);
         auto wire = c.encode(p);
-        require(wire.size() == p.payload.size() + 48, "wire overhead");
-        require(bool(wire[7] & 128) == encrypted, "mode flag");
+        require(wire.size() == p.payload.size() + ProtocolV5::header_size(p), "wire overhead");
+        require(bool(wire[0] & 128) == encrypted, "mode flag");
         if (encrypted && !p.payload.empty())
-            require(!std::equal(p.payload.begin(), p.payload.end(), wire.begin() + 48), "plaintext exposed");
+            require(!std::equal(p.payload.begin(), p.payload.end(), wire.begin() + static_cast<std::ptrdiff_t>(ProtocolV5::header_size(p))), "plaintext exposed");
         for (std::size_t i = 0; i < wire.size(); ++i) {
             auto bad = wire; bad[i] ^= 1;
             require(!recv(s, bad, decoded).data, "tampering accepted");
         }
-        auto downgrade = wire; downgrade[7] ^= 128;
+        auto downgrade = wire; downgrade[0] ^= 128;
         require(!recv(s, downgrade, decoded).data, "mode flag downgrade");
         require(!recv(c, wire, decoded).data, "reflection");
         auto r = recv(s, wire, decoded);
@@ -78,7 +78,7 @@ int main() {
         require(recv(s, init, p).reply.empty(), "mismatched INIT suite");
         SessionProtocol matching(42, key, true, 1500, encrypted);
         auto response = recv(matching, init, p).reply;
-        ProtocolV4 decoder(42, key, false), signer(42, key, true);
+        ProtocolV5 decoder(42, key, false), signer(42, key, true);
         require(decoder.decode(response.data(), response.size(), p), "response decoding");
         store_be16(p.payload.data() + 64, encrypted ? 0 : 1);
         auto mismatched = signer.encode(p);

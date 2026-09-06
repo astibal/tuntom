@@ -6,9 +6,22 @@ import subprocess
 import tempfile
 
 
-def wire(kind, payload=b"", seq=0, offset=0, original=0, version=4):
-    return struct.pack("!IHBBQQII", 0x5554554E, 42, version, kind,
-                       seq, 99, offset, original) + bytes(16) + payload
+def wire(kind, payload=b"", seq=0, offset=0, original=0, version=5):
+    if version != 5:
+        return struct.pack("!IHBBQQII", 0x5554554E, 42, version, kind,
+                           seq, 99, offset, original) + bytes(16) + payload
+    base_kind = kind & 15
+    extension = b""
+    if base_kind == 3 and (offset or original != len(payload)):
+        kind |= 0x40
+        extension = struct.pack("!QHH", 99, offset, original)
+    elif base_kind in (8, 9):
+        extension = struct.pack("!BQ", 5, 99)
+    elif base_kind in (6, 7):
+        extension = struct.pack("!QH", 99, original)
+    elif base_kind in (4, 5, 10, 11):
+        extension = struct.pack("!Q", 99)
+    return struct.pack("!BQ", kind, seq) + extension + bytes(16) + payload
 
 
 def frame(payload, reverse=False):
@@ -66,6 +79,8 @@ with tempfile.TemporaryDirectory(prefix="tuntom-dissector-") as directory:
     assert len(rows) == len(records), result.stdout
     assert rows[0][1:2] == ["8"] and rows[0][4:6] == ["0", "0"], rows[0]
     assert rows[1][1] == "9" and rows[1][4:6] == ["0", "0"], rows[1]
+    assert rows[0][0] == "5" and rows[1][0] == "5", rows[:2]
+    assert not rows[2][0] and not rows[4][0], "Version should only occur in handshake"
     assert rows[2][2:4] == ["0xabcd", "0"], rows[2]
     assert rows[3][1:4] == ["11", "0xabcd", "0"], rows[3]
     assert rows[4][3] == "2" and not rows[4][6], rows[4]
@@ -81,4 +96,4 @@ with tempfile.TemporaryDirectory(prefix="tuntom-dissector-") as directory:
     assert rows[14][4:6] == ["32", "2"] and not rows[14][7], rows[14]
     assert "Expected suite 0" in rows[15][7], rows[15]
     assert "Lua Error" not in result.stdout, result.stdout
-print("PASS: Wireshark V4 handshake fields, counters, session fragment separation and malformed messages")
+print("PASS: Wireshark V5 handshake fields, counters, session fragment separation and malformed messages")

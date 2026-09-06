@@ -40,12 +40,9 @@ public:
           options_(options),
           tun_(interface_name, options.tun_mtu),
           master_key_(parse_master_key()),
-          protocol_v2_(tunnel_id, master_key_),
-          protocol_v4_(tunnel_id, master_key_, server_mode, options.tun_mtu, options.encrypt_ascon, options.init_window, options.pfs) {
+          protocol_v5_(tunnel_id, master_key_, server_mode, options.tun_mtu, options.encrypt_ascon, options.init_window, options.pfs) {
 
         options_.encrypt_ascon = options_.encrypt_ascon or options_.pfs;
-        if (options_.encrypt_ascon and (options_.allow_v1 or options_.allow_v2))
-            throw std::runtime_error("Encryption/PFS cannot be combined with legacy protocols");
 
         const std::uint16_t port =
             static_cast<std::uint16_t>(40000 + tunnel_id_);
@@ -96,7 +93,7 @@ public:
             stats_.udp_rx_bytes, stats_.udp_tx_bytes});
 
         if (not server_mode_) {
-            send_handshake(protocol_v4_.begin(started_now));
+            send_handshake(protocol_v5_.begin(started_now));
             next_rtt_probe_ =
                 started_now +
                 std::chrono::seconds(rtt_probe_interval_seconds);
@@ -196,7 +193,7 @@ public:
                     stats_.tun_rx_bytes, stats_.tun_tx_bytes,
                     stats_.udp_rx_bytes, stats_.udp_tx_bytes});
             }
-            send_handshake(protocol_v4_.tick(now));
+            send_handshake(protocol_v5_.tick(now));
 
             if (
                 not server_mode_ and
@@ -227,7 +224,7 @@ public:
                 now - last_reassembly_cleanup >=
                 std::chrono::seconds(1)) {
 
-                protocol_v4_.cleanup();
+                protocol_v5_.cleanup();
                 last_reassembly_cleanup = now;
             }
 
@@ -261,7 +258,7 @@ private:
     }
 
     void session_activated() {
-        log_info("V4 session confirmed (AMAC, plaintext payload)");
+        log_info("V5 session confirmed");
         rtt_probes_.clear();
         send_rtt_probe();
         next_rtt_probe_ = std::chrono::steady_clock::now() +
@@ -283,7 +280,7 @@ private:
         rx_logical_packet_.payload.reserve(options_.tun_mtu);
 
         tx_encoded_buffer_.reserve(
-            protocol_header_v4_size + maximum_payload);
+            protocol_fragment_v5_size + maximum_payload);
         tx_mac_buffer_.reserve(32 + maximum_payload);
         rx_mac_buffer_.reserve(32 + options_.tun_mtu);
         reassembled_packet_.reserve(options_.tun_mtu);
@@ -293,11 +290,11 @@ private:
         const std::size_t overhead =
             udp_.outer_ip_header_size() +
             udp_header_size +
-            protocol_header_v4_size;
+            protocol_fragment_v5_size;
 
         if (active_transport_mtu_ <= overhead) {
             throw std::runtime_error(
-                "Transport MTU is too small for tuntom V4");
+                "Transport MTU is too small for tuntom V5");
         }
 
         return active_transport_mtu_ - overhead;
@@ -322,11 +319,11 @@ private:
         const std::uint8_t* data,
         std::size_t size) {
 
-        if (not protocol_v4_.ready()) return;
+        if (not protocol_v5_.ready()) return;
         Packet& logical_packet = tx_logical_packet_;
         logical_packet.type = PacketType::data;
         logical_packet.tunnel_id = tunnel_id_;
-        logical_packet.protocol_version = protocol_version_v4;
+        logical_packet.protocol_version = protocol_version_v5;
         logical_packet.sequence = 0;
         logical_packet.message_id = 0;
         logical_packet.fragment_offset = 0;
@@ -347,13 +344,8 @@ private:
 
         ++stats_.data_tx_packets;
 
-        const std::size_t maximum_payload =
-            maximum_fragment_payload();
-
-        const FragmentPlan plan =
-            make_fragment_plan(
-                logical_packet.payload.size(),
-                maximum_payload);
+        const FragmentPlan plan = make_v5_fragment_plan(
+            logical_packet.payload.size(), maximum_fragment_payload());
 
         const std::uint64_t message_id =
             message_id_generator_.next();
@@ -368,7 +360,7 @@ private:
             Packet& fragment = tx_fragment_packet_;
             fragment.type = PacketType::data;
             fragment.tunnel_id = tunnel_id_;
-            fragment.protocol_version = protocol_version_v4;
+            fragment.protocol_version = protocol_version_v5;
             fragment.message_id = message_id;
             fragment.fragment_offset =
                 static_cast<std::uint32_t>(offset);
@@ -383,7 +375,7 @@ private:
                     static_cast<std::ptrdiff_t>(
                         offset + fragment_size));
 
-            if (not protocol_v4_.encode_into(
+            if (not protocol_v5_.encode_into(
                 fragment, tx_encoded_buffer_, tx_mac_buffer_)) return;
 
             const ssize_t sent =
@@ -446,16 +438,12 @@ private:
         Packet& packet = rx_packet_;
         packet.payload.clear();
 
-        const std::uint8_t version =
-            size > 6 ? data[6] : 0;
-
-        bool decoded = false;
         SessionProtocol::Session* receive_session = nullptr;
-        bool v4_update_peer = false;
-        bool v4_activated = false;
+        bool session_update_peer = false;
+        bool session_activated_now = false;
 
-        if (version == protocol_version_v4) {
-            auto result = protocol_v4_.receive(data, size, packet, rx_mac_buffer_,
+        {
+            auto result = protocol_v5_.receive(data, size, packet, rx_mac_buffer_,
                                                std::chrono::steady_clock::now());
             if (result.timestamp_rejected) ++stats_.init_timestamp_rejected;
             if (result.nonce_capacity) ++stats_.init_nonce_capacity_rejected;
@@ -484,75 +472,22 @@ private:
             // Replies to unconfirmed INIT go directly to its source, without
             // changing the active return path. Clients retain their configured peer.
             send_handshake(result.reply, server_mode_ ? &source : nullptr, source_length);
-            v4_update_peer = result.update_peer;
-            v4_activated = result.activated;
-            if (v4_activated and v4_update_peer) udp_.set_peer(source, source_length);
-            if (v4_activated) session_activated();
+            session_update_peer = result.update_peer;
+            session_activated_now = result.activated;
+            if (session_activated_now and session_update_peer) udp_.set_peer(source, source_length);
+            if (session_activated_now) session_activated();
             if (not result.data) {
                 if (result.replay_drop) ++stats_.drops_replay;
                 else if (not result.control) ++stats_.drops_protocol;
                 return;
             }
             receive_session = result.session;
-            decoded = true;
-        } else if (
-            version == protocol_version_v2 and
-            options_.allow_v2 and not options_.encrypt_ascon) {
-
-            decoded =
-                protocol_v2_.decode(
-                    data,
-                    size,
-                    packet);
-        } else if (
-            version == protocol_version_v1 and
-            options_.allow_v1 and not options_.encrypt_ascon) {
-
-            decoded =
-                protocol_v1_.decode(
-                    data,
-                    size,
-                    packet);
-        } else {
-            ++stats_.drops_protocol;
-            if (log_enabled(LogLevel::info)) {
-                std::cerr
-                    << "DROP protocol version "
-                    << static_cast<unsigned>(version)
-                    << " not allowed\n";
-            }
-            return;
-        }
-
-        if (not decoded) {
-            ++stats_.drops_protocol;
-            log_info("DROP invalid/auth-failed protocol packet");
-            return;
-        }
-
-        if (packet.tunnel_id != tunnel_id_) {
-            ++stats_.drops_tunnel_id;
-            log_info("DROP tunnel id mismatch");
-            return;
-        }
-
-        if (packet.protocol_version == protocol_version_v2) {
-            if (not replay_window_.accept(packet.sequence)) {
-                ++stats_.drops_replay;
-                if (log_enabled(LogLevel::info)) {
-                    std::cerr
-                        << "DROP replay/old seq="
-                        << packet.sequence
-                        << "\n";
-                }
-                return;
-            }
         }
 
         // Server learns/updates the NAT peer only after successful
-        // authentication (or accepted V1 when explicitly enabled).
+        // authentication in an established session.
         if (server_mode_ and
-            (packet.protocol_version != protocol_version_v4 or v4_update_peer)) {
+            session_update_peer) {
             const bool peer_changed =
                 udp_.set_peer(source, source_length);
 
@@ -630,42 +565,36 @@ private:
             }
         } measurement { *this };
 
-        if (packet.protocol_version == protocol_version_v4) {
-            ++stats_.fragments_rx;
+        ++stats_.fragments_rx;
 
-            reassembled_packet_.clear();
+        reassembled_packet_.clear();
 
-            if (
-                not receive_session->reassembly.accept(
-                    packet,
-                    reassembled_packet_,
-                    stats_enabled() ? &reassembly_span_ : nullptr)) {
+        if (
+            not receive_session->reassembly.accept(
+                packet,
+                reassembled_packet_,
+                stats_enabled() ? &reassembly_span_ : nullptr)) {
 
-                return;
-            }
-
-            Packet& logical_packet = rx_logical_packet_;
-            logical_packet.type = PacketType::data;
-            logical_packet.tunnel_id = tunnel_id_;
-            logical_packet.protocol_version = protocol_version_v4;
-            logical_packet.sequence = packet.sequence;
-            logical_packet.message_id = packet.message_id;
-            logical_packet.fragment_offset = 0;
-            logical_packet.original_length =
-                static_cast<std::uint32_t>(
-                    reassembled_packet_.size());
-
-            logical_packet.payload.swap(reassembled_packet_);
-            deliver_to_tun(logical_packet);
-
-            // Recycle the storage used by the completed logical packet.
-            logical_packet.payload.swap(reassembled_packet_);
-            reassembled_packet_.clear();
             return;
         }
 
-        // Legacy V1/V2 packets are unfragmented.
-        deliver_to_tun(packet);
+        Packet& logical_packet = rx_logical_packet_;
+        logical_packet.type = PacketType::data;
+        logical_packet.tunnel_id = tunnel_id_;
+        logical_packet.protocol_version = protocol_version_v5;
+        logical_packet.sequence = packet.sequence;
+        logical_packet.message_id = packet.message_id;
+        logical_packet.fragment_offset = 0;
+        logical_packet.original_length =
+            static_cast<std::uint32_t>(
+                reassembled_packet_.size());
+
+        logical_packet.payload.swap(reassembled_packet_);
+        deliver_to_tun(logical_packet);
+
+        // Recycle the storage used by the completed logical packet.
+        logical_packet.payload.swap(reassembled_packet_);
+        reassembled_packet_.clear();
     }
 
     void deliver_to_tun(Packet& packet) {
@@ -719,10 +648,10 @@ private:
         Packet packet;
         packet.type = type;
         packet.tunnel_id = tunnel_id_;
-        packet.protocol_version = protocol_version_v4;
+        packet.protocol_version = protocol_version_v5;
         packet.message_id = message_id;
 
-        if (not protocol_v4_.encode_into(
+        if (not protocol_v5_.encode_into(
             packet, tx_encoded_buffer_, tx_mac_buffer_)) return false;
 
         const ssize_t sent =
@@ -909,7 +838,7 @@ private:
     }
 
     void send_mtu_probe(std::size_t target_mtu) {
-        if (not protocol_v4_.ready()) return;
+        if (not protocol_v5_.ready()) return;
         if (pmtud_probe_pending_) {
             if (log_enabled(LogLevel::debug)) {
                 std::cerr
@@ -925,7 +854,7 @@ private:
         const std::size_t overhead =
             udp_.outer_ip_header_size() +
             udp_header_size +
-            protocol_header_v4_size;
+            protocol_probe_v5_size;
 
         if (target_mtu <= overhead) {
             if (log_enabled(LogLevel::debug)) {
@@ -942,13 +871,13 @@ private:
         Packet packet;
         packet.type = PacketType::mtu_probe;
         packet.tunnel_id = tunnel_id_;
-        packet.protocol_version = protocol_version_v4;
+        packet.protocol_version = protocol_version_v5;
         packet.message_id = message_id_generator_.next();
         packet.original_length =
             static_cast<std::uint32_t>(target_mtu);
         packet.payload.resize(target_mtu - overhead);
 
-        const auto encoded = protocol_v4_.encode(packet);
+        const auto encoded = protocol_v5_.encode(packet);
         if (encoded.empty()) return;
 
         if (log_enabled(LogLevel::debug)) {
@@ -960,7 +889,7 @@ private:
                 << " udp-payload="
                 << encoded.size()
                 << " outer-ip-overhead="
-                << (overhead - protocol_header_v4_size)
+                << (overhead - protocol_probe_v5_size)
                 << "\n";
         }
 
@@ -1063,12 +992,12 @@ private:
         Packet reply;
         reply.type = PacketType::mtu_reply;
         reply.tunnel_id = tunnel_id_;
-        reply.protocol_version = protocol_version_v4;
+        reply.protocol_version = protocol_version_v5;
         reply.message_id = packet.message_id;
         reply.original_length =
             static_cast<std::uint32_t>(observed_outer_size);
 
-        const auto encoded = protocol_v4_.encode(reply);
+        const auto encoded = protocol_v5_.encode(reply);
         if (encoded.empty()) return;
 
         const ssize_t sent =
@@ -1330,7 +1259,7 @@ private:
                 << "pmtud_probes_ok=" << stats_.pmtud_probes_ok << "\n"
                 << "pmtud_probes_lost=" << stats_.pmtud_probes_lost << "\n";
 
-            protocol_v4_.write_stats(output, now_steady);
+            protocol_v5_.write_stats(output, now_steady);
             output << "processing_sample_interval=" << ProcessingStats::sample_interval << "\n";
             throughput_.write(output);
             tx_processing_.write(output, "tx_processing");
@@ -1366,14 +1295,11 @@ private:
     UdpEndpoint udp_;
 
     const ascon::key_type master_key_;
-    ProtocolV1 protocol_v1_;
-    ProtocolV2 protocol_v2_;
-    SessionProtocol protocol_v4_;
+    SessionProtocol protocol_v5_;
     SessionProtocol::Time init_warning_next_ {};
     std::uint64_t init_warning_suppressed_ = 0;
 
     SequenceGenerator message_id_generator_;
-    ReplayWindow replay_window_;
 
     // Hot-path storage is allocated/reserved once during construction and
     // reused for subsequent packets. This removes allocator churn without

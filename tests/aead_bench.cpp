@@ -8,7 +8,7 @@ int main() {
     ascon::key_type key {};
     for (std::size_t size : {64, 512, 1400, 9000}) {
         for (bool encrypted : {false, true}) {
-            ProtocolV4 codec(42, key, key, encrypted);
+            ProtocolV5 codec(42, key, key, encrypted);
             Packet packet, decoded;
             packet.tunnel_id = 42; packet.message_id = 1;
             packet.original_length = static_cast<std::uint32_t>(size);

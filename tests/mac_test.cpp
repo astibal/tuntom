@@ -132,8 +132,8 @@ void test_direction_separation() {
     require(c2s != ascon::derive_node_key(key, 42), "legacy key reused");
     require(c2s != ascon::derive_direction_key(key, 43, true), "tunnel keys equal");
     for (bool server_mode : {false, true}) {
-        ProtocolV4 sender(42, key, server_mode);
-        ProtocolV4 receiver(42, key, not server_mode);
+        ProtocolV5 sender(42, key, server_mode);
+        ProtocolV5 receiver(42, key, not server_mode);
         for (auto type : {PacketType::hello, PacketType::keepalive,
                           PacketType::data, PacketType::ping, PacketType::pong,
                           PacketType::mtu_probe, PacketType::mtu_reply}) {
@@ -153,18 +153,15 @@ void test_direction_separation() {
             }
             auto encoded = sender.encode(packet);
             Packet decoded;
-            require(encoded[6] == 4, "wrong wire version");
+            require((encoded[0] & 15) == static_cast<unsigned>(type), "wrong wire type");
             require(receiver.decode(encoded.data(), encoded.size(), decoded), "peer rejected packet");
             require(not sender.decode(encoded.data(), encoded.size(), decoded), "reflection accepted");
 
-            // A correctly MACed legacy v3 packet must still be rejected.
-            encoded[6] = 3;
-            std::vector<std::uint8_t> input(encoded.begin(), encoded.begin() + 32);
-            input.insert(input.end(), encoded.begin() + 48, encoded.end());
-            ascon::tag_type tag {};
-            ascon::mac(ascon::derive_node_key(key, 42), 42, input.data(), input.size(), tag);
-            std::copy(tag.begin(), tag.end(), encoded.begin() + 32);
-            require(not receiver.decode(encoded.data(), encoded.size(), decoded), "legacy v3 accepted");
+            // Historical packets with the UTUN prefix are not V5 datagrams.
+            std::vector<std::uint8_t> legacy(48, 0);
+            store_be32(legacy.data(), 0x5554554e);
+            legacy[6] = 4;
+            require(not receiver.decode(legacy.data(), legacy.size(), decoded), "legacy v4 accepted");
         }
     }
 }
@@ -175,13 +172,12 @@ int main() {
     test_mac_vectors();
     ascon::key_type key {}, other {};
     other[0] = 1;
-    test_protocol(ProtocolV2(42, key), ProtocolV2(42, key), ProtocolV2(42, other), ProtocolV2(43, key));
     for (bool server_mode : {false, true}) {
-        test_protocol(ProtocolV4(42, key, server_mode),
-                      ProtocolV4(42, key, not server_mode),
-                      ProtocolV4(42, other, not server_mode),
-                      ProtocolV4(43, key, not server_mode));
+        test_protocol(ProtocolV5(42, key, server_mode),
+                      ProtocolV5(42, key, not server_mode),
+                      ProtocolV5(42, other, not server_mode),
+                      ProtocolV5(43, key, not server_mode));
     }
     test_direction_separation();
-    std::cout << "PASS: reference permutations, MAC vectors, v2/v4 tampering, directional reflection and XOR forgery rejection\n";
+    std::cout << "PASS: reference permutations, MAC vectors, v5 tampering, directional reflection and XOR forgery rejection\n";
 }

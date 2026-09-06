@@ -16,8 +16,8 @@ live tunnel, or network access are needed.
 - `replay_test.cpp`: reordered timestamps, duplicates, window eviction,
   integer boundaries, and reassembly of 64 fragments received in reverse order.
 - `mac_test.cpp`: independent Ascon permutation comparisons, custom MAC
-  vectors, v2/v4 tampering checks, both traffic directions, reflection rejection
-  for ordinary v4 message types, legacy v3 rejection, and the XOR forgery regression.
+  vectors, v5 tampering checks, both traffic directions, reflection rejection
+  for ordinary v5 message types, legacy v4 rejection, and the XOR forgery regression.
 
 - `session_test.cpp`: full handshake, lost INIT/ACK, duplicate control messages,
   reordering, restart replay, expired pending state, previous-session overlap,
@@ -61,3 +61,13 @@ firewall rules and requires root. It is deliberately not run by `run.sh`.
 - `stats_control_test.cpp`: `--no-stats` argument-order independence and path
   preservation, real SIGUSR1 toggle / SIGUSR2 snapshot handling, pending signals, snapshot
   write gating while disabled, and handler restoration.
+
+- `compact_protocol_test.cpp`: exact compact layouts, implicit tunnel context,
+  authenticated version rejection, flag and truncation rejection, 16-bit fragment
+  boundaries, large reassembly and PMTUD wire sizes.
+
+`mk_stop_test.py` checks the deployment script's process cleanup with disposable
+local processes (no root or SSH connection required). It covers missing/stale
+PID files, duplicate instances, role/ID/interface matching, the remote command
+wrapper and TERM-to-KILL fallback. Requires Python 3 and `cc`; the shell runner
+runs it automatically when both are available.

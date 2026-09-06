@@ -37,12 +37,6 @@ inline void usage(const char* program_name) {
         << "  --encrypt-ascon       Require Ascon-AEAD128 payload encryption\n"
         << "\n"
         << "  --init-window <s>     Total INIT time window, even 2..86400 (default 300 = +/-150s)\n"
-        << "Compatibility:\n"
-        << "  --allow-v2            Accept legacy authenticated V2 "
-           "packets\n"
-        << "  --allow-v1            Accept legacy unauthenticated V1 "
-           "packets\n"
-        << "\n"
         << "Logging:\n"
         << "  default                informational drops/errors only\n"
         << "  --debug                packet/fragment protocol details\n"
@@ -100,9 +94,9 @@ inline void parse_options(
             if (options.init_window % 2 != 0)
                 throw std::runtime_error("--init-window must be an even number of seconds");
         } else if (option == "--allow-v1") {
-            options.allow_v1 = true;
+            throw std::runtime_error("V5 does not support --allow-v1");
         } else if (option == "--allow-v2") {
-            options.allow_v2 = true;
+            throw std::runtime_error("V5 does not support --allow-v2");
         } else if (option == "--debug") {
             log_level = LogLevel::debug;
         } else if (option == "--quiet") {
@@ -172,8 +166,6 @@ inline void parse_options(
                 "Unknown option: " + option);
         }
     }
-    if (options.encrypt_ascon and (options.allow_v1 or options.allow_v2))
-        throw std::runtime_error("--encrypt-ascon cannot be combined with legacy protocols");
 }
 
 inline std::uint16_t parse_tunnel_id(const char* value) {

@@ -32,10 +32,10 @@ enum class Direction {
 struct Packet {
     PacketType type = PacketType::data;
     std::uint16_t tunnel_id = 0;
-    std::uint8_t protocol_version = protocol_version_v4;
+    std::uint8_t protocol_version = protocol_version_v5;
     std::uint64_t sequence = 0;
 
-    // V4 DATA uses fragment metadata. PING/PONG use message_id as probe_id.
+    // V5 fragmented DATA uses optional metadata. PING/PONG use message_id as probe_id.
     std::uint64_t message_id = 0;
     std::uint32_t fragment_offset = 0;
     std::uint32_t original_length = 0;
@@ -51,8 +51,6 @@ struct Options {
     bool encrypt_ascon = false;
     bool pfs = false;
     std::size_t init_window = 300;
-    bool allow_v1 = false;
-    bool allow_v2 = false;
     bool ttl_compensate = true;
     bool pmtud_auto = true;
     std::size_t tun_mtu = default_tun_mtu;

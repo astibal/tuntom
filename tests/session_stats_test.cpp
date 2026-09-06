@@ -103,7 +103,7 @@ int main() {
     {
         SP c(42,key,false,1500,true,300,true), s(42,key,true,1500,true,300,true);
         auto init = c.begin(start,100000);
-        ProtocolV4 decode(42,key,true), encode(42,key,false); Packet p;
+        ProtocolV5 decode(42,key,true), encode(42,key,false); Packet p;
         check(decode.decode(init.data(),init.size(),p), "decode INIT");
         std::fill(p.payload.begin()+44,p.payload.end(),0);
         recv(s,encode.encode(p));
