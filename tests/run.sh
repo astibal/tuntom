@@ -41,6 +41,7 @@ fi
 
 if command -v python3 >/dev/null 2>&1 && command -v cc >/dev/null 2>&1; then
     python3 "${tests_dir}/mk_stop_test.py"
+    python3 "${tests_dir}/mk_switch_args_test.py"
 else
     echo "SKIP: process cleanup tests require python3 and cc"
 fi

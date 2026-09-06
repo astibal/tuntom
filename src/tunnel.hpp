@@ -59,7 +59,8 @@ public:
             tun_ = std::make_unique<TunDevice>(interface_name, options_.tun_mtu);
         }
         if (not options_.switch_socket.empty()) {
-            switch_ = std::make_unique<SwitchClient>(options_.switch_socket);
+            switch_ = std::make_unique<SwitchClient>(
+                options_.switch_socket, options_.switch_port_id);
         }
 
         active_transport_mtu_ =
@@ -72,6 +73,10 @@ public:
 
         if (options_.switch_socket.empty()) drop_privileges();
         else harden_unprivileged_process();
+
+        // The initial check must use the final runtime identity. Connecting as
+        // root would hide permissions that make all later reconnects fail.
+        try_switch_reconnect(std::chrono::steady_clock::now(), true);
 
         if (log_enabled(LogLevel::info)) {
             std::cerr
@@ -130,7 +135,7 @@ public:
             descriptors[0].events = POLLIN;
             descriptors[1].fd = udp_.fd();
             descriptors[1].events = POLLIN;
-            descriptors[2].fd = switch_ ? switch_->fd() : -1;
+            descriptors[2].fd = switch_ and switch_->connected() ? switch_->fd() : -1;
             descriptors[2].events = POLLIN;
 
             const int rc = ::poll(descriptors, 3, 1000);
@@ -208,10 +213,11 @@ public:
             }
             if (switch_ and
                 (descriptors[2].revents & (POLLHUP | POLLERR | POLLNVAL)) != 0) {
-                throw std::runtime_error("Switch socket disconnected");
+                disconnect_switch(ECONNRESET);
             }
 
             const auto now = std::chrono::steady_clock::now();
+            try_switch_reconnect(now);
             if (stats_enabled()) {
                 throughput_.update(now, {
                     stats_.tun_rx_bytes, stats_.tun_tx_bytes,
@@ -638,6 +644,10 @@ private:
         }
 
         if (switch_) {
+            if (not switch_->connected()) {
+                ++stats_.switch_drops;
+                return;
+            }
             const auto frame = encode_switch_frame(
                 SwitchOpcode::switch_packet,
                 {options_.switch_label},
@@ -645,8 +655,10 @@ private:
                 packet.payload.size());
             const ssize_t written = switch_->send(frame.data(), frame.size());
             if (written != static_cast<ssize_t>(frame.size())) {
+                const int error = written < 0 ? errno : EIO;
                 ++stats_.switch_send_errors;
                 ++stats_.switch_drops;
+                disconnect_switch(error);
                 return;
             }
             ++stats_.switch_tx_packets;
@@ -699,12 +711,14 @@ private:
     void handle_switch_packet() {
         const ssize_t received = switch_->receive(
             switch_rx_buffer_.data(), switch_rx_buffer_.size());
-        if (received == 0) throw std::runtime_error("Switch socket disconnected");
+        if (received == 0) {
+            disconnect_switch(ECONNRESET);
+            return;
+        }
         if (received < 0) {
             if (errno == EAGAIN or errno == EWOULDBLOCK or errno == EINTR) return;
-            throw std::runtime_error(
-                "Switch socket receive failed: " +
-                std::string(std::strerror(errno)));
+            disconnect_switch(errno);
+            return;
         }
         if (static_cast<std::size_t>(received) > switch_rx_buffer_.size()) {
             ++stats_.switch_drops;
@@ -746,6 +760,62 @@ private:
         packet.original_length = static_cast<std::uint32_t>(frame.payload_size);
         packet.payload.assign(frame.payload, frame.payload + frame.payload_size);
         deliver_to_tun(packet);
+    }
+
+    void record_switch_error(int error) {
+        stats_.switch_last_error_ts = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count());
+        stats_.switch_last_error_no = error;
+    }
+
+    void disconnect_switch(int error) {
+        if (not switch_ or not switch_->connected()) return;
+        record_switch_error(error);
+        switch_->disconnect();
+        ++stats_.switch_disconnects;
+        next_switch_reconnect_ =
+            std::chrono::steady_clock::now() + switch_reconnect_interval_;
+        log_info("Switch socket disconnected; DATA will be dropped until reconnect");
+    }
+
+    void try_switch_reconnect(
+        std::chrono::steady_clock::time_point now,
+        bool startup = false) {
+
+        if (not switch_ or switch_->connected() or now < next_switch_reconnect_) return;
+        ++stats_.switch_reconnect_attempts;
+        if (switch_->connect_now()) {
+            ++stats_.switch_reconnects;
+            last_switch_connect_error_ = 0;
+            log_info("Switch socket connected");
+            return;
+        }
+
+        const int error = switch_->last_error();
+        ++stats_.switch_socket_errors;
+        record_switch_error(error);
+        if (error == EACCES or error == EPERM) {
+            ++stats_.switch_socket_eacces;
+        } else if (error == ENOENT) {
+            ++stats_.switch_socket_enoent;
+        } else if (error == ECONNREFUSED) {
+            ++stats_.switch_socket_econnrefused;
+        } else {
+            ++stats_.switch_socket_other_errors;
+        }
+        if (startup and (error == EACCES or error == EPERM)) {
+            throw std::runtime_error(
+                "Cannot access switch socket " + options_.switch_socket +
+                " as runtime user: " + std::strerror(error));
+        }
+        if (error != last_switch_connect_error_) {
+            log_info(
+                "Switch reconnect failed: " +
+                std::string(std::strerror(error)));
+            last_switch_connect_error_ = error;
+        }
+        next_switch_reconnect_ = now + switch_reconnect_interval_;
     }
 
     bool send_control_packet(
@@ -1354,6 +1424,17 @@ private:
                 << "switch_tx_bytes=" << stats_.switch_tx_bytes << "\n"
                 << "switch_drops=" << stats_.switch_drops << "\n"
                 << "switch_send_errors=" << stats_.switch_send_errors << "\n"
+                << "switch_connected=" << (switch_ and switch_->connected() ? 1 : 0) << "\n"
+                << "switch_disconnects=" << stats_.switch_disconnects << "\n"
+                << "switch_reconnect_attempts=" << stats_.switch_reconnect_attempts << "\n"
+                << "switch_reconnects=" << stats_.switch_reconnects << "\n"
+                << "switch_socket_errors=" << stats_.switch_socket_errors << "\n"
+                << "switch_socket_eacces=" << stats_.switch_socket_eacces << "\n"
+                << "switch_socket_enoent=" << stats_.switch_socket_enoent << "\n"
+                << "switch_socket_econnrefused=" << stats_.switch_socket_econnrefused << "\n"
+                << "switch_socket_other_errors=" << stats_.switch_socket_other_errors << "\n"
+                << "switch_last_error_ts=" << stats_.switch_last_error_ts << "\n"
+                << "switch_last_error_no=" << stats_.switch_last_error_no << "\n"
                 << std::fixed << std::setprecision(3)
                 << "rtt_last_ms=" << stats_.rtt_last_ms << "\n"
                 << "rtt_min_ms=" << stats_.rtt_min_ms << "\n"
@@ -1407,6 +1488,9 @@ private:
     std::unique_ptr<TunDevice> tun_;
     UdpEndpoint udp_;
     std::unique_ptr<SwitchClient> switch_;
+    static constexpr auto switch_reconnect_interval_ = std::chrono::seconds(1);
+    std::chrono::steady_clock::time_point next_switch_reconnect_ {};
+    int last_switch_connect_error_ = 0;
 
     const ascon::key_type master_key_;
     SessionProtocol protocol_v5_;

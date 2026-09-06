@@ -59,6 +59,7 @@ struct Options {
     std::string stats_file;
     StatsFormat stats_format = StatsFormat::txt;
     std::string switch_socket;
+    std::string switch_port_id;
     std::uint64_t switch_label = 0;
     bool switch_label_set = false;
     bool switch_exit_node = false;
@@ -92,6 +93,16 @@ struct Stats {
     std::uint64_t switch_tx_bytes = 0;
     std::uint64_t switch_drops = 0;
     std::uint64_t switch_send_errors = 0;
+    std::uint64_t switch_disconnects = 0;
+    std::uint64_t switch_reconnect_attempts = 0;
+    std::uint64_t switch_reconnects = 0;
+    std::uint64_t switch_socket_errors = 0;
+    std::uint64_t switch_socket_eacces = 0;
+    std::uint64_t switch_socket_enoent = 0;
+    std::uint64_t switch_socket_econnrefused = 0;
+    std::uint64_t switch_socket_other_errors = 0;
+    std::uint64_t switch_last_error_ts = 0;
+    int switch_last_error_no = 0;
 
     double rtt_last_ms = 0.0;
     double rtt_min_ms = 0.0;

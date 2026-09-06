@@ -15,6 +15,11 @@ def frame(opcode, labels, payload):
         b"".join(struct.pack("!Q", label) for label in labels) + payload
 
 
+def register(peer, port_id):
+    encoded = port_id.encode("ascii")
+    peer.sendall(b"TTP\x01" + bytes([len(encoded), 0, 0, 0]) + encoded)
+
+
 def wait_for(path):
     for _ in range(100):
         if os.path.exists(path):
@@ -40,20 +45,19 @@ def stop(process):
 def main():
     binary = sys.argv[1]
     with tempfile.TemporaryDirectory(prefix="tuntom-switch-test.") as directory:
-        path_a = os.path.join(directory, "a.sock")
-        path_b = os.path.join(directory, "b.sock")
+        path = os.path.join(directory, "switch.sock")
         process = subprocess.Popen([
             binary,
-            "--port", f"a={path_a}",
-            "--port", f"b={path_b}",
+            "--socket", path,
             "--route", "a:17=b:83",
             "--default-back=on",
         ])
         try:
-            wait_for(path_a)
-            wait_for(path_b)
-            a = connect(path_a)
-            b = connect(path_b)
+            wait_for(path)
+            a = connect(path)
+            b = connect(path)
+            register(a, "a")
+            register(b, "b")
             time.sleep(0.05)
 
             payload = b"\x45\x00\x00\x14"
@@ -61,6 +65,13 @@ def main():
             expected = frame(1, [83, 200], payload)
             if b.recv(65535) != expected:
                 raise RuntimeError("label swap or stack preservation failed")
+
+            replacement_b = connect(path)
+            register(replacement_b, "b")
+            time.sleep(0.05)
+            a.sendall(frame(1, [17, 200], payload))
+            if replacement_b.recv(65535) != expected:
+                raise RuntimeError("reconnected port did not replace its old connection")
 
             unmatched = frame(1, [99], payload)
             a.sendall(unmatched)
@@ -70,13 +81,14 @@ def main():
 
             a.close()
             b.close()
+            replacement_b.close()
             stop(process)
         finally:
             if process.poll() is None:
                 process.kill()
                 process.wait()
 
-    print("PASS: switch routing, label swap, stack preservation and default-back")
+    print("PASS: one-listener registration, reconnect, label swap and default-back")
 
 
 if __name__ == "__main__":

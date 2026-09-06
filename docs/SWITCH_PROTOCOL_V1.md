@@ -1,8 +1,8 @@
 # tuntom switch protocol v1
 
-The switch protocol connects one tuntom link process to a deliberately small
-label switch. It is local IPC over Unix `SOCK_SEQPACKET` in version 1. Filesystem
-permissions are the local security boundary.
+The switch protocol connects tuntom link processes to a deliberately small
+label switch. All processes connect to one Unix `SOCK_SEQPACKET` listener in
+version 1. Filesystem permissions are the local security boundary.
 
 The switch never handles tuntom credentials, UDP, encryption, IP routing or
 TUN devices. Its data-plane operation is:
@@ -37,7 +37,19 @@ Opcodes:
 2  EXIT     the receiver exits the label network
 ```
 
-A tuntom instance sends only `SWITCH` to the switch. It assigns its configured
+A connection first sends one registration record. This setup record is separate
+from the data frames above:
+
+```text
+offset  size       field
+0       3          magic = "TTP"
+3       1          version = 1
+4       1          port ID length, 1..63
+5       3          reserved = 0
+8       variable   printable ASCII port ID
+```
+
+After registration, a tuntom instance sends only `SWITCH` to the switch. It assigns its configured
 `--switch-label` to authenticated DATA received from its UDP peer.
 
 The switch sends `SWITCH` to a destination tuntom port after a successful rule
@@ -61,24 +73,27 @@ TUN -> tuntom --switch-exit-node -> UDP DATA
 There is no fallback from `SWITCH` to TUN. Malformed frames, unsupported
 opcodes and `EXIT` received without exit-node mode are dropped.
 
-## Static switch configuration
+## Listener and static routes
 
-V1 uses a separate named listening socket for every port, avoiding a data-plane
-registration message:
+V1 uses one listener. Connections identify themselves with a stable port ID;
+a reconnect with the same ID replaces the previous connection:
 
 ```bash
 tuntom-switch \
-  --port honeypot=/run/tuntom/honeypot.sock \
-  --port proxy=/run/tuntom/proxy.sock \
+  --socket /run/tuntom/switch.sock \
   --route honeypot:17=proxy:83 \
   --route proxy:91=honeypot:44 \
   --default-back=off
 ```
 
-The switch creates sockets with mode `0660`. Their group ownership is inherited
-from the containing directory/process environment and should be configured by
-the service manager. A port accepts one active connection; a new connection
-replaces the previous one.
+The switch creates the listener with mode `0660`. Its group ownership is
+inherited from the containing directory/process environment and should be
+configured by the service manager; a setgid runtime directory such as
+`root:tuntom` mode `2770` is recommended. The listener remains active as tuntom
+instances connect and disconnect; adding a link does not restart the switch.
+If the listener disappears, tuntom keeps its UDP control plane alive, drops DATA
+fail-closed, and retries connection and registration once per second. The
+switch may therefore be restarted without restarting established tunnels.
 
 Remote transports, dynamic control-plane updates, a native switch exit adapter
 and exit-flow caching are outside protocol v1.

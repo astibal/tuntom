@@ -26,6 +26,7 @@ inline void usage(const char* program_name) {
         << "  --no-ttl-compensate   Do not compensate the extra "
            "tuntom routing hop\n"
         << "  --switch-socket <path>  Exchange labeled packets with tuntom-switch\n"
+        << "  --switch-port-id <name> Stable identity of this switch connection\n"
         << "  --switch-label <n>      Label assigned to DATA received from UDP\n"
         << "  --switch-exit-node      Allow IPC EXIT delivery through a local TUN\n"
         << "\n"
@@ -124,6 +125,11 @@ inline void parse_options(
             options.switch_label = std::stoull(argv[i], &used, 0);
             if (argv[i][used] != '\0') throw std::runtime_error("Invalid --switch-label");
             options.switch_label_set = true;
+        } else if (option == "--switch-port-id") {
+            if (++i >= argc) throw std::runtime_error("--switch-port-id requires a value");
+            options.switch_port_id = argv[i];
+            if (options.switch_port_id.empty())
+                throw std::runtime_error("--switch-port-id must not be empty");
         } else if (option == "--switch-exit-node") {
             options.switch_exit_node = true;
         } else if (option == "--mtu") {
@@ -185,12 +191,16 @@ inline void parse_options(
     }
 
     if (options.switch_socket.empty() and
-        (options.switch_label_set or options.switch_exit_node)) {
+        (options.switch_label_set or options.switch_exit_node or
+         not options.switch_port_id.empty())) {
         throw std::runtime_error(
             "--switch-label and --switch-exit-node require --switch-socket");
     }
     if (not options.switch_socket.empty() and not options.switch_label_set) {
         throw std::runtime_error("--switch-socket requires --switch-label");
+    }
+    if (not options.switch_socket.empty() and options.switch_port_id.empty()) {
+        throw std::runtime_error("--switch-socket requires --switch-port-id");
     }
 }
 

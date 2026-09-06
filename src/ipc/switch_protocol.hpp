@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace tuntom {
@@ -13,11 +14,64 @@ inline constexpr std::uint8_t switch_protocol_version = 1;
 inline constexpr std::size_t switch_base_header_size = 8;
 inline constexpr std::size_t switch_label_size = 8;
 inline constexpr std::size_t switch_max_labels = 8;
+inline constexpr std::size_t switch_registration_header_size = 8;
+inline constexpr std::size_t switch_max_port_id_size = 63;
 
 enum class SwitchOpcode : std::uint8_t {
     switch_packet = 1,
     exit_packet = 2,
 };
+
+inline std::vector<std::uint8_t> encode_switch_registration(
+    const std::string& port_id) {
+
+    if (port_id.empty() or port_id.size() > switch_max_port_id_size) {
+        throw std::runtime_error("Invalid switch port ID length");
+    }
+    for (const unsigned char byte : port_id) {
+        if (byte < 0x21 or byte > 0x7e) {
+            throw std::runtime_error("Switch port ID must be printable ASCII without spaces");
+        }
+    }
+
+    std::vector<std::uint8_t> output(
+        switch_registration_header_size + port_id.size());
+    output[0] = 'T';
+    output[1] = 'T';
+    output[2] = 'P';
+    output[3] = switch_protocol_version;
+    output[4] = static_cast<std::uint8_t>(port_id.size());
+    output[5] = output[6] = output[7] = 0;
+    std::copy(port_id.begin(), port_id.end(), output.begin() +
+        static_cast<std::ptrdiff_t>(switch_registration_header_size));
+    return output;
+}
+
+inline bool decode_switch_registration(
+    const std::uint8_t* data,
+    std::size_t size,
+    std::string& port_id) {
+
+    if (size < switch_registration_header_size or
+        data[0] != 'T' or data[1] != 'T' or data[2] != 'P' or
+        data[3] != switch_protocol_version or data[5] != 0 or
+        data[6] != 0 or data[7] != 0) {
+        return false;
+    }
+    const std::size_t id_size = data[4];
+    if (id_size == 0 or id_size > switch_max_port_id_size or
+        size != switch_registration_header_size + id_size) {
+        return false;
+    }
+    for (std::size_t index = 0; index < id_size; ++index) {
+        const auto byte = data[switch_registration_header_size + index];
+        if (byte < 0x21 or byte > 0x7e) return false;
+    }
+    port_id.assign(
+        reinterpret_cast<const char*>(data + switch_registration_header_size),
+        id_size);
+    return true;
+}
 
 struct SwitchFrameView {
     SwitchOpcode opcode = SwitchOpcode::switch_packet;

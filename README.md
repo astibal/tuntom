@@ -126,6 +126,10 @@ and the server UDP port.
 | `--pfs` | Require X25519 + AKDF + Ascon-AEAD128 on both endpoints |
 | `--encrypt-ascon` | Require Ascon-AEAD128 without PFS |
 | `--no-stats` | Disable automatic statistics writes and optional sampling |
+| `--client-switch <socket> <port-id> <label>` | Connect the local/client side to an existing switch listener |
+| `--server-switch <socket> <port-id> <label>` | Connect the remote/server side to an existing switch listener |
+| `--client-switch-exit-node` | Retain the client TUN and permit IPC `EXIT` delivery |
+| `--server-switch-exit-node` | Retain the server TUN and permit IPC `EXIT` delivery |
 | `--snat` / `--no-snat` | Enable / disable IPv4 MASQUERADE; default: off |
 | `--mss-clamp` / `--no-mss-clamp` | Enable / disable TCP MSS clamping; default: on |
 | `--stop` | Stop and clean up the tunnel on both hosts |
@@ -166,7 +170,8 @@ can run without root after its socket and UDP access are available.
 
 ```bash
 TUNTOM_SECRET=... tuntom client 42 - server.example \
-  --switch-socket /run/tuntom/client.sock \
+  --switch-socket /run/tuntom/switch.sock \
+  --switch-port-id client-42 \
   --switch-label 17 \
   --pfs
 ```
@@ -180,16 +185,31 @@ The companion switch has named static ports and routes:
 
 ```bash
 tuntom-switch \
-  --port a=/run/tuntom/a.sock \
-  --port b=/run/tuntom/b.sock \
-  --route a:17=b:83 \
-  --route b:91=a:44 \
+  --socket /run/tuntom/switch.sock \
+  --route client-42:17=proxy-7:83 \
+  --route proxy-7:91=client-42:44 \
   --default-back=off
 ```
 
 On a route miss, `--default-back=on` returns an `EXIT` frame to the ingress
 port. The IPC format and exact fail-closed behavior are specified in
 [switch protocol v1](docs/SWITCH_PROTOCOL_V1.md).
+
+The SSH bootstrap can independently attach either endpoint to a switch that is
+already running on that endpoint host:
+
+```bash
+./mk_tunnel.sh 42 honeynet-router \
+  --server-switch /run/tuntom/switch.sock honeypot-42 17 \
+  --pfs
+```
+
+A pure switch side creates no TUN and skips its address, hook and kernel-network
+setup. Adding `--server-switch-exit-node` (or its client counterpart) retains
+that side's TUN. The switch has an independent lifecycle and is never started or
+restarted by `mk_tunnel.sh`. While it is unavailable, tuntom keeps the UDP
+control plane alive, drops DATA, and retries connection and registration once
+per second.
 
 ### MTU and fragmentation
 

@@ -2,8 +2,25 @@
 set -euo pipefail
 umask 0077
 
+usage() {
+    cat >&2 <<EOF
+Usage: $0 <id 1..255> <host|user@host> [options]
+
+Tunnel options:
+  --snat | --no-snat
+  --mss-clamp | --no-mss-clamp
+  --encrypt-ascon | --pfs | --no-stats | --stop
+
+Switch ports (the tuntom-switch listener must already be running):
+  --client-switch <socket> <port-id> <label>
+  --server-switch <socket> <port-id> <label>
+  --client-switch-exit-node
+  --server-switch-exit-node
+EOF
+}
+
 if (( $# < 2 )); then
-    echo "Usage: $0 <id 1..255> <host|user@host> [--snat|--no-snat] [--mss-clamp|--no-mss-clamp] [--encrypt-ascon] [--pfs] [--no-stats] [--stop]" >&2
+    usage
     exit 1
 fi
 
@@ -17,6 +34,14 @@ stop_requested=0
 encrypt_option=""
 pfs_option=""
 stats_option=""
+client_switch_socket=""
+client_switch_port_id=""
+client_switch_label=""
+client_switch_exit_node=0
+server_switch_socket=""
+server_switch_port_id=""
+server_switch_label=""
+server_switch_exit_node=0
 
 while (( $# > 0 )); do
     case "$1" in
@@ -41,18 +66,104 @@ while (( $# > 0 )); do
         --encrypt-ascon)
             encrypt_option="--encrypt-ascon"
             ;;
+        --client-switch|--server-switch)
+            switch_side="${1#--}"
+            if (( $# < 4 )); then
+                echo "$1 requires <socket> <port-id> <label>" >&2
+                usage
+                exit 1
+            fi
+            switch_socket="$2"
+            switch_port_id="$3"
+            switch_label="$4"
+            if [[ -z "$switch_socket" || -z "$switch_port_id" ||
+                  "$switch_port_id" == *[[:space:]]* || ${#switch_port_id} -gt 63 ]]; then
+                echo "Invalid ${switch_side} socket or port ID" >&2
+                exit 1
+            fi
+            if ! [[ "$switch_label" =~ ^(0[xX][0-9A-Fa-f]+|[0-9]+)$ ]]; then
+                echo "Invalid ${switch_side} label: ${switch_label}" >&2
+                exit 1
+            fi
+            if [[ "$1" == "--client-switch" ]]; then
+                client_switch_socket="$switch_socket"
+                client_switch_port_id="$switch_port_id"
+                client_switch_label="$switch_label"
+            else
+                server_switch_socket="$switch_socket"
+                server_switch_port_id="$switch_port_id"
+                server_switch_label="$switch_label"
+            fi
+            shift 3
+            ;;
+        --client-switch-exit-node)
+            client_switch_exit_node=1
+            ;;
+        --server-switch-exit-node)
+            server_switch_exit_node=1
+            ;;
         --stop)
             stop_requested=1
             ;;
         *)
             echo "Unknown option: $1" >&2
-            echo "Usage: $0 <id 1..255> <host|user@host> [--snat|--no-snat] [--mss-clamp|--no-mss-clamp] [--encrypt-ascon] [--pfs] [--no-stats] [--stop]" >&2
+            usage
             exit 1
             ;;
     esac
 
     shift
 done
+
+if (( client_switch_exit_node )) && [[ -z "$client_switch_socket" ]]; then
+    echo "--client-switch-exit-node requires --client-switch" >&2
+    exit 1
+fi
+if (( server_switch_exit_node )) && [[ -z "$server_switch_socket" ]]; then
+    echo "--server-switch-exit-node requires --server-switch" >&2
+    exit 1
+fi
+
+client_has_tun=1
+server_has_tun=1
+if [[ -n "$client_switch_socket" ]] && (( ! client_switch_exit_node )); then
+    client_has_tun=0
+fi
+if [[ -n "$server_switch_socket" ]] && (( ! server_switch_exit_node )); then
+    server_has_tun=0
+fi
+
+shell_join() {
+    local output="" quoted argument
+    for argument in "$@"; do
+        printf -v quoted '%q' "$argument"
+        output+=" ${quoted}"
+    done
+    printf '%s' "$output"
+}
+
+client_switch_args=()
+server_switch_args=()
+if [[ -n "$client_switch_socket" ]]; then
+    client_switch_args+=(
+        --switch-socket "$client_switch_socket"
+        --switch-port-id "$client_switch_port_id"
+        --switch-label "$client_switch_label")
+    if (( client_switch_exit_node )); then
+        client_switch_args+=(--switch-exit-node)
+    fi
+fi
+if [[ -n "$server_switch_socket" ]]; then
+    server_switch_args+=(
+        --switch-socket "$server_switch_socket"
+        --switch-port-id "$server_switch_port_id"
+        --switch-label "$server_switch_label")
+    if (( server_switch_exit_node )); then
+        server_switch_args+=(--switch-exit-node)
+    fi
+fi
+client_switch_options="$(shell_join "${client_switch_args[@]}")"
+server_switch_options="$(shell_join "${server_switch_args[@]}")"
 
 if ! [[ "$id" =~ ^[0-9]+$ ]] || (( id < 1 || id > 255 )); then
     echo "Tunnel id must be in range 1..255" >&2
@@ -538,6 +649,12 @@ echo "  TUN MTU:    ${mtu}"
 echo "  xport MTU:  ${transport_mtu}"
 echo "  SNAT:       ${tuntom_snat}"
 echo "  MSS clamp:  ${tuntom_mss_clamp}"
+if [[ -n "$client_switch_socket" ]]; then
+    echo "  client switch: ${client_switch_socket} port=${client_switch_port_id} label=${client_switch_label} exit=${client_switch_exit_node}"
+fi
+if [[ -n "$server_switch_socket" ]]; then
+    echo "  server switch: ${server_switch_socket} port=${server_switch_port_id} label=${server_switch_label} exit=${server_switch_exit_node}"
+fi
 echo "  stats:      ${stats_format} -> ${run_dir}/${id}{c,s}.stats"
 echo "  pre hook:   ${tuntom_pre_hook} (local file, runs local+remote)"
 echo "  post hook:  ${tuntom_post_hook} (local file, runs local+remote)"
@@ -573,12 +690,12 @@ ensure_runtime_account_remote
 
 "${root_cmd[@]}" mkdir -p "$run_dir"
 "${root_cmd[@]}" chown root:"$runtime_group" "$run_dir"
-"${root_cmd[@]}" chmod 0770 "$run_dir"
+"${root_cmd[@]}" chmod 2770 "$run_dir"
 
 ssh "$remote" "
     mkdir -p '${run_dir}'
     chown root:'${runtime_group}' '${run_dir}'
-    chmod 0770 '${run_dir}'
+    chmod 2770 '${run_dir}'
 "
 
 # Up to this point the currently running tunnel is untouched. Only after all
@@ -613,53 +730,61 @@ printf '%s\n' "$TUNTOM_SECRET" | ssh "$remote" "
         --mtu '${mtu}' \
         --transport-mtu '${transport_mtu}' \
         --stats-format '${stats_format}' \
-        --stats-file '${remote_stats_file}' ${encrypt_option} ${pfs_option} ${stats_option} \
+        --stats-file '${remote_stats_file}' ${encrypt_option} ${pfs_option} ${stats_option}${server_switch_options} \
         >'${remote_log}' 2>&1 </dev/null &
     echo \$! > '${remote_pid_file}'
 "
 
-for _ in $(seq 1 20); do
-    if ssh "$remote" "ip link show '${server_if}' >/dev/null 2>&1"; then
-        break
-    fi
-    sleep 0.1
-done
+if (( server_has_tun )); then
+    for _ in $(seq 1 20); do
+        if ssh "$remote" "ip link show '${server_if}' >/dev/null 2>&1"; then
+            break
+        fi
+        sleep 0.1
+    done
 
-ssh "$remote" "
-    ip address add '${server_ip}' peer '${client_ip}' dev '${server_if}' &&
-    ip -6 address add '${server_ipv6}' peer '${client_ipv6}' dev '${server_if}' nodad &&
-    ip link set dev '${server_if}' mtu '${mtu}' up &&
-    ip -6 route replace '${client_ipv6}/128' dev '${server_if}' metric 256
-"
+    ssh "$remote" "
+        ip address add '${server_ip}' peer '${client_ip}' dev '${server_if}' &&
+        ip -6 address add '${server_ipv6}' peer '${client_ipv6}' dev '${server_if}' nodad &&
+        ip link set dev '${server_if}' mtu '${mtu}' up &&
+        ip -6 route replace '${client_ipv6}/128' dev '${server_if}' metric 256
+    "
 
-echo "[8] Configure remote networking"
-run_hook_remote "$tuntom_pre_hook" pre up remote "$server_if" "$server_ip" "$client_ip"
-net_up_remote
-run_hook_remote "$tuntom_post_hook" post up remote "$server_if" "$server_ip" "$client_ip"
+    echo "[8] Configure remote networking"
+    run_hook_remote "$tuntom_pre_hook" pre up remote "$server_if" "$server_ip" "$client_ip"
+    net_up_remote
+    run_hook_remote "$tuntom_post_hook" post up remote "$server_if" "$server_ip" "$client_ip"
+else
+    echo "[8] Skip remote TUN/networking (switch port)"
+fi
 
 echo "[9] Start local client"
 "${root_cmd[@]}" sh -c \
-    "nohup '${local_bin}' client '${id}' '${client_if}' '${remote#*@}' --mtu '${mtu}' --transport-mtu '${transport_mtu}' --stats-format '${stats_format}' --stats-file '${local_stats_file}' ${encrypt_option} ${pfs_option} ${stats_option} >'${local_log}' 2>&1 </dev/null & echo \$! > '${local_pid_file}'"
+    "nohup '${local_bin}' client '${id}' '${client_if}' '${remote#*@}' --mtu '${mtu}' --transport-mtu '${transport_mtu}' --stats-format '${stats_format}' --stats-file '${local_stats_file}' ${encrypt_option} ${pfs_option} ${stats_option}${client_switch_options} >'${local_log}' 2>&1 </dev/null & echo \$! > '${local_pid_file}'"
 
-for _ in $(seq 1 20); do
-    if "${root_cmd[@]}" ip link show "$client_if" >/dev/null 2>&1; then
-        break
-    fi
-    sleep 0.1
-done
+if (( client_has_tun )); then
+    for _ in $(seq 1 20); do
+        if "${root_cmd[@]}" ip link show "$client_if" >/dev/null 2>&1; then
+            break
+        fi
+        sleep 0.1
+    done
 
-"${root_cmd[@]}" ip address add "$client_ip" peer "$server_ip" dev "$client_if"
-"${root_cmd[@]}" ip -6 address add "$client_ipv6" peer "$server_ipv6" dev "$client_if" nodad
-"${root_cmd[@]}" ip link set dev "$client_if" mtu "$mtu" up
-"${root_cmd[@]}" ip -6 route replace "${server_ipv6}/128" dev "$client_if" metric 256
+    "${root_cmd[@]}" ip address add "$client_ip" peer "$server_ip" dev "$client_if"
+    "${root_cmd[@]}" ip -6 address add "$client_ipv6" peer "$server_ipv6" dev "$client_if" nodad
+    "${root_cmd[@]}" ip link set dev "$client_if" mtu "$mtu" up
+    "${root_cmd[@]}" ip -6 route replace "${server_ipv6}/128" dev "$client_if" metric 256
 
-echo "[10] Configure local networking"
-run_hook_local "$tuntom_pre_hook" pre up local "$client_if" "$client_ip" "$server_ip"
-net_up_local
-run_hook_local "$tuntom_post_hook" post up local "$client_if" "$client_ip" "$server_ip"
+    echo "[10] Configure local networking"
+    run_hook_local "$tuntom_pre_hook" pre up local "$client_if" "$client_ip" "$server_ip"
+    net_up_local
+    run_hook_local "$tuntom_post_hook" post up local "$client_if" "$client_ip" "$server_ip"
+else
+    echo "[10] Skip local TUN/networking (switch port)"
+fi
 
 echo "[11] Test"
-if "${root_cmd[@]}" ping -c 3 "$server_ip"; then
+if (( client_has_tun && server_has_tun )) && "${root_cmd[@]}" ping -c 3 "$server_ip"; then
     ipv6_ping=ping
     if command -v ping6 >/dev/null 2>&1; then
         ipv6_ping=ping6
@@ -677,9 +802,21 @@ if "${root_cmd[@]}" ping -c 3 "$server_ip"; then
         echo "Remote log: $remote_log"
         exit 2
     fi
-else
+elif (( client_has_tun && server_has_tun )); then
     echo "Ping failed"
     echo "Local log:  $local_log"
     echo "Remote log: $remote_log"
     exit 2
+else
+    sleep 1
+    local_pid="$(cat "$local_pid_file" 2>/dev/null || true)"
+    if ! [[ "$local_pid" =~ ^[0-9]+$ ]] ||
+       ! "${root_cmd[@]}" kill -0 "$local_pid" 2>/dev/null ||
+       ! ssh "$remote" "pid=\$(cat '${remote_pid_file}' 2>/dev/null || true); case \"\$pid\" in ''|*[!0-9]*) exit 1;; esac; kill -0 \"\$pid\""; then
+        echo "Switch-mode process health check failed"
+        echo "Local log:  $local_log"
+        echo "Remote log: $remote_log"
+        exit 2
+    fi
+    echo "Tunnel processes are UP (switch mode; ping skipped)"
 fi
