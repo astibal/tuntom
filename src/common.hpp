@@ -28,7 +28,7 @@ inline constexpr std::size_t pmtud_upper_mtu = 1500;
 inline constexpr int pmtud_probe_timeout_seconds = 2;
 inline constexpr std::size_t max_ip_packet_size = 65535;
 
-inline constexpr int keepalive_seconds = 5;
+inline constexpr int keepalive_seconds = 20;
 inline constexpr int rtt_probe_interval_seconds = 15;
 inline constexpr int rtt_probe_timeout_seconds = 5;
 inline constexpr int reassembly_timeout_seconds = 3;
