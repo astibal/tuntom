@@ -154,4 +154,19 @@ inline void drop_privileges() {
         runtime_user + ":" + runtime_group);
 }
 
+inline void harden_unprivileged_process() {
+    if (::geteuid() == 0) {
+        drop_privileges();
+        return;
+    }
+
+    harden_process_before_privilege_drop();
+    if (::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 or
+        ::prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0) {
+        throw std::runtime_error(
+            "Unable to harden unprivileged tuntom process: " +
+            std::string(std::strerror(errno)));
+    }
+}
+
 } // namespace tuntom

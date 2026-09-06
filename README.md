@@ -45,6 +45,7 @@ Contributors remain responsible for the changes they submit.
 | Networking | IPv4 policy routing, connection marks, MSS clamping, optional SNAT, lifecycle hooks |
 | Observability | Text statistics, signal-controlled snapshots, logs, Wireshark dissector |
 | Runtime | No external crypto libraries; drops privileges to `tuntom:tuntom` |
+| Switching | Optional userspace label switching over Unix `SOCK_SEQPACKET`, without a TUN on relay links |
 
 The tunnel engine handles transport. Linux networking and the included
 `tuntom-net.sh` helper handle routing and firewall policy; custom routes and
@@ -154,6 +155,41 @@ IPv6 addresses use the prefix text with dots replaced by colons.
 
 Advanced networking overrides are `TUNTOM_MARK`, `TUNTOM_MARK_MASK`,
 `TUNTOM_TABLE`, and `TUNTOM_CHAIN`; see [the helper](tuntom-net.sh).
+
+### Label-switch mode
+
+`--switch-socket` replaces the TUN data path with a Unix `SOCK_SEQPACKET`
+connection. Authenticated DATA received over UDP is emitted as a `SWITCH` frame
+with the configured ingress label; a `SWITCH` frame received from IPC is sent
+as ordinary V5 DATA to the UDP peer. No TUN device is created, so a pure relay
+can run without root after its socket and UDP access are available.
+
+```bash
+TUNTOM_SECRET=... tuntom client 42 - server.example \
+  --switch-socket /run/tuntom/client.sock \
+  --switch-label 17 \
+  --pfs
+```
+
+The positional interface name is ignored in pure switch mode; `-` is the
+recommended placeholder. `--switch-exit-node` retains the TUN and permits only
+an explicit IPC `EXIT` frame to write into it. Packets read from that TUN go
+directly to the instance's UDP peer.
+
+The companion switch has named static ports and routes:
+
+```bash
+tuntom-switch \
+  --port a=/run/tuntom/a.sock \
+  --port b=/run/tuntom/b.sock \
+  --route a:17=b:83 \
+  --route b:91=a:44 \
+  --default-back=off
+```
+
+On a route miss, `--default-back=on` returns an `EXIT` frame to the ingress
+port. The IPC format and exact fail-closed behavior are specified in
+[switch protocol v1](docs/SWITCH_PROTOCOL_V1.md).
 
 ### MTU and fragmentation
 

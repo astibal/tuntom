@@ -3,6 +3,8 @@
 #include "privileges.hpp"
 #include "tun_device.hpp"
 #include "udp_endpoint.hpp"
+#include "switch_endpoint.hpp"
+#include "switch_protocol.hpp"
 #include "session.hpp"
 #include "ip.hpp"
 #include "fragmentation.hpp"
@@ -18,6 +20,7 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -38,7 +41,6 @@ public:
         : tunnel_id_(tunnel_id),
           server_mode_(server_mode),
           options_(options),
-          tun_(interface_name, options.tun_mtu),
           master_key_(parse_master_key()),
           protocol_v5_(tunnel_id, master_key_, server_mode, options.tun_mtu, options.encrypt_ascon, options.init_window, options.pfs) {
 
@@ -53,6 +55,13 @@ public:
             udp_.open_client(remote_host, port);
         }
 
+        if (options_.switch_socket.empty() or options_.switch_exit_node) {
+            tun_ = std::make_unique<TunDevice>(interface_name, options_.tun_mtu);
+        }
+        if (not options_.switch_socket.empty()) {
+            switch_ = std::make_unique<SwitchEndpoint>(options_.switch_socket);
+        }
+
         active_transport_mtu_ =
             options_.pmtud_auto
                 ? min_transport_mtu
@@ -61,7 +70,8 @@ public:
         validate_fragment_capacity();
         reserve_hot_path_buffers();
 
-        drop_privileges();
+        if (options_.switch_socket.empty()) drop_privileges();
+        else harden_unprivileged_process();
 
         if (log_enabled(LogLevel::info)) {
             std::cerr
@@ -78,6 +88,10 @@ public:
                 << (options_.ttl_compensate ? "yes" : "no")
                 << " stats="
                 << (stats_enabled() ? options_.stats_file : "off")
+                << " switch="
+                << (switch_ ? options_.switch_socket : "off")
+                << " switch-exit="
+                << (options_.switch_exit_node ? "on" : "off")
                 << "\n";
         }
     }
@@ -111,13 +125,15 @@ public:
 
         while (true) {
             update_stats_control();
-            pollfd descriptors[2] {};
-            descriptors[0].fd = tun_.fd();
+            pollfd descriptors[3] {};
+            descriptors[0].fd = tun_ ? tun_->fd() : -1;
             descriptors[0].events = POLLIN;
             descriptors[1].fd = udp_.fd();
             descriptors[1].events = POLLIN;
+            descriptors[2].fd = switch_ ? switch_->fd() : -1;
+            descriptors[2].events = POLLIN;
 
-            const int rc = ::poll(descriptors, 2, 1000);
+            const int rc = ::poll(descriptors, 3, 1000);
 
             if (rc < 0) {
                 if (errno == EINTR) {
@@ -131,7 +147,7 @@ public:
 
             if ((descriptors[0].revents & POLLIN) != 0) {
                 const ssize_t received =
-                    tun_.read_packet(
+                    tun_->read_packet(
                         tun_rx_buffer_.data(),
                         tun_rx_buffer_.size());
 
@@ -185,6 +201,14 @@ public:
                         source,
                         source_length);
                 }
+            }
+
+            if ((descriptors[2].revents & POLLIN) != 0) {
+                handle_switch_packet();
+            }
+            if (switch_ and
+                (descriptors[2].revents & (POLLHUP | POLLERR | POLLNVAL)) != 0) {
+                throw std::runtime_error("Switch socket disconnected");
             }
 
             const auto now = std::chrono::steady_clock::now();
@@ -273,6 +297,10 @@ private:
 
         tun_rx_buffer_.resize(options_.tun_mtu);
         udp_rx_buffer_.resize(buffer_size);
+        switch_rx_buffer_.resize(
+            switch_base_header_size +
+            switch_max_labels * switch_label_size +
+            options_.tun_mtu);
 
         tx_logical_packet_.payload.reserve(options_.tun_mtu);
         tx_fragment_packet_.payload.reserve(maximum_payload);
@@ -590,14 +618,14 @@ private:
                 reassembled_packet_.size());
 
         logical_packet.payload.swap(reassembled_packet_);
-        deliver_to_tun(logical_packet);
+        deliver_received_data(logical_packet);
 
         // Recycle the storage used by the completed logical packet.
         logical_packet.payload.swap(reassembled_packet_);
         reassembled_packet_.clear();
     }
 
-    void deliver_to_tun(Packet& packet) {
+    void deliver_received_data(Packet& packet) {
         if (not process(packet, Direction::udp_to_tun)) {
             ++stats_.drops_process;
             return;
@@ -606,6 +634,33 @@ private:
         if (packet.payload.size() > options_.tun_mtu) {
             ++stats_.drops_mtu;
             log_info("DROP reassembled packet larger than configured MTU");
+            return;
+        }
+
+        if (switch_) {
+            const auto frame = encode_switch_frame(
+                SwitchOpcode::switch_packet,
+                {options_.switch_label},
+                packet.payload.data(),
+                packet.payload.size());
+            const ssize_t written = switch_->send(frame.data(), frame.size());
+            if (written != static_cast<ssize_t>(frame.size())) {
+                ++stats_.switch_send_errors;
+                ++stats_.switch_drops;
+                return;
+            }
+            ++stats_.switch_tx_packets;
+            stats_.switch_tx_bytes += static_cast<std::uint64_t>(written);
+            ++stats_.data_rx_packets;
+            return;
+        }
+
+        deliver_to_tun(packet);
+    }
+
+    void deliver_to_tun(Packet& packet) {
+        if (not tun_) {
+            ++stats_.switch_drops;
             return;
         }
 
@@ -620,7 +675,7 @@ private:
             20);
 
         const ssize_t written =
-            tun_.write_packet(
+            tun_->write_packet(
                 packet.payload.data(),
                 packet.payload.size());
 
@@ -639,6 +694,58 @@ private:
                 static_cast<std::uint64_t>(written);
             ++stats_.data_rx_packets;
         }
+    }
+
+    void handle_switch_packet() {
+        const ssize_t received = switch_->receive(
+            switch_rx_buffer_.data(), switch_rx_buffer_.size());
+        if (received == 0) throw std::runtime_error("Switch socket disconnected");
+        if (received < 0) {
+            if (errno == EAGAIN or errno == EWOULDBLOCK or errno == EINTR) return;
+            throw std::runtime_error(
+                "Switch socket receive failed: " +
+                std::string(std::strerror(errno)));
+        }
+        if (static_cast<std::size_t>(received) > switch_rx_buffer_.size()) {
+            ++stats_.switch_drops;
+            return;
+        }
+
+        ++stats_.switch_rx_packets;
+        stats_.switch_rx_bytes += static_cast<std::uint64_t>(received);
+
+        SwitchFrameView frame;
+        if (not decode_switch_frame(
+                switch_rx_buffer_.data(),
+                static_cast<std::size_t>(received),
+                frame)) {
+            ++stats_.switch_drops;
+            return;
+        }
+
+        if (frame.payload_size > options_.tun_mtu) {
+            ++stats_.drops_mtu;
+            ++stats_.switch_drops;
+            return;
+        }
+
+        if (frame.opcode == SwitchOpcode::switch_packet) {
+            send_data(frame.payload, frame.payload_size);
+            return;
+        }
+
+        if (not options_.switch_exit_node) {
+            ++stats_.switch_drops;
+            return;
+        }
+
+        Packet packet;
+        packet.type = PacketType::data;
+        packet.tunnel_id = tunnel_id_;
+        packet.protocol_version = protocol_version_v5;
+        packet.original_length = static_cast<std::uint32_t>(frame.payload_size);
+        packet.payload.assign(frame.payload, frame.payload + frame.payload_size);
+        deliver_to_tun(packet);
     }
 
     bool send_control_packet(
@@ -1241,6 +1348,12 @@ private:
                 << "drops_process=" << stats_.drops_process << "\n"
                 << "udp_send_errors=" << stats_.udp_send_errors << "\n"
                 << "tun_write_errors=" << stats_.tun_write_errors << "\n"
+                << "switch_rx_packets=" << stats_.switch_rx_packets << "\n"
+                << "switch_rx_bytes=" << stats_.switch_rx_bytes << "\n"
+                << "switch_tx_packets=" << stats_.switch_tx_packets << "\n"
+                << "switch_tx_bytes=" << stats_.switch_tx_bytes << "\n"
+                << "switch_drops=" << stats_.switch_drops << "\n"
+                << "switch_send_errors=" << stats_.switch_send_errors << "\n"
                 << std::fixed << std::setprecision(3)
                 << "rtt_last_ms=" << stats_.rtt_last_ms << "\n"
                 << "rtt_min_ms=" << stats_.rtt_min_ms << "\n"
@@ -1291,8 +1404,9 @@ private:
     bool server_mode_ = false;
     Options options_;
 
-    TunDevice tun_;
+    std::unique_ptr<TunDevice> tun_;
     UdpEndpoint udp_;
+    std::unique_ptr<SwitchEndpoint> switch_;
 
     const ascon::key_type master_key_;
     SessionProtocol protocol_v5_;
@@ -1306,6 +1420,7 @@ private:
     // changing Packet/process() semantics or the wire format.
     std::vector<std::uint8_t> tun_rx_buffer_;
     std::vector<std::uint8_t> udp_rx_buffer_;
+    std::vector<std::uint8_t> switch_rx_buffer_;
 
     Packet tx_logical_packet_;
     Packet tx_fragment_packet_;

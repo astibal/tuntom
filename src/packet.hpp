@@ -58,6 +58,10 @@ struct Options {
     bool stats_disabled = false;
     std::string stats_file;
     StatsFormat stats_format = StatsFormat::txt;
+    std::string switch_socket;
+    std::uint64_t switch_label = 0;
+    bool switch_label_set = false;
+    bool switch_exit_node = false;
 };
 
 struct Stats {
@@ -82,6 +86,12 @@ struct Stats {
     std::uint64_t drops_process = 0;
     std::uint64_t udp_send_errors = 0;
     std::uint64_t tun_write_errors = 0;
+    std::uint64_t switch_rx_packets = 0;
+    std::uint64_t switch_rx_bytes = 0;
+    std::uint64_t switch_tx_packets = 0;
+    std::uint64_t switch_tx_bytes = 0;
+    std::uint64_t switch_drops = 0;
+    std::uint64_t switch_send_errors = 0;
 
     double rtt_last_ms = 0.0;
     double rtt_min_ms = 0.0;

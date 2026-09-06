@@ -25,6 +25,9 @@ inline void usage(const char* program_name) {
         << "  --no-pmtud            Disable PMTUD and keep --transport-mtu fixed\n"
         << "  --no-ttl-compensate   Do not compensate the extra "
            "tuntom routing hop\n"
+        << "  --switch-socket <path>  Exchange labeled packets with tuntom-switch\n"
+        << "  --switch-label <n>      Label assigned to DATA received from UDP\n"
+        << "  --switch-exit-node      Allow IPC EXIT delivery through a local TUN\n"
         << "\n"
         << "Statistics:\n"
         << "  --no-stats             Disable stats writes and optional sampling\n"
@@ -109,6 +112,20 @@ inline void parse_options(
             options.ttl_compensate = false;
         } else if (option == "--ttl-compensate") {
             options.ttl_compensate = true;
+        } else if (option == "--switch-socket") {
+            if (++i >= argc) throw std::runtime_error("--switch-socket requires a value");
+            options.switch_socket = argv[i];
+            if (options.switch_socket.empty())
+                throw std::runtime_error("--switch-socket must not be empty");
+        } else if (option == "--switch-label") {
+            if (++i >= argc) throw std::runtime_error("--switch-label requires a value");
+            if (argv[i][0] == '-') throw std::runtime_error("Invalid --switch-label");
+            std::size_t used = 0;
+            options.switch_label = std::stoull(argv[i], &used, 0);
+            if (argv[i][used] != '\0') throw std::runtime_error("Invalid --switch-label");
+            options.switch_label_set = true;
+        } else if (option == "--switch-exit-node") {
+            options.switch_exit_node = true;
         } else if (option == "--mtu") {
             if (++i >= argc) {
                 throw std::runtime_error("--mtu requires a value");
@@ -165,6 +182,15 @@ inline void parse_options(
             throw std::runtime_error(
                 "Unknown option: " + option);
         }
+    }
+
+    if (options.switch_socket.empty() and
+        (options.switch_label_set or options.switch_exit_node)) {
+        throw std::runtime_error(
+            "--switch-label and --switch-exit-node require --switch-socket");
+    }
+    if (not options.switch_socket.empty() and not options.switch_label_set) {
+        throw std::runtime_error("--switch-socket requires --switch-label");
     }
 }
 
