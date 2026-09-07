@@ -18,7 +18,7 @@ printf '%s\n' \
   "server_port=$server_switch_port_id" \
   "server_label=$server_switch_label" \
   "server_exit=$server_switch_exit_node" \
-  "server_tun=$server_has_tun"1
+  "server_tun=$server_has_tun"
 '''
 
 

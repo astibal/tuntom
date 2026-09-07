@@ -57,6 +57,7 @@ struct Options {
     std::size_t transport_mtu = default_transport_mtu;
     bool stats_disabled = false;
     std::string stats_file;
+    std::string control_socket;
     StatsFormat stats_format = StatsFormat::txt;
     std::string switch_socket;
     std::string switch_port_id;

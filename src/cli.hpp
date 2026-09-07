@@ -34,6 +34,7 @@ inline void usage(const char* program_name) {
         << "  --no-stats             Disable stats writes and optional sampling\n"
         << "  SIGUSR1 / SIGUSR2       Toggle stats / snapshot now (needs --stats-file)\n"
         << "  --stats-file <path>    Export runtime statistics to file\n"
+        << "  --control-socket <path>  Local tuntomctl socket\n"
         << "  --stats-format <fmt>   Statistics format; currently: txt\n"
         << "\n"
         << "Encryption (optional):\n"
@@ -184,6 +185,11 @@ inline void parse_options(
                     "Unsupported stats format: " + format +
                     " (currently supported: txt)");
             }
+        } else if (option == "--control-socket") {
+            if (++i >= argc) throw std::runtime_error("--control-socket requires a value");
+            options.control_socket = argv[i];
+            if (options.control_socket.empty())
+                throw std::runtime_error("--control-socket must not be empty");
         } else {
             throw std::runtime_error(
                 "Unknown option: " + option);

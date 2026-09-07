@@ -24,6 +24,8 @@ from multiple translation units.
 | `cli.hpp` | Usage and argument parsing |
 | `switch_client.hpp` | Tuntom-side Unix switch connection |
 | `ipc/switch_protocol.hpp` | Shared `SWITCH` / `EXIT` frame codec |
+| `control_socket.hpp` | Shared local `show stats` control server |
+| `control/main.cpp` | `tuntomctl` client executable |
 | `switch/main.cpp` | Standalone label-switch executable |
 | `adapter/ip_flow.hpp` | Safe IPv4/IPv6 L3 and TCP/UDP tuple parsing |
 | `adapter/lru_cache.hpp` | Capacity and idle-time bounded LRU cache |

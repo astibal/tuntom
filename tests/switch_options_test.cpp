@@ -28,6 +28,7 @@ int main() {
         "--switch-port-id", "honeypot-42",
         "--switch-label", "0x1234",
         "--switch-exit-node",
+        "--control-socket", "/run/tuntom/42c.control",
     };
     std::vector<char*> argv;
     for (auto& argument : arguments) argv.push_back(argument.data());
@@ -38,6 +39,7 @@ int main() {
     require(options.switch_label == 0x1234 and options.switch_label_set,
             "switch label lost");
     require(options.switch_exit_node, "exit mode lost");
+    require(options.control_socket == "/run/tuntom/42c.control", "control socket lost");
 
     require(parse_fails({"--switch-socket", "/tmp/x"}), "missing port ID/label accepted");
     require(parse_fails({"--switch-socket", "/tmp/x", "--switch-label", "1"}),

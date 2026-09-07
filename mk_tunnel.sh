@@ -248,6 +248,8 @@ local_pid_file="${run_dir}/${id}c.pid"
 remote_pid_file="${run_dir}/${id}s.pid"
 local_stats_file="${run_dir}/${id}c.stats"
 remote_stats_file="${run_dir}/${id}s.stats"
+local_control_file="${run_dir}/${id}c.control"
+remote_control_file="${run_dir}/${id}s.control"
 stats_format="${TUNTOM_STATS_FORMAT:-txt}"
 
 runtime_user="tuntom"
@@ -622,8 +624,8 @@ if (( stop_requested )); then
     echo "Stopping tunnel ${id}"
     stop_local_process
     stop_remote_process
-    "${root_cmd[@]}" rm -f "$local_stats_file" 2>/dev/null || true
-    ssh "$remote" "rm -f '${remote_stats_file}'" >/dev/null 2>&1 || true
+    "${root_cmd[@]}" rm -f "$local_stats_file" "$local_control_file" 2>/dev/null || true
+    ssh "$remote" "rm -f '${remote_stats_file}' '${remote_control_file}'" >/dev/null 2>&1 || true
 
     hook_pre_down_local
     hook_pre_down_remote
@@ -703,8 +705,8 @@ ssh "$remote" "
 echo "[4] Stop previous processes"
 stop_local_process
 stop_remote_process
-"${root_cmd[@]}" rm -f "$local_stats_file" 2>/dev/null || true
-ssh "$remote" "rm -f '${remote_stats_file}'" >/dev/null 2>&1 || true
+"${root_cmd[@]}" rm -f "$local_stats_file" "$local_control_file" 2>/dev/null || true
+ssh "$remote" "rm -f '${remote_stats_file}' '${remote_control_file}'" >/dev/null 2>&1 || true
 
 echo "[5] Clean previous networking"
 hook_pre_down_local
@@ -730,7 +732,7 @@ printf '%s\n' "$TUNTOM_SECRET" | ssh "$remote" "
         --mtu '${mtu}' \
         --transport-mtu '${transport_mtu}' \
         --stats-format '${stats_format}' \
-        --stats-file '${remote_stats_file}' ${encrypt_option} ${pfs_option} ${stats_option}${server_switch_options} \
+        --stats-file '${remote_stats_file}' --control-socket '${remote_control_file}' ${encrypt_option} ${pfs_option} ${stats_option}${server_switch_options} \
         >'${remote_log}' 2>&1 </dev/null &
     echo \$! > '${remote_pid_file}'
 "
@@ -760,7 +762,7 @@ fi
 
 echo "[9] Start local client"
 "${root_cmd[@]}" sh -c \
-    "nohup '${local_bin}' client '${id}' '${client_if}' '${remote#*@}' --mtu '${mtu}' --transport-mtu '${transport_mtu}' --stats-format '${stats_format}' --stats-file '${local_stats_file}' ${encrypt_option} ${pfs_option} ${stats_option}${client_switch_options} >'${local_log}' 2>&1 </dev/null & echo \$! > '${local_pid_file}'"
+    "nohup '${local_bin}' client '${id}' '${client_if}' '${remote#*@}' --mtu '${mtu}' --transport-mtu '${transport_mtu}' --stats-format '${stats_format}' --stats-file '${local_stats_file}' --control-socket '${local_control_file}' ${encrypt_option} ${pfs_option} ${stats_option}${client_switch_options} >'${local_log}' 2>&1 </dev/null & echo \$! > '${local_pid_file}'"
 
 if (( client_has_tun )); then
     for _ in $(seq 1 20); do

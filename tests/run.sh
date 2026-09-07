@@ -19,11 +19,14 @@ echo "Building application"
     "${tests_dir}/../src/switch/main.cpp" -o "${build_dir}/tuntom-switch"
 "${CXX:-g++}" -std=c++17 -O2 -Wall -Wextra -Wconversion -pedantic \
     "${tests_dir}/../src/adapter/main.cpp" -o "${build_dir}/tuntom-switch-adapter"
+"${CXX:-g++}" -std=c++17 -O2 -Wall -Wextra -Wconversion -pedantic \
+    "${tests_dir}/../src/control/main.cpp" -o "${build_dir}/tuntomctl"
 
 if command -v python3 >/dev/null 2>&1; then
-    python3 "${tests_dir}/switch_test.py" "${build_dir}/tuntom-switch"
+    python3 "${tests_dir}/switch_test.py" \
+        "${build_dir}/tuntom-switch" "${build_dir}/tuntomctl"
     python3 "${tests_dir}/switch_tunnel_test.py" \
-        "${build_dir}/tuntom" "${build_dir}/tuntom-switch"
+        "${build_dir}/tuntom" "${build_dir}/tuntom-switch" "${build_dir}/tuntomctl"
 else
     echo "SKIP: tuntom-switch process test requires python3"
 fi

@@ -94,9 +94,14 @@ def check_startup_permission_failure(tuntom, switch):
 def main():
     tuntom = sys.argv[1]
     switch = sys.argv[2]
+    ctl = sys.argv[3]
     processes = []
     with tempfile.TemporaryDirectory(prefix="tuntom-switch-link-test.") as directory:
         switch_path = os.path.join(directory, "switch.sock")
+        server_control = os.path.join(directory, "server.control")
+        client_control = os.path.join(directory, "client.control")
+        server_stats = os.path.join(directory, "server.stats")
+        client_stats = os.path.join(directory, "client.stats")
         switch_process = start_switch(switch, switch_path)
         processes.append(switch_process)
 
@@ -108,12 +113,14 @@ def main():
                 tuntom, "server", "237", "-", "--quiet", "--no-stats",
                 "--switch-socket", switch_path, "--switch-port-id", "server",
                 "--switch-label", "2",
+                "--stats-file", server_stats, "--control-socket", server_control,
             ], env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             processes.append(server)
             client = subprocess.Popen([
                 tuntom, "client", "237", "-", "localhost", "--quiet", "--no-stats",
                 "--switch-socket", switch_path, "--switch-port-id", "client",
                 "--switch-label", "1",
+                "--stats-file", client_stats, "--control-socket", client_control,
             ], env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             processes.append(client)
 
@@ -125,6 +132,12 @@ def main():
             expected = frame(11, payload)
 
             exchange(app, payload, expected, [switch_process, server, client])
+
+            wait_for([server_control, client_control], [server, client])
+            client_snapshot = subprocess.check_output(
+                [ctl, client_control, "show", "stats"], text=True)
+            if "mode=client" not in client_snapshot or "switch_connected=1" not in client_snapshot:
+                raise RuntimeError("invalid tuntom control stats response")
 
             app.close()
             terminate(switch_process)
@@ -147,7 +160,7 @@ def main():
                 terminate(process)
 
     check_startup_permission_failure(tuntom, switch)
-    print("PASS: switch traffic, restart reconnect and startup permission validation")
+    print("PASS: switch traffic, tuntomctl stats, reconnect and permission validation")
 
 
 if __name__ == "__main__":

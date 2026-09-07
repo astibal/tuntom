@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <list>
 #include <unordered_map>
 
@@ -35,6 +36,7 @@ public:
         if (now - found->second->last_seen > idle_timeout_) {
             order_.erase(found->second);
             entries_.erase(found);
+            ++expirations_;
             return false;
         }
         found->second->last_seen = now;
@@ -44,6 +46,8 @@ public:
     }
 
     std::size_t size() const { return entries_.size(); }
+    std::uint64_t evictions() const { return evictions_; }
+    std::uint64_t expirations() const { return expirations_; }
 
 private:
     struct Entry {
@@ -55,12 +59,15 @@ private:
     void evict_last() {
         entries_.erase(order_.back().key);
         order_.pop_back();
+        ++evictions_;
     }
 
     std::size_t capacity_;
     Clock::duration idle_timeout_;
     std::list<Entry> order_;
     std::unordered_map<Key, typename std::list<Entry>::iterator, Hash> entries_;
+    std::uint64_t evictions_ = 0;
+    std::uint64_t expirations_ = 0;
 };
 
 } // namespace tuntom

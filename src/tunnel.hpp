@@ -11,6 +11,7 @@
 #include "processing_stats.hpp"
 #include "throughput_stats.hpp"
 #include "stats_control.hpp"
+#include "control_socket.hpp"
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
@@ -62,6 +63,8 @@ public:
             switch_ = std::make_unique<SwitchClient>(
                 options_.switch_socket, options_.switch_port_id);
         }
+        if (not options_.control_socket.empty())
+            control_ = std::make_unique<ControlSocket>(options_.control_socket);
 
         active_transport_mtu_ =
             options_.pmtud_auto
@@ -130,15 +133,17 @@ public:
 
         while (true) {
             update_stats_control();
-            pollfd descriptors[3] {};
+            pollfd descriptors[4] {};
             descriptors[0].fd = tun_ ? tun_->fd() : -1;
             descriptors[0].events = POLLIN;
             descriptors[1].fd = udp_.fd();
             descriptors[1].events = POLLIN;
             descriptors[2].fd = switch_ and switch_->connected() ? switch_->fd() : -1;
             descriptors[2].events = POLLIN;
+            descriptors[3].fd = control_ ? control_->fd() : -1;
+            descriptors[3].events = POLLIN;
 
-            const int rc = ::poll(descriptors, 3, 1000);
+            const int rc = ::poll(descriptors, 4, 1000);
 
             if (rc < 0) {
                 if (errno == EINTR) {
@@ -214,6 +219,19 @@ public:
             if (switch_ and
                 (descriptors[2].revents & (POLLHUP | POLLERR | POLLNVAL)) != 0) {
                 disconnect_switch(ECONNRESET);
+            }
+
+            if (control_ and (descriptors[3].revents & POLLIN)) {
+                control_->handle([this] {
+                    write_stats(true);
+                    if (options_.stats_file.empty())
+                        return std::string("error=stats_file_not_configured\n");
+                    std::ifstream input(options_.stats_file);
+                    if (not input) return std::string("error=stats_snapshot_unavailable\n");
+                    return std::string(
+                        std::istreambuf_iterator<char>(input),
+                        std::istreambuf_iterator<char>());
+                });
             }
 
             const auto now = std::chrono::steady_clock::now();
@@ -1488,6 +1506,7 @@ private:
     std::unique_ptr<TunDevice> tun_;
     UdpEndpoint udp_;
     std::unique_ptr<SwitchClient> switch_;
+    std::unique_ptr<ControlSocket> control_;
     static constexpr auto switch_reconnect_interval_ = std::chrono::seconds(1);
     std::chrono::steady_clock::time_point next_switch_reconnect_ {};
     int last_switch_connect_error_ = 0;

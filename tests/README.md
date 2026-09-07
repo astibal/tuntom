@@ -72,7 +72,7 @@ firewall rules and requires root. It is deliberately not run by `run.sh`.
   idle expiry and LRU eviction.
 - `switch_test.py`: one-listener Unix `SOCK_SEQPACKET` registration and reconnect,
   label swap, stack preservation, explicit exit-port routes and default-back
-  `EXIT` behavior.
+  `EXIT` behavior, plus `tuntomctl show stats` over the control socket.
 - `switch_tunnel_test.py`: two unprivileged tuntom processes carrying an opaque
   payload through a live UDP session and the label switch without creating TUNs.
 

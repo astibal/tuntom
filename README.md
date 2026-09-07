@@ -213,6 +213,24 @@ with an L3 fallback for fragments and non-port protocols. Return traffic from
 the TUN is sent as `SWITCH`; packets missing both caches are dropped. The
 adapter performs no NAT, TCP state tracking or default-label routing.
 
+### Runtime statistics control
+
+All three data-plane processes can expose the same local control command through
+an optional Unix socket:
+
+```bash
+tuntomctl /run/tuntom/42c.control show stats
+tuntomctl /run/tuntom/switch.control show stats
+tuntomctl /run/tuntom/exit0.control show stats
+```
+
+Pass `--control-socket <path>` to `tuntom`, `tuntom-switch` or
+`tuntom-switch-adapter`. `mk_tunnel.sh` configures `<id>c.control` and
+`<id>s.control` automatically. The sockets use mode `0660`; filesystem
+permissions are the authorization boundary. Only `show stats` is defined in
+this first control protocol version. Existing stats signals remain available
+for compatibility.
+
 On a route miss, `--default-back=on` returns an `EXIT` frame to the ingress
 port. The IPC format and exact fail-closed behavior are specified in
 [switch protocol v1](docs/SWITCH_PROTOCOL_V1.md).

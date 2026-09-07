@@ -44,11 +44,14 @@ def stop(process):
 
 def main():
     binary = sys.argv[1]
+    ctl_binary = sys.argv[2]
     with tempfile.TemporaryDirectory(prefix="tuntom-switch-test.") as directory:
         path = os.path.join(directory, "switch.sock")
+        control_path = os.path.join(directory, "switch.control")
         process = subprocess.Popen([
             binary,
             "--socket", path,
+            "--control-socket", control_path,
             "--route", "a:17=b:83",
             "--route", "a:18=exit:84",
             "--exit-port", "exit",
@@ -87,6 +90,22 @@ def main():
             expected_exit = frame(2, [99], payload)
             if a.recv(65535) != expected_exit:
                 raise RuntimeError("default-back did not return EXIT")
+
+            stats = subprocess.check_output([
+                ctl_binary, control_path, "show", "stats"
+            ], text=True)
+            required = {
+                "component=switch",
+                "connections_current=3",
+                "route_hits=3",
+                "route_misses=1",
+                "exit_deliveries=1",
+                "default_back=1",
+                "send_errors=0",
+            }
+            missing = required.difference(stats.splitlines())
+            if missing:
+                raise RuntimeError(f"invalid switch control stats: {sorted(missing)}")
 
             a.close()
             b.close()

@@ -14,6 +14,9 @@ target_compile_options(tuntom-switch PRIVATE -Wall -Wextra -pedantic)
 add_executable(tuntom-switch-adapter src/adapter/main.cpp)
 target_compile_options(tuntom-switch-adapter PRIVATE -Wall -Wextra -pedantic)
 
+add_executable(tuntomctl src/control/main.cpp)
+target_compile_options(tuntomctl PRIVATE -Wall -Wextra -pedantic)
+
 include(CTest)
 if(BUILD_TESTING)
     foreach(name compact_protocol_test switch_protocol_test switch_options_test exit_adapter_test stats_control_test session_stats_test x25519_test akdf_test pfs_session_test replay_test mac_test aead_test encrypted_session_test session_test processing_stats_test throughput_stats_test)
