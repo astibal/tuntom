@@ -46,8 +46,9 @@ public:
         std::vector<std::uint8_t> init, response;
         Session(std::uint16_t id, const ascon::key_type& tx,
                 const ascon::key_type& rx, std::uint16_t h,
-                std::uint64_t ex, std::size_t mtu, bool encrypt)
-            : codec(id, tx, rx, encrypt), reassembly(mtu), hint(h), exchange(ex) {}
+                std::uint64_t ex, std::size_t mtu, bool encrypt,
+                ReassemblyMetrics* metrics = nullptr)
+            : codec(id, tx, rx, encrypt), reassembly(mtu, metrics), hint(h), exchange(ex) {}
     };
     struct Counters {
         std::uint64_t handshake_started = 0, handshake_completed = 0;
@@ -56,6 +57,7 @@ public:
         std::uint64_t handshake_suite_mismatch = 0, handshake_dh_rejected = 0;
     };
     const Counters& counters() const { return counters_; }
+    const ReassemblyMetrics& reassembly_metrics() const { return reassembly_metrics_; }
 
     // Gauges describe local state; counters count protocol events, not UDP sends.
     void write_stats(std::ostream& out, Time now) const {
@@ -81,6 +83,7 @@ public:
             << "rekey_started=" << counters_.rekey_started << "\n"
             << "rekey_completed=" << counters_.rekey_completed << "\n"
             << "rekey_interval_seconds=" << (pfs_ ? std::chrono::duration_cast<std::chrono::seconds>(rekey_interval).count() : 0) << "\n";
+        reassembly_metrics_.write(out);
     }
 
     struct Received {
@@ -367,9 +370,9 @@ public:
         return result;
     }
 
-    void cleanup() {
-        if (active_) active_->reassembly.cleanup_expired();
-        if (previous_) previous_->reassembly.cleanup_expired();
+    void cleanup(Time now = Clock::now()) {
+        if (active_) active_->reassembly.cleanup_expired(now);
+        if (previous_) previous_->reassembly.cleanup_expired(now);
     }
 
 private:
@@ -406,7 +409,7 @@ private:
 
     std::unique_ptr<Session> derive(const std::vector<std::uint8_t>& init,
                                     const std::vector<std::uint8_t>& response,
-                                    std::uint64_t exchange, const x25519::Bytes& dh, Time now) const {
+                                    std::uint64_t exchange, const x25519::Bytes& dh, Time now) {
         auto transcript = init;
         transcript.insert(transcript.end(), response.begin(), response.end());
         Secret<16> c2s, s2c, hint;
@@ -422,7 +425,8 @@ private:
             hint.bytes = expand(master_, id_, "V4-SESSION-HINT", transcript);
         }
         auto result = std::make_unique<Session>(id_, server_ ? s2c.bytes : c2s.bytes,
-            server_ ? c2s.bytes : s2c.bytes, load_be16(hint.bytes.data()), exchange, mtu_, encrypt_);
+            server_ ? c2s.bytes : s2c.bytes, load_be16(hint.bytes.data()), exchange, mtu_, encrypt_,
+            &reassembly_metrics_);
         result->created = now;
         result->init = init;
         result->response = response;
@@ -460,6 +464,8 @@ private:
         return value;
     }
 
+    // Declared before session owners so their destructors can update gauges.
+    ReassemblyMetrics reassembly_metrics_;
     Counters counters_;
     Time last_completed_ {};
     std::uint16_t id_;

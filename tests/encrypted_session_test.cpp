@@ -57,10 +57,43 @@ void run(bool encrypted, bool pfs = false) {
     auto tail = c.encode(p);
     Wire complete;
     auto r = recv(s, tail, decoded);
-    require(r.data && !r.session->reassembly.accept(decoded, complete), "tail");
+    require(r.data && !r.session->reassembly.accept(decoded, complete, nullptr, now), "tail");
     r = recv(s, head, decoded);
-    require(r.data && r.session->reassembly.accept(decoded, complete), "reassembly");
+    require(r.data && r.session->reassembly.accept(decoded, complete, nullptr, now), "reassembly");
     require(complete.size() == 1500 && complete[999] == 42 && complete[1000] == 7, "reassembled bytes");
+    // Exercise capacity pressure through the real codec/authentication/replay
+    // path in all suites. No clock advance: recovery cannot depend on timeout.
+    p.fragment_offset = 0;
+    p.payload.assign(1000, 42);
+    for (std::size_t i = 0; i <= max_reassembly_entries; ++i) {
+        p.message_id = 1000 + i;
+        auto wire = c.encode(p);
+        r = recv(s, wire, decoded);
+        require(r.data && !r.session->reassembly.accept(decoded, complete, nullptr, now), "prefill");
+    }
+    const auto evictions = s.reassembly_metrics().capacity_evictions;
+    require(evictions > 0, "capacity pressure missing");
+    p.message_id = 1000;
+    p.fragment_offset = 1000;
+    p.payload.assign(500, 7);
+    auto late = c.encode(p);
+    r = recv(s, late, decoded);
+    require(r.data && !r.session->reassembly.accept(decoded, complete, nullptr, now), "late fragment");
+    require(s.reassembly_metrics().late_fragment_drops == 1 &&
+            s.reassembly_metrics().capacity_evictions == evictions,
+            "authenticated late fragment churned pool");
+    p.message_id = 99999;
+    auto fresh_tail = c.encode(p);
+    p.fragment_offset = 0;
+    p.payload.assign(1000, 42);
+    auto fresh_head = c.encode(p);
+    r = recv(s, fresh_tail, decoded);
+    require(r.data && !r.session->reassembly.accept(decoded, complete, nullptr, now), "fresh tail");
+    r = recv(s, fresh_head, decoded);
+    require(r.data && r.session->reassembly.accept(decoded, complete, nullptr, now),
+            "fresh reordered packet blacked out under pressure");
+    require(complete.size() == 1500 && complete[999] == 42 && complete[1000] == 7,
+            "fresh reassembled bytes");
     SessionProtocol restarted(42, key, true, 1500, encrypted, 300, pfs);
     require(!recv(restarted, head, decoded).data, "restart replay");
     require(!recv(restarted, init, decoded).reply.empty(), "restart handshake");

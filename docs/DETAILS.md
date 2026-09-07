@@ -407,26 +407,67 @@ Each reassembly entry contains:
 - packet buffer
 - received byte ranges
 - received byte count
-- last update time
+- first arrival and last accepted fragment times
 
 The current implementation deliberately uses bounded state:
 
 ```text
 maximum packet size:          configured TUN MTU
-maximum incomplete messages:  64
-maximum reassembly memory:     4 MiB
+maximum incomplete messages: 512 per session
+maximum packet-buffer memory: 16 MiB per session (allocated on demand)
 maximum fragments per packet: 64
-reassembly timeout:            3 seconds
+idle reassembly timeout:       3 seconds
+discarded message IDs:        32768 per session, retained for 3 seconds
 ```
 
-Fragments with invalid metadata are rejected.
+Active and previous sessions have independent pools; during rekey they can
+together reserve up to 32 MiB of packet buffers, plus bounded metadata.
 
-Partial overlaps are rejected.
+When either pool limit is reached, the oldest incomplete message by first arrival
+is discarded to admit a new one. Accepted fragments do not refresh that eviction
+order. A separate activity queue orders idle expiration by last accepted fragment.
+Eviction takes the arrival queue head; cleanup visits only expired heads, never
+scans the live table (including at capacity). Removing many expired records costs
+time proportional to the number removed.
 
-Duplicate/overlapping byte ranges are not used to advance reassembly.
+Any fragment offset can open a message, preserving UDP reordering. Evicted,
+expired, or invalidated messages leave a bounded discarded-ID record so their
+late fragments cannot recreate entries and evict useful work. Late fragments do
+not refresh the record's lifetime. If the discarded-ID cache fills, its oldest
+record is forgotten; suppression is then best-effort for those older IDs.
+Whole, unfragmented DATA bypasses the pool and discarded-ID cache: its implicit
+sequence-based ID is independent of explicit fragmented-message IDs.
 
-A packet is released to the TUN side only when all bytes from offset zero
+Fragments with invalid metadata and overlapping byte ranges are rejected.
+Duplicate/overlapping ranges neither advance reassembly nor refresh idle expiry.
+
+A packet is released to the TUN/switch side only when all bytes from offset zero
 through `original_length` have been received.
+
+Reassembly does not log individual drops. At info level it emits a cumulative
+loss summary at most once per second, only when loss counters have changed.
+
+### Reassembly statistics
+
+The stats/control snapshot exports these `reassembly_` fields even with
+automatic statistics disabled. Gauges aggregate the live sessions; peaks and
+counters survive rekey and reset only on process restart. Entry counters and
+fragment counters describe different events and must not be summed as packet loss.
+
+| Suffix | Meaning |
+| --- | --- |
+| `limit_entries_per_session`, `limit_bytes_per_session` | Per-session pool limits. |
+| `active_entries`, `active_bytes` | Incomplete messages and reserved packet-buffer bytes (not metadata). |
+| `peak_entries`, `peak_bytes` | High-water marks of the combined live pools. |
+| `completed_packets` | Successfully reassembled fragmented packets; excludes whole DATA. |
+| `capacity_evictions` | Incomplete messages evicted to admit a new message. |
+| `expired_entries` | Incomplete messages removed after idle timeout. |
+| `session_discarded_entries` | Incomplete messages discarded when their session is destroyed. |
+| `late_fragment_drops` | Fragments matching a retained discarded ID, including offset zero. Not all nonzero-offset arrivals are drops. |
+| `invalid_fragments`, `overlap_drops` | Invalid metadata/fragment-count violations and overlapping fragments. |
+| `capacity_drops` | Incoming messages whose individual buffer cannot fit the byte limit; no useful entries are evicted for them. |
+| `discarded_ids` | Currently retained discarded-ID records. |
+| `discarded_id_evictions` | Records forgotten early because the discarded-ID cache filled. |
 
 ## TUN processing boundary
 
@@ -1128,7 +1169,8 @@ ACK is outstanding. Counters disclose no private keys or DH/KDF secrets.
 sampling, reassembly-span sampling and throughput bucket updates continue, even
 without a stats file. The option preserves
 `--stats-file`, regardless of argument order. Basic packet/byte/drop counters,
-session/rekey counters and operational RTT/PMTUD control remain active.
+session/rekey counters, reassembly counters/gauges and operational RTT/PMTUD
+control remain active.
 `mk_tunnel.sh ... --no-stats` passes the option to both processes, retaining
 their normal stats paths for later activation.
 

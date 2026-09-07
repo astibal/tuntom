@@ -241,7 +241,8 @@ public:
                 now - last_reassembly_cleanup >=
                 std::chrono::seconds(1)) {
 
-                protocol_v5_.cleanup();
+                protocol_v5_.cleanup(now);
+                report_reassembly_drops();
                 last_reassembly_cleanup = now;
             }
 
@@ -263,6 +264,25 @@ protected:
     }
 
 private:
+    // Called at most once per second, including when automatic stats are off.
+    void report_reassembly_drops() {
+        const auto& m = protocol_v5_.reassembly_metrics();
+        const auto losses = m.capacity_evictions + m.expired_entries +
+            m.late_fragment_drops + m.invalid_fragments + m.overlap_drops +
+            m.capacity_drops + m.session_discarded_entries;
+        if (losses == reassembly_reported_losses_) return;
+        reassembly_reported_losses_ = losses;
+        if (not log_enabled(LogLevel::info)) return;
+        std::cerr << "Reassembly cumulative losses: evicted=" << m.capacity_evictions
+                  << " expired=" << m.expired_entries
+                  << " late-fragments=" << m.late_fragment_drops
+                  << " invalid=" << m.invalid_fragments
+                  << " overlap=" << m.overlap_drops
+                  << " capacity-drops=" << m.capacity_drops
+                  << " session-discarded=" << m.session_discarded_entries
+                  << " active=" << m.active_entries << "\n";
+    }
+
     void handle_control_request() {
         control_->handle([this] {
             std::ostringstream output;
@@ -1585,6 +1605,7 @@ private:
     std::unordered_map<std::uint64_t, ProbeState> rtt_probes_;
 
     AdaptivePolling adaptive_polling_;
+    std::uint64_t reassembly_reported_losses_ = 0;
     unsigned next_data_source_ = 0;
 
     std::size_t active_transport_mtu_ = min_transport_mtu;

@@ -111,6 +111,7 @@ def main():
             environment["TUNTOM_SECRET"] = "00112233445566778899aabbccddeeff"
             server = subprocess.Popen([
                 tuntom, "server", "237", "-", "--quiet", "--no-stats",
+                "--mtu", "9000", "--transport-mtu", "1500", "--no-pmtud",
                 "--switch-socket", switch_path, "--switch-port-id", "server",
                 "--switch-label", "2",
                 "--stats-file", server_stats, "--control-socket", server_control,
@@ -118,6 +119,7 @@ def main():
             processes.append(server)
             client = subprocess.Popen([
                 tuntom, "client", "237", "-", "localhost", "--quiet", "--no-stats",
+                "--mtu", "9000", "--transport-mtu", "1500", "--no-pmtud",
                 "--switch-socket", switch_path, "--switch-port-id", "client",
                 "--switch-label", "1",
                 "--stats-file", client_stats, "--control-socket", client_control,
@@ -133,6 +135,10 @@ def main():
 
             exchange(app, payload, expected, [switch_process, server, client])
 
+            fragmented_payload = bytes(range(256)) * 35 + bytes(range(40))
+            exchange(app, fragmented_payload, frame(11, fragmented_payload),
+                     [switch_process, server, client])
+
             wait_for([server_control, client_control], [server, client])
             client_snapshot = subprocess.check_output(
                 [ctl, client_control, "show", "stats"], text=True)
@@ -142,6 +148,14 @@ def main():
                     "encryption=ascon-aead128" not in client_snapshot or
                     "pfs=1" not in client_snapshot):
                 raise RuntimeError("invalid tuntom control stats response")
+            server_snapshot = subprocess.check_output(
+                [ctl, server_control, "show", "stats"], text=True)
+            fields = dict(line.split("=", 1) for line in server_snapshot.splitlines())
+            if (fields.get("stats_enabled") != "0" or
+                    int(fields.get("reassembly_completed_packets", "0")) < 1 or
+                    fields.get("reassembly_active_entries") != "0" or
+                    fields.get("reassembly_active_bytes") != "0"):
+                raise RuntimeError("fragmented traffic or disabled-stats reassembly metrics failed")
 
             app.close()
             terminate(switch_process)

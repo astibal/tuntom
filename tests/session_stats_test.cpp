@@ -65,9 +65,51 @@ void round_trip(int suite) {
         check(snapshot(c, now)["session_tx_counter"] == "1", "packet counter resets on rekey");
     }
 }
+void reassembly_across_rekey() {
+    SP c(42,key,false), s(42,key,true);
+    auto handshake = [&](SP::Time now) {
+        auto response = recv(s, c.begin(now, 100000), now).reply;
+        auto confirm = recv(c, response, now).reply;
+        auto ack = recv(s, confirm, now).reply;
+        check(recv(c, ack, now).activated, "reassembly stats handshake");
+    };
+    auto partial = [&](std::uint64_t id, SP::Time now) {
+        Packet packet; packet.message_id = id; packet.original_length = 8;
+        packet.payload = {1, 2};
+        const auto wire = c.encode(packet);
+        Wire scratch, complete;
+        auto r = s.receive(wire.data(), wire.size(), packet, scratch, now, 100000);
+        check(r.data && !r.session->reassembly.accept(packet, complete, nullptr, now),
+              "partial for stats");
+    };
+    handshake(start);
+    partial(1, start);
+    auto rekey = start + std::chrono::seconds(1);
+    handshake(rekey);
+    partial(1, rekey); // same ID in two different sessions
+    check(snapshot(s, rekey)["reassembly_active_entries"] == "2" &&
+          snapshot(s, rekey)["reassembly_active_bytes"] == "16", "aggregate session gauges");
+    // Retirement is separately accounted for; it must not look like expiry or
+    // lose cumulative counters. tick destroys the previous-session owner.
+    auto retired = rekey + SP::old_lifetime;
+    s.tick(retired, 100000);
+    auto f = snapshot(s, retired);
+    check(f["reassembly_active_entries"] == "1" &&
+          f["reassembly_session_discarded_entries"] == "1" &&
+          f["reassembly_peak_entries"] == "2", "retirement lost metrics");
+    s.cleanup(retired);
+    f = snapshot(s, retired);
+    check(f["reassembly_active_entries"] == "0" &&
+          f["reassembly_active_bytes"] == "0" &&
+          f["reassembly_expired_entries"] == "1", "periodic cleanup metrics");
+    handshake(retired);
+    check(snapshot(s, retired)["reassembly_expired_entries"] == "1",
+          "rekey reset loss counter");
+}
 int main() {
     log_level = LogLevel::quiet;
     for (int suite = 0; suite <= 2; ++suite) round_trip(suite);
+    reassembly_across_rekey();
     {
         SP c(42,key,false), s(42,key,true);
         auto init = c.begin(start,100000);

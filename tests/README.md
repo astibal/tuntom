@@ -15,6 +15,11 @@ live tunnel, or network access are needed.
 
 - `replay_test.cpp`: reordered timestamps, duplicates, window eviction,
   integer boundaries, and reassembly of 64 fragments received in reverse order.
+- `reassembly_test.cpp`: full-pool FIFO eviction, late-fragment suppression,
+  5,000 intact packets delivered in reverse-fragment order under sustained loss
+  before the three-second timeout, byte-limit pressure, activity-ordered expiry,
+  bounded discarded IDs, validation and shared metrics lifetime. Uses a simulated
+  clock, including equality at timeout boundaries.
 - `mac_test.cpp`: independent Ascon permutation comparisons, custom MAC
   vectors, v5 tampering checks, both traffic directions, reflection rejection
   for ordinary v5 message types, legacy v4 rejection, and the XOR forgery regression.
@@ -39,7 +44,8 @@ firewall rules and requires root. It is deliberately not run by `run.sh`.
   https://github.com/ascon/ascon-c/blob/main/crypto_aead/asconaead128/LWC_AEAD_KAT_128_128.txt
 - `encrypted_session_test.cpp`: both modes, mode mismatch/downgrade rejection,
   encrypted fragments/control packets, tampering, retransmission, restart,
-  reflection, replay, counter exhaustion and CLI compatibility.
+  reflection, replay, counter exhaustion and CLI compatibility. All suites also
+  check full-pool recovery and late-fragment suppression through the real codec.
 - `aead_bench.cpp`: optional allocation-reusing codec microbenchmark (MB/s):
   `g++ -std=c++17 -O3 -march=native tests/aead_bench.cpp -o /tmp/aead-bench && /tmp/aead-bench`.
   Results include header handling and authentication; they are not tunnel throughput.
@@ -56,7 +62,8 @@ firewall rules and requires root. It is deliberately not run by `run.sh`.
   session tests also run with PFS, including every control type and fragmentation.
 - `session_stats_test.cpp`: serialized suite/session gauges, both-side handshake
   completion boundaries, duplicate flights, retries/timeouts, rekey counts,
-  and authenticated suite/DH rejection counters. Runs without TUN or root.
+  authenticated suite/DH rejection counters, and reassembly accounting across
+  overlapping sessions, retirement, expiry and rekey. Runs without TUN or root.
 
 - `stats_control_test.cpp`: `--no-stats` argument-order independence and path
   preservation, real SIGUSR1 toggle / SIGUSR2 snapshot handling, pending signals, snapshot
@@ -74,7 +81,9 @@ firewall rules and requires root. It is deliberately not run by `run.sh`.
   label swap, stack preservation, explicit exit-port routes and default-back
   `EXIT` behavior, plus `tuntomctl show stats` over the control socket.
 - `switch_tunnel_test.py`: two unprivileged tuntom processes carrying an opaque
-  payload through a live UDP session and the label switch without creating TUNs.
+  payload through a live UDP session and the label switch without creating TUNs;
+  also checks encrypted 9000-byte fragmentation and reassembly counters while
+  automatic statistics are disabled.
 
 `mk_stop_test.py` checks the deployment script's process cleanup with disposable
 local processes (no root or SSH connection required). It covers missing/stale

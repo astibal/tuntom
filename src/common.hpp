@@ -31,8 +31,9 @@ inline constexpr int keepalive_seconds = 20;
 inline constexpr int rtt_probe_interval_seconds = 15;
 inline constexpr int rtt_probe_timeout_seconds = 5;
 inline constexpr int reassembly_timeout_seconds = 3;
-inline constexpr std::size_t max_reassembly_entries = 64;
-inline constexpr std::size_t max_reassembly_bytes = 4 * 1024 * 1024;
+inline constexpr std::size_t max_reassembly_entries = 512;
+inline constexpr std::size_t max_reassembly_bytes = 16 * 1024 * 1024;
+inline constexpr std::size_t max_reassembly_discarded = 32768;
 inline constexpr std::size_t max_fragments_per_packet = 64;
 
 inline constexpr const char* runtime_user = "tuntom";
