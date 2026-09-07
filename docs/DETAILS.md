@@ -1099,16 +1099,19 @@ applies. Processing statistics do not add fields to the V5 wire format, and no
 stats file is required to collect processing samples or read them over the socket.
 
 
-### Tunnel throughput statistics
+### Packet and throughput rate statistics
 
-File and control-socket snapshots expose these rates in bits per second:
+File and control-socket snapshots expose byte rates in bits per second and packet
+rates in packets per second:
 
 ```text
-tun_rx_bps_5s / tun_rx_bps_1m
-tun_tx_bps_5s / tun_tx_bps_1m
-udp_rx_bps_5s / udp_rx_bps_1m
-udp_tx_bps_5s / udp_tx_bps_1m
+<direction>_bps_5s / <direction>_bps_1m
+<direction>_pps_5s / <direction>_pps_1m
 ```
+
+The tunnel reports `tun_rx`, `tun_tx`, `udp_rx`, `udp_tx`, `switch_rx` and
+`switch_tx`. The standalone switch reports `switch_rx` and `switch_tx`; the exit
+adapter reports `tun_rx`, `tun_tx`, `switch_rx` and `switch_tx`.
 
 Directions match the existing byte counters: `tun_rx` reads local IP packets for
 transmission through the tunnel; `tun_tx` writes received IP packets to TUN.
@@ -1122,7 +1125,8 @@ clock reading. Deltas are assigned to the observation's fixed five-second
 bucket. A delayed observation belongs to its current bucket; historical arrival
 times cannot be recovered from counters. `_5s` reports the last completed bucket
 (bytes times 8 divided by 5); `_1m` averages the last twelve completed buckets.
-The current partial bucket is excluded. Idle buckets count as zero. During
+PPS uses packet-counter deltas over the same buckets. The current partial bucket
+is excluded. Idle buckets count as zero. During
 startup, only available completed buckets are averaged, with zero rates before
 the first bucket completes. `throughput_bucket_seconds=5` and
 `throughput_window_buckets` (0–12) expose the interval and available history.

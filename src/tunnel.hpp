@@ -113,8 +113,12 @@ public:
             std::chrono::steady_clock::now();
 
         throughput_.update(started_now, {
-            stats_.tun_rx_bytes, stats_.tun_tx_bytes,
-            stats_.udp_rx_bytes, stats_.udp_tx_bytes});
+            {stats_.tun_rx_packets, stats_.tun_rx_bytes},
+            {stats_.tun_tx_packets, stats_.tun_tx_bytes},
+            {stats_.udp_rx_packets, stats_.udp_rx_bytes},
+            {stats_.udp_tx_packets, stats_.udp_tx_bytes},
+            {stats_.switch_rx_packets, stats_.switch_rx_bytes},
+            {stats_.switch_tx_packets, stats_.switch_tx_bytes}});
 
         if (not server_mode_) {
             send_handshake(protocol_v5_.begin(started_now));
@@ -208,8 +212,12 @@ public:
             const auto now = std::chrono::steady_clock::now();
             try_switch_reconnect(now);
             throughput_.update(now, {
-                stats_.tun_rx_bytes, stats_.tun_tx_bytes,
-                stats_.udp_rx_bytes, stats_.udp_tx_bytes});
+                {stats_.tun_rx_packets, stats_.tun_rx_bytes},
+                {stats_.tun_tx_packets, stats_.tun_tx_bytes},
+                {stats_.udp_rx_packets, stats_.udp_rx_bytes},
+                {stats_.udp_tx_packets, stats_.udp_tx_bytes},
+                {stats_.switch_rx_packets, stats_.switch_rx_bytes},
+                {stats_.switch_tx_packets, stats_.switch_tx_bytes}});
             send_handshake(protocol_v5_.tick(now));
 
             if (
@@ -1425,8 +1433,12 @@ private:
     void format_stats(std::ostream& output) {
         const auto now_steady = std::chrono::steady_clock::now();
         throughput_.update(now_steady, {
-            stats_.tun_rx_bytes, stats_.tun_tx_bytes,
-            stats_.udp_rx_bytes, stats_.udp_tx_bytes});
+            {stats_.tun_rx_packets, stats_.tun_rx_bytes},
+            {stats_.tun_tx_packets, stats_.tun_tx_bytes},
+            {stats_.udp_rx_packets, stats_.udp_rx_bytes},
+            {stats_.udp_tx_packets, stats_.udp_tx_bytes},
+            {stats_.switch_rx_packets, stats_.switch_rx_bytes},
+            {stats_.switch_tx_packets, stats_.switch_tx_bytes}});
         const auto uptime =
             std::chrono::duration_cast<std::chrono::seconds>(
                 now_steady - started_at_).count();

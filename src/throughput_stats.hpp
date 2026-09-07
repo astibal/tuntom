@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iomanip>
+#include <initializer_list>
 #include <ostream>
 
 namespace tuntom {
@@ -13,14 +14,34 @@ namespace tuntom {
 class ThroughputStats {
 public:
     using Clock = std::chrono::steady_clock;
-    using Counters = std::array<std::uint64_t, 4>;
+    struct Counter {
+        std::uint64_t packets = 0;
+        std::uint64_t bytes = 0;
+    };
+    using Counters = std::array<Counter, 6>;
     static constexpr std::size_t bucket_count = 12;
 
-    void update(Clock::time_point now, const Counters& counters) {
+    ThroughputStats() : ThroughputStats({
+        "tun_rx", "tun_tx", "udp_rx", "udp_tx", "switch_rx", "switch_tx"}) {}
+
+    ThroughputStats(std::initializer_list<const char*> names) {
+        std::size_t index = 0;
+        for (const char* name : names) {
+            if (index == names_.size()) break;
+            names_[index++] = name;
+        }
+        used_ = index;
+    }
+
+    void update(Clock::time_point now, std::initializer_list<Counter> counters) {
         if (!initialized_) {
             initialized_ = true;
             bucket_start_ = now;
-            previous_ = counters;
+            std::size_t index = 0;
+            for (const Counter counter : counters) {
+                if (index == used_) break;
+                previous_[index++] = counter;
+            }
             return;
         }
         const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
@@ -41,35 +62,50 @@ public:
             current_ = {};
             bucket_start_ += std::chrono::seconds(elapsed * 5);
         }
-        for (std::size_t i = 0; i < counters.size(); ++i) {
-            current_[i] += counters[i] >= previous_[i] ? counters[i] - previous_[i] : counters[i];
+        std::size_t index = 0;
+        for (const Counter counter : counters) {
+            if (index == used_) break;
+            current_[index].packets += counter.packets >= previous_[index].packets ?
+                counter.packets - previous_[index].packets : counter.packets;
+            current_[index].bytes += counter.bytes >= previous_[index].bytes ?
+                counter.bytes - previous_[index].bytes : counter.bytes;
+            previous_[index++] = counter;
         }
-        previous_ = counters;
     }
 
     void write(std::ostream& out) const {
-        static constexpr std::array<const char*, 4> names {
-            "tun_rx", "tun_tx", "udp_rx", "udp_tx"
-        };
         const auto flags = out.flags();
         const auto precision = out.precision();
         out << "throughput_bucket_seconds=5\n"
             << "throughput_window_buckets=" << completed_ << "\n"
             << std::fixed << std::setprecision(3);
-        for (std::size_t i = 0; i < names.size(); ++i) {
-            double total = 0;
-            for (const auto& bucket : buckets_) total += static_cast<double>(bucket[i]);
-            const double latest = completed_ == 0 ? 0.0 :
-                static_cast<double>(buckets_[(next_ + bucket_count - 1) % bucket_count][i]);
-            out << names[i] << "_bps_5s=" << latest * 8.0 / 5.0 << "\n"
-                << names[i] << "_bps_1m=" << (completed_ == 0 ? 0.0 :
-                    total * 8.0 / (5.0 * static_cast<double>(completed_))) << "\n";
+        for (std::size_t i = 0; i < used_; ++i) {
+            double packets_total = 0;
+            double bytes_total = 0;
+            for (const auto& bucket : buckets_) {
+                packets_total += static_cast<double>(bucket[i].packets);
+                bytes_total += static_cast<double>(bucket[i].bytes);
+            }
+            const Counter latest = completed_ == 0 ? Counter {} :
+                buckets_[(next_ + bucket_count - 1) % bucket_count][i];
+            const double seconds = completed_ == 0 ? 1.0 :
+                5.0 * static_cast<double>(completed_);
+            out << names_[i] << "_bps_5s="
+                << static_cast<double>(latest.bytes) * 8.0 / 5.0 << "\n"
+                << names_[i] << "_bps_1m="
+                << (completed_ == 0 ? 0.0 : bytes_total * 8.0 / seconds) << "\n"
+                << names_[i] << "_pps_5s="
+                << static_cast<double>(latest.packets) / 5.0 << "\n"
+                << names_[i] << "_pps_1m="
+                << (completed_ == 0 ? 0.0 : packets_total / seconds) << "\n";
         }
         out.flags(flags);
         out.precision(precision);
     }
 
 private:
+    std::array<const char*, 6> names_ {};
+    std::size_t used_ = 0;
     bool initialized_ = false;
     Clock::time_point bucket_start_ {};
     Counters previous_ {};

@@ -106,6 +106,16 @@ def main():
             missing = required.difference(stats.splitlines())
             if missing:
                 raise RuntimeError(f"invalid switch control stats: {sorted(missing)}")
+            rate_fields = {
+                "switch_rx_bps_5s", "switch_rx_bps_1m",
+                "switch_rx_pps_5s", "switch_rx_pps_1m",
+                "switch_tx_bps_5s", "switch_tx_bps_1m",
+                "switch_tx_pps_5s", "switch_tx_pps_1m",
+            }
+            present_fields = {line.split("=", 1)[0] for line in stats.splitlines()}
+            missing_rates = rate_fields.difference(present_fields)
+            if missing_rates:
+                raise RuntimeError(f"missing switch rate stats: {sorted(missing_rates)}")
 
             a.close()
             b.close()

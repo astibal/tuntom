@@ -3,6 +3,7 @@
 #include "../switch_client.hpp"
 #include "../tun_device.hpp"
 #include "../control_socket.hpp"
+#include "../throughput_stats.hpp"
 #include <cerrno>
 #include <chrono>
 #include <csignal>
@@ -107,7 +108,13 @@ int main(int argc, char** argv) {
             std::chrono::seconds(l3_timeout),
             std::chrono::seconds(l4_timeout));
         AdapterStats stats;
+        ThroughputStats throughput({"tun_rx", "tun_tx", "switch_rx", "switch_tx"});
         const auto started_at = std::chrono::steady_clock::now();
+        throughput.update(started_at, {
+            {stats.tun_rx_packets, stats.tun_rx_bytes},
+            {stats.tun_tx_packets, stats.tun_tx_bytes},
+            {stats.switch_rx_packets, stats.switch_rx_bytes},
+            {stats.switch_tx_packets, stats.switch_tx_bytes}});
         std::unique_ptr<ControlSocket> control;
         if (not control_path.empty())
             control = std::make_unique<ControlSocket>(control_path);
@@ -210,8 +217,14 @@ int main(int argc, char** argv) {
 
             if (control and (descriptors[2].revents & POLLIN)) {
                 control->handle([&] {
+                    const auto snapshot_at = std::chrono::steady_clock::now();
+                    throughput.update(snapshot_at, {
+                        {stats.tun_rx_packets, stats.tun_rx_bytes},
+                        {stats.tun_tx_packets, stats.tun_tx_bytes},
+                        {stats.switch_rx_packets, stats.switch_rx_bytes},
+                        {stats.switch_tx_packets, stats.switch_tx_bytes}});
                     const auto uptime = std::chrono::duration_cast<std::chrono::seconds>(
-                        std::chrono::steady_clock::now() - started_at).count();
+                        snapshot_at - started_at).count();
                     std::ostringstream out;
                     out << "format=txt\nformat_version=1\ncomponent=adapter\n"
                         << "pid=" << ::getpid() << "\nuptime_seconds=" << uptime << "\n"
@@ -233,9 +246,15 @@ int main(int argc, char** argv) {
                         << "switch_send_errors=" << stats.switch_send_errors << "\nswitch_disconnects=" << stats.switch_disconnects << "\n"
                         << "switch_reconnect_attempts=" << stats.switch_reconnect_attempts << "\n"
                         << "switch_reconnects=" << stats.switch_reconnects << "\n";
+                    throughput.write(out);
                     return out.str();
                 });
             }
+            throughput.update(std::chrono::steady_clock::now(), {
+                {stats.tun_rx_packets, stats.tun_rx_bytes},
+                {stats.tun_tx_packets, stats.tun_tx_bytes},
+                {stats.switch_rx_packets, stats.switch_rx_bytes},
+                {stats.switch_tx_packets, stats.switch_tx_bytes}});
         }
         return 0;
     } catch (const std::exception& error) {

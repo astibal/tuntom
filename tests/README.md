@@ -79,7 +79,8 @@ firewall rules and requires root. It is deliberately not run by `run.sh`.
   idle expiry and LRU eviction.
 - `switch_test.py`: one-listener Unix `SOCK_SEQPACKET` registration and reconnect,
   label swap, stack preservation, explicit exit-port routes and default-back
-  `EXIT` behavior, plus `tuntomctl show stats` over the control socket.
+  `EXIT` behavior, plus `tuntomctl show stats` and switch BPS/PPS fields over the
+  control socket.
 - `switch_tunnel_test.py`: two unprivileged tuntom processes carrying an opaque
   payload through a live UDP session and the label switch without creating TUNs;
   also checks encrypted 9000-byte fragmentation and reassembly counters while
@@ -96,6 +97,6 @@ dependencies and whether pure switch sides correctly suppress TUN setup.
 
 `stats_socket_test.py` checks live socket snapshots with no stats path and an
 unusable path, untouched/missing files under `--no-stats`, continued processing
-and reassembly-span sampling, completed throughput buckets, file-only SIGUSR1
+and reassembly-span sampling, completed BPS/PPS throughput buckets, file-only SIGUSR1
 toggles without history resets, and explicit SIGUSR2 file snapshots. Uses only
 disposable unprivileged switch/UDP processes; run automatically by `run.sh`.

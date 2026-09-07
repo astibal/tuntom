@@ -90,6 +90,10 @@ def run_case(tuntom, switch, ctl, unavailable_path):
             fields = snapshot(ctl, server_control)
             assert int(fields["rx_processing_samples"]) > 0, fields
             assert int(fields["reassembly_span_samples"]) > 0, fields
+            for direction in ("tun_rx", "tun_tx", "udp_rx", "udp_tx",
+                              "switch_rx", "switch_tx"):
+                for rate in ("bps_5s", "bps_1m", "pps_5s", "pps_1m"):
+                    assert f"{direction}_{rate}" in fields, fields
             received = int(fields["udp_rx_packets"])
             exchange(app, payload, expected, processes)
             assert int(snapshot(ctl, server_control)["udp_rx_packets"]) > received
@@ -102,6 +106,7 @@ def run_case(tuntom, switch, ctl, unavailable_path):
                 # incomplete current bucket. Socket reads must keep them live.
                 wait_until(lambda: float(snapshot(ctl, server_control)["udp_rx_bps_5s"]) > 0,
                            "throughput stopped with --no-stats")
+                assert float(snapshot(ctl, server_control)["udp_rx_pps_5s"]) > 0
                 before = snapshot(ctl, client_control)
                 assert file_state(client_stats) == original_file
                 client.send_signal(signal.SIGUSR1)

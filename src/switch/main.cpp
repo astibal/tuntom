@@ -1,5 +1,6 @@
 #include "../ipc/switch_protocol.hpp"
 #include "../control_socket.hpp"
+#include "../throughput_stats.hpp"
 #include <algorithm>
 #include <cerrno>
 #include <csignal>
@@ -172,7 +173,11 @@ int main(int argc, char** argv) {
         std::unordered_map<RouteKey, RouteTarget, RouteKeyHash> routes;
         std::unordered_set<std::string> exit_ports;
         SwitchStats stats;
+        tuntom::ThroughputStats throughput({"switch_rx", "switch_tx"});
         const auto started_at = std::chrono::steady_clock::now();
+        throughput.update(started_at, {
+            {stats.frames_rx, stats.bytes_rx},
+            {stats.frames_tx, stats.bytes_tx}});
         bool default_back = false;
 
         for (int index = 1; index < argc; ++index) {
@@ -256,11 +261,15 @@ int main(int argc, char** argv) {
 
             if (control and (descriptors[1].revents & POLLIN)) {
                 control->handle([&] {
+                    const auto snapshot_at = std::chrono::steady_clock::now();
+                    throughput.update(snapshot_at, {
+                        {stats.frames_rx, stats.bytes_rx},
+                        {stats.frames_tx, stats.bytes_tx}});
                     std::size_t connected = 0;
                     for (const auto& item : connections)
                         if (item.fd >= 0 and not item.port_id.empty()) ++connected;
                     const auto uptime = std::chrono::duration_cast<std::chrono::seconds>(
-                        std::chrono::steady_clock::now() - started_at).count();
+                        snapshot_at - started_at).count();
                     std::ostringstream out;
                     out << "format=txt\nformat_version=1\ncomponent=switch\n"
                         << "pid=" << ::getpid() << "\nuptime_seconds=" << uptime << "\n"
@@ -276,6 +285,7 @@ int main(int argc, char** argv) {
                         << "exit_deliveries=" << stats.exit_deliveries << "\n"
                         << "malformed_frames=" << stats.malformed_frames << "\n"
                         << "send_errors=" << stats.send_errors << "\n";
+                    throughput.write(out);
                     return out.str();
                 });
             }
@@ -360,6 +370,9 @@ int main(int argc, char** argv) {
                     connections.begin(), connections.end(),
                     [](const Connection& connection) { return connection.fd < 0; }),
                 connections.end());
+            throughput.update(std::chrono::steady_clock::now(), {
+                {stats.frames_rx, stats.bytes_rx},
+                {stats.frames_tx, stats.bytes_tx}});
         }
 
         close_connections(connections);
