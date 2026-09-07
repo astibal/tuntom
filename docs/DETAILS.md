@@ -1155,14 +1155,14 @@ messages, not successful UDP sends.
 | `session_age_seconds` | Age of the current candidate/session since key derivation; -1 if absent. |
 | `session_tx_counter` | Last ordinary sequence counter allocated for encoding, excluding the session hint; 0 before any DATA/control encoding. Resets on each new session, and does not assert successful sending. |
 | `handshake_state` | `idle`, `wait_response` (client), `wait_confirm` (server), or `wait_ack` (client). `idle` can mean either connected or not yet started: inspect session gauges too. |
-| `handshake_started` | Client INIT attempts generated, or server pending sessions created after validation. Fresh client INIT retries count as new attempts; INITs ignored by a busy server do not. |
+| `handshake_started` | Client INIT attempts generated, or server pending sessions created after validation. Retransmitting a live INIT does not start a new attempt; expiry followed by a fresh INIT does. INITs ignored by a busy server do not count. |
 | `handshake_completed` | Local completions: valid CONFIRM activates server, valid ACK completes client. Duplicate confirmations/ACKs do not increment this. |
-| `handshake_retries` | Client fresh INIT retries, timer/duplicate-RESPONSE CONFIRM retries, or server ACK replies to duplicate active CONFIRMs. These are generated messages, not successful sends. |
-| `handshake_timeouts` | Server pending candidate expiration, or client five-second flight expiration. Each is counted once. Normal one-second fresh INIT retries supersede attempts without counting a five-second timeout. |
+| `handshake_retries` | Client exact INIT retries, timer/duplicate-RESPONSE CONFIRM retries, server cached RESPONSE replies to duplicate pending INITs, or ACK replies to duplicate active CONFIRMs. These are generated messages, not successful sends. |
+| `handshake_timeouts` | Server pending candidate expiration, or client five-second flight expiration. Each is counted once; retransmissions do not refresh these deadlines. |
 | `handshake_suite_mismatch` | Authenticated, structurally valid INIT/RESPONSE packets with a supported suite different from local configuration. Unknown suites and invalid lengths remain protocol drops. |
 | `handshake_dh_rejected` | Authenticated suite-2 exchanges that reach DH validation and yield an all-zero X25519 result. |
 | `handshake_last_age_seconds` | Seconds since most recent local completion; -1 before the first. |
-| `rekey_started` | Subset of handshake attempts started after at least one successful local handshake in this process. Includes retries and idle recovery, not only periodic PFS. |
+| `rekey_started` | Subset of handshake attempts started after at least one successful local handshake in this process. Includes fresh attempts after timeout and idle recovery, not only periodic PFS. Retransmissions within a live flight do not count. |
 | `rekey_completed` | Successful local handshakes after the first; includes idle recovery. For uninterrupted PFS traffic this directly counts completed periodic key rotations. |
 | `rekey_interval_seconds` | Configured periodic client DH interval: 120 with PFS, 0 otherwise. Server shows the same suite policy but does not initiate rotations. |
 

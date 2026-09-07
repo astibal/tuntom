@@ -223,16 +223,31 @@ seconds at payload offset 32. This layout is incompatible with the earlier
 must be even, 2..86400. The receiving server enforces its own setting; settings
 are not negotiated.
 
-The client retries INIT every second with fresh nonce, timestamp and exchange
-ID; responses to superseded attempts are ignored. CONFIRM retries retain their
-bytes and have a five-second flight deadline. The server has one pending
-exchange with a fixed five-second deadline. No INIT can evict it or the active
-session. Losing a RESPONSE can therefore delay recovery until the pending
-deadline.
+The client retries the exact INIT bytes every second, retaining its nonce,
+timestamp, exchange ID and ephemeral PFS secret until the five-second flight
+deadline. A delayed RESPONSE still matches after a retry. Flight expiry starts
+a new attempt with fresh nonce, timestamp, exchange ID and PFS key material;
+responses to superseded attempts are ignored. CONFIRM retries also retain their
+bytes and have a five-second flight deadline, starting when RESPONSE arrives.
+The server has one pending exchange with a fixed five-second deadline. An
+exact duplicate of that pending INIT resends its cached RESPONSE, without
+deriving new keys, extending the deadline, activating a session or changing the
+peer address. A different INIT cannot evict the pending or active session.
+For DoS/reflection protection, the first cached RESPONSE resend is immediate;
+later resends are spaced by at least 200 ms using the monotonic clock. Excess
+duplicates are ignored without moving the resend deadline or waiting in the
+event loop. The initial RESPONSE and one resend may therefore form a two-packet
+burst. The limit resets for a new pending exchange and counts generated replies,
+even if UDP transmission fails; it does not limit incoming traffic or MAC work.
+This supports RTTs above the one-second retry interval; flights must still
+complete within their five-second deadlines.
 
 After authentication and time validation, the server records each nonce,
 including INITs ignored while pending. Repeated nonces are silently dropped,
-even if their timestamp or exchange ID differs. An exact set avoids Bloom-filter
+except for the exact, still-time-valid pending INIT retransmission described
+above. A nonce reused with different timestamp, exchange ID or DH bytes is
+rejected, as is a replay after pending expiry or activation. Retransmission
+does not refresh nonce history. An exact set avoids Bloom-filter
 false positives. Entries remain through timestamp + half-window, including that
 final second. The per-process, per-tunnel set holds up to 65536 nonces;
 saturation rejects new INITs instead of evicting live entries. Expired entries

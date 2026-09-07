@@ -115,12 +115,14 @@ int main() {
         auto init = c.begin(start,100000);
         auto response = recv(s,init).reply;
         auto retry = c.tick(start + std::chrono::seconds(1),100000);
-        check(c.counters().handshake_started == 2 && c.counters().handshake_retries == 1, "INIT retry");
-        check(recv(s,retry).reply.empty() && s.counters().handshake_started == 1, "busy INIT not attempt");
+        check(c.counters().handshake_started == 1 && c.counters().handshake_retries == 1, "INIT retry is not new attempt");
+        check(recv(s,retry,start + std::chrono::seconds(1)).reply == response &&
+              s.counters().handshake_started == 1 && s.counters().handshake_retries == 1,
+              "cached RESPONSE retry is not new attempt");
         s.tick(start + SP::pending_lifetime,100000);
         s.tick(start + SP::pending_lifetime,100000);
         check(s.counters().handshake_timeouts == 1, "pending timeout counted once");
-        check(recv(c,response).reply.empty(), "stale response");
+        check(recv(c,response,start + SP::pending_lifetime).reply.empty(), "expired response");
         c.tick(start + std::chrono::seconds(6),100000);
         check(c.counters().handshake_timeouts == 1, "client flight timeout");
     }

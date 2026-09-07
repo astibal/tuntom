@@ -28,6 +28,12 @@ live tunnel, or network access are needed.
   reordering, restart replay, expired pending state, previous-session overlap,
   hint collisions, per-session reassembly, counter exhaustion, tampering and
   rejection of unsupported suites/nonempty DH. Uses a simulated clock.
+- `session_latency_test.cpp`: all suites at 400/1200/4800 ms RTT, loss of each
+  handshake flight, bidirectional DATA and replay checks, exact INIT/RESPONSE
+  retries, unchanged pending deadlines, rejection of altered or retired INIT
+  replays, fresh PFS material after expiry, and delayed periodic PFS rekey with
+  a lost RESPONSE. Also checks the immediate first RESPONSE resend and 200ms
+  spacing under duplicate floods. Uses real codecs with a simulated network and clock.
 - `dissector_test.py`: offline synthetic capture with handshake fields,
   split counters, malformed messages, v3 compatibility and fragment separation
   across different hints. Run automatically if `tshark` and `python3` are

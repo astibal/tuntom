@@ -30,6 +30,7 @@ public:
     using Time = Clock::time_point;
     static constexpr std::uint64_t counter_mask = 0x0000ffffffffffffULL;
     static constexpr auto retry_interval = std::chrono::seconds(1);
+    static constexpr auto response_resend_interval = std::chrono::milliseconds(200);
     static constexpr auto pending_lifetime = std::chrono::seconds(5);
     static constexpr auto old_lifetime = std::chrono::seconds(3);
     static constexpr auto rekey_interval = std::chrono::minutes(2);
@@ -175,7 +176,8 @@ public:
             }
             if (now - last_retry_ >= retry_interval) {
                 ++counters_.handshake_retries;
-                if (not waiting_ack_) return begin(now, wall);
+                // Keep the INIT transcript and PFS secret until the flight
+                // deadline so a RESPONSE arriving after a retry still matches.
                 last_retry_ = now;
                 return flight_;
             }
@@ -245,7 +247,23 @@ public:
                 Nonce nonce {};
                 std::copy_n(packet.payload.begin(), nonce.size(), nonce.begin());
                 if (seen_nonces_.count(nonce)) {
-                    result.replay_drop = true;
+                    // Only an exact retry of the still-pending INIT may obtain
+                    // its cached RESPONSE. Never extend the deadline, derive
+                    // new keys, reset replay state, or change the active peer.
+                    if (pending_ and pending_->init == encoded) {
+                        // DoS/reflection protection: allow one immediate resend
+                        // to recover a lost RESPONSE, then space cached replies
+                        // by 200 ms. This bounds replies to replayed valid INITs,
+                        // not incoming traffic or MAC verification work.
+                        // Suppressed retries must not postpone the next reply
+                        // or extend the pending lifetime; never wait here.
+                        if (now < response_resend_after_) return result;
+                        result.reply = pending_->response;
+                        response_resend_after_ = now + response_resend_interval;
+                        ++counters_.handshake_retries;
+                    } else {
+                        result.replay_drop = true;
+                    }
                     return result;
                 }
                 if (seen_nonces_.size() >= nonce_capacity) {
@@ -254,7 +272,7 @@ public:
                 }
                 seen_nonces_.insert(nonce);
                 nonce_expiry_.emplace(stamp + half, nonce);
-                // Fresh retries cannot evict an exchange awaiting CONFIRM.
+                // A different INIT cannot evict an exchange awaiting CONFIRM.
                 if (pending_) return result;
                 Packet response = control(PacketType::response, packet.message_id);
                 response.payload = commitment(master_, id_, encoded);
@@ -278,6 +296,7 @@ public:
                 previous_.reset(); // At most two candidate session keys.
                 pending_ = derive(encoded, response_wire, packet.message_id, dh.bytes, now);
                 pending_until_ = now + pending_lifetime;
+                response_resend_after_ = now; // First cached resend has no waiting window.
                 started();
                 result.reply = std::move(response_wire);
                 return result;
@@ -478,6 +497,7 @@ private:
     ProtocolV5 handshake_;
     std::unique_ptr<Session> active_, previous_, pending_;
     Time previous_until_ {}, pending_until_ {}, last_received_ {};
+    Time response_resend_after_ {};
     Time flight_started_ {}, last_retry_ {};
     bool waiting_ack_ = false;
     std::uint64_t client_exchange_ = 0;

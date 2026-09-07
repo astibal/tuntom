@@ -33,7 +33,7 @@ else
     echo "SKIP: tuntom-switch process test requires python3"
 fi
 
-for name in compact_protocol_test switch_protocol_test switch_options_test exit_adapter_test stats_control_test session_stats_test x25519_test akdf_test pfs_session_test replay_test mac_test aead_test encrypted_session_test session_test adaptive_polling_test reassembly_test; do
+for name in compact_protocol_test switch_protocol_test switch_options_test exit_adapter_test stats_control_test session_stats_test session_latency_test x25519_test akdf_test pfs_session_test replay_test mac_test aead_test encrypted_session_test session_test adaptive_polling_test reassembly_test; do
     echo "Building ${name}"
     "${CXX:-g++}" -std=c++17 -O2 -Wall -Wextra -Wconversion -pedantic \
         "${tests_dir}/${name}.cpp" -o "${build_dir}/${name}"
