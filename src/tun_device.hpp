@@ -22,7 +22,7 @@ public:
         std::size_t mtu)
         : interface_name_(interface_name) {
 
-        fd_ = ::open("/dev/net/tun", O_RDWR | O_CLOEXEC);
+        fd_ = ::open("/dev/net/tun", O_RDWR | O_CLOEXEC | O_NONBLOCK);
         if (fd_ < 0) {
             throw std::runtime_error(
                 "Cannot open /dev/net/tun: " +

@@ -995,6 +995,29 @@ Linux networking
 Transport complexity should stay inside that boundary. Routing and deployment
 policy should stay outside it.
 
+### Adaptive event polling
+
+The normal event loop processes one packet from each ready data descriptor per
+`poll()` call.  It enters overload batching only after eight consecutive polls
+return within 5 microseconds and a zero-timeout readiness check confirms that
+data remains queued.  Overload uses round-robin batches of 4, 8, then 16 rounds
+as the immediate-poll streak reaches 8, 32, and 128.  A processing slice ends
+after 150 microseconds even when its packet budget remains, so control traffic
+and timers cannot be held behind a long batch.
+
+A poll that blocks for at least 50 microseconds immediately restores the normal
+one-round mode.  Otherwise, overload also expires after 32 milliseconds without
+a confirmed backlog.  The stats file exposes:
+
+- `event_poll_overload`: whether overload batching is currently active;
+- `event_poll_busy_streak`: consecutive immediate polls;
+- `event_poll_batch`: the current number of round-robin rounds;
+- `event_poll_overload_entries`: overload transitions since process start;
+- `event_poll_backlog_confirmations`: positive post-service readiness checks;
+- `event_poll_slice_limit_hits`: processing slices stopped by the 150-us limit.
+
+TUN, UDP, and switch data descriptors are nonblocking.  `EAGAIN` ends processing
+for that descriptor in the current slice.
 
 ### Processing latency statistics
 

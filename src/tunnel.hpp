@@ -10,6 +10,7 @@
 #include "fragmentation.hpp"
 #include "processing_stats.hpp"
 #include "throughput_stats.hpp"
+#include "adaptive_polling.hpp"
 #include "stats_control.hpp"
 #include "control_socket.hpp"
 #include <algorithm>
@@ -143,7 +144,9 @@ public:
             descriptors[3].fd = control_ ? control_->fd() : -1;
             descriptors[3].events = POLLIN;
 
+            const auto poll_started = AdaptivePolling::Clock::now();
             const int rc = ::poll(descriptors, 4, 1000);
+            const auto poll_finished = AdaptivePolling::Clock::now();
 
             if (rc < 0) {
                 if (errno == EINTR) {
@@ -155,83 +158,50 @@ public:
                     std::string(std::strerror(errno)));
             }
 
-            if ((descriptors[0].revents & POLLIN) != 0) {
-                const ssize_t received =
-                    tun_->read_packet(
-                        tun_rx_buffer_.data(),
-                        tun_rx_buffer_.size());
+            adaptive_polling_.observe_poll(poll_finished - poll_started);
 
-                if (received > 0) {
-                    tx_sample_active_ = stats_enabled() and tx_processing_.select();
-                    if (tx_sample_active_) tx_sample_start_ = ProcessingStats::Clock::now();
-                    const std::size_t packet_size =
-                        static_cast<std::size_t>(received);
+            // Control traffic is never held behind an overload data slice.
+            if (control_ and (descriptors[3].revents & POLLIN)) {
+                handle_control_request();
+            }
 
-                    ++stats_.tun_rx_packets;
-                    stats_.tun_rx_bytes += packet_size;
+            const bool initially_ready[3] {
+                (descriptors[0].revents & POLLIN) != 0,
+                (descriptors[1].revents & POLLIN) != 0,
+                (descriptors[2].revents & POLLIN) != 0,
+            };
+            const unsigned rounds = adaptive_polling_.batch_size();
+            const auto slice_started = AdaptivePolling::Clock::now();
 
-                    dump_bytes(
-                        "TUN read",
-                        tun_rx_buffer_.data(),
-                        packet_size,
-                        20);
+            for (unsigned round = 0; round < rounds; ++round) {
+                bool progress = false;
+                for (unsigned offset = 0; offset < 3; ++offset) {
+                    const unsigned source = (next_data_source_ + offset) % 3;
+                    if (round == 0 and not initially_ready[source]) continue;
+                    if (source == 0) progress |= try_handle_tun_packet();
+                    else if (source == 1) progress |= try_handle_udp_packet();
+                    else progress |= try_handle_switch_packet();
+                }
+                next_data_source_ = (next_data_source_ + 1) % 3;
+                if (not progress) break;
+                if (
+                    AdaptivePolling::Clock::now() - slice_started >=
+                    AdaptivePolling::processing_slice) {
 
-                    if (packet_size > options_.tun_mtu) {
-                        ++stats_.drops_mtu;
-                        log_info("DROP TUN packet larger than configured MTU");
-                    } else {
-                        send_data(
-                            tun_rx_buffer_.data(),
-                            packet_size);
-                    }
+                    adaptive_polling_.note_slice_limit();
+                    break;
                 }
             }
 
-            if ((descriptors[1].revents & POLLIN) != 0) {
-                sockaddr_storage source {};
-                socklen_t source_length = 0;
-
-                const ssize_t received =
-                    udp_.receive(
-                        udp_rx_buffer_.data(),
-                        udp_rx_buffer_.size(),
-                        source,
-                        source_length);
-
-                if (received > 0) {
-                    rx_sample_active_ = stats_enabled() and rx_processing_.select();
-                    if (rx_sample_active_) rx_sample_start_ = ProcessingStats::Clock::now();
-                    ++stats_.udp_rx_packets;
-                    stats_.udp_rx_bytes +=
-                        static_cast<std::uint64_t>(received);
-
-                    handle_udp_packet(
-                        udp_rx_buffer_.data(),
-                        static_cast<std::size_t>(received),
-                        source,
-                        source_length);
-                }
-            }
-
-            if ((descriptors[2].revents & POLLIN) != 0) {
-                handle_switch_packet();
-            }
             if (switch_ and
                 (descriptors[2].revents & (POLLHUP | POLLERR | POLLNVAL)) != 0) {
                 disconnect_switch(ECONNRESET);
             }
 
-            if (control_ and (descriptors[3].revents & POLLIN)) {
-                control_->handle([this] {
-                    write_stats(true);
-                    if (options_.stats_file.empty())
-                        return std::string("error=stats_file_not_configured\n");
-                    std::ifstream input(options_.stats_file);
-                    if (not input) return std::string("error=stats_snapshot_unavailable\n");
-                    return std::string(
-                        std::istreambuf_iterator<char>(input),
-                        std::istreambuf_iterator<char>());
-                });
+            if (adaptive_polling_.should_check_backlog()) {
+                adaptive_polling_.observe_backlog(
+                    data_backlog_ready(),
+                    AdaptivePolling::Clock::now());
             }
 
             const auto now = std::chrono::steady_clock::now();
@@ -294,6 +264,73 @@ protected:
     }
 
 private:
+    void handle_control_request() {
+        control_->handle([this] {
+            write_stats(true);
+            if (options_.stats_file.empty())
+                return std::string("error=stats_file_not_configured\n");
+            std::ifstream input(options_.stats_file);
+            if (not input)
+                return std::string("error=stats_snapshot_unavailable\n");
+            return std::string(
+                std::istreambuf_iterator<char>(input),
+                std::istreambuf_iterator<char>());
+        });
+    }
+
+    bool try_handle_tun_packet() {
+        if (not tun_) return false;
+        const ssize_t received = tun_->read_packet(
+            tun_rx_buffer_.data(), tun_rx_buffer_.size());
+        if (received <= 0) return false;
+
+        tx_sample_active_ = stats_enabled() and tx_processing_.select();
+        if (tx_sample_active_) tx_sample_start_ = ProcessingStats::Clock::now();
+        const std::size_t packet_size = static_cast<std::size_t>(received);
+        ++stats_.tun_rx_packets;
+        stats_.tun_rx_bytes += packet_size;
+        dump_bytes("TUN read", tun_rx_buffer_.data(), packet_size, 20);
+
+        if (packet_size > options_.tun_mtu) {
+            ++stats_.drops_mtu;
+            log_info("DROP TUN packet larger than configured MTU");
+        } else {
+            send_data(tun_rx_buffer_.data(), packet_size);
+        }
+        return true;
+    }
+
+    bool try_handle_udp_packet() {
+        sockaddr_storage source {};
+        socklen_t source_length = 0;
+        const ssize_t received = udp_.receive(
+            udp_rx_buffer_.data(), udp_rx_buffer_.size(), source, source_length);
+        if (received <= 0) return false;
+
+        rx_sample_active_ = stats_enabled() and rx_processing_.select();
+        if (rx_sample_active_) rx_sample_start_ = ProcessingStats::Clock::now();
+        ++stats_.udp_rx_packets;
+        stats_.udp_rx_bytes += static_cast<std::uint64_t>(received);
+        handle_udp_packet(
+            udp_rx_buffer_.data(), static_cast<std::size_t>(received),
+            source, source_length);
+        return true;
+    }
+
+    bool data_backlog_ready() const {
+        pollfd descriptors[3] {
+            {tun_ ? tun_->fd() : -1, POLLIN, 0},
+            {udp_.fd(), POLLIN, 0},
+            {switch_ and switch_->connected() ? switch_->fd() : -1, POLLIN, 0},
+        };
+        const int ready = ::poll(descriptors, 3, 0);
+        if (ready <= 0) return false;
+        for (const auto& descriptor : descriptors) {
+            if ((descriptor.revents & POLLIN) != 0) return true;
+        }
+        return false;
+    }
+
     void send_handshake(const std::vector<std::uint8_t>& wire,
                         const sockaddr_storage* source = nullptr,
                         socklen_t source_length = 0) {
@@ -726,21 +763,23 @@ private:
         }
     }
 
-    void handle_switch_packet() {
+    bool try_handle_switch_packet() {
+        if (not switch_ or not switch_->connected()) return false;
         const ssize_t received = switch_->receive(
             switch_rx_buffer_.data(), switch_rx_buffer_.size());
         if (received == 0) {
             disconnect_switch(ECONNRESET);
-            return;
+            return true;
         }
         if (received < 0) {
-            if (errno == EAGAIN or errno == EWOULDBLOCK or errno == EINTR) return;
+            if (errno == EAGAIN or errno == EWOULDBLOCK or errno == EINTR)
+                return false;
             disconnect_switch(errno);
-            return;
+            return true;
         }
         if (static_cast<std::size_t>(received) > switch_rx_buffer_.size()) {
             ++stats_.switch_drops;
-            return;
+            return true;
         }
 
         ++stats_.switch_rx_packets;
@@ -752,23 +791,23 @@ private:
                 static_cast<std::size_t>(received),
                 frame)) {
             ++stats_.switch_drops;
-            return;
+            return true;
         }
 
         if (frame.payload_size > options_.tun_mtu) {
             ++stats_.drops_mtu;
             ++stats_.switch_drops;
-            return;
+            return true;
         }
 
         if (frame.opcode == SwitchOpcode::switch_packet) {
             send_data(frame.payload, frame.payload_size);
-            return;
+            return true;
         }
 
         if (not options_.switch_exit_node) {
             ++stats_.switch_drops;
-            return;
+            return true;
         }
 
         Packet packet;
@@ -778,6 +817,7 @@ private:
         packet.original_length = static_cast<std::uint32_t>(frame.payload_size);
         packet.payload.assign(frame.payload, frame.payload + frame.payload_size);
         deliver_to_tun(packet);
+        return true;
     }
 
     void record_switch_error(int error) {
@@ -1453,6 +1493,12 @@ private:
                 << "switch_socket_other_errors=" << stats_.switch_socket_other_errors << "\n"
                 << "switch_last_error_ts=" << stats_.switch_last_error_ts << "\n"
                 << "switch_last_error_no=" << stats_.switch_last_error_no << "\n"
+                << "event_poll_overload=" << (adaptive_polling_.overloaded() ? 1 : 0) << "\n"
+                << "event_poll_busy_streak=" << adaptive_polling_.busy_streak() << "\n"
+                << "event_poll_batch=" << adaptive_polling_.batch_size() << "\n"
+                << "event_poll_overload_entries=" << adaptive_polling_.overload_entries() << "\n"
+                << "event_poll_backlog_confirmations=" << adaptive_polling_.backlog_confirmations() << "\n"
+                << "event_poll_slice_limit_hits=" << adaptive_polling_.slice_limit_hits() << "\n"
                 << std::fixed << std::setprecision(3)
                 << "rtt_last_ms=" << stats_.rtt_last_ms << "\n"
                 << "rtt_min_ms=" << stats_.rtt_min_ms << "\n"
@@ -1544,6 +1590,9 @@ private:
     ProcessingStats::Clock::time_point tx_sample_start_ {};
     ProcessingStats::Clock::time_point rx_sample_start_ {};
     std::unordered_map<std::uint64_t, ProbeState> rtt_probes_;
+
+    AdaptivePolling adaptive_polling_;
+    unsigned next_data_source_ = 0;
 
     std::size_t active_transport_mtu_ = min_transport_mtu;
     bool pmtud_started_ = false;

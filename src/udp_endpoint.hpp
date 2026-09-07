@@ -23,7 +23,10 @@ public:
     }
 
     void open_server(std::uint16_t port) {
-        fd_ = ::socket(AF_INET6, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+        fd_ = ::socket(
+            AF_INET6,
+            SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK,
+            0);
         if (fd_ < 0) {
             throw std::runtime_error(
                 "socket() failed: " +
@@ -104,7 +107,7 @@ public:
             const int candidate =
                 ::socket(
                     item->ai_family,
-                    SOCK_DGRAM | SOCK_CLOEXEC,
+                    SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK,
                     0);
 
             if (candidate < 0) {

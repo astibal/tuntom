@@ -664,7 +664,7 @@ echo "  protocol:   v5 / Ascon auth + replay protection + fragmentation"
 
 echo "[1] Compile local staging binary"
 rm -f "$local_stage"
-g++ -std=c++17 -O2 -march=native -mtune=native -Wall -Wextra -pedantic "$source_dir/main.cpp" -o "$local_stage"
+g++ -std=c++17 -O3 -march=native -mtune=native -Wall -Wextra -pedantic "$source_dir/main.cpp" -o "$local_stage"
 test -x "$local_stage"
 
 echo "[2] Compile remote staging binary"
@@ -677,7 +677,7 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 tar -xf - -C "$build_dir"
-g++ -std=c++17 -O2 -march=native -mtune=native -Wall -Wextra -pedantic "$build_dir/src/main.cpp" -o "$stage"
+g++ -std=c++17 -O3 -march=native -mtune=native -Wall -Wextra -pedantic "$build_dir/src/main.cpp" -o "$stage"
 test -x "$stage"
 REMOTE_BUILD
 )
