@@ -1,4 +1,4 @@
-# tuntom V5: compact AMAC sessions and optional Ascon-AEAD128
+# tuntom V5: compact forward-secret Ascon-AEAD128 sessions
 
 V5 is the only supported wire protocol. Upgrade both endpoints together; V1–V4
 packets are rejected and there is no automatic downgrade. The Wireshark
@@ -59,15 +59,15 @@ All four messages share the client's nonzero random 64-bit exchange ID in
 fresh random bytes from Linux `getrandom`, with errors failing closed.
 Retransmissions preserve the exact original bytes, nonces and exchange ID.
 
-Suite **0** (default) authenticates plaintext using AMAC. Suite **1** requires
-`--encrypt-ascon` on both endpoints and uses standard NIST SP 800-232
-Ascon-AEAD128. Both require `dh_length = 0`; neither has forward secrecy. Suite
-**2** requires `--pfs` on both endpoints and implies encryption. It uses
-Ascon-AEAD128 with ephemeral X25519 and [AKDF v1](AKDF_V1.md). Its `dh_length`
-must be 32, giving exact payload sizes of 76/100 bytes for INIT/RESPONSE. All
-suites require exact lengths and matching local configuration. Unknown suites,
-wrong DH lengths and zero DH shared results are rejected. There is no
-negotiation or timeout fallback.
+Suite **2** is the default. It uses Ascon-AEAD128 with ephemeral X25519 and
+[AKDF v1](AKDF_V1.md); `dh_length` must be 32, giving exact payload sizes of
+76/100 bytes for INIT/RESPONSE. `--crypto-auth-only` selects suite **0**, which
+authenticates plaintext using AMAC, has no forward secrecy, and requires
+`dh_length = 0`. Suite **1** (Ascon-AEAD128 without PFS) remains recognized for
+wire compatibility and tests but has no command-line selector. The former
+`--pfs` and `--encrypt-ascon` options are rejected. All suites require exact
+lengths and matching local configuration. Unknown suites, wrong DH lengths and
+zero DH shared results are rejected. There is no negotiation or timeout fallback.
 
 INIT/RESPONSE remain plaintext AMAC packets with bit 7 clear. Their
 authenticated suite fields are also bound into the session-key transcript. All

@@ -37,9 +37,9 @@ inline void usage(const char* program_name) {
         << "  --control-socket <path>  Local tuntomctl socket\n"
         << "  --stats-format <fmt>   Statistics format; currently: txt\n"
         << "\n"
-        << "Encryption (optional):\n"
-        << "  --pfs                 Require X25519 + AKDF + Ascon-AEAD128 (suite 2)\n"
-        << "  --encrypt-ascon       Require Ascon-AEAD128 payload encryption\n"
+        << "Cryptography:\n"
+        << "  default               X25519 + AKDF + Ascon-AEAD128 (suite 2)\n"
+        << "  --crypto-auth-only    Plaintext payload with AMAC authentication (suite 0)\n"
         << "\n"
         << "  --init-window <s>     Total INIT time window, even 2..86400 (default 300 = +/-150s)\n"
         << "Logging:\n"
@@ -89,10 +89,8 @@ inline void parse_options(
     for (int i = first_option; i < argc; ++i) {
         const std::string option = argv[i];
 
-        if (option == "--pfs") {
-            options.pfs = options.encrypt_ascon = true;
-        } else if (option == "--encrypt-ascon") {
-            options.encrypt_ascon = true;
+        if (option == "--crypto-auth-only") {
+            options.pfs = options.encrypt_ascon = false;
         } else if (option == "--init-window") {
             if (++i >= argc) throw std::runtime_error("--init-window requires a value");
             options.init_window = parse_size_option(option, argv[i], 2, 86400);

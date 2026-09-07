@@ -136,7 +136,11 @@ def main():
             wait_for([server_control, client_control], [server, client])
             client_snapshot = subprocess.check_output(
                 [ctl, client_control, "show", "stats"], text=True)
-            if "mode=client" not in client_snapshot or "switch_connected=1" not in client_snapshot:
+            if ("mode=client" not in client_snapshot or
+                    "switch_connected=1" not in client_snapshot or
+                    "suite=2" not in client_snapshot or
+                    "encryption=ascon-aead128" not in client_snapshot or
+                    "pfs=1" not in client_snapshot):
                 raise RuntimeError("invalid tuntom control stats response")
 
             app.close()

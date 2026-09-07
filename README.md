@@ -1,14 +1,14 @@
 # tuntom
 
-**Linux IP tunneling over UDP, with authenticated sessions, optional encryption,
-and SSH deployment.**
+**Linux IP tunneling over UDP, with encrypted forward-secret sessions and SSH
+deployment.**
 
 `tuntom` connects two Linux TUN interfaces and carries IPv4 and IPv6 traffic
 between them. It combines a self-contained C++17 tunnel engine with a bootstrap
 script that builds, deploys, and configures both endpoints. Protocol v5 provides
 replay protection, automatic path-MTU discovery, and internal fragmentation;
-optional Ascon encryption and X25519 rekeying add confidentiality and forward
-secrecy.
+Ascon-AEAD128 encryption and X25519 rekeying provide confidentiality and forward
+secrecy by default; an explicit authentication-only mode is available.
 
 ```text
       local / client                         remote / server
@@ -20,7 +20,7 @@ secrecy.
              |                                      |
              +---------- UDP / port 40042 ----------+
                   authenticated v5 session
-                  optional encryption + PFS
+                  AEAD encryption + PFS
 ```
 
 Written by **Ales Stibal <astib@mag0.net>**.   
@@ -39,7 +39,7 @@ Contributors remain responsible for the changes they submit.
 | --- | --- |
 | Tunnel | IPv4/IPv6 TUN traffic over UDP, NAT-friendly client/server model |
 | Sessions | Authenticated v5 handshake, directional keys, replay protection |
-| Encryption | Optional Ascon-AEAD128; optional X25519 PFS with periodic rekey |
+| Encryption | Ascon-AEAD128 with X25519 PFS and periodic rekey by default |
 | MTU | Independent inner/outer MTUs, automatic PMTUD, balanced fragmentation |
 | Deployment | Local and remote compilation, staged restart, start/stop helper |
 | Networking | IPv4 policy routing, connection marks, MSS clamping, optional SNAT, lifecycle hooks |
@@ -80,13 +80,14 @@ export TUNTOM_SECRET="$(openssl rand -hex 16)"
 From the repository directory, create tunnel `42` to `sx2`:
 
 ```bash
-./mk_tunnel.sh 42 sx2 --pfs
+./mk_tunnel.sh 42 sx2
 ```
 
 This builds both endpoints, passes the secret over SSH, creates the runtime
 account, configures networking, and starts the processes in the background.
-`--pfs` enables encryption and forward secrecy on both ends. Omitting it uses
-**authentication without encryption**; see the [mode table](#security-and-compatibility).
+Encryption and forward secrecy are enabled on both ends by default. Use
+`--crypto-auth-only` only when the payload must remain visible on the wire; see
+the [mode table](#security-and-compatibility).
 
 | Tunnel 42 | Local / client | Remote / server |
 | --- | --- | --- |
@@ -123,8 +124,7 @@ and the server UDP port.
 
 | Option | Effect |
 | --- | --- |
-| `--pfs` | Require X25519 + AKDF + Ascon-AEAD128 on both endpoints |
-| `--encrypt-ascon` | Require Ascon-AEAD128 without PFS |
+| `--crypto-auth-only` | Disable payload encryption and PFS; retain AMAC authentication |
 | `--no-stats` | Disable automatic stats file writes; keep live metrics and socket queries |
 | `--client-switch <socket> <port-id> <label>` | Connect the local/client side to an existing switch listener |
 | `--server-switch <socket> <port-id> <label>` | Connect the remote/server side to an existing switch listener |
@@ -150,7 +150,7 @@ For example:
 
 ```bash
 TUNTOM_PREFIX16=10.10 TUNTOM_MTU=9000 TUNTOM_TRANSPORT_MTU=1500 \
-    ./mk_tunnel.sh 42 sx2 --pfs
+    ./mk_tunnel.sh 42 sx2
 ```
 
 This uses `10.10.42.1` / `10.10.42.2` and
@@ -172,8 +172,7 @@ can run without root after its socket and UDP access are available.
 TUNTOM_SECRET=... tuntom client 42 - server.example \
   --switch-socket /run/tuntom/switch.sock \
   --switch-port-id client-42 \
-  --switch-label 17 \
-  --pfs
+  --switch-label 17
 ```
 
 The positional interface name is ignored in pure switch mode; `-` is the
@@ -240,8 +239,7 @@ already running on that endpoint host:
 
 ```bash
 ./mk_tunnel.sh 42 honeynet-router \
-  --server-switch /run/tuntom/switch.sock honeypot-42 17 \
-  --pfs
+  --server-switch /run/tuntom/switch.sock honeypot-42 17
 ```
 
 A pure switch side creates no TUN and skips its address, hook and kernel-network
@@ -286,9 +284,12 @@ Both endpoints must select the same mode.
 
 | Mode | Suite | Payload encryption | Forward secrecy |
 | --- | --- | --- | --- |
-| Default | 0 | No; authentication only | No |
-| `--encrypt-ascon` | 1 | Ascon-AEAD128 | No |
-| `--pfs` | 2 | Ascon-AEAD128 | X25519 exchange, rekey every two minutes |
+| Default | 2 | Ascon-AEAD128 | X25519 exchange, rekey every two minutes |
+| `--crypto-auth-only` | 0 | No; AMAC authentication only | No |
+
+Suite 1 (Ascon-AEAD128 without PFS) remains a recognized wire suite for protocol
+compatibility and tests, but has no command-line selector. The former `--pfs`
+and `--encrypt-ascon` options are rejected.
 
 The authentication primitive is specified in [AMAC v1](docs/AMAC_V1.md).
 Suite 2 uses a **project-specific AMAC-based [AKDF v1](docs/AKDF_V1.md)**, not HKDF or a standardized

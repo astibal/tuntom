@@ -9,7 +9,7 @@ Usage: $0 <id 1..255> <host|user@host> [options]
 Tunnel options:
   --snat | --no-snat
   --mss-clamp | --no-mss-clamp
-  --encrypt-ascon | --pfs | --no-stats | --stop
+  --crypto-auth-only | --no-stats | --stop
 
 Switch ports (the tuntom-switch listener must already be running):
   --client-switch <socket> <port-id> <label>
@@ -31,8 +31,7 @@ shift 2
 tuntom_snat=0
 tuntom_mss_clamp=1
 stop_requested=0
-encrypt_option=""
-pfs_option=""
+crypto_option=""
 stats_option=""
 client_switch_socket=""
 client_switch_port_id=""
@@ -60,11 +59,8 @@ while (( $# > 0 )); do
         --no-stats)
             stats_option="--no-stats"
             ;;
-        --pfs)
-            pfs_option="--pfs"
-            ;;
-        --encrypt-ascon)
-            encrypt_option="--encrypt-ascon"
+        --crypto-auth-only)
+            crypto_option="--crypto-auth-only"
             ;;
         --client-switch|--server-switch)
             switch_side="${1#--}"
@@ -732,7 +728,7 @@ printf '%s\n' "$TUNTOM_SECRET" | ssh "$remote" "
         --mtu '${mtu}' \
         --transport-mtu '${transport_mtu}' \
         --stats-format '${stats_format}' \
-        --stats-file '${remote_stats_file}' --control-socket '${remote_control_file}' ${encrypt_option} ${pfs_option} ${stats_option}${server_switch_options} \
+        --stats-file '${remote_stats_file}' --control-socket '${remote_control_file}' ${crypto_option} ${stats_option}${server_switch_options} \
         >'${remote_log}' 2>&1 </dev/null &
     echo \$! > '${remote_pid_file}'
 "
@@ -762,7 +758,7 @@ fi
 
 echo "[9] Start local client"
 "${root_cmd[@]}" sh -c \
-    "nohup '${local_bin}' client '${id}' '${client_if}' '${remote#*@}' --mtu '${mtu}' --transport-mtu '${transport_mtu}' --stats-format '${stats_format}' --stats-file '${local_stats_file}' --control-socket '${local_control_file}' ${encrypt_option} ${pfs_option} ${stats_option}${client_switch_options} >'${local_log}' 2>&1 </dev/null & echo \$! > '${local_pid_file}'"
+    "nohup '${local_bin}' client '${id}' '${client_if}' '${remote#*@}' --mtu '${mtu}' --transport-mtu '${transport_mtu}' --stats-format '${stats_format}' --stats-file '${local_stats_file}' --control-socket '${local_control_file}' ${crypto_option} ${stats_option}${client_switch_options} >'${local_log}' 2>&1 </dev/null & echo \$! > '${local_pid_file}'"
 
 if (( client_has_tun )); then
     for _ in $(seq 1 20); do

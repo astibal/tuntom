@@ -86,7 +86,7 @@ int main() {
     }
     for (const char* legacy : {"--allow-v1", "--allow-v2"}) {
         Options options;
-        const char* args[] = {"tuntom", "--encrypt-ascon", legacy};
+        const char* args[] = {"tuntom", "--crypto-auth-only", legacy};
         bool threw = false;
         try { parse_options(3, const_cast<char**>(args), 1, options); }
         catch (const std::runtime_error&) { threw = true; }
@@ -112,8 +112,6 @@ int main() {
         require(threw, "missing INIT window accepted");
     }
     Options options;
-    const char* args[] = {"tuntom", "--encrypt-ascon"};
-    parse_options(2, const_cast<char**>(args), 1, options);
-    require(options.encrypt_ascon, "CLI option");
+    require(options.encrypt_ascon && options.pfs, "default crypto suite");
     std::cout << "PASS: encrypted/plain sessions, controls, fragments, mode mismatch, tampering, replay, restart, limits and CLI\n";
 }

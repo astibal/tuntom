@@ -48,8 +48,8 @@ enum class StatsFormat {
 };
 
 struct Options {
-    bool encrypt_ascon = false;
-    bool pfs = false;
+    bool encrypt_ascon = true;
+    bool pfs = true;
     std::size_t init_window = 300;
     bool ttl_compensate = true;
     bool pmtud_auto = true;

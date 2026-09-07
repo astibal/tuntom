@@ -260,8 +260,9 @@ complete handshake messages; see the wire specification.
 
 The exact layouts, domain labels and state transitions are specified in
 [PROTOCOL_V5.md](PROTOCOL_V5.md). V5 establishes fresh session keys through INIT
-/ RESPONSE / CONFIRM / CONFIRM_ACK before accepting DATA. Suite 0 authenticates
-plaintext; suites 1/2 encrypt the payload, and suite 2 adds PFS.
+/ RESPONSE / CONFIRM / CONFIRM_ACK before accepting DATA. Suite 2 with payload
+encryption and PFS is the default. `--crypto-auth-only` selects plaintext suite
+0; suite 1 remains wire-recognized but has no command-line selector.
 
 The 64-bit SEQ field consists of a 16-bit transcript-derived session hint and an
 independent 48-bit packet counter for each direction. Counter zero is reserved
@@ -269,7 +270,7 @@ for CONFIRM/ACK; ordinary traffic starts at one. The hint selects candidate
 keys; AMAC determines the actual session. A collision is supported.
 
 Every session has its own 64-value replay window and reassembly table. Only
-counter bits enter the replay window, after successful AMAC verification. The
+counter bits enter the replay window, after successful authentication. The
 first ordinary packet need not have counter one: reordering is allowed. Replayed
 confirmations never reset these structures. Old session receive keys remain
 valid for a three-second overlap; previous-session packets cannot change the

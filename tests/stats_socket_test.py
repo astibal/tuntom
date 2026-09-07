@@ -57,7 +57,7 @@ def run_case(tuntom, switch, ctl, unavailable_path):
         try:
             processes.append(start_switch(switch, switch_path))
             wait_for([switch_path], processes)
-            common = ["--quiet", "--no-stats", "--pfs", "--mtu", "9000",
+            common = ["--quiet", "--no-stats", "--mtu", "9000",
                       "--transport-mtu", "1500", "--no-pmtud",
                       "--switch-socket", switch_path]
             server = subprocess.Popen([

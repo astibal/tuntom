@@ -149,14 +149,23 @@ int main() {
     current->next_counter = 0xffffffffULL;
     require(!data(p.s).empty() && data(p.s).empty(), "PFS counter cap");
     for (const char* legacy_flag : {"--allow-v1", "--allow-v2"}) {
-        Options options; const char* args[] = {"tuntom", "--pfs", legacy_flag};
+        Options options; const char* args[] = {"tuntom", legacy_flag};
         bool rejected = false;
-        try { parse_options(3, const_cast<char**>(args), 1, options); }
+        try { parse_options(2, const_cast<char**>(args), 1, options); }
         catch (const std::runtime_error&) { rejected = true; }
         require(rejected, "PFS legacy CLI");
     }
-    Options options; const char* args[] = {"tuntom", "--pfs"};
-    parse_options(2, const_cast<char**>(args), 1, options);
-    require(options.pfs && options.encrypt_ascon, "PFS implies encryption");
+    Options options;
+    require(options.pfs && options.encrypt_ascon, "PFS+AEAD is not default");
+    const char* auth_args[] = {"tuntom", "--crypto-auth-only"};
+    parse_options(2, const_cast<char**>(auth_args), 1, options);
+    require(!options.pfs && !options.encrypt_ascon, "auth-only CLI mode");
+    for (const char* removed : {"--pfs", "--encrypt-ascon"}) {
+        Options removed_options; const char* args[] = {"tuntom", removed};
+        bool rejected = false;
+        try { parse_options(2, const_cast<char**>(args), 1, removed_options); }
+        catch (const std::runtime_error&) { rejected = true; }
+        require(rejected, "removed crypto CLI option accepted");
+    }
     std::cout << "PASS: PFS handshake, DH validation, suite isolation, retransmission, periodic rekey, expiry, counter cap and CLI\n";
 }

@@ -18,7 +18,8 @@ printf '%s\n' \
   "server_port=$server_switch_port_id" \
   "server_label=$server_switch_label" \
   "server_exit=$server_switch_exit_node" \
-  "server_tun=$server_has_tun"
+  "server_tun=$server_has_tun" \
+  "crypto_option=$crypto_option"
 '''
 
 
@@ -51,6 +52,7 @@ expected = {
     "server_label=23",
     "server_exit=1",
     "server_tun=1",
+    "crypto_option=",
 }
 if set(output.splitlines()) != expected:
     raise RuntimeError(f"unexpected parsed switch options:\n{output}")
@@ -58,5 +60,9 @@ if set(output.splitlines()) != expected:
 run("--client-switch-exit-node", ok=False)
 run("--server-switch", "/tmp/x", "bad port", "1", ok=False)
 run("--server-switch", "/tmp/x", "port", "-1", ok=False)
+if "crypto_option=--crypto-auth-only" not in run("--crypto-auth-only").splitlines():
+    raise RuntimeError("auth-only option was not forwarded")
+run("--pfs", ok=False)
+run("--encrypt-ascon", ok=False)
 
 print("PASS: mk_tunnel per-side switch options and TUN selection")

@@ -38,5 +38,6 @@ source file or custom include processing is needed.
 
 PFS implementation: `x25519.hpp` wraps the pinned `vendor/x25519.hpp` extraction;
 `akdf.hpp` implements [AKDF v1](../docs/AKDF_V1.md) extract/expand; `secret.hpp` owns wiping
-helpers. `--pfs` selects suite 2, implies Ascon encryption and enables periodic DH
-rekey. See `docs/PROTOCOL_V5.md` for exact derivation and security assumptions.
+helpers. Suite 2 with Ascon encryption, X25519 PFS and periodic DH rekey is the
+default. `--crypto-auth-only` selects plaintext suite 0. See
+`docs/PROTOCOL_V5.md` for exact derivation and security assumptions.
