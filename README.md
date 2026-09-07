@@ -126,6 +126,7 @@ and the server UDP port.
 | --- | --- |
 | `--crypto-auth-only` | Disable payload encryption and PFS; retain AMAC authentication |
 | `--no-stats` | Disable automatic stats file writes; keep live metrics and socket queries |
+| `--all-tools` | Build and atomically install `tuntom-switch`, `tuntom-switch-adapter`, and `tuntomctl` in `/tmp` on both hosts |
 | `--client-switch <socket> <port-id> <label>` | Connect the local/client side to an existing switch listener |
 | `--server-switch <socket> <port-id> <label>` | Connect the remote/server side to an existing switch listener |
 | `--client-switch-exit-node` | Retain the client TUN and permit IPC `EXIT` delivery |
@@ -161,6 +162,13 @@ Advanced networking overrides are `TUNTOM_MARK`, `TUNTOM_MARK_MASK`,
 `TUNTOM_TABLE`, and `TUNTOM_CHAIN`; see [the helper](tuntom-net.sh).
 
 ### Label-switch mode
+
+Use `--all-tools` during deployment when the standalone switch utilities should
+be rebuilt together with the tunnel. They are installed as `/tmp/tuntom-switch`,
+`/tmp/tuntom-switch-adapter`, and `/tmp/tuntomctl` locally and remotely. A failed
+direct tunnel ping is reported as a warning in switch mode because the selected
+switch topology may intentionally route packets away from the peer TUN; both
+tunnel processes are still checked.
 
 `--switch-socket` replaces the TUN data path with a Unix `SOCK_SEQPACKET`
 connection. Authenticated DATA received over UDP is emitted as a `SWITCH` frame

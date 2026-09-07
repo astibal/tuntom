@@ -1,6 +1,8 @@
 #include "../src/adaptive_polling.hpp"
 #include <chrono>
+#include <sstream>
 #include <stdexcept>
+#include <string>
 
 static void require(bool condition) {
     if (not condition) throw std::runtime_error("adaptive polling check failed");
@@ -27,6 +29,11 @@ int main() {
     require(polling.backlog_confirmations() == 1);
     polling.note_slice_limit();
     require(polling.slice_limit_hits() == 1);
+    std::ostringstream stats;
+    polling.write_stats(stats);
+    require(stats.str().find("event_poll_overload=1\n") != std::string::npos);
+    require(stats.str().find("event_poll_batch=4\n") != std::string::npos);
+    require(stats.str().find("event_poll_slice_limit_hits=1\n") != std::string::npos);
 
     for (unsigned i = Polling::entry_streak; i < 32; ++i)
         polling.observe_poll(std::chrono::microseconds(1));

@@ -732,9 +732,13 @@ private:
             const ssize_t written = switch_->send(frame.data(), frame.size());
             if (written != static_cast<ssize_t>(frame.size())) {
                 const int error = written < 0 ? errno : EIO;
-                ++stats_.switch_send_errors;
                 ++stats_.switch_drops;
-                disconnect_switch(error);
+                if (error == EAGAIN or error == EWOULDBLOCK)
+                    ++stats_.switch_backpressure_drops;
+                else {
+                    ++stats_.switch_send_errors;
+                    disconnect_switch(error);
+                }
                 return;
             }
             ++stats_.switch_tx_packets;
@@ -1485,6 +1489,7 @@ private:
             << "switch_tx_bytes=" << stats_.switch_tx_bytes << "\n"
             << "switch_drops=" << stats_.switch_drops << "\n"
             << "switch_send_errors=" << stats_.switch_send_errors << "\n"
+            << "switch_backpressure_drops=" << stats_.switch_backpressure_drops << "\n"
             << "switch_connected=" << (switch_ and switch_->connected() ? 1 : 0) << "\n"
             << "switch_disconnects=" << stats_.switch_disconnects << "\n"
             << "switch_reconnect_attempts=" << stats_.switch_reconnect_attempts << "\n"
@@ -1495,14 +1500,9 @@ private:
             << "switch_socket_econnrefused=" << stats_.switch_socket_econnrefused << "\n"
             << "switch_socket_other_errors=" << stats_.switch_socket_other_errors << "\n"
             << "switch_last_error_ts=" << stats_.switch_last_error_ts << "\n"
-            << "switch_last_error_no=" << stats_.switch_last_error_no << "\n"
-            << "event_poll_overload=" << (adaptive_polling_.overloaded() ? 1 : 0) << "\n"
-            << "event_poll_busy_streak=" << adaptive_polling_.busy_streak() << "\n"
-            << "event_poll_batch=" << adaptive_polling_.batch_size() << "\n"
-            << "event_poll_overload_entries=" << adaptive_polling_.overload_entries() << "\n"
-            << "event_poll_backlog_confirmations=" << adaptive_polling_.backlog_confirmations() << "\n"
-            << "event_poll_slice_limit_hits=" << adaptive_polling_.slice_limit_hits() << "\n"
-            << std::fixed << std::setprecision(3)
+            << "switch_last_error_no=" << stats_.switch_last_error_no << "\n";
+        adaptive_polling_.write_stats(output);
+        output << std::fixed << std::setprecision(3)
             << "rtt_last_ms=" << stats_.rtt_last_ms << "\n"
             << "rtt_min_ms=" << stats_.rtt_min_ms << "\n"
             << "rtt_max_ms=" << stats_.rtt_max_ms << "\n"

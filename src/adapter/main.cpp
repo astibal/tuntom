@@ -1,4 +1,5 @@
 #include "exit_adapter.hpp"
+#include "../adaptive_polling.hpp"
 #include "../ipc/switch_protocol.hpp"
 #include "../switch_client.hpp"
 #include "../tun_device.hpp"
@@ -32,6 +33,7 @@ struct AdapterStats {
     std::uint64_t cache_miss_drops = 0, switch_disconnected_drops = 0, opcode_drops = 0;
     std::uint64_t tun_read_errors = 0, tun_write_errors = 0;
     std::uint64_t switch_send_errors = 0, switch_disconnects = 0;
+    std::uint64_t switch_backpressure_drops = 0;
     std::uint64_t switch_reconnect_attempts = 0, switch_reconnects = 0;
 };
 
@@ -130,6 +132,102 @@ int main(int argc, char** argv) {
             switch_base_header_size + switch_max_labels * switch_label_size +
             std::numeric_limits<std::uint16_t>::max());
         auto next_connect = std::chrono::steady_clock::now();
+        AdaptivePolling adaptive_polling;
+        unsigned next_data_source = 0;
+
+        const auto disconnect_switch = [&] {
+            ++stats.switch_disconnects;
+            switch_client.disconnect();
+            next_connect = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        };
+
+        const auto try_handle_tun_packet = [&] {
+            const ssize_t size = tun.read_packet(packet.data(), packet.size());
+            if (size < 0) {
+                if (errno == EAGAIN or errno == EWOULDBLOCK or errno == EINTR)
+                    return false;
+                ++stats.tun_read_errors;
+                return true;
+            }
+            if (size == 0) return false;
+
+            ++stats.tun_rx_packets;
+            stats.tun_rx_bytes += static_cast<std::uint64_t>(size);
+            std::vector<std::uint64_t> labels;
+            if (not switch_client.connected()) {
+                ++stats.switch_disconnected_drops;
+            } else if (routes.lookup(
+                    packet.data(), static_cast<std::size_t>(size), labels)) {
+                const auto frame = encode_switch_frame(
+                    SwitchOpcode::switch_packet, labels, packet.data(),
+                    static_cast<std::size_t>(size));
+                const ssize_t sent = switch_client.send(frame.data(), frame.size());
+                if (sent != static_cast<ssize_t>(frame.size())) {
+                    if (sent < 0 and (errno == EAGAIN or errno == EWOULDBLOCK)) {
+                        ++stats.switch_backpressure_drops;
+                    } else {
+                        ++stats.switch_send_errors;
+                        disconnect_switch();
+                    }
+                } else {
+                    ++stats.switch_tx_packets;
+                    stats.switch_tx_bytes += frame.size();
+                }
+            } else {
+                ++stats.cache_miss_drops;
+            }
+            return true;
+        };
+
+        const auto try_handle_switch_packet = [&] {
+            if (not switch_client.connected()) return false;
+            const ssize_t size = switch_client.receive(
+                frame_buffer.data(), frame_buffer.size());
+            if (size < 0) {
+                if (errno == EAGAIN or errno == EWOULDBLOCK or errno == EINTR)
+                    return false;
+                disconnect_switch();
+                return true;
+            }
+            if (size == 0 or static_cast<std::size_t>(size) > frame_buffer.size()) {
+                disconnect_switch();
+                return true;
+            }
+
+            SwitchFrameView frame;
+            if (decode_switch_frame(
+                    frame_buffer.data(), static_cast<std::size_t>(size), frame) and
+                frame.opcode == SwitchOpcode::exit_packet) {
+                ++stats.switch_rx_packets;
+                stats.switch_rx_bytes += static_cast<std::uint64_t>(size);
+                std::vector<std::uint64_t> labels;
+                labels.reserve(frame.label_count);
+                for (std::size_t index = 0; index < frame.label_count; ++index)
+                    labels.push_back(frame.label(index));
+                if (routes.learn(frame.payload, frame.payload_size, labels)) {
+                    if (tun.write_packet(frame.payload, frame.payload_size) !=
+                        static_cast<ssize_t>(frame.payload_size)) {
+                        ++stats.tun_write_errors;
+                    } else {
+                        ++stats.tun_tx_packets;
+                        stats.tun_tx_bytes += frame.payload_size;
+                    }
+                }
+            } else {
+                ++stats.opcode_drops;
+            }
+            return true;
+        };
+
+        const auto data_backlog_ready = [&] {
+            pollfd pending[2] {
+                {tun.fd(), POLLIN, 0},
+                {switch_client.connected() ? switch_client.fd() : -1, POLLIN, 0},
+            };
+            const int ready = ::poll(pending, 2, 0);
+            return ready > 0 and
+                (((pending[0].revents | pending[1].revents) & POLLIN) != 0);
+        };
 
         while (not stop_requested) {
             const auto now = std::chrono::steady_clock::now();
@@ -144,77 +242,21 @@ int main(int argc, char** argv) {
                 {switch_client.fd(), POLLIN, 0},
                 {control ? control->fd() : -1, POLLIN, 0},
             };
+            const auto poll_started = AdaptivePolling::Clock::now();
             const int ready = ::poll(descriptors, 3, 1000);
+            const auto poll_finished = AdaptivePolling::Clock::now();
             if (ready < 0) {
                 if (errno == EINTR) continue;
                 throw std::runtime_error("poll() failed: " + std::string(std::strerror(errno)));
             }
-
-            if (descriptors[0].revents & POLLIN) {
-                const ssize_t size = tun.read_packet(packet.data(), packet.size());
-                if (size < 0) ++stats.tun_read_errors;
-                if (size > 0) {
-                    ++stats.tun_rx_packets;
-                    stats.tun_rx_bytes += static_cast<std::uint64_t>(size);
-                }
-                std::vector<std::uint64_t> labels;
-                if (size > 0 and not switch_client.connected()) {
-                    ++stats.switch_disconnected_drops;
-                } else if (size > 0 and
-                    routes.lookup(packet.data(), static_cast<std::size_t>(size), labels)) {
-                    const auto frame = encode_switch_frame(
-                        SwitchOpcode::switch_packet, labels, packet.data(),
-                        static_cast<std::size_t>(size));
-                    if (switch_client.send(frame.data(), frame.size()) !=
-                        static_cast<ssize_t>(frame.size())) {
-                        ++stats.switch_send_errors;
-                        ++stats.switch_disconnects;
-                        switch_client.disconnect();
-                    } else {
-                        ++stats.switch_tx_packets;
-                        stats.switch_tx_bytes += frame.size();
-                    }
-                } else if (size > 0) {
-                    ++stats.cache_miss_drops;
-                }
-            }
+            adaptive_polling.observe_poll(poll_finished - poll_started);
 
             if (switch_client.connected() and
                 (descriptors[1].revents & (POLLHUP | POLLERR | POLLNVAL))) {
-                ++stats.switch_disconnects;
-                switch_client.disconnect();
-                next_connect = std::chrono::steady_clock::now() + std::chrono::seconds(1);
-            } else if (switch_client.connected() and (descriptors[1].revents & POLLIN)) {
-                const ssize_t size = switch_client.receive(frame_buffer.data(), frame_buffer.size());
-                if (size <= 0 or static_cast<std::size_t>(size) > frame_buffer.size()) {
-                    ++stats.switch_disconnects;
-                    switch_client.disconnect();
-                    next_connect = std::chrono::steady_clock::now() + std::chrono::seconds(1);
-                    continue;
-                }
-                SwitchFrameView frame;
-                if (decode_switch_frame(frame_buffer.data(), static_cast<std::size_t>(size), frame) and
-                    frame.opcode == SwitchOpcode::exit_packet) {
-                    ++stats.switch_rx_packets;
-                    stats.switch_rx_bytes += static_cast<std::uint64_t>(size);
-                    std::vector<std::uint64_t> labels;
-                    labels.reserve(frame.label_count);
-                    for (std::size_t index = 0; index < frame.label_count; ++index)
-                        labels.push_back(frame.label(index));
-                    if (routes.learn(frame.payload, frame.payload_size, labels)) {
-                        if (tun.write_packet(frame.payload, frame.payload_size) !=
-                            static_cast<ssize_t>(frame.payload_size)) {
-                            ++stats.tun_write_errors;
-                        } else {
-                            ++stats.tun_tx_packets;
-                            stats.tun_tx_bytes += frame.payload_size;
-                        }
-                    }
-                } else {
-                    ++stats.opcode_drops;
-                }
+                disconnect_switch();
             }
 
+            // Control requests stay ahead of overload data batches.
             if (control and (descriptors[2].revents & POLLIN)) {
                 control->handle([&] {
                     const auto snapshot_at = std::chrono::steady_clock::now();
@@ -244,12 +286,43 @@ int main(int argc, char** argv) {
                         << "opcode_drops=" << stats.opcode_drops << "\n"
                         << "tun_read_errors=" << stats.tun_read_errors << "\ntun_write_errors=" << stats.tun_write_errors << "\n"
                         << "switch_send_errors=" << stats.switch_send_errors << "\nswitch_disconnects=" << stats.switch_disconnects << "\n"
+                        << "switch_backpressure_drops=" << stats.switch_backpressure_drops << "\n"
                         << "switch_reconnect_attempts=" << stats.switch_reconnect_attempts << "\n"
                         << "switch_reconnects=" << stats.switch_reconnects << "\n";
+                    adaptive_polling.write_stats(out);
                     throughput.write(out);
                     return out.str();
                 });
             }
+
+            const bool initially_ready[2] {
+                (descriptors[0].revents & POLLIN) != 0,
+                switch_client.connected() and
+                    (descriptors[1].revents & POLLIN) != 0,
+            };
+            const unsigned rounds = adaptive_polling.batch_size();
+            const auto slice_started = AdaptivePolling::Clock::now();
+            for (unsigned round = 0; round < rounds; ++round) {
+                bool progress = false;
+                for (unsigned offset = 0; offset < 2; ++offset) {
+                    const unsigned source = (next_data_source + offset) % 2;
+                    if (round == 0 and not initially_ready[source]) continue;
+                    if (source == 0) progress |= try_handle_tun_packet();
+                    else progress |= try_handle_switch_packet();
+                }
+                next_data_source = (next_data_source + 1) % 2;
+                if (not progress) break;
+                if (AdaptivePolling::Clock::now() - slice_started >=
+                    AdaptivePolling::processing_slice) {
+                    adaptive_polling.note_slice_limit();
+                    break;
+                }
+            }
+
+            if (adaptive_polling.should_check_backlog())
+                adaptive_polling.observe_backlog(
+                    data_backlog_ready(), AdaptivePolling::Clock::now());
+
             throughput.update(std::chrono::steady_clock::now(), {
                 {stats.tun_rx_packets, stats.tun_rx_bytes},
                 {stats.tun_tx_packets, stats.tun_tx_bytes},

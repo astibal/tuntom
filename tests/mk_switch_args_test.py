@@ -19,6 +19,8 @@ printf '%s\n' \
   "server_label=$server_switch_label" \
   "server_exit=$server_switch_exit_node" \
   "server_tun=$server_has_tun" \
+  "switch_enabled=$switch_enabled" \
+  "all_tools=$all_tools" \
   "crypto_option=$crypto_option"
 '''
 
@@ -52,6 +54,8 @@ expected = {
     "server_label=23",
     "server_exit=1",
     "server_tun=1",
+    "switch_enabled=1",
+    "all_tools=0",
     "crypto_option=",
 }
 if set(output.splitlines()) != expected:
@@ -62,7 +66,19 @@ run("--server-switch", "/tmp/x", "bad port", "1", ok=False)
 run("--server-switch", "/tmp/x", "port", "-1", ok=False)
 if "crypto_option=--crypto-auth-only" not in run("--crypto-auth-only").splitlines():
     raise RuntimeError("auth-only option was not forwarded")
+if "all_tools=1" not in run("--all-tools").splitlines():
+    raise RuntimeError("all-tools option was not enabled")
 run("--pfs", ok=False)
 run("--encrypt-ascon", ok=False)
+
+for required in (
+        '"$source_dir/switch/main.cpp" -o "$local_switch_stage"',
+        '"$source_dir/adapter/main.cpp" -o "$local_adapter_stage"',
+        '"$source_dir/control/main.cpp" -o "$local_control_stage"',
+        '"$build_dir/src/switch/main.cpp" -o "$switch_stage"',
+        '"$build_dir/src/adapter/main.cpp" -o "$adapter_stage"',
+        '"$build_dir/src/control/main.cpp" -o "$control_stage"'):
+    if required not in source:
+        raise RuntimeError(f"all-tools build is missing: {required}")
 
 print("PASS: mk_tunnel per-side switch options and TUN selection")

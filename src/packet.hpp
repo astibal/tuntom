@@ -94,6 +94,7 @@ struct Stats {
     std::uint64_t switch_tx_bytes = 0;
     std::uint64_t switch_drops = 0;
     std::uint64_t switch_send_errors = 0;
+    std::uint64_t switch_backpressure_drops = 0;
     std::uint64_t switch_disconnects = 0;
     std::uint64_t switch_reconnect_attempts = 0;
     std::uint64_t switch_reconnects = 0;

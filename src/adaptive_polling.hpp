@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <ostream>
 
 namespace tuntom {
 
@@ -71,6 +72,15 @@ public:
     std::uint64_t backlog_confirmations() const { return backlog_confirmations_; }
     std::uint64_t slice_limit_hits() const { return slice_limit_hits_; }
     void note_slice_limit() { ++slice_limit_hits_; }
+
+    void write_stats(std::ostream& out) const {
+        out << "event_poll_overload=" << (overloaded_ ? 1 : 0) << "\n"
+            << "event_poll_busy_streak=" << busy_streak_ << "\n"
+            << "event_poll_batch=" << batch_size() << "\n"
+            << "event_poll_overload_entries=" << overload_entries_ << "\n"
+            << "event_poll_backlog_confirmations=" << backlog_confirmations_ << "\n"
+            << "event_poll_slice_limit_hits=" << slice_limit_hits_ << "\n";
+    }
 
 private:
     void leave_overload() {

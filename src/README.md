@@ -25,6 +25,7 @@ from multiple translation units.
 | `switch_client.hpp` | Tuntom-side Unix switch connection |
 | `ipc/switch_protocol.hpp` | Shared `SWITCH` / `EXIT` frame codec |
 | `control_socket.hpp` | Shared local `show stats` control server |
+| `adaptive_polling.hpp` | Shared overload detection, batching policy and event-loop metrics |
 | `control/main.cpp` | `tuntomctl` client executable |
 | `switch/main.cpp` | Standalone label-switch executable |
 | `adapter/ip_flow.hpp` | Safe IPv4/IPv6 L3 and TCP/UDP tuple parsing |
@@ -35,6 +36,14 @@ from multiple translation units.
 `../mk_tunnel.sh` sends this directory as a tar stream over SSH, compiles
 `main.cpp` remotely and removes the temporary sources on exit. No generated
 source file or custom include processing is needed.
+
+Packet-forwarding components must use nonblocking descriptors and the shared
+`AdaptivePolling` policy: one fair round normally, confirmed-backlog batching,
+round-robin source selection and a bounded processing slice with control traffic
+handled first. New I/O loops should reuse this class and expose its standard
+metrics rather than introducing an unbounded drain loop or one-packet-per-poll
+bottleneck. Output backpressure is a drop/queueing condition, not a reason to
+disconnect an otherwise healthy socket.
 
 PFS implementation: `x25519.hpp` wraps the pinned `vendor/x25519.hpp` extraction;
 `akdf.hpp` implements [AKDF v1](../docs/AKDF_V1.md) extract/expand; `secret.hpp` owns wiping

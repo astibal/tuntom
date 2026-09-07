@@ -91,13 +91,20 @@ def main():
             if a.recv(65535) != expected_exit:
                 raise RuntimeError("default-back did not return EXIT")
 
+            # Leave enough work queued for the adaptive loop to confirm a
+            # backlog and enter bounded multi-round processing.
+            for _ in range(128):
+                a.sendall(frame(1, [17, 200], payload))
+            for _ in range(128):
+                if replacement_b.recv(65535) != expected:
+                    raise RuntimeError("unexpected frame in switch burst")
+
             stats = subprocess.check_output([
                 ctl_binary, control_path, "show", "stats"
             ], text=True)
             required = {
                 "component=switch",
                 "connections_current=3",
-                "route_hits=3",
                 "route_misses=1",
                 "exit_deliveries=1",
                 "default_back=1",
@@ -111,11 +118,20 @@ def main():
                 "switch_rx_pps_5s", "switch_rx_pps_1m",
                 "switch_tx_bps_5s", "switch_tx_bps_1m",
                 "switch_tx_pps_5s", "switch_tx_pps_1m",
+                "event_poll_overload", "event_poll_busy_streak",
+                "event_poll_batch", "event_poll_overload_entries",
+                "event_poll_backlog_confirmations", "event_poll_slice_limit_hits",
+                "send_backpressure_drops",
             }
             present_fields = {line.split("=", 1)[0] for line in stats.splitlines()}
             missing_rates = rate_fields.difference(present_fields)
             if missing_rates:
                 raise RuntimeError(f"missing switch rate stats: {sorted(missing_rates)}")
+            fields = dict(line.split("=", 1) for line in stats.splitlines())
+            if (int(fields["route_hits"]) < 131 or
+                    int(fields["event_poll_overload_entries"]) < 1 or
+                    int(fields["event_poll_backlog_confirmations"]) < 1):
+                raise RuntimeError("switch burst did not activate adaptive polling")
 
             a.close()
             b.close()

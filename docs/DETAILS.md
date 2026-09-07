@@ -1039,8 +1039,10 @@ policy should stay outside it.
 
 ### Adaptive event polling
 
-The normal event loop processes one packet from each ready data descriptor per
-`poll()` call.  It enters overload batching only after eight consecutive polls
+All packet-forwarding components (`tuntom`, `tuntom-switch` and
+`tuntom-switch-adapter`) use the shared `AdaptivePolling` state machine. The
+normal event loop processes one packet from each ready data descriptor per
+`poll()` call. It enters overload batching only after eight consecutive polls
 return within 5 microseconds and a zero-timeout readiness check confirms that
 data remains queued.  Overload uses round-robin batches of 4, 8, then 16 rounds
 as the immediate-poll streak reaches 8, 32, and 128.  A processing slice ends
@@ -1058,8 +1060,10 @@ a confirmed backlog.  The stats file exposes:
 - `event_poll_backlog_confirmations`: positive post-service readiness checks;
 - `event_poll_slice_limit_hits`: processing slices stopped by the 150-us limit.
 
-TUN, UDP, and switch data descriptors are nonblocking.  `EAGAIN` ends processing
-for that descriptor in the current slice.
+TUN, UDP, and switch data descriptors are nonblocking. `EAGAIN` on input ends
+processing for that descriptor in the current slice. `EAGAIN` while writing to
+switch IPC counts as a backpressure drop, but does not disconnect the healthy
+socket and cause a reconnect blackout.
 
 ### Processing latency statistics
 
