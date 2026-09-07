@@ -1021,8 +1021,8 @@ for that descriptor in the current slice.
 
 ### Processing latency statistics
 
-When `--stats-file` is enabled, tuntom samples the first and then every 1024th
-TUN packet / UDP datagram using `std::chrono::steady_clock`. The stats file adds
+Tuntom samples the first and then every 1024th TUN packet / UDP datagram using
+`std::chrono::steady_clock`, independently of file export. Stats snapshots add
 `processing_sample_interval=1024` and these prefixes:
 
 - `tx_processing`: elapsed microseconds from after a successful TUN read through
@@ -1054,12 +1054,12 @@ the results. For unfragmented traffic, TX on A plus RX on B estimates one-way
 application processing; sum both directions for RTT processing. For fragmented
 traffic RX work is spread over multiple datagrams, so this simple sum no longer
 applies. Processing statistics do not add fields to the V5 wire format, and no
-processing samples are collected without a stats file.
+stats file is required to collect processing samples or read them over the socket.
 
 
 ### Tunnel throughput statistics
 
-With `--stats-file`, the following rates are exported in bits per second:
+File and control-socket snapshots expose these rates in bits per second:
 
 ```text
 tun_rx_bps_5s / tun_rx_bps_1m
@@ -1123,15 +1123,20 @@ ACK is outstanding. Counters disclose no private keys or DH/KDF secrets.
 
 ### Disabling and controlling statistics
 
-`--no-stats` disables periodic file creation/replacement, processing-latency
-sampling, reassembly-span sampling and throughput bucket updates. It preserves
+`--no-stats` disables only periodic file creation/replacement. Processing-latency
+sampling, reassembly-span sampling and throughput bucket updates continue, even
+without a stats file. The option preserves
 `--stats-file`, regardless of argument order. Basic packet/byte/drop counters,
 session/rekey counters and operational RTT/PMTUD control remain active.
 `mk_tunnel.sh ... --no-stats` passes the option to both processes, retaining
 their normal stats paths for later activation.
 
-The standalone binary installs SIGUSR1 (toggle automatic statistics) and SIGUSR2
-(one immediate snapshot, even while disabled) handlers. They only update
+`tuntomctl <control-socket> show stats` formats an up-to-date in-memory snapshot
+directly into the socket response. It needs no `--stats-file`, never reads or
+writes a stats file, and works even if a configured export path is unusable.
+
+The standalone binary installs SIGUSR1 (toggle automatic file export) and SIGUSR2
+(one immediate file snapshot, even while disabled) handlers. They only update
 `sig_atomic_t` flags; I/O and state updates happen in the normal event loop.
 Both signals are blocked briefly when consuming flags to avoid losing requests.
 Two delivered USR1 signals cancel each other; multiple USR2 requests before
@@ -1140,15 +1145,12 @@ so do not use rapid repeated signals as a reliable queue. An already running
 iteration/write may finish before a disable request takes effect. No output path
 means enabling has no output effect. Existing files remain untouched while
 disabled unless USR2 requests a snapshot. Snapshotting does not toggle automatic
-mode or resume sampling. The snapshot includes `stats_enabled=0/1`; cumulative
-counters are current, while optional latency and throughput fields retain their
-last collected history when disabled. No SIGHUP handler is installed; periodic
+file export. The snapshot includes `stats_enabled=0/1`, describing periodic file
+export, not metric collection. Counters, latency samples and throughput buckets
+continue updating while export is disabled. No SIGHUP handler is installed; periodic
 rekey remains unchanged.
 
-On re-enable, writing resumes immediately in the loop. Throughput windows are
-reset and baseline byte counters are captured, so disabled traffic is never
-reported as a burst. Processing sample counts/windows resume their old history;
-they contain only samples collected while enabled (a completed fragmented packet
-may have started during the pause). Lifetime counters are never reset by these
+On re-enable, writing resumes immediately in the loop. Throughput and processing
+windows retain their continuously collected history. Counters are never reset by these
 signals. Signal handlers are installed only by `main`, so embedding `Tunnel`
 does not install process-global handlers automatically.

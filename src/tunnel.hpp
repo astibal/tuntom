@@ -23,6 +23,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -96,7 +97,7 @@ public:
                 << " ttl-compensate="
                 << (options_.ttl_compensate ? "yes" : "no")
                 << " stats="
-                << (stats_enabled() ? options_.stats_file : "off")
+                << (stats_file_enabled() ? options_.stats_file : "off")
                 << " switch="
                 << (switch_ ? options_.switch_socket : "off")
                 << " switch-exit="
@@ -206,11 +207,9 @@ public:
 
             const auto now = std::chrono::steady_clock::now();
             try_switch_reconnect(now);
-            if (stats_enabled()) {
-                throughput_.update(now, {
-                    stats_.tun_rx_bytes, stats_.tun_tx_bytes,
-                    stats_.udp_rx_bytes, stats_.udp_tx_bytes});
-            }
+            throughput_.update(now, {
+                stats_.tun_rx_bytes, stats_.tun_tx_bytes,
+                stats_.udp_rx_bytes, stats_.udp_tx_bytes});
             send_handshake(protocol_v5_.tick(now));
 
             if (
@@ -266,15 +265,9 @@ protected:
 private:
     void handle_control_request() {
         control_->handle([this] {
-            write_stats(true);
-            if (options_.stats_file.empty())
-                return std::string("error=stats_file_not_configured\n");
-            std::ifstream input(options_.stats_file);
-            if (not input)
-                return std::string("error=stats_snapshot_unavailable\n");
-            return std::string(
-                std::istreambuf_iterator<char>(input),
-                std::istreambuf_iterator<char>());
+            std::ostringstream output;
+            format_stats(output);
+            return output.str();
         });
     }
 
@@ -284,7 +277,7 @@ private:
             tun_rx_buffer_.data(), tun_rx_buffer_.size());
         if (received <= 0) return false;
 
-        tx_sample_active_ = stats_enabled() and tx_processing_.select();
+        tx_sample_active_ = tx_processing_.select();
         if (tx_sample_active_) tx_sample_start_ = ProcessingStats::Clock::now();
         const std::size_t packet_size = static_cast<std::size_t>(received);
         ++stats_.tun_rx_packets;
@@ -307,7 +300,7 @@ private:
             udp_rx_buffer_.data(), udp_rx_buffer_.size(), source, source_length);
         if (received <= 0) return false;
 
-        rx_sample_active_ = stats_enabled() and rx_processing_.select();
+        rx_sample_active_ = rx_processing_.select();
         if (rx_sample_active_) rx_sample_start_ = ProcessingStats::Clock::now();
         ++stats_.udp_rx_packets;
         stats_.udp_rx_bytes += static_cast<std::uint64_t>(received);
@@ -662,7 +655,7 @@ private:
             not receive_session->reassembly.accept(
                 packet,
                 reassembled_packet_,
-                stats_enabled() ? &reassembly_span_ : nullptr)) {
+                &reassembly_span_)) {
 
             return;
         }
@@ -1396,31 +1389,24 @@ private:
         send_mtu_probe(candidate);
     }
 
-    bool stats_enabled() const {
+    bool stats_file_enabled() const {
         return not options_.stats_disabled and not options_.stats_file.empty();
     }
 
     void update_stats_control() {
         const auto request = take_stats_requests();
-        if (request.toggle) {
+        if (request.toggle)
             options_.stats_disabled = not options_.stats_disabled;
-            if (stats_enabled()) {
-                // Exclude bytes accumulated while sampling was paused.
-                throughput_ = ThroughputStats {};
-                throughput_.update(std::chrono::steady_clock::now(), {
-                    stats_.tun_rx_bytes, stats_.tun_tx_bytes,
-                    stats_.udp_rx_bytes, stats_.udp_tx_bytes});
-            }
-        }
-        if (request.snapshot or (request.toggle and stats_enabled()))
+        if (request.snapshot or (request.toggle and stats_file_enabled()))
             write_stats(request.snapshot);
     }
 
-    void write_stats(bool snapshot = false) {
-        if (not stats_write_requested(not options_.stats_file.empty(),
-                                      options_.stats_disabled, snapshot)) return;
-
+    // One in-memory snapshot format for both the socket and optional file export.
+    void format_stats(std::ostream& output) {
         const auto now_steady = std::chrono::steady_clock::now();
+        throughput_.update(now_steady, {
+            stats_.tun_rx_bytes, stats_.tun_tx_bytes,
+            stats_.udp_rx_bytes, stats_.udp_tx_bytes});
         const auto uptime =
             std::chrono::duration_cast<std::chrono::seconds>(
                 now_steady - started_at_).count();
@@ -1430,6 +1416,89 @@ private:
         const auto updated_unix =
             std::chrono::duration_cast<std::chrono::seconds>(
                 now_system.time_since_epoch()).count();
+
+        output
+            << "format=txt\n"
+            << "format_version=1\n"
+            << "pid=" << ::getpid() << "\n"
+            << "tunnel_id=" << tunnel_id_ << "\n"
+            << "mode=" << (server_mode_ ? "server" : "client") << "\n"
+            << "updated_unix=" << updated_unix << "\n"
+            << "uptime_seconds=" << uptime << "\n"
+            << "stats_enabled=" << (stats_file_enabled() ? 1 : 0) << "\n"
+            << "tun_rx_packets=" << stats_.tun_rx_packets << "\n"
+            << "tun_rx_bytes=" << stats_.tun_rx_bytes << "\n"
+            << "tun_tx_packets=" << stats_.tun_tx_packets << "\n"
+            << "tun_tx_bytes=" << stats_.tun_tx_bytes << "\n"
+            << "udp_rx_packets=" << stats_.udp_rx_packets << "\n"
+            << "udp_rx_bytes=" << stats_.udp_rx_bytes << "\n"
+            << "udp_tx_packets=" << stats_.udp_tx_packets << "\n"
+            << "udp_tx_bytes=" << stats_.udp_tx_bytes << "\n"
+            << "data_tx_packets=" << stats_.data_tx_packets << "\n"
+            << "data_rx_packets=" << stats_.data_rx_packets << "\n"
+            << "fragments_tx=" << stats_.fragments_tx << "\n"
+            << "fragments_rx=" << stats_.fragments_rx << "\n"
+            << "drops_protocol=" << stats_.drops_protocol << "\n"
+            << "drops_tunnel_id=" << stats_.drops_tunnel_id << "\n"
+            << "drops_replay=" << stats_.drops_replay << "\n"
+            << "init_timestamp_rejected=" << stats_.init_timestamp_rejected << "\n"
+            << "init_nonce_capacity_rejected=" << stats_.init_nonce_capacity_rejected << "\n"
+            << "drops_mtu=" << stats_.drops_mtu << "\n"
+            << "drops_process=" << stats_.drops_process << "\n"
+            << "udp_send_errors=" << stats_.udp_send_errors << "\n"
+            << "tun_write_errors=" << stats_.tun_write_errors << "\n"
+            << "switch_rx_packets=" << stats_.switch_rx_packets << "\n"
+            << "switch_rx_bytes=" << stats_.switch_rx_bytes << "\n"
+            << "switch_tx_packets=" << stats_.switch_tx_packets << "\n"
+            << "switch_tx_bytes=" << stats_.switch_tx_bytes << "\n"
+            << "switch_drops=" << stats_.switch_drops << "\n"
+            << "switch_send_errors=" << stats_.switch_send_errors << "\n"
+            << "switch_connected=" << (switch_ and switch_->connected() ? 1 : 0) << "\n"
+            << "switch_disconnects=" << stats_.switch_disconnects << "\n"
+            << "switch_reconnect_attempts=" << stats_.switch_reconnect_attempts << "\n"
+            << "switch_reconnects=" << stats_.switch_reconnects << "\n"
+            << "switch_socket_errors=" << stats_.switch_socket_errors << "\n"
+            << "switch_socket_eacces=" << stats_.switch_socket_eacces << "\n"
+            << "switch_socket_enoent=" << stats_.switch_socket_enoent << "\n"
+            << "switch_socket_econnrefused=" << stats_.switch_socket_econnrefused << "\n"
+            << "switch_socket_other_errors=" << stats_.switch_socket_other_errors << "\n"
+            << "switch_last_error_ts=" << stats_.switch_last_error_ts << "\n"
+            << "switch_last_error_no=" << stats_.switch_last_error_no << "\n"
+            << "event_poll_overload=" << (adaptive_polling_.overloaded() ? 1 : 0) << "\n"
+            << "event_poll_busy_streak=" << adaptive_polling_.busy_streak() << "\n"
+            << "event_poll_batch=" << adaptive_polling_.batch_size() << "\n"
+            << "event_poll_overload_entries=" << adaptive_polling_.overload_entries() << "\n"
+            << "event_poll_backlog_confirmations=" << adaptive_polling_.backlog_confirmations() << "\n"
+            << "event_poll_slice_limit_hits=" << adaptive_polling_.slice_limit_hits() << "\n"
+            << std::fixed << std::setprecision(3)
+            << "rtt_last_ms=" << stats_.rtt_last_ms << "\n"
+            << "rtt_min_ms=" << stats_.rtt_min_ms << "\n"
+            << "rtt_max_ms=" << stats_.rtt_max_ms << "\n"
+            << "rtt_avg_ms=" << stats_.rtt_avg_ms << "\n"
+            << "rtt_jitter_ms=" << stats_.rtt_jitter_ms << "\n"
+            << std::defaultfloat
+            << "rtt_samples=" << stats_.rtt_samples << "\n"
+            << "rtt_lost=" << stats_.rtt_lost << "\n"
+            << "pmtud=" << (options_.pmtud_auto ? "auto" : "off") << "\n"
+            << "transport_mtu_configured=" << options_.transport_mtu << "\n"
+            << "transport_mtu_active=" << active_transport_mtu_ << "\n"
+            << "pmtud_known_good=" << pmtud_known_good_ << "\n"
+            << "pmtud_known_bad=" << pmtud_known_bad_ << "\n"
+            << "pmtud_probes_sent=" << stats_.pmtud_probes_sent << "\n"
+            << "pmtud_probes_ok=" << stats_.pmtud_probes_ok << "\n"
+            << "pmtud_probes_lost=" << stats_.pmtud_probes_lost << "\n";
+
+        protocol_v5_.write_stats(output, now_steady);
+        output << "processing_sample_interval=" << ProcessingStats::sample_interval << "\n";
+        throughput_.write(output);
+        tx_processing_.write(output, "tx_processing");
+        rx_processing_.write(output, "rx_processing");
+        reassembly_span_.write(output, "reassembly_span");
+    }
+
+    void write_stats(bool snapshot = false) {
+        if (not stats_write_requested(not options_.stats_file.empty(),
+                                      options_.stats_disabled, snapshot)) return;
 
         const std::string temporary_file =
             options_.stats_file +
@@ -1446,83 +1515,7 @@ private:
                 return;
             }
 
-            output
-                << "format=txt\n"
-                << "format_version=1\n"
-                << "pid=" << ::getpid() << "\n"
-                << "tunnel_id=" << tunnel_id_ << "\n"
-                << "mode=" << (server_mode_ ? "server" : "client") << "\n"
-                << "updated_unix=" << updated_unix << "\n"
-                << "uptime_seconds=" << uptime << "\n"
-                << "stats_enabled=" << (stats_enabled() ? 1 : 0) << "\n"
-                << "tun_rx_packets=" << stats_.tun_rx_packets << "\n"
-                << "tun_rx_bytes=" << stats_.tun_rx_bytes << "\n"
-                << "tun_tx_packets=" << stats_.tun_tx_packets << "\n"
-                << "tun_tx_bytes=" << stats_.tun_tx_bytes << "\n"
-                << "udp_rx_packets=" << stats_.udp_rx_packets << "\n"
-                << "udp_rx_bytes=" << stats_.udp_rx_bytes << "\n"
-                << "udp_tx_packets=" << stats_.udp_tx_packets << "\n"
-                << "udp_tx_bytes=" << stats_.udp_tx_bytes << "\n"
-                << "data_tx_packets=" << stats_.data_tx_packets << "\n"
-                << "data_rx_packets=" << stats_.data_rx_packets << "\n"
-                << "fragments_tx=" << stats_.fragments_tx << "\n"
-                << "fragments_rx=" << stats_.fragments_rx << "\n"
-                << "drops_protocol=" << stats_.drops_protocol << "\n"
-                << "drops_tunnel_id=" << stats_.drops_tunnel_id << "\n"
-                << "drops_replay=" << stats_.drops_replay << "\n"
-                << "init_timestamp_rejected=" << stats_.init_timestamp_rejected << "\n"
-                << "init_nonce_capacity_rejected=" << stats_.init_nonce_capacity_rejected << "\n"
-                << "drops_mtu=" << stats_.drops_mtu << "\n"
-                << "drops_process=" << stats_.drops_process << "\n"
-                << "udp_send_errors=" << stats_.udp_send_errors << "\n"
-                << "tun_write_errors=" << stats_.tun_write_errors << "\n"
-                << "switch_rx_packets=" << stats_.switch_rx_packets << "\n"
-                << "switch_rx_bytes=" << stats_.switch_rx_bytes << "\n"
-                << "switch_tx_packets=" << stats_.switch_tx_packets << "\n"
-                << "switch_tx_bytes=" << stats_.switch_tx_bytes << "\n"
-                << "switch_drops=" << stats_.switch_drops << "\n"
-                << "switch_send_errors=" << stats_.switch_send_errors << "\n"
-                << "switch_connected=" << (switch_ and switch_->connected() ? 1 : 0) << "\n"
-                << "switch_disconnects=" << stats_.switch_disconnects << "\n"
-                << "switch_reconnect_attempts=" << stats_.switch_reconnect_attempts << "\n"
-                << "switch_reconnects=" << stats_.switch_reconnects << "\n"
-                << "switch_socket_errors=" << stats_.switch_socket_errors << "\n"
-                << "switch_socket_eacces=" << stats_.switch_socket_eacces << "\n"
-                << "switch_socket_enoent=" << stats_.switch_socket_enoent << "\n"
-                << "switch_socket_econnrefused=" << stats_.switch_socket_econnrefused << "\n"
-                << "switch_socket_other_errors=" << stats_.switch_socket_other_errors << "\n"
-                << "switch_last_error_ts=" << stats_.switch_last_error_ts << "\n"
-                << "switch_last_error_no=" << stats_.switch_last_error_no << "\n"
-                << "event_poll_overload=" << (adaptive_polling_.overloaded() ? 1 : 0) << "\n"
-                << "event_poll_busy_streak=" << adaptive_polling_.busy_streak() << "\n"
-                << "event_poll_batch=" << adaptive_polling_.batch_size() << "\n"
-                << "event_poll_overload_entries=" << adaptive_polling_.overload_entries() << "\n"
-                << "event_poll_backlog_confirmations=" << adaptive_polling_.backlog_confirmations() << "\n"
-                << "event_poll_slice_limit_hits=" << adaptive_polling_.slice_limit_hits() << "\n"
-                << std::fixed << std::setprecision(3)
-                << "rtt_last_ms=" << stats_.rtt_last_ms << "\n"
-                << "rtt_min_ms=" << stats_.rtt_min_ms << "\n"
-                << "rtt_max_ms=" << stats_.rtt_max_ms << "\n"
-                << "rtt_avg_ms=" << stats_.rtt_avg_ms << "\n"
-                << "rtt_jitter_ms=" << stats_.rtt_jitter_ms << "\n"
-                << std::defaultfloat
-                << "rtt_samples=" << stats_.rtt_samples << "\n"
-                << "rtt_lost=" << stats_.rtt_lost << "\n"
-                << "pmtud=" << (options_.pmtud_auto ? "auto" : "off") << "\n"
-                << "transport_mtu_configured=" << options_.transport_mtu << "\n"
-                << "transport_mtu_active=" << active_transport_mtu_ << "\n"
-                << "pmtud_known_good=" << pmtud_known_good_ << "\n"
-                << "pmtud_known_bad=" << pmtud_known_bad_ << "\n"
-                << "pmtud_probes_sent=" << stats_.pmtud_probes_sent << "\n"
-                << "pmtud_probes_ok=" << stats_.pmtud_probes_ok << "\n"
-                << "pmtud_probes_lost=" << stats_.pmtud_probes_lost << "\n";
-
-            protocol_v5_.write_stats(output, now_steady);
-            output << "processing_sample_interval=" << ProcessingStats::sample_interval << "\n";
-            throughput_.write(output);
-            tx_processing_.write(output, "tx_processing");
-            rx_processing_.write(output, "rx_processing");
-            reassembly_span_.write(output, "reassembly_span");
+            format_stats(output);
             output.flush();
 
             if (not output) {

@@ -125,7 +125,7 @@ and the server UDP port.
 | --- | --- |
 | `--pfs` | Require X25519 + AKDF + Ascon-AEAD128 on both endpoints |
 | `--encrypt-ascon` | Require Ascon-AEAD128 without PFS |
-| `--no-stats` | Disable automatic statistics writes and optional sampling |
+| `--no-stats` | Disable automatic stats file writes; keep live metrics and socket queries |
 | `--client-switch <socket> <port-id> <label>` | Connect the local/client side to an existing switch listener |
 | `--server-switch <socket> <port-id> <label>` | Connect the remote/server side to an existing switch listener |
 | `--client-switch-exit-node` | Retain the client TUN and permit IPC `EXIT` delivery |
@@ -334,20 +334,22 @@ PMTUD state, active suite, session readiness, and handshake/rekey counters.
 See [statistics field definitions](docs/DETAILS.md#session-suite-and-rekey-statistics).
 The standalone binary also accepts `--debug` and `--quiet` for logging.
 
-Start with `--no-stats` to pause automatic writes and optional latency/throughput
-sampling. Control each running process separately using its PID:
+Start with `--no-stats` to pause automatic file writes. Counters and sampled
+latency/throughput metrics continue updating in memory. Control each process
+separately using its PID:
 
 ```bash
-sudo kill -USR1 <pid>  # toggle automatic statistics
+sudo kill -USR1 <pid>  # toggle automatic stats file writes
 sudo kill -USR2 <pid>  # write one snapshot, even when disabled
 ```
 
 The bootstrap retains the stats destination when disabled. For direct binary
 use, supply `--stats-file <path>` even with `--no-stats` to allow later writes.
-Cumulative counters continue while paused; the last file stays unchanged, so
-check `updated_unix` for age. `stats_enabled` records the automatic mode.
-Throughput windows restart when enabled; snapshots while paused retain the
-last optional sampling history.
+The last file stays unchanged while paused, so check `updated_unix` for age.
+`stats_enabled` records automatic file export, not metric collection. Toggling
+export does not reset throughput or latency history. `tuntomctl <control-socket>
+show stats` returns current metrics directly from memory, even without a configured
+stats file, and never reads or writes that file.
 
 ### Networking and hooks
 

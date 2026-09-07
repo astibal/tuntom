@@ -84,3 +84,9 @@ runs it automatically when both are available.
 
 `mk_switch_args_test.py` checks per-side switch argument validation, exit-node
 dependencies and whether pure switch sides correctly suppress TUN setup.
+
+`stats_socket_test.py` checks live socket snapshots with no stats path and an
+unusable path, untouched/missing files under `--no-stats`, continued processing
+and reassembly-span sampling, completed throughput buckets, file-only SIGUSR1
+toggles without history resets, and explicit SIGUSR2 file snapshots. Uses only
+disposable unprivileged switch/UDP processes; run automatically by `run.sh`.

@@ -27,6 +27,8 @@ if command -v python3 >/dev/null 2>&1; then
         "${build_dir}/tuntom-switch" "${build_dir}/tuntomctl"
     python3 "${tests_dir}/switch_tunnel_test.py" \
         "${build_dir}/tuntom" "${build_dir}/tuntom-switch" "${build_dir}/tuntomctl"
+    python3 "${tests_dir}/stats_socket_test.py" \
+        "${build_dir}/tuntom" "${build_dir}/tuntom-switch" "${build_dir}/tuntomctl"
 else
     echo "SKIP: tuntom-switch process test requires python3"
 fi
