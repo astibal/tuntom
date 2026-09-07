@@ -9,7 +9,11 @@ Usage: $0 <id 1..255> <host|user@host> [options]
 Tunnel options:
   --snat | --no-snat
   --mss-clamp | --no-mss-clamp
-  --crypto-auth-only | --no-stats | --stop
+  --crypto-auth-only | --no-stats | --all-tools | --stop
+
+Build options:
+  --all-tools  Also build/install tuntom-switch, tuntom-switch-adapter and
+               tuntomctl on both local and remote hosts
 
 Switch ports (the tuntom-switch listener must already be running):
   --client-switch <socket> <port-id> <label>
@@ -31,6 +35,7 @@ shift 2
 tuntom_snat=0
 tuntom_mss_clamp=1
 stop_requested=0
+all_tools=0
 crypto_option=""
 stats_option=""
 client_switch_socket=""
@@ -61,6 +66,9 @@ while (( $# > 0 )); do
             ;;
         --crypto-auth-only)
             crypto_option="--crypto-auth-only"
+            ;;
+        --all-tools)
+            all_tools=1
             ;;
         --client-switch|--server-switch)
             switch_side="${1#--}"
@@ -160,6 +168,10 @@ if [[ -n "$server_switch_socket" ]]; then
 fi
 client_switch_options="$(shell_join "${client_switch_args[@]}")"
 server_switch_options="$(shell_join "${server_switch_args[@]}")"
+switch_enabled=0
+if [[ -n "$client_switch_socket" || -n "$server_switch_socket" ]]; then
+    switch_enabled=1
+fi
 
 if ! [[ "$id" =~ ^[0-9]+$ ]] || (( id < 1 || id > 255 )); then
     echo "Tunnel id must be in range 1..255" >&2
@@ -227,11 +239,23 @@ tuntom_post_hook="${TUNTOM_POST_HOOK:-/etc/tuntom/tuntom-post.sh}"
 
 local_bin="/tmp/tuntom_${id}c"
 remote_bin="/tmp/tuntom_${id}s"
+local_switch_bin="/tmp/tuntom-switch"
+local_adapter_bin="/tmp/tuntom-switch-adapter"
+local_control_bin="/tmp/tuntomctl"
+remote_switch_bin="/tmp/tuntom-switch"
+remote_adapter_bin="/tmp/tuntom-switch-adapter"
+remote_control_bin="/tmp/tuntomctl"
 
 # Build into separate staging files so a failed or slow compilation never
 # touches the binaries used by the currently running tunnel.
 local_stage="${local_bin}.new.$$"
 remote_stage="${remote_bin}.new.$$"
+local_switch_stage="${local_switch_bin}.new.$$"
+local_adapter_stage="${local_adapter_bin}.new.$$"
+local_control_stage="${local_control_bin}.new.$$"
+remote_switch_stage="${remote_switch_bin}.new.$$"
+remote_adapter_stage="${remote_adapter_bin}.new.$$"
+remote_control_stage="${remote_control_bin}.new.$$"
 
 remote_net_file="/tmp/tuntom-net-${id}.sh"
 
@@ -366,8 +390,10 @@ stage_active=1
 
 cleanup_staging() {
     if (( stage_active )); then
-        rm -f "$local_stage" 2>/dev/null || true
-        ssh "$remote" "rm -f '${remote_stage}'" >/dev/null 2>&1 || true
+        rm -f "$local_stage" "$local_switch_stage" "$local_adapter_stage" \
+            "$local_control_stage" 2>/dev/null || true
+        ssh "$remote" "rm -f '${remote_stage}' '${remote_switch_stage}' \
+            '${remote_adapter_stage}' '${remote_control_stage}'" >/dev/null 2>&1 || true
     fi
 }
 
@@ -659,9 +685,20 @@ echo "  post hook:  ${tuntom_post_hook} (local file, runs local+remote)"
 echo "  protocol:   v5 / Ascon auth + replay protection + fragmentation"
 
 echo "[1] Compile local staging binary"
-rm -f "$local_stage"
+rm -f "$local_stage" "$local_switch_stage" "$local_adapter_stage" "$local_control_stage"
 g++ -std=c++17 -O3 -march=native -mtune=native -Wall -Wextra -pedantic "$source_dir/main.cpp" -o "$local_stage"
 test -x "$local_stage"
+if (( all_tools )); then
+    g++ -std=c++17 -O3 -march=native -mtune=native -Wall -Wextra -pedantic \
+        "$source_dir/switch/main.cpp" -o "$local_switch_stage"
+    g++ -std=c++17 -O3 -march=native -mtune=native -Wall -Wextra -pedantic \
+        "$source_dir/adapter/main.cpp" -o "$local_adapter_stage"
+    g++ -std=c++17 -O3 -march=native -mtune=native -Wall -Wextra -pedantic \
+        "$source_dir/control/main.cpp" -o "$local_control_stage"
+    test -x "$local_switch_stage"
+    test -x "$local_adapter_stage"
+    test -x "$local_control_stage"
+fi
 
 echo "[2] Compile remote staging binary"
 ssh -o BatchMode=yes "$remote" "rm -f '${remote_stage}'"
@@ -675,10 +712,21 @@ trap 'exit 143' TERM
 tar -xf - -C "$build_dir"
 g++ -std=c++17 -O3 -march=native -mtune=native -Wall -Wextra -pedantic "$build_dir/src/main.cpp" -o "$stage"
 test -x "$stage"
+if [ "$all_tools" = 1 ]; then
+    g++ -std=c++17 -O3 -march=native -mtune=native -Wall -Wextra -pedantic "$build_dir/src/switch/main.cpp" -o "$switch_stage"
+    g++ -std=c++17 -O3 -march=native -mtune=native -Wall -Wextra -pedantic "$build_dir/src/adapter/main.cpp" -o "$adapter_stage"
+    g++ -std=c++17 -O3 -march=native -mtune=native -Wall -Wextra -pedantic "$build_dir/src/control/main.cpp" -o "$control_stage"
+    test -x "$switch_stage"
+    test -x "$adapter_stage"
+    test -x "$control_stage"
+fi
 REMOTE_BUILD
 )
 tar -C "$script_dir" -cf - src | \
-    ssh -o BatchMode=yes "$remote" "stage='${remote_stage}'; ${remote_build_command}"
+    ssh -o BatchMode=yes "$remote" \
+        "stage='${remote_stage}'; all_tools='${all_tools}'; \
+         switch_stage='${remote_switch_stage}'; adapter_stage='${remote_adapter_stage}'; \
+         control_stage='${remote_control_stage}'; ${remote_build_command}"
 
 echo "[3] Deploy network helper"
 ssh "$remote" "cat > '${remote_net_file}' && chmod 700 '${remote_net_file}'" < "$net_file"
@@ -718,6 +766,15 @@ ssh "$remote" "ip link del '${server_if}' 2>/dev/null || true"
 echo "[6] Install staged binaries"
 "${root_cmd[@]}" mv -f "$local_stage" "$local_bin"
 ssh "$remote" "mv -f '${remote_stage}' '${remote_bin}'"
+if (( all_tools )); then
+    "${root_cmd[@]}" mv -f "$local_switch_stage" "$local_switch_bin"
+    "${root_cmd[@]}" mv -f "$local_adapter_stage" "$local_adapter_bin"
+    "${root_cmd[@]}" mv -f "$local_control_stage" "$local_control_bin"
+    ssh "$remote" \
+        "mv -f '${remote_switch_stage}' '${remote_switch_bin}' && \
+         mv -f '${remote_adapter_stage}' '${remote_adapter_bin}' && \
+         mv -f '${remote_control_stage}' '${remote_control_bin}'"
+fi
 stage_active=0
 
 echo "[7] Start remote server"
@@ -782,30 +839,42 @@ else
 fi
 
 echo "[11] Test"
-if (( client_has_tun && server_has_tun )) && "${root_cmd[@]}" ping -c 3 "$server_ip"; then
+ping_failure=""
+if (( client_has_tun && server_has_tun )); then
+    if ! "${root_cmd[@]}" ping -c 3 "$server_ip"; then
+        ping_failure="IPv4 ping into the tunnel failed"
+    fi
+
     ipv6_ping=ping
     if command -v ping6 >/dev/null 2>&1; then
         ipv6_ping=ping6
     fi
 
-    if "${root_cmd[@]}" "$ipv6_ping" -c 3 "$server_ipv6"; then
+    if [[ -z "$ping_failure" ]] && \
+       "${root_cmd[@]}" "$ipv6_ping" -c 3 "$server_ipv6"; then
         echo "Tunnel is UP (IPv4 + IPv6)"
     else
-        echo "IPv6 ping failed"
-        echo "IPv6 address state:"
-        ip -6 address show dev "$client_if" || true
-        echo "IPv6 route state:"
-        ip -6 route get "$server_ipv6" || true
-        echo "Local log:  $local_log"
-        echo "Remote log: $remote_log"
-        exit 2
+        if [[ -z "$ping_failure" ]]; then
+            ping_failure="IPv6 ping into the tunnel failed"
+        fi
+        if (( switch_enabled )); then
+            echo "WARNING: ${ping_failure}, but this is probably expected when using the switch"
+        else
+            echo "$ping_failure"
+            if [[ "$ping_failure" == IPv6* ]]; then
+                echo "IPv6 address state:"
+                ip -6 address show dev "$client_if" || true
+                echo "IPv6 route state:"
+                ip -6 route get "$server_ipv6" || true
+            fi
+            echo "Local log:  $local_log"
+            echo "Remote log: $remote_log"
+            exit 2
+        fi
     fi
-elif (( client_has_tun && server_has_tun )); then
-    echo "Ping failed"
-    echo "Local log:  $local_log"
-    echo "Remote log: $remote_log"
-    exit 2
-else
+fi
+
+if [[ -n "$ping_failure" ]] || (( ! client_has_tun || ! server_has_tun )); then
     sleep 1
     local_pid="$(cat "$local_pid_file" 2>/dev/null || true)"
     if ! [[ "$local_pid" =~ ^[0-9]+$ ]] ||
@@ -816,5 +885,9 @@ else
         echo "Remote log: $remote_log"
         exit 2
     fi
-    echo "Tunnel processes are UP (switch mode; ping skipped)"
+    if [[ -n "$ping_failure" ]]; then
+        echo "Tunnel processes are UP (switch mode; tunnel ping failure accepted)"
+    else
+        echo "Tunnel processes are UP (switch mode; ping skipped)"
+    fi
 fi
