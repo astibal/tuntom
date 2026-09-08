@@ -23,7 +23,7 @@ host:
 - nftables / iptables
 - transparent proxying
 - smithproxy
-- honeynet routing
+- private service ingress
 - IDS/IPS
 - packet capture
 - custom applications
@@ -523,7 +523,7 @@ It can be disabled using:
 The compensation assumes that the packet entering tuntom was already forwarded
 by the sending Linux host before it entered the sending TUN interface.
 
-That assumption is correct for the main routed/honeynet use case.
+That assumption is correct for routed site-to-site and service ingress traffic.
 
 It is not correct for traffic generated locally on a tuntom endpoint.
 
@@ -801,7 +801,7 @@ Typical surrounding configuration may include:
 - DNAT
 - SNAT/MASQUERADE
 - forwarding rules
-- honeynet routes
+- private service routes
 - transparent proxying
 
 This separation is intentional.
@@ -822,37 +822,59 @@ The resulting fwmark selects the tunnel-specific routing table. Packets arriving
 from the TUN as `INVALID` or `UNTRACKED` are dropped because no persistent
 return path can be associated with them.
 
-## Honeynet use case
+## Public ingress for a private service
 
-One important deployment model is:
+A site can publish an internal HTTPS service through a public edge gateway.
+The site router initiates the UDP tunnel to the edge, so the service needs no
+public address. TLS terminates on the service itself.
 
 ```text
-Internet
+Internet client: 203.0.113.25
     |
-remote public probe
+    | HTTPS to 198.51.100.42:443
+    v
+Public edge gateway (remote/server)
+    ens3: 198.51.100.42
+    DNAT -> 10.80.20.10:443
+    ut42s: 10.254.42.2
     |
-tuntom
+    | tuntom 42 / UDP
+    v
+Site router (local/client)
+    ut42c: 10.254.42.1
+    br-services: 10.80.20.1/24
     |
-core
-    |
-honeynet
+    | service VLAN: 10.80.20.0/24
+    v
+HTTPS service: 10.80.20.10:443
+    default gateway: 10.80.20.1
 ```
 
-The public probe can DNAT selected public services into the honeynet without
-SNAT, preserving the original Internet source address.
+The edge DNATs only its published TCP port and routes the service's `/32`
+through the tunnel. With `--no-snat`, the service sees the original client IP,
+which keeps application access logs and IP-based policy useful.
 
-The core can use tunnel-specific policy routing to ensure honeynet replies
-return through the same probe.
+The site router sends traffic sourced from this service through a dedicated
+tunnel policy table. The table contains the directly connected service VLAN
+and a default route through the TUN. Replies therefore return to the same edge,
+where conntrack reverses DNAT. Other hosts on the VLAN retain normal site
+routing. Add explicit routes for any additional private subnets the service
+must reach. This example uses one public ingress gateway for the service;
+multiple ingress gateways require a connection-aware return policy.
 
-Keeping the TUN MTU at the surrounding infrastructure's normal MTU reduces an
-obvious tunnel fingerprint.
+Both routers need IPv4 forwarding and firewall rules allowing the selected
+service and its replies. The service must use the site router as its default
+gateway. The example addresses are placeholders for the site's configuration.
 
-TTL/Hop-Limit compensation similarly hides one otherwise artificial routing hop
-for forwarded traffic.
+Keeping the TUN MTU aligned with the service network lets hosts retain their
+normal interface MTU while tuntom handles transport fragmentation. For forwarded
+traffic, TTL/Hop-Limit compensation accounts for reinjection into the receiving
+kernel; the locally generated traffic limitation described above still applies.
 
-Together these features make tuntom useful as a small transport primitive for
-geographically or logically remote honeynet probes while keeping the
-honeypot-side network behavior relatively normal.
+The [service ingress hook](../examples/tuntom-service-ingress-hook.example.sh)
+implements this topology, including per-side routes, DNAT and lifecycle cleanup.
+Configure the same file as both `TUNTOM_PRE_HOOK` and `TUNTOM_POST_HOOK` so setup
+runs at `post/up` and custom routing is removed at `pre/down`.
 
 ## Wireshark dissector
 

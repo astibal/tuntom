@@ -272,7 +272,7 @@ Hooks receive `TUNTOM_SIDE=local|remote`, `TUNTOM_ACTION=up|down`,
 `TUNTOM_PHASE=pre|post`, plus tunnel addresses, interface names, and networking
 settings. Use `post/up` to add custom routes or DNAT rules.
 See [hook context](docs/DETAILS.md#lifecycle-hooks) and the
-[honeynet example](examples/tuntom-honeynet-hook.example.sh).
+[service ingress example](examples/tuntom-service-ingress-hook.example.sh).
 
 ### Wireshark
 
