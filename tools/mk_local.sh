@@ -359,9 +359,9 @@ local_run() {
     chown "$socket_owner" "${stage}/owner-check"
     local_check_endpoints
     echo "[1] Compile staged $kind and tuntomctl"
-    "${CXX:-g++}" -std=c++17 -O3 -march=native -mtune=native -Wall -Wextra -pedantic \
+    "${CXX:-g++}" -std=c++17 -pthread -O3 -march=native -mtune=native -Wall -Wextra -pedantic \
         "${script_dir}/src/${kind}/main.cpp" -o "${stage}/main"
-    "${CXX:-g++}" -std=c++17 -O3 -march=native -mtune=native -Wall -Wextra -pedantic \
+    "${CXX:-g++}" -std=c++17 -pthread -O3 -march=native -mtune=native -Wall -Wextra -pedantic \
         "${script_dir}/src/control/main.cpp" -o "${stage}/ctl"
     for path in "${stage}/main" "${stage}/ctl"; do
         [[ -f "$path" && -s "$path" ]] || local_die "Compiler did not produce a binary: $path"

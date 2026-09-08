@@ -83,9 +83,10 @@ public:
         // The initial check must use the final runtime identity. Connecting as
         // root would hide permissions that make all later reconnects fail.
         try_switch_reconnect(std::chrono::steady_clock::now(), true);
+        logger.start();
 
         if (log_enabled(LogLevel::info)) {
-            std::cerr
+            LogLine()
                 << "tuntom id=" << tunnel_id_
                 << " tun-mtu=" << options_.tun_mtu
                 << " transport-mtu-configured=" << options_.transport_mtu
@@ -290,7 +291,7 @@ private:
         if (losses == reassembly_reported_losses_) return;
         reassembly_reported_losses_ = losses;
         if (not log_enabled(LogLevel::info)) return;
-        std::cerr << "Reassembly cumulative losses: evicted=" << m.capacity_evictions
+        LogLine() << "Reassembly cumulative losses: evicted=" << m.capacity_evictions
                   << " expired=" << m.expired_entries
                   << " late-fragments=" << m.late_fragment_drops
                   << " invalid=" << m.invalid_fragments
@@ -508,9 +509,9 @@ private:
                 const int send_error = errno;
 
                 if (log_enabled(LogLevel::info)) {
-                    std::cerr
+                    LogLine()
                         << "UDP send failed: "
-                        << std::strerror(send_error)
+                        << "errno=" << send_error
                         << "\n";
                 }
 
@@ -534,7 +535,7 @@ private:
             ++stats_.fragments_tx;
 
             if (log_enabled(LogLevel::debug)) {
-                std::cerr
+                LogLine()
                     << "FRAGMENT "
                     << (index + 1) << "/" << plan.count
                     << " msg=" << message_id
@@ -574,7 +575,7 @@ private:
                         char host[NI_MAXHOST] {}, service[NI_MAXSERV] {};
                         ::getnameinfo(reinterpret_cast<const sockaddr*>(&source), source_length,
                             host, sizeof(host), service, sizeof(service), NI_NUMERICHOST | NI_NUMERICSERV);
-                        std::cerr << "WARN INIT tunnel=" << packet.tunnel_id
+                        LogLine() << "WARN INIT tunnel=" << packet.tunnel_id
                             << " peer=[" << host << "]:" << service
                             << " observed_clock_offset=" << result.clock_offset
                             << "s allowed=+/-" << options_.init_window / 2 << "s"
@@ -620,7 +621,7 @@ private:
         }
 
         if (log_enabled(LogLevel::debug)) {
-            std::cerr
+            LogLine()
                 << "ACCEPT v"
                 << static_cast<unsigned>(packet.protocol_version)
                 << " seq=" << packet.sequence
@@ -785,9 +786,9 @@ private:
             ++stats_.tun_write_errors;
 
             if (log_enabled(LogLevel::info)) {
-                std::cerr
+                LogLine()
                     << "TUN write failed: "
-                    << std::strerror(errno)
+                    << "errno=" << errno
                     << "\n";
             }
         } else {
@@ -912,8 +913,7 @@ private:
         }
         if (error != last_switch_connect_error_) {
             log_info(
-                "Switch reconnect failed: " +
-                std::string(std::strerror(error)));
+                "Switch reconnect failed: errno=", error);
             last_switch_connect_error_ = error;
         }
         next_switch_reconnect_ = now + switch_reconnect_interval_;
@@ -1083,7 +1083,7 @@ private:
                 pmtud_upper_bound());
 
         if (log_enabled(LogLevel::debug)) {
-            std::cerr
+            LogLine()
                 << "PMTUD start: known-good="
                 << pmtud_known_good_
                 << " first-probe="
@@ -1106,7 +1106,7 @@ private:
         active_transport_mtu_ = min_transport_mtu;
 
         if (log_enabled(LogLevel::debug)) {
-            std::cerr
+            LogLine()
                 << "PMTUD restart: "
                 << reason
                 << "\n";
@@ -1119,7 +1119,7 @@ private:
         if (not protocol_v5_.ready()) return;
         if (pmtud_probe_pending_) {
             if (log_enabled(LogLevel::debug)) {
-                std::cerr
+                LogLine()
                     << "PMTUD send skipped: probe pending id="
                     << pmtud_probe_id_
                     << " mtu="
@@ -1136,7 +1136,7 @@ private:
 
         if (target_mtu <= overhead) {
             if (log_enabled(LogLevel::debug)) {
-                std::cerr
+                LogLine()
                     << "PMTUD send skipped: target-mtu="
                     << target_mtu
                     << " overhead="
@@ -1159,7 +1159,7 @@ private:
         if (encoded.empty()) return;
 
         if (log_enabled(LogLevel::debug)) {
-            std::cerr
+            LogLine()
                 << "PMTUD send probe: id="
                 << packet.message_id
                 << " target-mtu="
@@ -1183,16 +1183,14 @@ private:
 
         if (sent < 0) {
             if (log_enabled(LogLevel::info)) {
-                std::cerr
+                LogLine()
                     << "PMTUD probe send failed: id="
                     << packet.message_id
                     << " target-mtu="
                     << target_mtu
                     << " errno="
                     << send_error
-                    << " ("
-                    << std::strerror(send_error)
-                    << ")\n";
+                    << "\n";
             }
 
             ++stats_.udp_send_errors;
@@ -1204,7 +1202,7 @@ private:
             pmtud_known_bad_ = target_mtu;
 
             if (log_enabled(LogLevel::info)) {
-                std::cerr
+                LogLine()
                     << "PMTUD continuing below failed mtu="
                     << target_mtu
                     << "\n";
@@ -1219,7 +1217,7 @@ private:
             static_cast<std::uint64_t>(sent);
 
         if (log_enabled(LogLevel::debug)) {
-            std::cerr
+            LogLine()
                 << "PMTUD probe sent: id="
                 << packet.message_id
                 << " target-mtu="
@@ -1247,7 +1245,7 @@ private:
             udp_payload_size;
 
         if (log_enabled(LogLevel::debug)) {
-            std::cerr
+            LogLine()
                 << "PMTUD recv probe: id="
                 << packet.message_id
                 << " declared-mtu="
@@ -1289,16 +1287,14 @@ private:
         if (sent < 0) {
             ++stats_.udp_send_errors;
             if (log_enabled(LogLevel::info)) {
-                std::cerr
+                LogLine()
                     << "PMTUD reply send failed: id="
                     << reply.message_id
                     << " mtu="
                     << reply.original_length
                     << " errno="
                     << send_error
-                    << " ("
-                    << std::strerror(send_error)
-                    << ")\n";
+                    << "\n";
             }
             return;
         }
@@ -1308,7 +1304,7 @@ private:
             static_cast<std::uint64_t>(sent);
 
         if (log_enabled(LogLevel::info)) {
-            std::cerr
+            LogLine()
                 << "PMTUD reply sent: id="
                 << reply.message_id
                 << " mtu="
@@ -1321,7 +1317,7 @@ private:
 
     void handle_mtu_reply(const Packet& packet) {
         if (log_enabled(LogLevel::info)) {
-            std::cerr
+            LogLine()
                 << "PMTUD recv reply: id="
                 << packet.message_id
                 << " mtu="
@@ -1356,7 +1352,7 @@ private:
             pmtud_known_good_;
 
         if (log_enabled(LogLevel::info)) {
-            std::cerr
+            LogLine()
                 << "PMTUD probe confirmed: id="
                 << packet.message_id
                 << " mtu="
@@ -1386,7 +1382,7 @@ private:
             pmtud_probe_size_;
 
         if (log_enabled(LogLevel::info)) {
-            std::cerr
+            LogLine()
                 << "PMTUD probe timeout: id="
                 << pmtud_probe_id_
                 << " mtu="
@@ -1410,7 +1406,7 @@ private:
                     pmtud_known_good_ + 1)) {
 
             if (log_enabled(LogLevel::info)) {
-                std::cerr
+                LogLine()
                     << "PMTUD complete: outer-mtu="
                     << active_transport_mtu_
                     << " max-fragment-payload="
@@ -1520,6 +1516,7 @@ private:
             << "switch_last_error_ts=" << stats_.switch_last_error_ts << "\n"
             << "switch_last_error_no=" << stats_.switch_last_error_no << "\n";
         recovery_.write_stats(output);
+        logger.write_stats(output);
         adaptive_polling_.write_stats(output);
         output << std::fixed << std::setprecision(3)
             << "rtt_last_ms=" << stats_.rtt_last_ms << "\n"
@@ -1562,7 +1559,7 @@ private:
                 std::ios::out | std::ios::trunc);
 
             if (not output) {
-                log_info("Unable to open stats file " + temporary_file);
+                log_info("Unable to open stats file ", temporary_file);
                 return;
             }
 
@@ -1570,7 +1567,7 @@ private:
             output.flush();
 
             if (not output) {
-                log_info("Unable to write stats file " + temporary_file);
+                log_info("Unable to write stats file ", temporary_file);
                 return;
             }
         }
@@ -1581,10 +1578,7 @@ private:
                 options_.stats_file.c_str()) != 0) {
 
             log_info(
-                "Unable to publish stats file " +
-                options_.stats_file +
-                ": " +
-                std::strerror(errno));
+                "Unable to publish stats file ", options_.stats_file, ": errno=", errno);
             std::remove(temporary_file.c_str());
         }
     }

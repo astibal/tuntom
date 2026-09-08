@@ -53,7 +53,7 @@ def main():
                                                "-Wl,--wrap=open", "-Wl,--wrap=ioctl"]),
                 (ctl, "control/main.cpp", []),
             ):
-                subprocess.run([os.environ.get("CXX", "g++"), "-std=c++17", "-O2",
+                subprocess.run([os.environ.get("CXX", "g++"), "-std=c++17", "-pthread", "-O2",
                                 str(ROOT / "src" / source), *extra, "-o", str(output)], check=True)
 
         env = os.environ.copy()

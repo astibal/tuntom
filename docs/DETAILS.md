@@ -1111,6 +1111,54 @@ the control handler attempts a static `error=out_of_memory` reply. Startup
 configuration/device errors still fail startup. Endpoint recovery, FD capacity,
 blocking log output and synchronous filesystem I/O are separate concerns.
 
+### Runtime logging
+
+All three daemons ignore SIGPIPE from startup and submit runtime messages to a
+single-producer queue of 64 records, each at most 1 KiB. Formatting uses bounded
+stack storage without heap allocation or iostream locks. One detached POSIX
+writer with a 64 KiB stack performs stderr I/O. It starts after any privilege
+drop, owns no session state and is never joined. The process-global queue has
+no destructor, so a stuck writer cannot access a destroyed owner at shutdown.
+Thread creation failure disables logging for this process lifetime. Missing
+inherited stderr is detected before packet sockets can reuse descriptor 2;
+logging stays disabled even if that number later belongs to another endpoint.
+Runtime never falls back to synchronous logging or creates replacement writers.
+
+A shared token bucket allows 64 messages initially and replenishes 20 per
+second, including `--debug`. Full queues and exhausted tokens drop the new
+message. Long messages end with ` [truncated]`. The writer sleeps for 100 ms
+when idle and one second after output errors; failed messages are discarded.
+Short writes get at most four attempts. A blocked syscall can occupy this one
+thread indefinitely, with the packet loop still running. Shutdown does not
+flush pending records.
+
+Regular files inherited on stderr are capped at 16 MiB. A message that would
+exceed the cap is discarded with `EFBIG`; the logger never deletes or truncates
+the file. Use external `copytruncate` rotation with a dedicated log per daemon.
+Seeking to the current end before each record resumes at the new end after
+truncation. A concurrent copytruncate can lose an in-flight record or race with
+its seek/write and leave a hole; this remains within the 16 MiB bound.
+Renaming the file alone does not change the inherited descriptor. For pipes,
+sockets and terminals, retention belongs to the receiver. Multiple independent
+writers to the same file are outside the file-size guarantee.
+
+| Counter | Meaning |
+| --- | --- |
+| `log_worker_started` | Writer creation succeeded (1); not a health/readiness check |
+| `log_start_errors` | Signal setup, inherited stderr or writer initialization failures |
+| `log_dropped` | Total records discarded by limiting, queue pressure, unavailable writer or output errors |
+| `log_rate_limited` | Drops due to the shared message rate limit; included in `log_dropped` |
+| `log_truncated` | Oversize messages shortened by the formatter; can also be dropped later |
+| `log_write_errors` | Output check/write failures, including the regular-file size limit |
+| `log_last_errno` | Most recent output failure; retained after recovery |
+| `log_file_limit_drops` | Records rejected by the 16 MiB file cap |
+
+Metrics are present on all three control sockets and in tuntom stats exports.
+A log flood can suppress unrelated diagnostics through the shared limit. CLI
+usage and configuration errors before writer startup remain synchronous;
+`tuntomctl` retains its usual one-shot CLI output behavior. Stats-file export
+is still synchronous and is handled separately from logging (audit PF-04).
+
 ### Nonblocking switch connection
 
 `SwitchClient` creates its Unix `SOCK_SEQPACKET` socket with `SOCK_NONBLOCK`

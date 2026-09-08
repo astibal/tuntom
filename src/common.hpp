@@ -1,5 +1,6 @@
 #pragma once
 
+#include "logging.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
@@ -51,16 +52,21 @@ inline LogLevel log_level = LogLevel::info;
     return static_cast<int>(log_level) >= static_cast<int>(level);
 }
 
-[[maybe_unused]] inline void log_info(const std::string& message) {
-    if (log_enabled(LogLevel::info)) {
-        std::cerr << message << "\n";
-    }
+template<class... Parts>
+inline void log_info(const Parts&... parts) noexcept {
+    if (log_enabled(LogLevel::info)) (LogLine() << ... << parts);
 }
 
-[[maybe_unused]] inline void log_debug(const std::string& message) {
-    if (log_enabled(LogLevel::debug)) {
-        std::cerr << message << "\n";
-    }
+template<class... Parts>
+inline void log_debug(const Parts&... parts) noexcept {
+    if (log_enabled(LogLevel::debug)) (LogLine() << ... << parts);
+}
+
+// CLI/configuration diagnostics remain synchronous before the writer starts.
+// Runtime errors must use the same fail-open path even if thread creation failed.
+inline void log_fatal(const char* message) {
+    if (logger.attempted() or not logger.sink_available()) LogLine() << "ERROR: " << message;
+    else std::cerr << "ERROR: " << message << "\n";
 }
 
 } // namespace tuntom

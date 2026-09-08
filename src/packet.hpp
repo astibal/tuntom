@@ -120,7 +120,7 @@ struct Stats {
 };
 
 inline void dump_bytes(
-    const std::string& prefix,
+    std::string_view prefix,
     const std::uint8_t* data,
     std::size_t size,
     std::size_t max_bytes = 28) {
@@ -129,14 +129,13 @@ inline void dump_bytes(
         return;
     }
 
-    std::cerr << prefix << " " << size << " bytes:";
+    LogLine line;
+    line << prefix << " " << size << " bytes:";
 
-    const std::size_t count = std::min(size, max_bytes);
+    const std::size_t count = std::min({size, max_bytes, (AsyncLogger::record_size - 1) / 3});
     for (std::size_t i = 0; i < count; ++i) {
-        std::cerr << " " << std::hex << static_cast<unsigned>(data[i]);
+        line.hex_byte(data[i]);
     }
-
-    std::cerr << std::dec << "\n";
 }
 
 } // namespace tuntom

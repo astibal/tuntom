@@ -257,6 +257,13 @@ Statistics include traffic counters, throughput, sampled processing latency,
 PMTUD state, active suite, session readiness, and handshake/rekey counters.
 See [statistics field definitions](docs/DETAILS.md#session-suite-and-rekey-statistics).
 The standalone binary also accepts `--debug` and `--quiet` for logging.
+Runtime logging uses a bounded queue and a detached writer: unavailable output
+drops logs without waiting in the packet loop. Messages are limited to 1 KiB,
+with a 64-message burst and 20 messages/s thereafter, including debug output.
+An inherited regular-file log stops growing at 16 MiB; external `copytruncate`
+rotation permits writing to resume. Pipe/socket log collectors manage their own
+retention. Inspect the `log_*` control counters for suppressed logs and output
+errors; see [logging details](docs/DETAILS.md#runtime-logging).
 
 Start with `--no-stats` to pause automatic file writes. Counters and sampled
 latency/throughput metrics continue updating in memory. Control each process
@@ -345,7 +352,7 @@ ctest --test-dir /tmp/tuntom-build --output-on-failure
 Or compile directly:
 
 ```bash
-g++ -std=c++17 -O2 -Wall -Wextra -pedantic src/main.cpp -o /tmp/tuntom
+g++ -std=c++17 -pthread -O2 -Wall -Wextra -pedantic src/main.cpp -o /tmp/tuntom
 ```
 
 The regression runner also checks header self-containment and runs the dissector

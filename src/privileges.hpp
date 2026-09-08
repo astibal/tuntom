@@ -150,8 +150,7 @@ inline void drop_privileges() {
     verify_supplementary_groups(gid);
 
     log_info(
-        std::string("Privileges dropped and hardened as ") +
-        runtime_user + ":" + runtime_group);
+        "Privileges dropped and hardened as ", runtime_user, ":", runtime_group);
 }
 
 inline void harden_unprivileged_process() {

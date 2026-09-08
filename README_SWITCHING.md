@@ -77,6 +77,9 @@ traversal permissions. Both managed processes run as root.
 Private PID, saved endpoints, rules and log live under
 `/run/tuntom-mk/switch-<name>/` or `/run/tuntom-mk/adapter-<ifname>/` (root only).
 For example, `sudo tail -f /run/tuntom-mk/adapter-exit0/log`.
+Each daemon's regular-file log is capped at 16 MiB; external `copytruncate`
+rotation allows further logging. Full or broken output drops logs while packet
+forwarding continues; `log_*` control counters expose logging failures.
 The binaries (`main` and `tuntomctl`) live under
 `/var/lib/tuntom-mk/switch-<name>/` or `/var/lib/tuntom-mk/adapter-<ifname>/`;
 builds are staged on that same filesystem so installation uses atomic renames.

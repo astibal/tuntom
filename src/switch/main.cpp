@@ -1,3 +1,4 @@
+#include "../common.hpp"
 #include "../runtime_recovery.hpp"
 #include "../ipc/switch_protocol.hpp"
 #include "../adaptive_polling.hpp"
@@ -20,6 +21,7 @@
 #include <unordered_set>
 #include <vector>
 #include <poll.h>
+#include <sys/prctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -171,6 +173,10 @@ void close_connections(std::vector<Connection>& connections) {
 } // namespace
 
 int main(int argc, char** argv) {
+    // Deployment installs the executable as "main"; identify it in top/ps.
+    // This is cosmetic, so failure must not prevent startup.
+    (void)::prctl(PR_SET_NAME, "tuntom-switch", 0UL, 0UL, 0UL);
+    tuntom::logger.ignore_sigpipe();
     int listener = -1;
     std::string socket_path;
     std::string control_path;
@@ -372,11 +378,15 @@ int main(int argc, char** argv) {
                     << "send_errors=" << stats.send_errors << "\n"
                     << "send_backpressure_drops=" << stats.send_backpressure_drops << "\n";
                 recovery.write_stats(out);
+                tuntom::logger.write_stats(out);
                 adaptive_polling.write_stats(out);
                 throughput.write(out);
                 return out.str();
             });
         };
+
+        tuntom::logger.start();
+        tuntom::log_info("tuntom-switch ready");
 
         while (not stop_requested) {
             try {
@@ -484,7 +494,7 @@ int main(int argc, char** argv) {
             ::close(listener);
             ::unlink(socket_path.c_str());
         }
-        std::cerr << "ERROR: " << error.what() << "\n";
+        tuntom::log_fatal(error.what());
         return 1;
     }
 }

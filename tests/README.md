@@ -15,6 +15,16 @@ live tunnel, or network access are needed.
 
 - `replay_test.cpp`: reordered timestamps, duplicates, window eviction,
   integer boundaries, and reassembly of 64 fragments received in reverse order.
+- `logging_test.cpp`: bounded allocation-free formatting, errno preservation,
+  SIGPIPE/EPIPE, a full queue with a stalled writer, flood limiting and recovery,
+  ordered queue wraparound, failed thread creation, inherited closed stderr,
+  I/O failures and partial writes, the file-size cap and copytruncate recovery,
+  and exit without joining a blocked writer.
+- `logging_recovery_test.py`: twelve live-daemon scenarios (full stderr pipe,
+  closed reader, stalled write, failed thread creation) across tuntom, switch
+  and adapter. Verifies control and DATA during failure, fixed thread counts,
+  logging recovery and graceful exit with a blocked writer. Uses test-only
+  `logging_faults.cpp` injection and the socketpair TUN fixture.
 - `reassembly_test.cpp`: full-pool FIFO eviction, late-fragment suppression,
   5,000 intact packets delivered in reverse-fragment order under sustained loss
   before the three-second timeout, byte-limit pressure, activity-ordered expiry,

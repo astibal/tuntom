@@ -1,3 +1,4 @@
+#include "../common.hpp"
 #include "../runtime_recovery.hpp"
 #include "exit_adapter.hpp"
 #include "../adaptive_polling.hpp"
@@ -20,6 +21,7 @@
 #include <string>
 #include <vector>
 #include <poll.h>
+#include <sys/prctl.h>
 
 namespace {
 
@@ -64,6 +66,10 @@ void usage(const char* program) {
 } // namespace
 
 int main(int argc, char** argv) {
+    // Linux comm allows 15 characters; the installed filename is just "main".
+    // This is cosmetic, so failure must not prevent startup.
+    (void)::prctl(PR_SET_NAME, "tuntom-adapter", 0UL, 0UL, 0UL);
+    tuntom::logger.ignore_sigpipe();
     using namespace tuntom;
     try {
         if (argc < 2) {
@@ -280,11 +286,15 @@ int main(int argc, char** argv) {
                     << "switch_reconnect_attempts=" << stats.switch_reconnect_attempts << "\n"
                     << "switch_reconnects=" << stats.switch_reconnects << "\n";
                 recovery.write_stats(out);
+                tuntom::logger.write_stats(out);
                 adaptive_polling.write_stats(out);
                 throughput.write(out);
                 return out.str();
             });
         };
+
+        tuntom::logger.start();
+        tuntom::log_info("tuntom-switch-adapter ready");
 
         while (not stop_requested) {
             try {
@@ -359,7 +369,7 @@ int main(int argc, char** argv) {
         }
         return 0;
     } catch (const std::exception& error) {
-        std::cerr << "ERROR: " << error.what() << "\n";
+        tuntom::log_fatal(error.what());
         return 1;
     }
 }

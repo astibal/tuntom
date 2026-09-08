@@ -686,14 +686,14 @@ echo "  protocol:   v5 / Ascon auth + replay protection + fragmentation"
 
 echo "[1] Compile local staging binary"
 rm -f "$local_stage" "$local_switch_stage" "$local_adapter_stage" "$local_control_stage"
-g++ -std=c++17 -O3 -march=native -mtune=native -Wall -Wextra -pedantic "$source_dir/main.cpp" -o "$local_stage"
+g++ -std=c++17 -pthread -O3 -march=native -mtune=native -Wall -Wextra -pedantic "$source_dir/main.cpp" -o "$local_stage"
 test -x "$local_stage"
 if (( all_tools )); then
-    g++ -std=c++17 -O3 -march=native -mtune=native -Wall -Wextra -pedantic \
+    g++ -std=c++17 -pthread -O3 -march=native -mtune=native -Wall -Wextra -pedantic \
         "$source_dir/switch/main.cpp" -o "$local_switch_stage"
-    g++ -std=c++17 -O3 -march=native -mtune=native -Wall -Wextra -pedantic \
+    g++ -std=c++17 -pthread -O3 -march=native -mtune=native -Wall -Wextra -pedantic \
         "$source_dir/adapter/main.cpp" -o "$local_adapter_stage"
-    g++ -std=c++17 -O3 -march=native -mtune=native -Wall -Wextra -pedantic \
+    g++ -std=c++17 -pthread -O3 -march=native -mtune=native -Wall -Wextra -pedantic \
         "$source_dir/control/main.cpp" -o "$local_control_stage"
     test -x "$local_switch_stage"
     test -x "$local_adapter_stage"
@@ -710,12 +710,12 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 tar -xf - -C "$build_dir"
-g++ -std=c++17 -O3 -march=native -mtune=native -Wall -Wextra -pedantic "$build_dir/src/main.cpp" -o "$stage"
+g++ -std=c++17 -pthread -O3 -march=native -mtune=native -Wall -Wextra -pedantic "$build_dir/src/main.cpp" -o "$stage"
 test -x "$stage"
 if [ "$all_tools" = 1 ]; then
-    g++ -std=c++17 -O3 -march=native -mtune=native -Wall -Wextra -pedantic "$build_dir/src/switch/main.cpp" -o "$switch_stage"
-    g++ -std=c++17 -O3 -march=native -mtune=native -Wall -Wextra -pedantic "$build_dir/src/adapter/main.cpp" -o "$adapter_stage"
-    g++ -std=c++17 -O3 -march=native -mtune=native -Wall -Wextra -pedantic "$build_dir/src/control/main.cpp" -o "$control_stage"
+    g++ -std=c++17 -pthread -O3 -march=native -mtune=native -Wall -Wextra -pedantic "$build_dir/src/switch/main.cpp" -o "$switch_stage"
+    g++ -std=c++17 -pthread -O3 -march=native -mtune=native -Wall -Wextra -pedantic "$build_dir/src/adapter/main.cpp" -o "$adapter_stage"
+    g++ -std=c++17 -pthread -O3 -march=native -mtune=native -Wall -Wextra -pedantic "$build_dir/src/control/main.cpp" -o "$control_stage"
     test -x "$switch_stage"
     test -x "$adapter_stage"
     test -x "$control_stage"
