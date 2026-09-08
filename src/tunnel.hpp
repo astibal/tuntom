@@ -145,7 +145,7 @@ public:
 
         while (true) {
             try {
-                if (recovery_.wait_for_retry(control_ ? control_->fd() : -1)) {
+                if (recovery_.wait_for_retry(control_ ? control_->poll_fd() : -1)) {
                     if (control_) handle_control_request();
                     continue;
                 }
@@ -157,12 +157,14 @@ public:
                 descriptors[1].events = POLLIN;
                 descriptors[2].fd = switch_ ? switch_->fd() : -1;
                 descriptors[2].events = switch_ ? switch_->poll_events() : POLLIN;
-                descriptors[3].fd = control_ ? control_->fd() : -1;
+                descriptors[3].fd = control_ ? control_->poll_fd() : -1;
                 descriptors[3].events = POLLIN;
 
+                const auto timeout_at = AdaptivePolling::Clock::now();
+                int timeout = switch_ ? switch_->poll_timeout_ms(timeout_at, 1000) : 1000;
+                if (control_) timeout = control_->poll_timeout_ms(timeout_at, timeout);
                 const auto poll_started = AdaptivePolling::Clock::now();
-                const int rc = ::poll(descriptors, 4,
-                    switch_ ? switch_->poll_timeout_ms(poll_started, 1000) : 1000);
+                const int rc = ::poll(descriptors, 4, timeout);
                 const auto poll_finished = AdaptivePolling::Clock::now();
 
                 if (rc < 0) {

@@ -30,6 +30,10 @@ if command -v python3 >/dev/null 2>&1; then
         "${tests_dir}/runtime_faults.cpp" -ldl -o "${build_dir}/runtime_faults.so"
     "${CXX:-g++}" -std=c++17 -pthread -shared -fPIC -O2 -Wall -Wextra -Wconversion -pedantic \
         "${tests_dir}/logging_faults.cpp" -ldl -o "${build_dir}/logging_faults.so"
+    "${CXX:-g++}" -std=c++17 -pthread -shared -fPIC -O2 -Wall -Wextra -Wconversion -pedantic \
+        "${tests_dir}/accept_faults.cpp" -ldl -o "${build_dir}/accept_faults.so"
+    python3 "${tests_dir}/switch_capacity_test.py" \
+        "${build_dir}/tuntom-switch" "${build_dir}/accept_faults.so"
     python3 "${tests_dir}/logging_recovery_test.py" \
         "${build_dir}/tuntom" "${build_dir}/tuntom-switch" \
         "${build_dir}/adapter_reconnect_fixture" "${build_dir}/logging_faults.so"
@@ -53,7 +57,7 @@ else
     echo "SKIP: tuntom-switch process test requires python3"
 fi
 
-for name in compact_protocol_test switch_protocol_test switch_options_test switch_client_test runtime_state_test logging_test exit_adapter_test stats_control_test session_stats_test session_latency_test x25519_test akdf_test pfs_session_test replay_test mac_test aead_test encrypted_session_test session_test adaptive_polling_test reassembly_test; do
+for name in compact_protocol_test switch_protocol_test switch_options_test switch_client_test switch_admission_test runtime_state_test logging_test exit_adapter_test stats_control_test session_stats_test session_latency_test x25519_test akdf_test pfs_session_test replay_test mac_test aead_test encrypted_session_test session_test adaptive_polling_test reassembly_test; do
     echo "Building ${name}"
     link_flags=()
     if [[ "$name" == switch_client_test ]]; then

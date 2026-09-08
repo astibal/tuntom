@@ -55,6 +55,13 @@ offset  size       field
 After registration, a tuntom instance sends only `SWITCH` to the switch. It assigns its configured
 `--switch-label` to authenticated DATA received from its UDP peer.
 
+The switch requires registration within five seconds of accepting a connection.
+Registered ports have no idle timeout. Registration of the same port ID replaces
+its previous connection, including at the registered-port limit; a new distinct
+ID above that limit is disconnected. Pending registrations have separate bounded
+capacity. These admission rules add no registration ACK or wire fields; see
+[connection capacity](../README_SWITCHING.md#connection-capacity).
+
 The switch sends `SWITCH` to a destination tuntom port after a successful rule
 lookup. That tuntom transmits the opaque payload through its authenticated V5
 session. Labels are IPC metadata and do not change the V5 wire format.

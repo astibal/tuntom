@@ -242,6 +242,39 @@ port. The IPC format and exact fail-closed behavior are specified in
 
 ## Runtime statistics control
 
+### Connection capacity
+
+The switch defaults to **256 registered ports** and **16 additional pending
+registrations**. Set `--max-ports` and `--max-pending` (each 1..65535) on either
+`tuntom-switch` or `mk_switch.sh` to change them. At startup it counts open and
+inherited descriptors using `/proc/self/fd` and reduces these limits to fit
+the soft `RLIMIT_NOFILE`, leaving 16 descriptor slots for control and other
+operations. Pending capacity is reserved before port capacity, with at least
+one slot of each kind; insufficient startup capacity is an error. Effective
+limits are visible in control statistics.
+
+An accepted client must register within five seconds. Registered ports may
+remain idle indefinitely. A new connection can replace an existing port ID
+even at the port limit; a new distinct ID at that limit is disconnected.
+Pending capacity is separate so a full port table alone cannot prevent a
+replacement. A full pending pool temporarily defers all new admissions.
+
+Accept attempts have a burst allowance of 16 and refill at 32/s. While pending
+capacity or rate allowance is exhausted, the data listener leaves the poll set;
+established ports and control continue to run. Accept errors other than normal
+nonblocking retries defer that listener for one second. Control listeners use
+their own error backoff, including during runtime resource recovery. Under
+system-wide file-table exhaustion (`ENFILE`), new control requests may also
+fail until resources recover. Limits prevent clients of this switch from
+consuming its control headroom; they do not reserve global kernel resources.
+
+The capacity calculation is performed at startup. Later changes to the process
+FD limit or descriptors opened by other code are handled by accept-error
+backoff, rather than by silently evicting registered ports. Socket access
+permissions and port replacement semantics are unchanged.
+
+### Query statistics
+
 The switch and adapter expose live statistics through their own Unix control
 sockets:
 
@@ -255,6 +288,9 @@ For direct invocation, pass `--control-socket <path>` to `tuntom-switch` or
 and print the command using their private `tuntomctl` binary. Sockets use mode
 `0660`; filesystem permissions control access. Only `show stats` is supported;
 flow rules are configured at startup.
+
+Switch admission fields are documented in
+[switch admission statistics](docs/DETAILS.md#switch-admission-and-fd-capacity).
 
 Tunnel control sockets are covered in the
 [tuntom operations guide](README.md#runtime-statistics-control). See also the

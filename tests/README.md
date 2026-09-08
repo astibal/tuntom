@@ -121,6 +121,20 @@ firewall rules and requires root. It is deliberately not run by `run.sh`.
   also checks encrypted 9000-byte fragmentation and reassembly counters while
   automatic statistics are disabled.
 
+`switch_admission_test.cpp` checks the accept-rate bound under continuous demand,
+idle burst cap, retry deadlines and FD headroom calculations with simulated time.
+`switch_capacity_test.py` runs the real switch with a 64-FD limit, including
+inherited descriptors: a full pending pool preserves control and bidirectional
+forwarding; pending expiry preserves idle registered ports; replacement at full
+port capacity survives an injected allocation failure. Repeated churn checks
+bounded acceptance, CPU, FD count and RSS. `accept_faults.cpp` injects one-shot
+and persistent accept errors on either listener, including control accept failure
+during PF-02 poll recovery. Tests check actual new packets and new registrations
+after recovery without restarting. Faults are confined to disposable processes;
+no system-wide resource exhaustion, root access or TUN setup is required. Both
+CTest and `tests/run.sh` run these regressions. `mk_local_test.py` also verifies
+capacity option validation and forwarding to the deployed switch.
+
 `mk_stop_test.py` checks the deployment script's process cleanup with disposable
 local processes (no root or SSH connection required). It covers missing/stale
 PID files, duplicate instances, role/ID/interface matching, the remote command

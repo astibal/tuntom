@@ -151,6 +151,8 @@ main "$@"
                 ("switch", ("../bad",)), ("switch", ("sw", "--route")),
                 ("switch", ("sw", "--remote", "example")),
                 ("switch", ("sw", "--socket", "relative")),
+                ("switch", ("sw", "--max-ports", "0")),
+                ("switch", ("sw", "--max-pending", "65536")),
                 ("adapter", ("interface-too-long",)),
                 ("adapter", ("exit0",)),
                 ("adapter", (*adapter_args, "--mtu", "99999999999999999999")),
@@ -159,8 +161,15 @@ main "$@"
                 run(kind, *args, ok=False)
             assert not (directory / "state").exists()
 
-            run("switch", "sw")
+            run("switch", "sw", "--max-ports", "8", "--max-pending", "3")
             first = pid("switch", "sw")
+            with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as query:
+                query.settimeout(2)
+                query.connect(str(control))
+                query.sendall(b"show stats")
+                fields = dict(line.split("=", 1) for line in query.recv(65536).decode().splitlines())
+                assert fields["connections_limit_ports_configured"] == "8"
+                assert fields["connections_limit_pending_configured"] == "3"
             print("PASS: local startup and argument validation", flush=True)
             assert alive(first)
             assert [e.split()[1:4] for e in events()] == [
