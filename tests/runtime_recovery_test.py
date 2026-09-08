@@ -130,7 +130,7 @@ def tunnel_case(binary, library, fault, role="server"):
             if mode != role:
                 env.pop("LD_PRELOAD")
             args = [binary, mode, "241", "-"] + (["localhost"] if mode == "client" else [])
-            args += ["--quiet", "--no-stats", "--no-pmtud", "--switch-socket", path,
+            args += ["--quiet", "--no-pmtud", "--switch-socket", path,
                      "--switch-port-id", mode, "--switch-label", "7", "--control-socket", ctl]
             processes[mode] = start(stack, args, env=env)
             peers[mode] = accept_port(stack, listener, mode)

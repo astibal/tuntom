@@ -31,11 +31,7 @@ inline void usage(const char* program_name) {
         << "  --switch-exit-node      Allow IPC EXIT delivery through a local TUN\n"
         << "\n"
         << "Statistics:\n"
-        << "  --no-stats             Disable periodic stats file writes; keep metrics/socket\n"
-        << "  SIGUSR1 / SIGUSR2       Toggle file writes / write snapshot (needs --stats-file)\n"
-        << "  --stats-file <path>    Export runtime statistics to file\n"
         << "  --control-socket <path>  Local tuntomctl socket\n"
-        << "  --stats-format <fmt>   Statistics format; currently: txt\n"
         << "\n"
         << "Cryptography:\n"
         << "  default               X25519 + AKDF + Ascon-AEAD128 (suite 2)\n"
@@ -154,35 +150,6 @@ inline void parse_options(
                     argv[i],
                     min_transport_mtu,
                     max_ip_packet_size);
-        } else if (option == "--no-stats") {
-            options.stats_disabled = true;
-        } else if (option == "--stats-file") {
-            if (++i >= argc) {
-                throw std::runtime_error(
-                    "--stats-file requires a value");
-            }
-
-            options.stats_file = argv[i];
-
-            if (options.stats_file.empty()) {
-                throw std::runtime_error(
-                    "--stats-file must not be empty");
-            }
-        } else if (option == "--stats-format") {
-            if (++i >= argc) {
-                throw std::runtime_error(
-                    "--stats-format requires a value");
-            }
-
-            const std::string format = argv[i];
-
-            if (format == "txt") {
-                options.stats_format = StatsFormat::txt;
-            } else {
-                throw std::runtime_error(
-                    "Unsupported stats format: " + format +
-                    " (currently supported: txt)");
-            }
         } else if (option == "--control-socket") {
             if (++i >= argc) throw std::runtime_error("--control-socket requires a value");
             options.control_socket = argv[i];

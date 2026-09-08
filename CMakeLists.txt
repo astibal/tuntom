@@ -22,7 +22,7 @@ target_compile_options(tuntomctl PRIVATE -Wall -Wextra -pedantic)
 
 include(CTest)
 if(BUILD_TESTING)
-    foreach(name compact_protocol_test switch_protocol_test switch_options_test switch_client_test switch_admission_test runtime_state_test logging_test exit_adapter_test stats_control_test session_stats_test session_latency_test x25519_test akdf_test pfs_session_test replay_test mac_test aead_test encrypted_session_test session_test processing_stats_test throughput_stats_test adaptive_polling_test reassembly_test)
+    foreach(name compact_protocol_test switch_protocol_test switch_options_test switch_client_test switch_admission_test runtime_state_test logging_test exit_adapter_test session_stats_test session_latency_test x25519_test akdf_test pfs_session_test replay_test mac_test aead_test encrypted_session_test session_test processing_stats_test throughput_stats_test adaptive_polling_test reassembly_test)
         add_executable(${name} tests/${name}.cpp)
         target_compile_options(${name} PRIVATE -Wall -Wextra -Wconversion -pedantic)
         add_test(NAME ${name} COMMAND ${name})

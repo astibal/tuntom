@@ -733,10 +733,9 @@ Both values are passed to the local and remote C++ processes.
 
 The same values are exported to lifecycle hooks.
 
-`../mk_tunnel.sh` also enables text statistics and writes them atomically under
-its runtime directory as `IDc.stats` and `IDs.stats` (normally
-`/run/tuntom/ID{c,s}.stats`). The format can currently only be `txt` and is
-selected with `TUNTOM_STATS_FORMAT`.
+`../mk_tunnel.sh` configures live statistics control sockets in its runtime
+directory as `IDc.control` and `IDs.control` (normally `/run/tuntom`). Query
+with `tuntomctl <control-socket> show stats`; no statistics files are written.
 
 ## Testing PMTUD black holes
 
@@ -1073,7 +1072,7 @@ and timers cannot be held behind a long batch.
 
 A poll that blocks for at least 50 microseconds immediately restores the normal
 one-round mode.  Otherwise, overload also expires after 32 milliseconds without
-a confirmed backlog.  The stats file exposes:
+a confirmed backlog.  The control snapshot exposes:
 
 - `event_poll_overload`: whether overload batching is currently active;
 - `event_poll_busy_streak`: consecutive immediate polls;
@@ -1311,7 +1310,7 @@ All history resets on restart.
 
 ### Session, suite and rekey statistics
 
-The text stats file includes local session gauges and lifetime event counters.
+The control snapshot includes local session gauges and lifetime event counters.
 They reset on process restart. This is an additive change to stats format 1; the
 wire protocol is unchanged. Counters live in `SessionProtocol`, so socket send
 failures do not change their meaning: they count protocol events and prepared
@@ -1345,37 +1344,14 @@ retry counts need not match (loss, validation, pending-slot occupancy and ACK
 loss differ at each side). Completion counts can also temporarily differ while
 ACK is outstanding. Counters disclose no private keys or DH/KDF secrets.
 
-### Disabling and controlling statistics
-
-`--no-stats` disables only periodic file creation/replacement. Processing-latency
-sampling, reassembly-span sampling and throughput bucket updates continue, even
-without a stats file. The option preserves
-`--stats-file`, regardless of argument order. Basic packet/byte/drop counters,
-session/rekey counters, reassembly counters/gauges and operational RTT/PMTUD
-control remain active.
-`mk_tunnel.sh ... --no-stats` passes the option to both processes, retaining
-their normal stats paths for later activation.
+### Querying statistics
 
 `tuntomctl <control-socket> show stats` formats an up-to-date in-memory snapshot
-directly into the socket response. It needs no `--stats-file`, never reads or
-writes a stats file, and works even if a configured export path is unusable.
+directly into the socket response. Processing-latency sampling, reassembly-span
+sampling, throughput buckets and all counters continue updating between queries.
+The daemon performs no statistics file I/O, periodically or on signals.
 
-The standalone binary installs SIGUSR1 (toggle automatic file export) and SIGUSR2
-(one immediate file snapshot, even while disabled) handlers. They only update
-`sig_atomic_t` flags; I/O and state updates happen in the normal event loop.
-Both signals are blocked briefly when consuming flags to avoid losing requests.
-Two delivered USR1 signals cancel each other; multiple USR2 requests before
-consumption produce one snapshot. Standard signals may coalesce before delivery,
-so do not use rapid repeated signals as a reliable queue. An already running
-iteration/write may finish before a disable request takes effect. No output path
-means enabling has no output effect. Existing files remain untouched while
-disabled unless USR2 requests a snapshot. Snapshotting does not toggle automatic
-file export. The snapshot includes `stats_enabled=0/1`, describing periodic file
-export, not metric collection. Counters, latency samples and throughput buckets
-continue updating while export is disabled. No SIGHUP handler is installed; periodic
-rekey remains unchanged.
-
-On re-enable, writing resumes immediately in the loop. Throughput and processing
-windows retain their continuously collected history. Counters are never reset by these
-signals. Signal handlers are installed only by `main`, so embedding `Tunnel`
-does not install process-global handlers automatically.
+`--stats-file`, `--stats-format`, `--no-stats`, `TUNTOM_STATS_FORMAT` and the
+`stats_enabled` field have been removed. Update old launch commands to use
+`--control-socket`. SIGUSR1/SIGUSR2 handlers have been removed; these signals now
+have their default action (process termination). Use control queries for snapshots.

@@ -9,7 +9,7 @@ Usage: $0 <id 1..255> <host|user@host> [options]
 Tunnel options:
   --snat | --no-snat
   --mss-clamp | --no-mss-clamp
-  --crypto-auth-only | --no-stats | --all-tools | --stop
+  --crypto-auth-only | --all-tools | --stop
 
 Build options:
   --all-tools  Also build/install tuntom-switch, tuntom-switch-adapter and
@@ -37,7 +37,6 @@ tuntom_mss_clamp=1
 stop_requested=0
 all_tools=0
 crypto_option=""
-stats_option=""
 client_switch_socket=""
 client_switch_port_id=""
 client_switch_label=""
@@ -60,9 +59,6 @@ while (( $# > 0 )); do
             ;;
         --no-mss-clamp)
             tuntom_mss_clamp=0
-            ;;
-        --no-stats)
-            stats_option="--no-stats"
             ;;
         --crypto-auth-only)
             crypto_option="--crypto-auth-only"
@@ -266,11 +262,8 @@ run_dir="/run/tuntom"
 
 local_pid_file="${run_dir}/${id}c.pid"
 remote_pid_file="${run_dir}/${id}s.pid"
-local_stats_file="${run_dir}/${id}c.stats"
-remote_stats_file="${run_dir}/${id}s.stats"
 local_control_file="${run_dir}/${id}c.control"
 remote_control_file="${run_dir}/${id}s.control"
-stats_format="${TUNTOM_STATS_FORMAT:-txt}"
 
 runtime_user="tuntom"
 runtime_group="tuntom"
@@ -646,8 +639,8 @@ if (( stop_requested )); then
     echo "Stopping tunnel ${id}"
     stop_local_process
     stop_remote_process
-    "${root_cmd[@]}" rm -f "$local_stats_file" "$local_control_file" 2>/dev/null || true
-    ssh "$remote" "rm -f '${remote_stats_file}' '${remote_control_file}'" >/dev/null 2>&1 || true
+    "${root_cmd[@]}" rm -f "$local_control_file" 2>/dev/null || true
+    ssh "$remote" "rm -f '${remote_control_file}'" >/dev/null 2>&1 || true
 
     hook_pre_down_local
     hook_pre_down_remote
@@ -679,7 +672,6 @@ fi
 if [[ -n "$server_switch_socket" ]]; then
     echo "  server switch: ${server_switch_socket} port=${server_switch_port_id} label=${server_switch_label} exit=${server_switch_exit_node}"
 fi
-echo "  stats:      ${stats_format} -> ${run_dir}/${id}{c,s}.stats"
 echo "  pre hook:   ${tuntom_pre_hook} (local file, runs local+remote)"
 echo "  post hook:  ${tuntom_post_hook} (local file, runs local+remote)"
 echo "  protocol:   v5 / Ascon auth + replay protection + fragmentation"
@@ -749,8 +741,8 @@ ssh "$remote" "
 echo "[4] Stop previous processes"
 stop_local_process
 stop_remote_process
-"${root_cmd[@]}" rm -f "$local_stats_file" "$local_control_file" 2>/dev/null || true
-ssh "$remote" "rm -f '${remote_stats_file}' '${remote_control_file}'" >/dev/null 2>&1 || true
+"${root_cmd[@]}" rm -f "$local_control_file" 2>/dev/null || true
+ssh "$remote" "rm -f '${remote_control_file}'" >/dev/null 2>&1 || true
 
 echo "[5] Clean previous networking"
 hook_pre_down_local
@@ -784,8 +776,7 @@ printf '%s\n' "$TUNTOM_SECRET" | ssh "$remote" "
     nohup '${remote_bin}' server '${id}' '${server_if}' \
         --mtu '${mtu}' \
         --transport-mtu '${transport_mtu}' \
-        --stats-format '${stats_format}' \
-        --stats-file '${remote_stats_file}' --control-socket '${remote_control_file}' ${crypto_option} ${stats_option}${server_switch_options} \
+        --control-socket '${remote_control_file}' ${crypto_option} ${server_switch_options} \
         >'${remote_log}' 2>&1 </dev/null &
     echo \$! > '${remote_pid_file}'
 "
@@ -815,7 +806,7 @@ fi
 
 echo "[9] Start local client"
 "${root_cmd[@]}" sh -c \
-    "nohup '${local_bin}' client '${id}' '${client_if}' '${remote#*@}' --mtu '${mtu}' --transport-mtu '${transport_mtu}' --stats-format '${stats_format}' --stats-file '${local_stats_file}' --control-socket '${local_control_file}' ${crypto_option} ${stats_option}${client_switch_options} >'${local_log}' 2>&1 </dev/null & echo \$! > '${local_pid_file}'"
+    "nohup '${local_bin}' client '${id}' '${client_if}' '${remote#*@}' --mtu '${mtu}' --transport-mtu '${transport_mtu}' --control-socket '${local_control_file}' ${crypto_option} ${client_switch_options} >'${local_log}' 2>&1 </dev/null & echo \$! > '${local_pid_file}'"
 
 if (( client_has_tun )); then
     for _ in $(seq 1 20); do

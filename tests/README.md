@@ -81,10 +81,6 @@ firewall rules and requires root. It is deliberately not run by `run.sh`.
   authenticated suite/DH rejection counters, and reassembly accounting across
   overlapping sessions, retirement, expiry and rekey. Runs without TUN or root.
 
-- `stats_control_test.cpp`: `--no-stats` argument-order independence and path
-  preservation, real SIGUSR1 toggle / SIGUSR2 snapshot handling, pending signals, snapshot
-  write gating while disabled, and handler restoration.
-
 - `compact_protocol_test.cpp`: exact compact layouts, implicit tunnel context,
   authenticated version rejection, flag and truncation rejection, 16-bit fragment
   boundaries, large reassembly and PMTUD wire sizes.
@@ -159,8 +155,7 @@ of a `noexec` binary directory before compilation or stopping the old process.
 Run directly with `python3 tests/mk_local_test.py` (builds its fixtures), or
 through `tests/run.sh`, which reuses its compiled fixtures.
 
-`stats_socket_test.py` checks live socket snapshots with no stats path and an
-unusable path, untouched/missing files under `--no-stats`, continued processing
-and reassembly-span sampling, completed BPS/PPS throughput buckets, file-only SIGUSR1
-toggles without history resets, and explicit SIGUSR2 file snapshots. Uses only
+`stats_socket_test.py` checks live socket snapshots, untouched/missing legacy
+stats files, continued processing and reassembly-span sampling, and completed
+BPS/PPS throughput buckets without resetting history. Uses only
 disposable unprivileged switch/UDP processes; run automatically by `run.sh`.

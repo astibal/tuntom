@@ -80,7 +80,7 @@ def tunnel_case(binary):
         server_listener = listen(stack, server_path)
         fill_queue(stack, client_path)
         env = dict(os.environ, TUNTOM_SECRET="00112233445566778899aabbccddeeff")
-        common = ["--quiet", "--no-stats", "--no-pmtud"]
+        common = ["--quiet", "--no-pmtud"]
         server = start(stack, [binary, "server", "240", "-", *common,
                               "--switch-socket", server_path, "--switch-port-id", "server",
                               "--switch-label", "2", "--control-socket", server_ctl], env=env)

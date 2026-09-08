@@ -138,7 +138,6 @@ and the server UDP port.
 | Option | Effect |
 | --- | --- |
 | `--crypto-auth-only` | Disable payload encryption and PFS; retain AMAC authentication |
-| `--no-stats` | Disable automatic stats file writes; keep live metrics and socket queries |
 | `--snat` / `--no-snat` | Enable / disable IPv4 MASQUERADE; default: off |
 | `--mss-clamp` / `--no-mss-clamp` | Enable / disable TCP MSS clamping; default: on |
 | `--stop` | Stop and clean up the tunnel on both hosts |
@@ -246,11 +245,10 @@ Files live on the respective endpoint hosts:
 | --- | --- | --- |
 | Log | `/tmp/tuntom_42c.log` | `/tmp/tuntom_42s.log` |
 | PID | `/run/tuntom/42c.pid` | `/run/tuntom/42s.pid` |
-| Statistics | `/run/tuntom/42c.stats` | `/run/tuntom/42s.stats` |
 
 ```bash
 sudo tail -f /tmp/tuntom_42c.log
-sudo cat /run/tuntom/42c.stats
+sudo tuntomctl /run/tuntom/42c.control show stats
 ```
 
 Statistics include traffic counters, throughput, sampled processing latency,
@@ -265,22 +263,12 @@ rotation permits writing to resume. Pipe/socket log collectors manage their own
 retention. Inspect the `log_*` control counters for suppressed logs and output
 errors; see [logging details](docs/DETAILS.md#runtime-logging).
 
-Start with `--no-stats` to pause automatic file writes. Counters and sampled
-latency/throughput metrics continue updating in memory. Control each process
-separately using its PID:
-
-```bash
-sudo kill -USR1 <pid>  # toggle automatic stats file writes
-sudo kill -USR2 <pid>  # write one snapshot, even when disabled
-```
-
-The bootstrap retains the stats destination when disabled. For direct binary
-use, supply `--stats-file <path>` even with `--no-stats` to allow later writes.
-The last file stays unchanged while paused, so check `updated_unix` for age.
-`stats_enabled` records automatic file export, not metric collection. Toggling
-export does not reset throughput or latency history. `tuntomctl <control-socket>
-show stats` returns current metrics directly from memory, even without a configured
-stats file, and never reads or writes that file.
+Statistics are collected continuously in memory and returned on demand by
+`tuntomctl <control-socket> show stats`. The daemon does not write statistics
+files. File-export options (`--stats-file`, `--stats-format`, `--no-stats`) and
+`TUNTOM_STATS_FORMAT` have been removed; update existing launch commands.
+SIGUSR1/SIGUSR2 no longer control statistics and have their default signal action.
+Use the control socket for snapshots.
 
 ### Runtime statistics control
 

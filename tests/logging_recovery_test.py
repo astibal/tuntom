@@ -173,7 +173,7 @@ def tunnel_case(binary, library, mode):
             listener = listen(stack, path)
             env = sink.env if role == "server" else dict(os.environ, TUNTOM_SECRET=sink.env["TUNTOM_SECRET"])
             args = [binary, role, "242", "-"] + (["localhost"] if role == "client" else [])
-            args += ["--debug" if role == "server" else "--quiet", "--no-stats", "--no-pmtud",
+            args += ["--debug" if role == "server" else "--quiet", "--no-pmtud",
                      "--switch-socket", path, "--switch-port-id", role, "--switch-label", "7",
                      "--control-socket", control]
             processes[role] = start(stack, args, env=env,

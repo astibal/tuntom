@@ -11,7 +11,6 @@
 #include "processing_stats.hpp"
 #include "throughput_stats.hpp"
 #include "adaptive_polling.hpp"
-#include "stats_control.hpp"
 #include "control_socket.hpp"
 #include "runtime_recovery.hpp"
 #include <algorithm>
@@ -21,7 +20,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <fstream>
 #include <iostream>
 #include <memory>
 #include <sstream>
@@ -98,8 +96,6 @@ public:
                 << maximum_fragment_payload()
                 << " ttl-compensate="
                 << (options_.ttl_compensate ? "yes" : "no")
-                << " stats="
-                << (stats_file_enabled() ? options_.stats_file : "off")
                 << " switch="
                 << (switch_ ? options_.switch_socket : "off")
                 << " switch-exit="
@@ -133,12 +129,9 @@ public:
         auto last_keepalive = started_now;
         auto last_reassembly_cleanup =
             std::chrono::steady_clock::now();
-        auto last_stats_write =
-            std::chrono::steady_clock::now();
 
         try {
             if (not server_mode_) send_handshake(protocol_v5_.begin(started_now));
-            write_stats();
         } catch (const std::bad_alloc&) {
             recovery_.allocation_failed();
         }
@@ -149,7 +142,6 @@ public:
                     if (control_) handle_control_request();
                     continue;
                 }
-                update_stats_control();
                 pollfd descriptors[4] {};
                 descriptors[0].fd = tun_ ? tun_->fd() : -1;
                 descriptors[0].events = POLLIN;
@@ -262,14 +254,6 @@ public:
                     report_reassembly_drops();
                     last_reassembly_cleanup = now;
                 }
-
-                if (
-                    now - last_stats_write >=
-                        std::chrono::seconds(1)) {
-
-                    write_stats();
-                    last_stats_write = now;
-                }
             } catch (const std::bad_alloc&) {
                 recovery_.allocation_failed();
             }
@@ -284,7 +268,7 @@ protected:
     }
 
 private:
-    // Called at most once per second, including when automatic stats are off.
+    // Called at most once per second, independently of control queries.
     void report_reassembly_drops() {
         const auto& m = protocol_v5_.reassembly_metrics();
         const auto losses = m.capacity_evictions + m.expired_entries +
@@ -1437,19 +1421,7 @@ private:
         send_mtu_probe(candidate);
     }
 
-    bool stats_file_enabled() const {
-        return not options_.stats_disabled and not options_.stats_file.empty();
-    }
-
-    void update_stats_control() {
-        const auto request = take_stats_requests();
-        if (request.toggle)
-            options_.stats_disabled = not options_.stats_disabled;
-        if (request.snapshot or (request.toggle and stats_file_enabled()))
-            write_stats(request.snapshot);
-    }
-
-    // One in-memory snapshot format for both the socket and optional file export.
+    // Format a live in-memory snapshot for the control socket.
     void format_stats(std::ostream& output) {
         const auto now_steady = std::chrono::steady_clock::now();
         throughput_.update(now_steady, {
@@ -1477,7 +1449,6 @@ private:
             << "mode=" << (server_mode_ ? "server" : "client") << "\n"
             << "updated_unix=" << updated_unix << "\n"
             << "uptime_seconds=" << uptime << "\n"
-            << "stats_enabled=" << (stats_file_enabled() ? 1 : 0) << "\n"
             << "tun_rx_packets=" << stats_.tun_rx_packets << "\n"
             << "tun_rx_bytes=" << stats_.tun_rx_bytes << "\n"
             << "tun_tx_packets=" << stats_.tun_tx_packets << "\n"
@@ -1544,45 +1515,6 @@ private:
         tx_processing_.write(output, "tx_processing");
         rx_processing_.write(output, "rx_processing");
         reassembly_span_.write(output, "reassembly_span");
-    }
-
-    void write_stats(bool snapshot = false) {
-        if (not stats_write_requested(not options_.stats_file.empty(),
-                                      options_.stats_disabled, snapshot)) return;
-
-        const std::string temporary_file =
-            options_.stats_file +
-            ".tmp." +
-            std::to_string(static_cast<long long>(::getpid()));
-
-        {
-            std::ofstream output(
-                temporary_file,
-                std::ios::out | std::ios::trunc);
-
-            if (not output) {
-                log_info("Unable to open stats file ", temporary_file);
-                return;
-            }
-
-            format_stats(output);
-            output.flush();
-
-            if (not output) {
-                log_info("Unable to write stats file ", temporary_file);
-                return;
-            }
-        }
-
-        if (
-            std::rename(
-                temporary_file.c_str(),
-                options_.stats_file.c_str()) != 0) {
-
-            log_info(
-                "Unable to publish stats file ", options_.stats_file, ": errno=", errno);
-            std::remove(temporary_file.c_str());
-        }
     }
 
     std::uint16_t tunnel_id_ = 0;

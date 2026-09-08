@@ -73,7 +73,7 @@ def check_startup_permission_failure(tuntom, switch):
             environment = os.environ.copy()
             environment["TUNTOM_SECRET"] = "00112233445566778899aabbccddeeff"
             process = subprocess.Popen([
-                tuntom, "server", "238", "-", "--quiet", "--no-stats",
+                tuntom, "server", "238", "-", "--quiet",
                 "--switch-socket", switch_path, "--switch-port-id", "denied",
                 "--switch-label", "1",
             ], env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -100,8 +100,6 @@ def main():
         switch_path = os.path.join(directory, "switch.sock")
         server_control = os.path.join(directory, "server.control")
         client_control = os.path.join(directory, "client.control")
-        server_stats = os.path.join(directory, "server.stats")
-        client_stats = os.path.join(directory, "client.stats")
         switch_process = start_switch(switch, switch_path)
         processes.append(switch_process)
 
@@ -110,19 +108,19 @@ def main():
             environment = os.environ.copy()
             environment["TUNTOM_SECRET"] = "00112233445566778899aabbccddeeff"
             server = subprocess.Popen([
-                tuntom, "server", "237", "-", "--quiet", "--no-stats",
+                tuntom, "server", "237", "-", "--quiet",
                 "--mtu", "9000", "--transport-mtu", "1500", "--no-pmtud",
                 "--switch-socket", switch_path, "--switch-port-id", "server",
                 "--switch-label", "2",
-                "--stats-file", server_stats, "--control-socket", server_control,
+                "--control-socket", server_control,
             ], env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             processes.append(server)
             client = subprocess.Popen([
-                tuntom, "client", "237", "-", "localhost", "--quiet", "--no-stats",
+                tuntom, "client", "237", "-", "localhost", "--quiet",
                 "--mtu", "9000", "--transport-mtu", "1500", "--no-pmtud",
                 "--switch-socket", switch_path, "--switch-port-id", "client",
                 "--switch-label", "1",
-                "--stats-file", client_stats, "--control-socket", client_control,
+                "--control-socket", client_control,
             ], env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             processes.append(client)
 
@@ -151,11 +149,10 @@ def main():
             server_snapshot = subprocess.check_output(
                 [ctl, server_control, "show", "stats"], text=True)
             fields = dict(line.split("=", 1) for line in server_snapshot.splitlines())
-            if (fields.get("stats_enabled") != "0" or
-                    int(fields.get("reassembly_completed_packets", "0")) < 1 or
+            if (int(fields.get("reassembly_completed_packets", "0")) < 1 or
                     fields.get("reassembly_active_entries") != "0" or
                     fields.get("reassembly_active_bytes") != "0"):
-                raise RuntimeError("fragmented traffic or disabled-stats reassembly metrics failed")
+                raise RuntimeError("fragmented traffic or live reassembly metrics failed")
 
             app.close()
             terminate(switch_process)
