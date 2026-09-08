@@ -1,3 +1,4 @@
+#include "../runtime_recovery.hpp"
 #include "../ipc/switch_protocol.hpp"
 #include "../adaptive_polling.hpp"
 #include "../control_socket.hpp"
@@ -117,7 +118,7 @@ std::pair<std::string, std::uint64_t> parse_endpoint(const std::string& text) {
 int create_listener(const std::string& path) {
     if (path.empty() or path.size() >= sizeof(sockaddr_un::sun_path))
         throw std::runtime_error("Invalid Unix socket path");
-    const int fd = ::socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
+    const int fd = ::socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
     if (fd < 0)
         throw std::runtime_error("socket() failed: " + std::string(std::strerror(errno)));
     sockaddr_un address {};
@@ -263,23 +264,31 @@ int main(int argc, char** argv) {
             const std::size_t size = static_cast<std::size_t>(received);
 
             if (connection.port_id.empty()) {
-                std::string registered_id;
-                if (not tuntom::decode_switch_registration(
-                        buffer.data(), size, registered_id)) {
-                    ++stats.registrations_invalid;
+                try {
+                    std::string registered_id;
+                    if (not tuntom::decode_switch_registration(
+                            buffer.data(), size, registered_id)) {
+                        ++stats.registrations_invalid;
+                        ::close(connection.fd);
+                        connection.fd = -1;
+                        return true;
+                    }
+                    if (auto* old = find_connection(connections, registered_id)) {
+                        if (old != &connection) {
+                            ::close(old->fd);
+                            old->fd = -1;
+                        }
+                    }
+                    connection.port_id = std::move(registered_id);
+                    ++stats.registrations_ok;
+                    return true;
+                } catch (const std::bad_alloc&) {
+                    // The registration record was already consumed. Force a
+                    // reconnect rather than leaving a half-registered peer.
                     ::close(connection.fd);
                     connection.fd = -1;
-                    return true;
+                    throw;
                 }
-                if (auto* old = find_connection(connections, registered_id)) {
-                    if (old != &connection) {
-                        ::close(old->fd);
-                        old->fd = -1;
-                    }
-                }
-                connection.port_id = registered_id;
-                ++stats.registrations_ok;
-                return true;
             }
 
             SwitchFrameView frame;
@@ -332,118 +341,136 @@ int main(int argc, char** argv) {
             return false;
         };
 
+        tuntom::RuntimeRecovery recovery;
+        const auto handle_control = [&] {
+            if (not control) return;
+            control->handle([&] {
+                const auto snapshot_at = std::chrono::steady_clock::now();
+                throughput.update(snapshot_at, {
+                    {stats.frames_rx, stats.bytes_rx},
+                    {stats.frames_tx, stats.bytes_tx}});
+                std::size_t connected = 0;
+                for (const auto& item : connections)
+                    if (item.fd >= 0 and not item.port_id.empty()) ++connected;
+                const auto uptime = std::chrono::duration_cast<std::chrono::seconds>(
+                    snapshot_at - started_at).count();
+                std::ostringstream out;
+                out.exceptions(std::ios::badbit);
+                out << "format=txt\nformat_version=1\ncomponent=switch\n"
+                    << "pid=" << ::getpid() << "\nuptime_seconds=" << uptime << "\n"
+                    << "connections_current=" << connected << "\n"
+                    << "connections_accepted=" << stats.connections_accepted << "\n"
+                    << "registrations_ok=" << stats.registrations_ok << "\n"
+                    << "registrations_invalid=" << stats.registrations_invalid << "\n"
+                    << "frames_rx=" << stats.frames_rx << "\nbytes_rx=" << stats.bytes_rx << "\n"
+                    << "frames_tx=" << stats.frames_tx << "\nbytes_tx=" << stats.bytes_tx << "\n"
+                    << "route_hits=" << stats.route_hits << "\nroute_misses=" << stats.route_misses << "\n"
+                    << "target_disconnected=" << stats.target_disconnected << "\n"
+                    << "default_back=" << stats.default_back << "\n"
+                    << "exit_deliveries=" << stats.exit_deliveries << "\n"
+                    << "malformed_frames=" << stats.malformed_frames << "\n"
+                    << "send_errors=" << stats.send_errors << "\n"
+                    << "send_backpressure_drops=" << stats.send_backpressure_drops << "\n";
+                recovery.write_stats(out);
+                adaptive_polling.write_stats(out);
+                throughput.write(out);
+                return out.str();
+            });
+        };
+
         while (not stop_requested) {
-            descriptors.clear();
-            descriptors.reserve(connections.size() + 2);
-            descriptors.push_back({listener, POLLIN, 0});
-            descriptors.push_back({control ? control->fd() : -1, POLLIN, 0});
-            for (const auto& connection : connections)
-                descriptors.push_back({connection.fd, POLLIN, 0});
-
-            const auto poll_started = tuntom::AdaptivePolling::Clock::now();
-            const int ready = ::poll(descriptors.data(), descriptors.size(), 1000);
-            const auto poll_finished = tuntom::AdaptivePolling::Clock::now();
-            if (ready < 0) {
-                if (errno == EINTR) continue;
-                throw std::runtime_error(
-                    "poll() failed: " + std::string(std::strerror(errno)));
-            }
-            adaptive_polling.observe_poll(poll_finished - poll_started);
-
-            if (descriptors[0].revents & POLLIN) {
-                const int accepted = ::accept4(
-                    listener, nullptr, nullptr, SOCK_CLOEXEC | SOCK_NONBLOCK);
-                if (accepted >= 0) {
-                    connections.push_back({accepted, {}});
-                    ++stats.connections_accepted;
-                }
-            }
-
-            if (control and (descriptors[1].revents & POLLIN)) {
-                control->handle([&] {
-                    const auto snapshot_at = std::chrono::steady_clock::now();
-                    throughput.update(snapshot_at, {
-                        {stats.frames_rx, stats.bytes_rx},
-                        {stats.frames_tx, stats.bytes_tx}});
-                    std::size_t connected = 0;
-                    for (const auto& item : connections)
-                        if (item.fd >= 0 and not item.port_id.empty()) ++connected;
-                    const auto uptime = std::chrono::duration_cast<std::chrono::seconds>(
-                        snapshot_at - started_at).count();
-                    std::ostringstream out;
-                    out << "format=txt\nformat_version=1\ncomponent=switch\n"
-                        << "pid=" << ::getpid() << "\nuptime_seconds=" << uptime << "\n"
-                        << "connections_current=" << connected << "\n"
-                        << "connections_accepted=" << stats.connections_accepted << "\n"
-                        << "registrations_ok=" << stats.registrations_ok << "\n"
-                        << "registrations_invalid=" << stats.registrations_invalid << "\n"
-                        << "frames_rx=" << stats.frames_rx << "\nbytes_rx=" << stats.bytes_rx << "\n"
-                        << "frames_tx=" << stats.frames_tx << "\nbytes_tx=" << stats.bytes_tx << "\n"
-                        << "route_hits=" << stats.route_hits << "\nroute_misses=" << stats.route_misses << "\n"
-                        << "target_disconnected=" << stats.target_disconnected << "\n"
-                        << "default_back=" << stats.default_back << "\n"
-                        << "exit_deliveries=" << stats.exit_deliveries << "\n"
-                        << "malformed_frames=" << stats.malformed_frames << "\n"
-                        << "send_errors=" << stats.send_errors << "\n"
-                        << "send_backpressure_drops=" << stats.send_backpressure_drops << "\n";
-                    adaptive_polling.write_stats(out);
-                    throughput.write(out);
-                    return out.str();
-                });
-            }
-
-            const std::size_t polled_connections = descriptors.size() - 2;
-            initially_ready.assign(polled_connections, false);
-            for (std::size_t index = 0; index < polled_connections; ++index) {
-                auto& connection = connections[index];
-                const auto events = descriptors[index + 2].revents;
-                if (connection.fd < 0) continue;
-                if (events & (POLLHUP | POLLERR | POLLNVAL)) {
-                    ::close(connection.fd);
-                    connection.fd = -1;
+            try {
+                if (recovery.wait_for_retry(control ? control->fd() : -1)) {
+                    handle_control();
                     continue;
                 }
-                initially_ready[index] = (events & POLLIN) != 0;
-            }
+                descriptors.clear();
+                descriptors.reserve(connections.size() + 2);
+                descriptors.push_back({listener, POLLIN, 0});
+                descriptors.push_back({control ? control->fd() : -1, POLLIN, 0});
+                for (const auto& connection : connections)
+                    descriptors.push_back({connection.fd, POLLIN, 0});
 
-            const unsigned rounds = adaptive_polling.batch_size();
-            const auto slice_started = tuntom::AdaptivePolling::Clock::now();
-            bool slice_limited = false;
-            for (unsigned round = 0; round < rounds and polled_connections != 0; ++round) {
-                bool progress = false;
-                for (std::size_t offset = 0; offset < polled_connections; ++offset) {
-                    const std::size_t index =
-                        (next_connection + offset) % polled_connections;
-                    if (round == 0 and not initially_ready[index]) continue;
-                    if (connections[index].fd < 0) continue;
-                    progress |= try_handle_connection(connections[index]);
-                    if (tuntom::AdaptivePolling::Clock::now() - slice_started >=
-                        tuntom::AdaptivePolling::processing_slice) {
-                        next_connection = (index + 1) % polled_connections;
-                        adaptive_polling.note_slice_limit();
-                        slice_limited = true;
-                        break;
+                const auto poll_started = tuntom::AdaptivePolling::Clock::now();
+                const int ready = ::poll(descriptors.data(), descriptors.size(), 1000);
+                const auto poll_finished = tuntom::AdaptivePolling::Clock::now();
+                if (ready < 0) {
+                    if (errno != EINTR) recovery.poll_failed(errno);
+                    continue;
+                }
+                adaptive_polling.observe_poll(poll_finished - poll_started);
+
+                if (descriptors[0].revents & POLLIN) {
+                    const int accepted = ::accept4(
+                        listener, nullptr, nullptr, SOCK_CLOEXEC | SOCK_NONBLOCK);
+                    if (accepted >= 0) {
+                        try {
+                            connections.push_back({accepted, {}});
+                        } catch (...) {
+                            ::close(accepted);
+                            throw;
+                        }
+                        ++stats.connections_accepted;
                     }
                 }
-                if (slice_limited) break;
-                next_connection = (next_connection + 1) % polled_connections;
-                if (not progress) break;
+
+                if (control and (descriptors[1].revents & POLLIN)) handle_control();
+
+                const std::size_t polled_connections = descriptors.size() - 2;
+                initially_ready.assign(polled_connections, false);
+                for (std::size_t index = 0; index < polled_connections; ++index) {
+                    auto& connection = connections[index];
+                    const auto events = descriptors[index + 2].revents;
+                    if (connection.fd < 0) continue;
+                    if (events & (POLLHUP | POLLERR | POLLNVAL)) {
+                        ::close(connection.fd);
+                        connection.fd = -1;
+                        continue;
+                    }
+                    initially_ready[index] = (events & POLLIN) != 0;
+                }
+
+                const unsigned rounds = adaptive_polling.batch_size();
+                const auto slice_started = tuntom::AdaptivePolling::Clock::now();
+                bool slice_limited = false;
+                for (unsigned round = 0; round < rounds and polled_connections != 0; ++round) {
+                    bool progress = false;
+                    for (std::size_t offset = 0; offset < polled_connections; ++offset) {
+                        const std::size_t index =
+                            (next_connection + offset) % polled_connections;
+                        if (round == 0 and not initially_ready[index]) continue;
+                        if (connections[index].fd < 0) continue;
+                        progress |= try_handle_connection(connections[index]);
+                        if (tuntom::AdaptivePolling::Clock::now() - slice_started >=
+                            tuntom::AdaptivePolling::processing_slice) {
+                            next_connection = (index + 1) % polled_connections;
+                            adaptive_polling.note_slice_limit();
+                            slice_limited = true;
+                            break;
+                        }
+                    }
+                    if (slice_limited) break;
+                    next_connection = (next_connection + 1) % polled_connections;
+                    if (not progress) break;
+                }
+
+                if (adaptive_polling.should_check_backlog())
+                    adaptive_polling.observe_backlog(
+                        data_backlog_ready(), tuntom::AdaptivePolling::Clock::now());
+
+                connections.erase(
+                    std::remove_if(
+                        connections.begin(), connections.end(),
+                        [](const Connection& connection) { return connection.fd < 0; }),
+                    connections.end());
+                if (connections.empty()) next_connection = 0;
+                else next_connection %= connections.size();
+                throughput.update(std::chrono::steady_clock::now(), {
+                    {stats.frames_rx, stats.bytes_rx},
+                    {stats.frames_tx, stats.bytes_tx}});
+            } catch (const std::bad_alloc&) {
+                recovery.allocation_failed();
             }
-
-            if (adaptive_polling.should_check_backlog())
-                adaptive_polling.observe_backlog(
-                    data_backlog_ready(), tuntom::AdaptivePolling::Clock::now());
-
-            connections.erase(
-                std::remove_if(
-                    connections.begin(), connections.end(),
-                    [](const Connection& connection) { return connection.fd < 0; }),
-                connections.end());
-            if (connections.empty()) next_connection = 0;
-            else next_connection %= connections.size();
-            throughput.update(std::chrono::steady_clock::now(), {
-                {stats.frames_rx, stats.bytes_rx},
-                {stats.frames_tx, stats.bytes_tx}});
         }
 
         close_connections(connections);

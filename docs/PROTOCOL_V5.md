@@ -57,6 +57,9 @@ padding.
 All four messages share the client's nonzero random 64-bit exchange ID in
 `message_id`; fragment offset and original length are absent. Nonces are 32
 fresh random bytes from Linux `getrandom`, with errors failing closed.
+Key generation uses `GRND_NONBLOCK`: errors defer a new exchange for one
+second while an existing usable session can continue. Failed preparation
+does not publish partial handshake state or substitute weaker entropy.
 Retransmissions preserve the exact original bytes, nonces and exchange ID.
 
 Suite **2** is the default. It uses Ascon-AEAD128 with ephemeral X25519 and

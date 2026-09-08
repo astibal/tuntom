@@ -1,5 +1,8 @@
 # tuntom switch protocol v1
 
+For setup, flow rules and lifecycle hooks, see the
+[label-switching README](../README_SWITCHING.md).
+
 The switch protocol connects tuntom link processes to a deliberately small
 label switch. All processes connect to one Unix `SOCK_SEQPACKET` listener in
 version 1. Filesystem permissions are the local security boundary.

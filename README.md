@@ -31,7 +31,8 @@ Contributors remain responsible for the changes they submit.
 
 [Quick start](#quick-start) · [Configuration](#configuration) ·
 [Security and compatibility](#security-and-compatibility) ·
-[Operations](#operations) · [Build and test](#build-and-test)
+[Operations](#operations) · [Build and test](#build-and-test) ·
+[Label switching](README_SWITCHING.md)
 
 ## At a glance
 
@@ -45,11 +46,23 @@ Contributors remain responsible for the changes they submit.
 | Networking | IPv4 policy routing, connection marks, MSS clamping, optional SNAT, lifecycle hooks |
 | Observability | Text statistics, signal-controlled snapshots, logs, Wireshark dissector |
 | Runtime | No external crypto libraries; drops privileges to `tuntom:tuntom` |
-| Switching | Optional userspace label switching over Unix `SOCK_SEQPACKET`, without a TUN on relay links |
+| Switching | Optional [label switching](README_SWITCHING.md) to connect tunnel links and exit paths |
 
 The tunnel engine handles transport. Linux networking and the included
 `tuntom-net.sh` helper handle routing and firewall policy; custom routes and
 DNAT rules can be added through hooks.
+
+## Label switching
+
+`tuntom` also supports **optional label switching** to connect tunnel links
+through chosen relay and exit paths. Local `(port, label)` rules select the
+next link without creating a TUN or configuring kernel IP routes on each relay.
+We use this to make multi-link forwarding paths explicit while keeping
+encrypted UDP transport in tuntom and Linux routing at the chosen exits.
+
+**[The label-switching README](README_SWITCHING.md)** covers the architecture,
+`tuntom-switch`, exit adapters, tunnel attachment, flow rules, local deployment,
+socket permissions and lifecycle hooks.
 
 ## Quick start
 
@@ -126,14 +139,12 @@ and the server UDP port.
 | --- | --- |
 | `--crypto-auth-only` | Disable payload encryption and PFS; retain AMAC authentication |
 | `--no-stats` | Disable automatic stats file writes; keep live metrics and socket queries |
-| `--all-tools` | Build and atomically install `tuntom-switch`, `tuntom-switch-adapter`, and `tuntomctl` in `/tmp` on both hosts |
-| `--client-switch <socket> <port-id> <label>` | Connect the local/client side to an existing switch listener |
-| `--server-switch <socket> <port-id> <label>` | Connect the remote/server side to an existing switch listener |
-| `--client-switch-exit-node` | Retain the client TUN and permit IPC `EXIT` delivery |
-| `--server-switch-exit-node` | Retain the server TUN and permit IPC `EXIT` delivery |
 | `--snat` / `--no-snat` | Enable / disable IPv4 MASQUERADE; default: off |
 | `--mss-clamp` / `--no-mss-clamp` | Enable / disable TCP MSS clamping; default: on |
 | `--stop` | Stop and clean up the tunnel on both hosts |
+
+Switch attachment and companion-tool build options are documented in
+[label-switch bootstrap options](README_SWITCHING.md#connect-tunnel-endpoints).
 
 ### Environment
 
@@ -160,102 +171,6 @@ IPv6 addresses use the prefix text with dots replaced by colons.
 
 Advanced networking overrides are `TUNTOM_MARK`, `TUNTOM_MARK_MASK`,
 `TUNTOM_TABLE`, and `TUNTOM_CHAIN`; see [the helper](tuntom-net.sh).
-
-### Label-switch mode
-
-Use `--all-tools` during deployment when the standalone switch utilities should
-be rebuilt together with the tunnel. They are installed as `/tmp/tuntom-switch`,
-`/tmp/tuntom-switch-adapter`, and `/tmp/tuntomctl` locally and remotely. A failed
-direct tunnel ping is reported as a warning in switch mode because the selected
-switch topology may intentionally route packets away from the peer TUN; both
-tunnel processes are still checked.
-
-`--switch-socket` replaces the TUN data path with a Unix `SOCK_SEQPACKET`
-connection. Authenticated DATA received over UDP is emitted as a `SWITCH` frame
-with the configured ingress label; a `SWITCH` frame received from IPC is sent
-as ordinary V5 DATA to the UDP peer. No TUN device is created, so a pure relay
-can run without root after its socket and UDP access are available.
-
-```bash
-TUNTOM_SECRET=... tuntom client 42 - server.example \
-  --switch-socket /run/tuntom/switch.sock \
-  --switch-port-id client-42 \
-  --switch-label 17
-```
-
-The positional interface name is ignored in pure switch mode; `-` is the
-recommended placeholder. `--switch-exit-node` retains the TUN and permits only
-an explicit IPC `EXIT` frame to write into it. Packets read from that TUN go
-directly to the instance's UDP peer.
-
-The companion switch has named static ports and routes:
-
-```bash
-tuntom-switch \
-  --socket /run/tuntom/switch.sock \
-  --route client-42:17=proxy-7:83 \
-  --route proxy-7:91=client-42:44 \
-  --default-back=off
-```
-
-The standalone exit adapter is a switch client backed by a Linux TUN:
-
-```bash
-tuntom-switch-adapter exit0 \
-  --switch-socket /run/tuntom/switch.sock \
-  --switch-port-id internet
-
-tuntom-switch --socket /run/tuntom/switch.sock \
-  --exit-port internet \
-  --route client-42:17=internet:1001 \
-  --route internet:1001=client-42:44
-```
-
-The adapter creates the named TUN and brings its link state up. IP addresses,
-routes, forwarding and any NAT rules remain explicit host configuration.
-
-Routes targeting an `--exit-port` are delivered as `EXIT`. The adapter learns
-the reverse label stack from every valid IPv4/IPv6 packet, using an L4 LRU cache
-with an L3 fallback for fragments and non-port protocols. Return traffic from
-the TUN is sent as `SWITCH`; packets missing both caches are dropped. The
-adapter performs no NAT, TCP state tracking or default-label routing.
-
-### Runtime statistics control
-
-All three data-plane processes can expose the same local control command through
-an optional Unix socket:
-
-```bash
-tuntomctl /run/tuntom/42c.control show stats
-tuntomctl /run/tuntom/switch.control show stats
-tuntomctl /run/tuntom/exit0.control show stats
-```
-
-Pass `--control-socket <path>` to `tuntom`, `tuntom-switch` or
-`tuntom-switch-adapter`. `mk_tunnel.sh` configures `<id>c.control` and
-`<id>s.control` automatically. The sockets use mode `0660`; filesystem
-permissions are the authorization boundary. Only `show stats` is defined in
-this first control protocol version. Existing stats signals remain available
-for compatibility.
-
-On a route miss, `--default-back=on` returns an `EXIT` frame to the ingress
-port. The IPC format and exact fail-closed behavior are specified in
-[switch protocol v1](docs/SWITCH_PROTOCOL_V1.md).
-
-The SSH bootstrap can independently attach either endpoint to a switch that is
-already running on that endpoint host:
-
-```bash
-./mk_tunnel.sh 42 site-router \
-  --server-switch /run/tuntom/switch.sock edge-42 17
-```
-
-A pure switch side creates no TUN and skips its address, hook and kernel-network
-setup. Adding `--server-switch-exit-node` (or its client counterpart) retains
-that side's TUN. The switch has an independent lifecycle and is never started or
-restarted by `mk_tunnel.sh`. While it is unavailable, tuntom keeps the UDP
-control plane alive, drops DATA, and retries connection and registration once
-per second.
 
 ### MTU and fragmentation
 
@@ -360,6 +275,21 @@ export does not reset throughput or latency history. `tuntomctl <control-socket>
 show stats` returns current metrics directly from memory, even without a configured
 stats file, and never reads or writes that file.
 
+### Runtime statistics control
+
+`tuntom` exposes live statistics through an optional Unix control socket:
+
+```bash
+tuntomctl /run/tuntom/42c.control show stats
+tuntomctl /run/tuntom/42s.control show stats
+```
+
+For direct invocation, pass `--control-socket <path>` to `tuntom`.
+`mk_tunnel.sh` configures `<id>c.control` and `<id>s.control` automatically on
+the respective hosts. Sockets use mode `0660`; filesystem permissions control
+access. Only `show stats` is supported. Existing stats signals remain
+available for compatibility.
+
 ### Networking and hooks
 
 The bootstrap runs `tuntom-net.sh` on both hosts to set up IPv4 connection
@@ -441,6 +371,7 @@ deployment.
 | [src/](src/README.md) | C++17 engine, ordinary headers, and `main.cpp` |
 | [src/vendor/](src/vendor/README.md) | Vendored X25519 implementation and provenance |
 | [mk_tunnel.sh](mk_tunnel.sh) | Build, deploy, start, restart, and stop |
+| [README_SWITCHING.md](README_SWITCHING.md) | Label switching, exit adapters, flow rules and local lifecycle |
 | [tuntom-net.sh](tuntom-net.sh) | Linux routing and firewall helper |
 | [tuntom.lua](tuntom.lua) | Wireshark Lua dissector |
 | [examples/](examples/) | Lifecycle hook example |

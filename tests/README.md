@@ -81,6 +81,25 @@ firewall rules and requires root. It is deliberately not run by `run.sh`.
 - `switch_protocol_test.cpp`: switch frame layout, label stacks, top-label swap,
   truncation and malformed-header rejection.
 - `switch_options_test.cpp`: switch CLI dependencies and label parsing.
+- `runtime_state_test.cpp`: allocation-failure sweeps across all handshake
+  stages/suites, LRU insertion and reassembly; entropy failures/backoff at every
+  suite-2 RNG step, continued old-session traffic, replay/TX nonce safety,
+  expired candidate retirement and control FD cleanup on allocation failure.
+- `runtime_recovery_test.py`: one-shot/persistent main-poll and forwarding
+  allocation failures in live tuntom, switch and adapter loops; control
+  responsiveness, bounded retry/CPU and fresh DATA recovery. Also covers client
+  and server startup entropy failure/recovery. `runtime_faults.cpp` is loaded
+  only into disposable test processes; the adapter uses the TUN fixture.
+- `switch_client_test.cpp`: real full Unix accept queue and recovery; injected
+  asynchronous connect, registration backpressure/interruption, socket errors,
+  fixed shared deadline and registration-before-DATA ordering. Linker wrappers
+  affect only this test; an alarm bounds any blocking regression.
+- `switch_reconnect_test.py`: full queue during tuntom startup and reconnect,
+  live UDP handshake/data reception and responsive control during the outage,
+  bounded retries and bidirectional recovery. Also runs the real adapter loop
+  with a socket pair in place of TUN (`adapter_tun_fixture.cpp`) and verifies
+  TUN service, retained routes and recovery; checks live switch listener flags.
+  Runs through both CTest (when Python is available) and `tests/run.sh`.
 - `exit_adapter_test.cpp`: reverse L3/L4 learning, fragment fallback, cache miss,
   idle expiry and LRU eviction.
 - `switch_test.py`: one-listener Unix `SOCK_SEQPACKET` registration and reconnect,
@@ -100,6 +119,21 @@ runs it automatically when both are available.
 
 `mk_switch_args_test.py` checks per-side switch argument validation, exit-node
 dependencies and whether pure switch sides correctly suppress TUN setup.
+
+`mk_local_test.py` checks `mk_switch.sh` and `mk_adapter.sh` with real binaries
+and disposable local sockets. Covers generated flow forwarding, build/rule
+failures keeping the old process alive, hook ordering and saved context, socket
+ownership, lock contention, unrelated sockets/files/symlinks, missing/stale PID
+files, duplicate processes, crash recovery, TERM-to-KILL fallback, adapter
+startup without a switch, and failed-start cleanup. Privilege/account setup
+and interface inspection are replaced; the real adapter loop uses
+`adapter_tun_fixture.cpp`. No root, SSH or host network changes are needed.
+Also checks cleanup of instances using the former binary location. When a
+writable `noexec` mount is available, verifies switch restart and adapter startup
+with runtime state there, binaries on an executable filesystem, and rejection
+of a `noexec` binary directory before compilation or stopping the old process.
+Run directly with `python3 tests/mk_local_test.py` (builds its fixtures), or
+through `tests/run.sh`, which reuses its compiled fixtures.
 
 `stats_socket_test.py` checks live socket snapshots with no stats path and an
 unusable path, untouched/missing files under `--no-stats`, continued processing

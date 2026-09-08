@@ -1,0 +1,5 @@
+# One directive and one value per line. No shell expansion or inline comments.
+exit-port internet
+route client-42:17=internet:1001
+route internet:1001=client-42:44
+default-back off

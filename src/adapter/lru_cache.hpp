@@ -26,7 +26,13 @@ public:
         }
         if (capacity_ == 0) return;
         order_.push_front({key, value, now});
-        entries_[key] = order_.begin();
+        try {
+            entries_.emplace(key, order_.begin());
+        } catch (...) {
+            // Keep the list and its index in sync if map allocation fails.
+            order_.pop_front();
+            throw;
+        }
         while (entries_.size() > capacity_) evict_last();
     }
 

@@ -3,6 +3,7 @@
 #include <cerrno>
 #include <cstddef>
 #include <cstring>
+#include <new>
 #include <stdexcept>
 #include <string>
 #include <fcntl.h>
@@ -42,25 +43,35 @@ public:
     void handle(StatsProvider provider) {
         const int client = ::accept4(fd_, nullptr, nullptr, SOCK_CLOEXEC | SOCK_NONBLOCK);
         if (client < 0) return;
-        char request[64] {};
-        pollfd descriptor {client, POLLIN, 0};
-        const ssize_t size = ::poll(&descriptor, 1, 10) > 0
-            ? ::recv(client, request, sizeof(request), 0)
-            : -1;
-        std::string response;
-        if (size > 0) {
-            std::string command(request, static_cast<std::size_t>(size));
-            while (not command.empty() and
-                   (command.back() == '\n' or command.back() == '\r'))
-                command.pop_back();
-            response = command == "show stats"
-                ? provider()
-                : "error=unknown_command\n";
-        } else {
-            response = "error=empty_command\n";
+        struct CloseClient {
+            int fd;
+            ~CloseClient() { ::close(fd); }
+        } close_client {client};
+        try {
+            char request[64] {};
+            pollfd descriptor {client, POLLIN, 0};
+            const ssize_t size = ::poll(&descriptor, 1, 10) > 0
+                ? ::recv(client, request, sizeof(request), 0)
+                : -1;
+            std::string response;
+            if (size > 0) {
+                std::string command(request, static_cast<std::size_t>(size));
+                while (not command.empty() and
+                       (command.back() == '\n' or command.back() == '\r'))
+                    command.pop_back();
+                response = command == "show stats"
+                    ? provider()
+                    : "error=unknown_command\n";
+            } else {
+                response = "error=empty_command\n";
+            }
+            ::send(client, response.data(), response.size(), MSG_DONTWAIT | MSG_NOSIGNAL);
+        } catch (const std::bad_alloc&) {
+            // Report without allocating, then let the loop count/back off.
+            constexpr char error[] = "error=out_of_memory\n";
+            ::send(client, error, sizeof(error) - 1, MSG_DONTWAIT | MSG_NOSIGNAL);
+            throw;
         }
-        ::send(client, response.data(), response.size(), MSG_NOSIGNAL);
-        ::close(client);
     }
 
 private:

@@ -13,6 +13,7 @@
 #include "adaptive_polling.hpp"
 #include "stats_control.hpp"
 #include "control_socket.hpp"
+#include "runtime_recovery.hpp"
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
@@ -121,7 +122,6 @@ public:
             {stats_.switch_tx_packets, stats_.switch_tx_bytes}});
 
         if (not server_mode_) {
-            send_handshake(protocol_v5_.begin(started_now));
             next_rtt_probe_ =
                 started_now +
                 std::chrono::seconds(rtt_probe_interval_seconds);
@@ -135,131 +135,140 @@ public:
         auto last_stats_write =
             std::chrono::steady_clock::now();
 
-        write_stats();
+        try {
+            if (not server_mode_) send_handshake(protocol_v5_.begin(started_now));
+            write_stats();
+        } catch (const std::bad_alloc&) {
+            recovery_.allocation_failed();
+        }
 
         while (true) {
-            update_stats_control();
-            pollfd descriptors[4] {};
-            descriptors[0].fd = tun_ ? tun_->fd() : -1;
-            descriptors[0].events = POLLIN;
-            descriptors[1].fd = udp_.fd();
-            descriptors[1].events = POLLIN;
-            descriptors[2].fd = switch_ and switch_->connected() ? switch_->fd() : -1;
-            descriptors[2].events = POLLIN;
-            descriptors[3].fd = control_ ? control_->fd() : -1;
-            descriptors[3].events = POLLIN;
+            try {
+                if (recovery_.wait_for_retry(control_ ? control_->fd() : -1)) {
+                    if (control_) handle_control_request();
+                    continue;
+                }
+                update_stats_control();
+                pollfd descriptors[4] {};
+                descriptors[0].fd = tun_ ? tun_->fd() : -1;
+                descriptors[0].events = POLLIN;
+                descriptors[1].fd = udp_.fd();
+                descriptors[1].events = POLLIN;
+                descriptors[2].fd = switch_ ? switch_->fd() : -1;
+                descriptors[2].events = switch_ ? switch_->poll_events() : POLLIN;
+                descriptors[3].fd = control_ ? control_->fd() : -1;
+                descriptors[3].events = POLLIN;
 
-            const auto poll_started = AdaptivePolling::Clock::now();
-            const int rc = ::poll(descriptors, 4, 1000);
-            const auto poll_finished = AdaptivePolling::Clock::now();
+                const auto poll_started = AdaptivePolling::Clock::now();
+                const int rc = ::poll(descriptors, 4,
+                    switch_ ? switch_->poll_timeout_ms(poll_started, 1000) : 1000);
+                const auto poll_finished = AdaptivePolling::Clock::now();
 
-            if (rc < 0) {
-                if (errno == EINTR) {
+                if (rc < 0) {
+                    if (errno != EINTR) recovery_.poll_failed(errno);
                     continue;
                 }
 
-                throw std::runtime_error(
-                    "poll() failed: " +
-                    std::string(std::strerror(errno)));
-            }
+                adaptive_polling_.observe_poll(poll_finished - poll_started);
 
-            adaptive_polling_.observe_poll(poll_finished - poll_started);
-
-            // Control traffic is never held behind an overload data slice.
-            if (control_ and (descriptors[3].revents & POLLIN)) {
-                handle_control_request();
-            }
-
-            const bool initially_ready[3] {
-                (descriptors[0].revents & POLLIN) != 0,
-                (descriptors[1].revents & POLLIN) != 0,
-                (descriptors[2].revents & POLLIN) != 0,
-            };
-            const unsigned rounds = adaptive_polling_.batch_size();
-            const auto slice_started = AdaptivePolling::Clock::now();
-
-            for (unsigned round = 0; round < rounds; ++round) {
-                bool progress = false;
-                for (unsigned offset = 0; offset < 3; ++offset) {
-                    const unsigned source = (next_data_source_ + offset) % 3;
-                    if (round == 0 and not initially_ready[source]) continue;
-                    if (source == 0) progress |= try_handle_tun_packet();
-                    else if (source == 1) progress |= try_handle_udp_packet();
-                    else progress |= try_handle_switch_packet();
+                // Control traffic is never held behind an overload data slice.
+                if (control_ and (descriptors[3].revents & POLLIN)) {
+                    handle_control_request();
                 }
-                next_data_source_ = (next_data_source_ + 1) % 3;
-                if (not progress) break;
+
+                const bool initially_ready[3] {
+                    (descriptors[0].revents & POLLIN) != 0,
+                    (descriptors[1].revents & POLLIN) != 0,
+                    (descriptors[2].revents & POLLIN) != 0,
+                };
+                const unsigned rounds = adaptive_polling_.batch_size();
+                const auto slice_started = AdaptivePolling::Clock::now();
+
+                for (unsigned round = 0; round < rounds; ++round) {
+                    bool progress = false;
+                    for (unsigned offset = 0; offset < 3; ++offset) {
+                        const unsigned source = (next_data_source_ + offset) % 3;
+                        if (round == 0 and not initially_ready[source]) continue;
+                        if (source == 0) progress |= try_handle_tun_packet();
+                        else if (source == 1) progress |= try_handle_udp_packet();
+                        else progress |= try_handle_switch_packet();
+                    }
+                    next_data_source_ = (next_data_source_ + 1) % 3;
+                    if (not progress) break;
+                    if (
+                        AdaptivePolling::Clock::now() - slice_started >=
+                        AdaptivePolling::processing_slice) {
+
+                        adaptive_polling_.note_slice_limit();
+                        break;
+                    }
+                }
+
+                if (switch_ and
+                    (descriptors[2].revents & (POLLHUP | POLLERR | POLLNVAL)) != 0) {
+                    disconnect_switch(ECONNRESET);
+                }
+
+                if (adaptive_polling_.should_check_backlog()) {
+                    adaptive_polling_.observe_backlog(
+                        data_backlog_ready(),
+                        AdaptivePolling::Clock::now());
+                }
+
+                const auto now = std::chrono::steady_clock::now();
+                try_switch_reconnect(now, false, descriptors[2].revents);
+                throughput_.update(now, {
+                    {stats_.tun_rx_packets, stats_.tun_rx_bytes},
+                    {stats_.tun_tx_packets, stats_.tun_tx_bytes},
+                    {stats_.udp_rx_packets, stats_.udp_rx_bytes},
+                    {stats_.udp_tx_packets, stats_.udp_tx_bytes},
+                    {stats_.switch_rx_packets, stats_.switch_rx_bytes},
+                    {stats_.switch_tx_packets, stats_.switch_tx_bytes}});
+                send_handshake(protocol_v5_.tick(now));
+
                 if (
-                    AdaptivePolling::Clock::now() - slice_started >=
-                    AdaptivePolling::processing_slice) {
+                    not server_mode_ and
+                    now - last_keepalive >=
+                        std::chrono::seconds(keepalive_seconds)) {
 
-                    adaptive_polling_.note_slice_limit();
-                    break;
+                    send_control(PacketType::keepalive);
+                    last_keepalive = now;
                 }
-            }
 
-            if (switch_ and
-                (descriptors[2].revents & (POLLHUP | POLLERR | POLLNVAL)) != 0) {
-                disconnect_switch(ECONNRESET);
-            }
+                if (
+                    rtt_probe_schedule_active_ and
+                    now >= next_rtt_probe_) {
 
-            if (adaptive_polling_.should_check_backlog()) {
-                adaptive_polling_.observe_backlog(
-                    data_backlog_ready(),
-                    AdaptivePolling::Clock::now());
-            }
+                    send_rtt_probe();
+                    next_rtt_probe_ +=
+                        std::chrono::seconds(
+                            rtt_probe_interval_seconds);
+                }
 
-            const auto now = std::chrono::steady_clock::now();
-            try_switch_reconnect(now);
-            throughput_.update(now, {
-                {stats_.tun_rx_packets, stats_.tun_rx_bytes},
-                {stats_.tun_tx_packets, stats_.tun_tx_bytes},
-                {stats_.udp_rx_packets, stats_.udp_rx_bytes},
-                {stats_.udp_tx_packets, stats_.udp_tx_bytes},
-                {stats_.switch_rx_packets, stats_.switch_rx_bytes},
-                {stats_.switch_tx_packets, stats_.switch_tx_bytes}});
-            send_handshake(protocol_v5_.tick(now));
+                cleanup_rtt_probes(now);
 
-            if (
-                not server_mode_ and
-                now - last_keepalive >=
-                    std::chrono::seconds(keepalive_seconds)) {
+                if (options_.pmtud_auto) {
+                    handle_pmtud_timeout(now);
+                }
 
-                send_control(PacketType::keepalive);
-                last_keepalive = now;
-            }
-
-            if (
-                rtt_probe_schedule_active_ and
-                now >= next_rtt_probe_) {
-
-                send_rtt_probe();
-                next_rtt_probe_ +=
-                    std::chrono::seconds(
-                        rtt_probe_interval_seconds);
-            }
-
-            cleanup_rtt_probes(now);
-
-            if (options_.pmtud_auto) {
-                handle_pmtud_timeout(now);
-            }
-
-            if (
-                now - last_reassembly_cleanup >=
-                std::chrono::seconds(1)) {
-
-                protocol_v5_.cleanup(now);
-                report_reassembly_drops();
-                last_reassembly_cleanup = now;
-            }
-
-            if (
-                now - last_stats_write >=
+                if (
+                    now - last_reassembly_cleanup >=
                     std::chrono::seconds(1)) {
 
-                write_stats();
-                last_stats_write = now;
+                    protocol_v5_.cleanup(now);
+                    report_reassembly_drops();
+                    last_reassembly_cleanup = now;
+                }
+
+                if (
+                    now - last_stats_write >=
+                        std::chrono::seconds(1)) {
+
+                    write_stats();
+                    last_stats_write = now;
+                }
+            } catch (const std::bad_alloc&) {
+                recovery_.allocation_failed();
             }
         }
     }
@@ -294,6 +303,7 @@ private:
     void handle_control_request() {
         control_->handle([this] {
             std::ostringstream output;
+            output.exceptions(std::ios::badbit);
             format_stats(output);
             return output.str();
         });
@@ -864,11 +874,19 @@ private:
 
     void try_switch_reconnect(
         std::chrono::steady_clock::time_point now,
-        bool startup = false) {
+        bool startup = false,
+        short revents = 0) {
 
-        if (not switch_ or switch_->connected() or now < next_switch_reconnect_) return;
-        ++stats_.switch_reconnect_attempts;
-        if (switch_->connect_now()) {
+        if (not switch_ or switch_->connected()) return;
+        if (switch_->connecting()) {
+            switch_->advance_connect(now, revents);
+        } else {
+            if (now < next_switch_reconnect_) return;
+            ++stats_.switch_reconnect_attempts;
+            switch_->start_connect(now);
+        }
+        if (switch_->connecting()) return;
+        if (switch_->connected()) {
             ++stats_.switch_reconnects;
             last_switch_connect_error_ = 0;
             log_info("Switch socket connected");
@@ -1501,6 +1519,7 @@ private:
             << "switch_socket_other_errors=" << stats_.switch_socket_other_errors << "\n"
             << "switch_last_error_ts=" << stats_.switch_last_error_ts << "\n"
             << "switch_last_error_no=" << stats_.switch_last_error_no << "\n";
+        recovery_.write_stats(output);
         adaptive_polling_.write_stats(output);
         output << std::fixed << std::setprecision(3)
             << "rtt_last_ms=" << stats_.rtt_last_ms << "\n"
@@ -1578,6 +1597,7 @@ private:
     UdpEndpoint udp_;
     std::unique_ptr<SwitchClient> switch_;
     std::unique_ptr<ControlSocket> control_;
+    RuntimeRecovery recovery_;
     static constexpr auto switch_reconnect_interval_ = std::chrono::seconds(1);
     std::chrono::steady_clock::time_point next_switch_reconnect_ {};
     int last_switch_connect_error_ = 0;

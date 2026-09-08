@@ -1,3 +1,4 @@
+#include "../runtime_recovery.hpp"
 #include "exit_adapter.hpp"
 #include "../adaptive_polling.hpp"
 #include "../ipc/switch_protocol.hpp"
@@ -141,6 +142,20 @@ int main(int argc, char** argv) {
             next_connect = std::chrono::steady_clock::now() + std::chrono::seconds(1);
         };
 
+        const auto try_switch_reconnect = [&](SwitchClient::Time now, short revents = 0) {
+            if (switch_client.connected()) return;
+            if (switch_client.connecting()) {
+                switch_client.advance_connect(now, revents);
+            } else {
+                if (now < next_connect) return;
+                ++stats.switch_reconnect_attempts;
+                switch_client.start_connect(now);
+            }
+            if (switch_client.connecting()) return;
+            if (switch_client.connected()) ++stats.switch_reconnects;
+            else next_connect = now + std::chrono::seconds(1);
+        };
+
         const auto try_handle_tun_packet = [&] {
             const ssize_t size = tun.read_packet(packet.data(), packet.size());
             if (size < 0) {
@@ -229,105 +244,118 @@ int main(int argc, char** argv) {
                 (((pending[0].revents | pending[1].revents) & POLLIN) != 0);
         };
 
+        tuntom::RuntimeRecovery recovery;
+        const auto handle_control = [&] {
+            if (not control) return;
+            control->handle([&] {
+                const auto snapshot_at = std::chrono::steady_clock::now();
+                throughput.update(snapshot_at, {
+                    {stats.tun_rx_packets, stats.tun_rx_bytes},
+                    {stats.tun_tx_packets, stats.tun_tx_bytes},
+                    {stats.switch_rx_packets, stats.switch_rx_bytes},
+                    {stats.switch_tx_packets, stats.switch_tx_bytes}});
+                const auto uptime = std::chrono::duration_cast<std::chrono::seconds>(
+                    snapshot_at - started_at).count();
+                std::ostringstream out;
+                out.exceptions(std::ios::badbit);
+                out << "format=txt\nformat_version=1\ncomponent=adapter\n"
+                    << "pid=" << ::getpid() << "\nuptime_seconds=" << uptime << "\n"
+                    << "switch_connected=" << (switch_client.connected() ? 1 : 0) << "\n"
+                    << "tun_rx_packets=" << stats.tun_rx_packets << "\ntun_rx_bytes=" << stats.tun_rx_bytes << "\n"
+                    << "tun_tx_packets=" << stats.tun_tx_packets << "\ntun_tx_bytes=" << stats.tun_tx_bytes << "\n"
+                    << "switch_rx_packets=" << stats.switch_rx_packets << "\nswitch_rx_bytes=" << stats.switch_rx_bytes << "\n"
+                    << "switch_tx_packets=" << stats.switch_tx_packets << "\nswitch_tx_bytes=" << stats.switch_tx_bytes << "\n"
+                    << "l3_entries=" << routes.l3_size() << "\nl4_entries=" << routes.l4_size() << "\n"
+                    << "learned_packets=" << routes.learned_packets() << "\nip_parse_errors=" << routes.parse_errors() << "\n"
+                    << "l3_hits=" << routes.l3_hits() << "\nl3_misses=" << routes.l3_misses() << "\n"
+                    << "l4_hits=" << routes.l4_hits() << "\nl4_misses=" << routes.l4_misses() << "\n"
+                    << "l3_evictions=" << routes.l3_evictions() << "\nl4_evictions=" << routes.l4_evictions() << "\n"
+                    << "l3_expirations=" << routes.l3_expirations() << "\nl4_expirations=" << routes.l4_expirations() << "\n"
+                    << "cache_miss_drops=" << stats.cache_miss_drops << "\n"
+                    << "switch_disconnected_drops=" << stats.switch_disconnected_drops << "\n"
+                    << "opcode_drops=" << stats.opcode_drops << "\n"
+                    << "tun_read_errors=" << stats.tun_read_errors << "\ntun_write_errors=" << stats.tun_write_errors << "\n"
+                    << "switch_send_errors=" << stats.switch_send_errors << "\nswitch_disconnects=" << stats.switch_disconnects << "\n"
+                    << "switch_backpressure_drops=" << stats.switch_backpressure_drops << "\n"
+                    << "switch_reconnect_attempts=" << stats.switch_reconnect_attempts << "\n"
+                    << "switch_reconnects=" << stats.switch_reconnects << "\n";
+                recovery.write_stats(out);
+                adaptive_polling.write_stats(out);
+                throughput.write(out);
+                return out.str();
+            });
+        };
+
         while (not stop_requested) {
-            const auto now = std::chrono::steady_clock::now();
-            if (not switch_client.connected() and now >= next_connect) {
-                ++stats.switch_reconnect_attempts;
-                if (switch_client.connect_now()) ++stats.switch_reconnects;
-                next_connect = now + std::chrono::seconds(1);
-            }
-
-            pollfd descriptors[3] {
-                {tun.fd(), POLLIN, 0},
-                {switch_client.fd(), POLLIN, 0},
-                {control ? control->fd() : -1, POLLIN, 0},
-            };
-            const auto poll_started = AdaptivePolling::Clock::now();
-            const int ready = ::poll(descriptors, 3, 1000);
-            const auto poll_finished = AdaptivePolling::Clock::now();
-            if (ready < 0) {
-                if (errno == EINTR) continue;
-                throw std::runtime_error("poll() failed: " + std::string(std::strerror(errno)));
-            }
-            adaptive_polling.observe_poll(poll_finished - poll_started);
-
-            if (switch_client.connected() and
-                (descriptors[1].revents & (POLLHUP | POLLERR | POLLNVAL))) {
-                disconnect_switch();
-            }
-
-            // Control requests stay ahead of overload data batches.
-            if (control and (descriptors[2].revents & POLLIN)) {
-                control->handle([&] {
-                    const auto snapshot_at = std::chrono::steady_clock::now();
-                    throughput.update(snapshot_at, {
-                        {stats.tun_rx_packets, stats.tun_rx_bytes},
-                        {stats.tun_tx_packets, stats.tun_tx_bytes},
-                        {stats.switch_rx_packets, stats.switch_rx_bytes},
-                        {stats.switch_tx_packets, stats.switch_tx_bytes}});
-                    const auto uptime = std::chrono::duration_cast<std::chrono::seconds>(
-                        snapshot_at - started_at).count();
-                    std::ostringstream out;
-                    out << "format=txt\nformat_version=1\ncomponent=adapter\n"
-                        << "pid=" << ::getpid() << "\nuptime_seconds=" << uptime << "\n"
-                        << "switch_connected=" << (switch_client.connected() ? 1 : 0) << "\n"
-                        << "tun_rx_packets=" << stats.tun_rx_packets << "\ntun_rx_bytes=" << stats.tun_rx_bytes << "\n"
-                        << "tun_tx_packets=" << stats.tun_tx_packets << "\ntun_tx_bytes=" << stats.tun_tx_bytes << "\n"
-                        << "switch_rx_packets=" << stats.switch_rx_packets << "\nswitch_rx_bytes=" << stats.switch_rx_bytes << "\n"
-                        << "switch_tx_packets=" << stats.switch_tx_packets << "\nswitch_tx_bytes=" << stats.switch_tx_bytes << "\n"
-                        << "l3_entries=" << routes.l3_size() << "\nl4_entries=" << routes.l4_size() << "\n"
-                        << "learned_packets=" << routes.learned_packets() << "\nip_parse_errors=" << routes.parse_errors() << "\n"
-                        << "l3_hits=" << routes.l3_hits() << "\nl3_misses=" << routes.l3_misses() << "\n"
-                        << "l4_hits=" << routes.l4_hits() << "\nl4_misses=" << routes.l4_misses() << "\n"
-                        << "l3_evictions=" << routes.l3_evictions() << "\nl4_evictions=" << routes.l4_evictions() << "\n"
-                        << "l3_expirations=" << routes.l3_expirations() << "\nl4_expirations=" << routes.l4_expirations() << "\n"
-                        << "cache_miss_drops=" << stats.cache_miss_drops << "\n"
-                        << "switch_disconnected_drops=" << stats.switch_disconnected_drops << "\n"
-                        << "opcode_drops=" << stats.opcode_drops << "\n"
-                        << "tun_read_errors=" << stats.tun_read_errors << "\ntun_write_errors=" << stats.tun_write_errors << "\n"
-                        << "switch_send_errors=" << stats.switch_send_errors << "\nswitch_disconnects=" << stats.switch_disconnects << "\n"
-                        << "switch_backpressure_drops=" << stats.switch_backpressure_drops << "\n"
-                        << "switch_reconnect_attempts=" << stats.switch_reconnect_attempts << "\n"
-                        << "switch_reconnects=" << stats.switch_reconnects << "\n";
-                    adaptive_polling.write_stats(out);
-                    throughput.write(out);
-                    return out.str();
-                });
-            }
-
-            const bool initially_ready[2] {
-                (descriptors[0].revents & POLLIN) != 0,
-                switch_client.connected() and
-                    (descriptors[1].revents & POLLIN) != 0,
-            };
-            const unsigned rounds = adaptive_polling.batch_size();
-            const auto slice_started = AdaptivePolling::Clock::now();
-            for (unsigned round = 0; round < rounds; ++round) {
-                bool progress = false;
-                for (unsigned offset = 0; offset < 2; ++offset) {
-                    const unsigned source = (next_data_source + offset) % 2;
-                    if (round == 0 and not initially_ready[source]) continue;
-                    if (source == 0) progress |= try_handle_tun_packet();
-                    else progress |= try_handle_switch_packet();
+            try {
+                if (recovery.wait_for_retry(control ? control->fd() : -1)) {
+                    handle_control();
+                    continue;
                 }
-                next_data_source = (next_data_source + 1) % 2;
-                if (not progress) break;
-                if (AdaptivePolling::Clock::now() - slice_started >=
-                    AdaptivePolling::processing_slice) {
-                    adaptive_polling.note_slice_limit();
-                    break;
+                const auto now = std::chrono::steady_clock::now();
+                try_switch_reconnect(now);
+
+                pollfd descriptors[3] {
+                    {tun.fd(), POLLIN, 0},
+                    {switch_client.fd(), switch_client.poll_events(), 0},
+                    {control ? control->fd() : -1, POLLIN, 0},
+                };
+                const auto poll_started = AdaptivePolling::Clock::now();
+                const int ready = ::poll(descriptors, 3,
+                    switch_client.poll_timeout_ms(poll_started, 1000));
+                const auto poll_finished = AdaptivePolling::Clock::now();
+                if (ready < 0) {
+                    if (errno != EINTR) recovery.poll_failed(errno);
+                    continue;
                 }
+                adaptive_polling.observe_poll(poll_finished - poll_started);
+
+                if (switch_client.connected() and
+                    (descriptors[1].revents & (POLLHUP | POLLERR | POLLNVAL))) {
+                    disconnect_switch();
+                }
+                if (switch_client.connecting())
+                    try_switch_reconnect(poll_finished, descriptors[1].revents);
+
+                // Control requests stay ahead of overload data batches.
+                if (control and (descriptors[2].revents & POLLIN)) handle_control();
+
+                const bool initially_ready[2] {
+                    (descriptors[0].revents & POLLIN) != 0,
+                    switch_client.connected() and
+                        (descriptors[1].revents & POLLIN) != 0,
+                };
+                const unsigned rounds = adaptive_polling.batch_size();
+                const auto slice_started = AdaptivePolling::Clock::now();
+                for (unsigned round = 0; round < rounds; ++round) {
+                    bool progress = false;
+                    for (unsigned offset = 0; offset < 2; ++offset) {
+                        const unsigned source = (next_data_source + offset) % 2;
+                        if (round == 0 and not initially_ready[source]) continue;
+                        if (source == 0) progress |= try_handle_tun_packet();
+                        else progress |= try_handle_switch_packet();
+                    }
+                    next_data_source = (next_data_source + 1) % 2;
+                    if (not progress) break;
+                    if (AdaptivePolling::Clock::now() - slice_started >=
+                        AdaptivePolling::processing_slice) {
+                        adaptive_polling.note_slice_limit();
+                        break;
+                    }
+                }
+
+                if (adaptive_polling.should_check_backlog())
+                    adaptive_polling.observe_backlog(
+                        data_backlog_ready(), AdaptivePolling::Clock::now());
+
+                throughput.update(std::chrono::steady_clock::now(), {
+                    {stats.tun_rx_packets, stats.tun_rx_bytes},
+                    {stats.tun_tx_packets, stats.tun_tx_bytes},
+                    {stats.switch_rx_packets, stats.switch_rx_bytes},
+                    {stats.switch_tx_packets, stats.switch_tx_bytes}});
+            } catch (const std::bad_alloc&) {
+                recovery.allocation_failed();
             }
-
-            if (adaptive_polling.should_check_backlog())
-                adaptive_polling.observe_backlog(
-                    data_backlog_ready(), AdaptivePolling::Clock::now());
-
-            throughput.update(std::chrono::steady_clock::now(), {
-                {stats.tun_rx_packets, stats.tun_rx_bytes},
-                {stats.tun_tx_packets, stats.tun_tx_bytes},
-                {stats.switch_rx_packets, stats.switch_rx_bytes},
-                {stats.switch_tx_packets, stats.switch_tx_bytes}});
         }
         return 0;
     } catch (const std::exception& error) {

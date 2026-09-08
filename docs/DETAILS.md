@@ -1087,6 +1087,58 @@ processing for that descriptor in the current slice. `EAGAIN` while writing to
 switch IPC counts as a backpressure drop, but does not disconnect the healthy
 socket and cause a reconnect blackout.
 
+### Runtime resource recovery
+
+Tuntom, the switch and the exit adapter catch runtime `std::bad_alloc` and
+record main-loop `poll()` errors instead of exiting. They defer data and
+maintenance work for 100 ms while keeping the control socket serviced through
+a fixed-size `pselect()` fallback. This avoids a busy loop even if the main
+poll repeatedly fails. The recovery path does not allocate C++ heap objects or
+log. An interrupted packet may be dropped. These counters appear on all three
+components: `runtime_poll_errors` (excluding `EINTR`),
+`runtime_last_poll_errno`, and `runtime_allocation_errors`.
+
+Handshake entropy uses nonblocking `getrandom`. Errors defer new key generation
+for one second, preserving an existing usable session and never substituting
+weaker entropy. `handshake_random_errors` records these failures. Handshake
+transitions prepare allocating work before publishing a new state; failed
+response construction rolls back its unpublished INIT nonce reservation.
+Expiration still retires unconfirmed candidates even if creating the next
+attempt fails. A failed DATA encoding never rolls back its TX nonce counter.
+
+Control clients are closed during exception unwinding. On allocation failure,
+the control handler attempts a static `error=out_of_memory` reply. Startup
+configuration/device errors still fail startup. Endpoint recovery, FD capacity,
+blocking log output and synchronous filesystem I/O are separate concerns.
+
+### Nonblocking switch connection
+
+`SwitchClient` creates its Unix `SOCK_SEQPACKET` socket with `SOCK_NONBLOCK`
+and `SOCK_CLOEXEC`. Both tuntom and the exit adapter advance connection and
+registration from their event loops. Pending sockets request `POLLOUT`;
+connected sockets request `POLLIN`. A pending connect is completed only after
+checking `SO_ERROR`. Linux AF_UNIX `EAGAIN` from a full accept queue closes the
+attempt immediately: it is not an `EINPROGRESS` connection to wait on.
+
+Connection and registration share a fixed five-second monotonic deadline.
+Registration is encoded once at construction and sent as one complete record
+with `MSG_DONTWAIT | MSG_NOSIGNAL`. Temporary registration errors wait for
+writability without extending the deadline. Failed or expired attempts close
+the socket; the event loop starts a fresh attempt after a one-second backoff.
+Poll timeouts account for the pending deadline. No DATA is sent or received
+through the client until the registration record has been sent in full.
+
+`switch_connected` and `switch_reconnects` indicate successful local submission
+of the registration, as before; the IPC protocol has no registration ACK.
+`switch_reconnect_attempts` counts fresh connection attempts, not readiness events. Tuntom
+records failed attempts in `switch_socket_errors` and the existing errno fields,
+including `ETIMEDOUT` for an expired pending attempt. Startup permission errors
+remain configuration errors; errors during reconnect remain recoverable.
+
+The switch listener itself is also nonblocking. A stale readiness indication
+therefore cannot leave `accept4()` waiting for a new connection. Nonblocking
+flags on the accepted socket alone would not provide this protection.
+
 ### Processing latency statistics
 
 Tuntom samples the first and then every 1024th TUN packet / UDP datagram using
@@ -1183,6 +1235,7 @@ messages, not successful UDP sends.
 | `handshake_timeouts` | Server pending candidate expiration, or client five-second flight expiration. Each is counted once; retransmissions do not refresh these deadlines. |
 | `handshake_suite_mismatch` | Authenticated, structurally valid INIT/RESPONSE packets with a supported suite different from local configuration. Unknown suites and invalid lengths remain protocol drops. |
 | `handshake_dh_rejected` | Authenticated suite-2 exchanges that reach DH validation and yield an all-zero X25519 result. |
+| `handshake_random_errors` | Failed attempts to obtain handshake entropy, including a zero exchange ID; new attempts back off for one second. |
 | `handshake_last_age_seconds` | Seconds since most recent local completion; -1 before the first. |
 | `rekey_started` | Subset of handshake attempts started after at least one successful local handshake in this process. Includes fresh attempts after timeout and idle recovery, not only periodic PFS. Retransmissions within a live flight do not count. |
 | `rekey_completed` | Successful local handshakes after the first; includes idle recovery. For uninterrupted PFS traffic this directly counts completed periodic key rotations. |
