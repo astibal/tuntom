@@ -246,8 +246,8 @@ The SSH bootstrap can independently attach either endpoint to a switch that is
 already running on that endpoint host:
 
 ```bash
-./mk_tunnel.sh 42 honeynet-router \
-  --server-switch /run/tuntom/switch.sock honeypot-42 17
+./mk_tunnel.sh 42 site-router \
+  --server-switch /run/tuntom/switch.sock edge-42 17
 ```
 
 A pure switch side creates no TUN and skips its address, hook and kernel-network
@@ -379,7 +379,7 @@ Hooks receive `TUNTOM_SIDE=local|remote`, `TUNTOM_ACTION=up|down`,
 `TUNTOM_PHASE=pre|post`, plus tunnel addresses, interface names, and networking
 settings. Use `post/up` to add custom routes or DNAT rules.
 See [hook context](docs/DETAILS.md#lifecycle-hooks) and the
-[honeynet example](examples/tuntom-honeynet-hook.example.sh).
+[service ingress example](examples/tuntom-service-ingress-hook.example.sh).
 
 ### Wireshark
 

@@ -83,11 +83,16 @@ a reconnect with the same ID replaces the previous connection:
 ```bash
 tuntom-switch \
   --socket /run/tuntom/switch.sock \
-  --exit-port internet \
-  --route honeypot:17=proxy:83 \
-  --route proxy:91=honeypot:44 \
+  --route edge-42:17=site-42:83 \
+  --route site-42:91=edge-42:44 \
   --default-back=off
 ```
+
+Here `edge-42` is a tunnel port from a public edge gateway and `site-42`
+is a tunnel port toward a private service network. The two local tuntom
+instances assign ingress labels `17` and `91`, respectively; the rules
+forward both directions through the corresponding UDP sessions. Neither
+port exits to a local TUN in this example.
 
 The switch creates the listener with mode `0660`. Its group ownership is
 inherited from the containing directory/process environment and should be

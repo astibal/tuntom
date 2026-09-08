@@ -25,7 +25,7 @@ bool parse_fails(std::vector<std::string> arguments) {
 int main() {
     std::vector<std::string> arguments {
         "--switch-socket", "/run/tuntom/a.sock",
-        "--switch-port-id", "honeypot-42",
+        "--switch-port-id", "edge-42",
         "--switch-label", "0x1234",
         "--switch-exit-node",
         "--control-socket", "/run/tuntom/42c.control",
@@ -35,7 +35,7 @@ int main() {
     Options options;
     parse_options(static_cast<int>(argv.size()), argv.data(), 0, options);
     require(options.switch_socket == "/run/tuntom/a.sock", "socket path lost");
-    require(options.switch_port_id == "honeypot-42", "port ID lost");
+    require(options.switch_port_id == "edge-42", "port ID lost");
     require(options.switch_label == 0x1234 and options.switch_label_set,
             "switch label lost");
     require(options.switch_exit_node, "exit mode lost");

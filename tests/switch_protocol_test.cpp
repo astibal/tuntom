@@ -10,11 +10,11 @@ void require(bool value, const char* why) {
 }
 
 int main() {
-    const auto registration = encode_switch_registration("honeypot-42");
+    const auto registration = encode_switch_registration("edge-42");
     std::string port_id;
     require(decode_switch_registration(
         registration.data(), registration.size(), port_id), "registration roundtrip failed");
-    require(port_id == "honeypot-42", "registration ID lost");
+    require(port_id == "edge-42", "registration ID lost");
 
     const std::vector<std::uint8_t> payload {0x45, 0, 0, 20};
     auto wire = encode_switch_frame(
