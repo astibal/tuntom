@@ -297,8 +297,10 @@ UDP endpoint failures are recovered without restarting the daemon. Fatal socket
 errors retire the descriptor and retry socket creation once per second, preserving
 the local port, cached peer address and PMTUD options. Ordinary network errors
 pause UDP receive polling for 100 ms. DNS is resolved at startup only.
-A permanently failed TUN is taken out of service while control and healthy
-transports keep running; automatic TUN recreation is not implemented yet.
+A removed or permanently failed TUN makes tuntom or the adapter exit with status 1.
+Recovery belongs to an external supervisor or operator, which must restore the
+interface's complete network configuration and hooks as well as restart the daemon.
+The daemon does not recreate TUN devices or rerun deployment hooks.
 An administratively DOWN TUN stays open: incoming packets are dropped and counted
 in `tun_write_errors`, without buffering or retries. Traffic resumes when the
 interface is brought UP again; the daemon does not change its administrative state.

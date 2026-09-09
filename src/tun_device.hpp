@@ -5,7 +5,9 @@
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <exception>
 #include <stdexcept>
 #include <string>
 #include <ostream>
@@ -21,6 +23,20 @@ namespace tuntom {
 
 class TunDevice {
 public:
+    // This must escape the loops' bad_alloc recovery, even under memory pressure.
+    class Failure final : public std::exception {
+    public:
+        explicit Failure(int error) noexcept : error_(error) {
+            std::snprintf(message_, sizeof(message_),
+                "TUN device failed (errno=%d); external restart required", error);
+        }
+        const char* what() const noexcept override { return message_; }
+        int error() const noexcept { return error_; }
+    private:
+        int error_;
+        char message_[96] {};
+    };
+
     TunDevice(
         const std::string& interface_name,
         std::size_t mtu)
@@ -67,7 +83,7 @@ public:
     }
     void poll_events(short events) {
         if (fd_ >= 0 and (events & (POLLERR | POLLHUP | POLLNVAL)))
-            retire(events & POLLNVAL ? EBADF : EIO);
+            fail(events & POLLNVAL ? EBADF : EIO);
     }
     void write_stats(std::ostream& out) const {
         out << "tun_endpoint_available=" << (fd_ >= 0 ? 1 : 0) << '\n'
@@ -75,14 +91,14 @@ public:
             << "tun_endpoint_last_errno=" << last_error_ << '\n';
     }
     ssize_t read_packet(std::uint8_t* buffer, std::size_t size) {
-        if (fd_ < 0) { errno = ENODEV; return -1; }
+        if (fd_ < 0) fail(last_error_ ? last_error_ : ENODEV);
         if (poll_fd() < 0) { errno = EAGAIN; return -1; }
         const auto result = ::read(fd_, buffer, size);
-        if (result == 0) retire(ENODEV);
+        if (result == 0) fail(ENODEV);
         if (result < 0) {
             const int error = errno;
             if (error != EAGAIN and error != EWOULDBLOCK and error != EINTR and
-                error != ENOBUFS and error != ENOMEM) retire(error);
+                error != ENOBUFS and error != ENOMEM) fail(error);
             if (error == ENOBUFS or error == ENOMEM)
                 resume_at_ = AcceptBackoff::Clock::now() + std::chrono::milliseconds(100);
             errno = error;
@@ -91,15 +107,15 @@ public:
     }
 
     ssize_t write_packet(const std::uint8_t* buffer, std::size_t size) {
-        if (fd_ < 0) { errno = ENODEV; return -1; }
+        if (fd_ < 0) fail(last_error_ ? last_error_ : ENODEV);
         const auto result = ::write(fd_, buffer, size);
         if (result < 0) {
             const int error = errno;
             // Linux returns EIO while IFF_UP is clear. Drop this packet but keep
             // the fd: a later write can succeed as soon as the interface is UP.
             // Invalid packet data (e.g. EINVAL/EMSGSIZE) must not disable TUN.
-            if (error == EBADF or error == ENODEV or error == ENXIO)
-                retire(error);
+            if (error == EBADF or error == EBADFD or error == ENODEV or error == ENXIO)
+                fail(error);
             errno = error;
         }
         return result;
@@ -130,11 +146,12 @@ public:
     }
 
 private:
-    void retire(int error) {
+    [[noreturn]] void fail(int error) {
         if (fd_ >= 0) ::close(fd_);
         fd_ = -1;
         ++failures_;
         last_error_ = error;
+        throw Failure(error);
     }
     AcceptBackoff::Time resume_at_ {};
     std::uint64_t failures_ = 0;

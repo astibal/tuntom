@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PF-06 part1: UDP recovery, TUN DOWN/UP and retirement in real unprivileged loops."""
+"""PF-06: UDP recovery, live TUN DOWN/UP and fatal device errors in real loops."""
 import contextlib
 import os
 from pathlib import Path
@@ -164,21 +164,13 @@ def tun_case(binary, library, component, fault):
             print(f"PASS: {component} repeated DOWN/UP, drops without replay, bounded CPU/RSS, live control and bidirectional recovery (simulated TUN)", flush=True)
             return
         marker.touch()
-        until(lambda: snapshot(ctl)["tun_endpoint_available"] == "0")
-        began, ticks, baseline_rss = time.monotonic(), cpu_ticks(process), rss_bytes(process)
-        before = snapshot(ctl)
-        for _ in range(12):
-            snapshot(ctl)
-            time.sleep(0.05)
-        check_cpu(process, ticks, began, baseline_rss)
-        fields = snapshot(ctl)
-        assert fields["tun_endpoint_failures"] == before["tun_endpoint_failures"] == "1"
-        marker.unlink()
-        # TUN must stay retired until part2, while IPC/control remain usable.
-        peer.sendall(wire)
-        until(lambda: int(snapshot(ctl)["switch_rx_packets"]) > int(before["switch_rx_packets"]))
-        assert snapshot(ctl)["tun_endpoint_available"] == "0"
-        print(f"PASS: {component} {fault}, TUN retired once, bounded CPU and live IPC/control", flush=True)
+        if fault == "tun_write":
+            peer.sendall(wire)
+        # Poll/read/EOF faults must exit even without any incoming data.
+        assert process.wait(timeout=3) == 1, (component, fault, process.returncode)
+        assert not Path(ctl).exists(), "fatal exit must clean up the control socket"
+        assert peer.recv(65536) == b"", "fatal exit must close the IPC connection"
+        print(f"PASS: {component} {fault}, exit 1 for external recovery and clean endpoint shutdown", flush=True)
 
 
 def control_case(binary, library, target):
@@ -212,7 +204,7 @@ if __name__ == "__main__":
         for fault in ("udp_pollerr", "udp_hup", "udp_nval", "udp_read", "udp_send", "udp_socket", "udp_bind", "udp_refused"):
             udp_case(tunnel, library, role, fault)
     for component, binary in (("adapter", adapter), ("tuntom", tun_fixture)):
-        for fault in ("tun_pollerr", "tun_hup", "tun_nval", "tun_read", "tun_down"):
+        for fault in ("tun_pollerr", "tun_hup", "tun_nval", "tun_read", "tun_eof", "tun_write", "tun_down"):
             tun_case(binary, library, component, fault)
     for target in ("control", "listener"):
         control_case(switch, library, target)

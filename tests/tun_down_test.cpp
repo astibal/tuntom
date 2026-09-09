@@ -1,5 +1,6 @@
 // Manual kernel regression: run in a disposable network namespace (see README).
 #include "../src/tun_device.hpp"
+#include <cstdlib>
 #include <iostream>
 #include <sstream>
 
@@ -48,6 +49,20 @@ int main() {
         require(stats.str().find("tun_endpoint_failures=0\n") != std::string::npos, "no permanent failure");
         ::close(ctl);
         std::cout << "PASS: real kernel TUN, 3 DOWN/UP cycles, 96 dropped writes, same fd/interface, resumed writes\n";
+        require(::system("ip link delete dev pf06down") == 0, "delete test interface");
+        require(::if_nametoindex("pf06down") == 0, "test interface was removed");
+        require(::write(fd, packet, sizeof(packet)) == -1 and errno == EBADFD,
+            "removed kernel TUN returns EBADFD on write");
+        pollfd removed {fd, POLLIN, 0};
+        require(::poll(&removed, 1, 1000) == 1, "removed TUN reports readiness without data");
+        bool failed = false;
+        try {
+            tun.poll_events(removed.revents);
+        } catch (const tuntom::TunDevice::Failure&) {
+            failed = true;
+        }
+        require(failed and tun.fd() == -1, "removed TUN propagates fatal failure and closes fd");
+        std::cout << "PASS: real kernel TUN removal triggers fatal device failure\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

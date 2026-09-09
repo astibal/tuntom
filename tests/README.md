@@ -178,8 +178,10 @@ Repeated TUN write EIO errors must drop packets without closing the descriptor;
 successful writes resume afterward without replaying dropped packets.
 `endpoint_recovery_test.py` and `endpoint_faults.cpp` inject persistent UDP
 poll/read/send faults and recreation failures into both tunnel roles, check
-bounded CPU/RSS/retry counts and bidirectional DATA recovery, and verify TUN
-retirement in the real adapter/tunnel loops using a socketpair fixture.
+bounded CPU/RSS/retry counts and bidirectional DATA recovery, and verify exit 1
+on permanent TUN poll/read/write errors and EOF in the real adapter/tunnel loops
+using a socketpair fixture. Fatal exits must close IPC and remove the control socket;
+poll/read/EOF failures are detected without incoming data.
 Separate control and data listener scenarios check backoff and forwarding during faults.
 No root, real TUN or changes to host network configuration are required.
 
@@ -190,8 +192,10 @@ bidirectional traffic after UP.
 `tun_down_test.cpp` is a separate manual regression against the actual Linux TUN
 driver. It runs three DOWN/UP cycles, checks EIO on 96 dropped writes, preserves
 the same descriptor/interface and verifies successful writes after each UP.
+It then deletes the test interface with `ip link delete` and checks that the
+kernel reports EBADFD on write and that error readiness triggers a fatal failure.
 Run it in a disposable user/network namespace; it requires `/dev/net/tun` and
-permission to create these namespaces, and is not part of `run.sh` or CTest:
+permission to create these namespaces, plus `ip`. It is not part of `run.sh` or CTest:
 
 ```bash
 g++ -std=c++17 -O2 -Wall -Wextra -Wconversion -Werror -pedantic tests/tun_down_test.cpp -o /tmp/tun-down-test

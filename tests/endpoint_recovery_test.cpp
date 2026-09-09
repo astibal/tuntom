@@ -129,6 +129,21 @@ static void udp_case(const char* host) {
     require(resolves == dns_calls, "recovery must not resolve DNS");
     require(port(client.fd()) == client_port and port(server.fd()) == server_port, "stable ports");
 }
+template<class Operation>
+static void tun_failure(tuntom::TunDevice& tun, int error, Operation operation) {
+    const int fd = tun.fd();
+    try {
+        operation();
+    } catch (const tuntom::TunDevice::Failure& failure) {
+        require(failure.error() == error, "fatal TUN error preserves cause");
+        require(tun.fd() == -1 and ::fcntl(fd, F_GETFD) == -1 and errno == EBADF,
+            "fatal TUN error closes descriptor before propagating");
+        require(std::strstr(failure.what(), "external restart required") != nullptr,
+            "fatal TUN error explains recovery policy");
+        return;
+    }
+    throw std::runtime_error("permanent TUN fault must escape to process failure handler");
+}
 static void tun_case() {
     int pair[2];
     require(::socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, pair) == 0, "fake TUN pair");
@@ -164,34 +179,39 @@ static void tun_case() {
         require(stats.str().find("tun_endpoint_failures=0\n") != std::string::npos,
             "DOWN is not a permanent endpoint failure");
     }
-    for (int error : {EBADF, ENODEV, ENXIO}) {
+    for (int error : {EBADF, EBADFD, ENODEV, ENXIO}) {
         tuntom::TunDevice tun("test", 1500);
         tun_fd = tun.fd();
         write_error = error;
         std::uint8_t byte = 0;
-        require(tun.write_packet(&byte, 1) < 0 and errno == error and tun.fd() == -1,
-            "permanent write fault retires TUN");
+        tun_failure(tun, error, [&] { tun.write_packet(&byte, 1); });
         write_error = 0;
     }
-    {
+    for (int error : {ENODEV, EBADFD, EIO}) {
         tuntom::TunDevice tun("test", 1500);
         tun_fd = tun.fd();
-        read_error = ENODEV;
+        read_error = error;
         std::uint8_t byte;
-        require(tun.read_packet(&byte, 1) < 0 and tun.fd() == -1, "read fault retires TUN");
+        tun_failure(tun, error, [&] { tun.read_packet(&byte, 1); });
         read_error = 0;
     }
     for (int event : {POLLERR, POLLHUP, POLLNVAL}) {
         tuntom::TunDevice tun("test", 1500);
-        tun.poll_events(static_cast<short>(event));
-        require(tun.fd() == -1, "poll fault retires TUN");
+        tun_failure(tun, event == POLLNVAL ? EBADF : EIO,
+            [&] { tun.poll_events(static_cast<short>(event)); });
+    }
+    ::close(pair[1]);
+    {
+        tuntom::TunDevice tun("test", 1500);
+        tun_fd = tun.fd();
+        std::uint8_t byte;
+        tun_failure(tun, ENODEV, [&] { tun.read_packet(&byte, 1); });
     }
     ::close(pair[0]);
-    ::close(pair[1]);
 }
 int main() {
     udp_case("127.0.0.1");
     udp_case("::1");
     tun_case();
-    std::cout << "PASS: UDP recovery/ports/DNS/backoff, TUN DOWN/UP and retirement\n";
+    std::cout << "PASS: UDP recovery/ports/DNS/backoff, TUN DOWN/UP and fatal device errors\n";
 }
