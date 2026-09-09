@@ -291,6 +291,15 @@ the respective hosts. Sockets use mode `0660`; filesystem permissions control
 access. Only `show stats` is supported. Existing stats signals remain
 available for compatibility.
 
+### Endpoint recovery
+
+UDP endpoint failures are recovered without restarting the daemon. Fatal socket
+errors retire the descriptor and retry socket creation once per second, preserving
+the local port, cached peer address and PMTUD options. Ordinary network errors
+pause UDP receive polling for 100 ms. DNS is resolved at startup only.
+A permanently failed TUN is taken out of service while control and healthy
+transports keep running; automatic TUN recreation is not implemented yet.
+
 ### Networking and hooks
 
 The bootstrap runs `tuntom-net.sh` on both hosts to set up IPv4 connection

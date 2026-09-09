@@ -1365,3 +1365,50 @@ The daemon performs no statistics file I/O, periodically or on signals.
 `stats_enabled` field have been removed. Update old launch commands to use
 `--control-socket`. SIGUSR1/SIGUSR2 handlers have been removed; these signals now
 have their default action (process termination). Use control queries for snapshots.
+
+### Endpoint faults and recovery (PF-06 part1)
+
+UDP and TUN error readiness is handled before control admission can reuse a
+retired descriptor number. UDP `POLLHUP`/`POLLNVAL`, unexplained `POLLERR`, and
+fatal I/O errors close the socket. A monotonic one-second retry deadline keeps
+failed socket creation, option configuration or bind from spinning. Every
+failed candidate is closed. The main loop continues control, session timers
+and healthy transports during the outage.
+
+`SO_ERROR` clears ordinary UDP network errors. Connection refusal, unreachable
+networks/hosts, resource pressure, permission errors and `EMSGSIZE` keep the
+socket and pause receive polling for 100 ms. The original send errno still
+reaches packet accounting and PMTUD handling. A zero-length UDP datagram is
+not treated as an endpoint failure.
+
+Recovery retains address family, explicit local bind (including the client's
+ephemeral port), cached peer and PMTUD socket options. Server sockets retain
+dual-stack/reuse settings. DNS resolution happens only at startup. Crypto
+sessions, replay windows and sequence counters are not reset by socket recovery.
+A local-port conflict leaves the endpoint offline with bounded retries rather
+than silently selecting a new client port.
+
+TUN `POLLERR`/`POLLHUP`/`POLLNVAL`, EOF and permanent read errors retire the
+descriptor in both tuntom and adapter. Transient resource errors on read pause
+polling for 100 ms; EAGAIN/EINTR retain the descriptor. Permanent write errors
+(EBADF, ENODEV, ENXIO, EIO) retire it; invalid packet errors such as EINVAL or
+EMSGSIZE only drop that packet. TUN recreation and restoring its configuration
+after privilege drop remain PF-06 part2.
+
+Control and switch data listener error readiness uses the respective existing
+one-second backoff. Established clients retain independent progress; a
+permanently broken listener is not recreated by this change.
+
+New snapshot fields:
+
+| Field | Meaning |
+| --- | --- |
+| `udp_endpoint_available` | A UDP socket is open (receive polling may be paused). |
+| `udp_endpoint_errors`, `udp_endpoint_last_errno` | Observed endpoint errors and most recent endpoint/reopen errno. |
+| `udp_reopen_attempts`, `udp_reopens` | Recovery attempts and successful socket recreations. |
+| `tun_endpoint_available` | Configured TUN descriptor is still active. |
+| `tun_endpoint_failures`, `tun_endpoint_last_errno` | Permanent TUN retirements and last cause. |
+
+TUN fields are omitted in tuntom modes without a configured TUN. Fault-injection
+tests run unprivileged with local UDP/Unix sockets and a socketpair TUN fixture;
+they do not replace a laboratory test of real TUN device removal.

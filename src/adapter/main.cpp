@@ -163,6 +163,7 @@ int main(int argc, char** argv) {
         };
 
         const auto try_handle_tun_packet = [&] {
+            if (tun.fd() < 0) return false;
             const ssize_t size = tun.read_packet(packet.data(), packet.size());
             if (size < 0) {
                 if (errno == EAGAIN or errno == EWOULDBLOCK or errno == EINTR)
@@ -242,7 +243,7 @@ int main(int argc, char** argv) {
 
         const auto data_backlog_ready = [&] {
             pollfd pending[2] {
-                {tun.fd(), POLLIN, 0},
+                {tun.poll_fd(), POLLIN, 0},
                 {switch_client.connected() ? switch_client.fd() : -1, POLLIN, 0},
             };
             const int ready = ::poll(pending, 2, 0);
@@ -285,6 +286,7 @@ int main(int argc, char** argv) {
                     << "switch_backpressure_drops=" << stats.switch_backpressure_drops << "\n"
                     << "switch_reconnect_attempts=" << stats.switch_reconnect_attempts << "\n"
                     << "switch_reconnects=" << stats.switch_reconnects << "\n";
+                tun.write_stats(out);
                 recovery.write_stats(out);
                 tuntom::logger.write_stats(out);
                 adaptive_polling.write_stats(out);
@@ -312,7 +314,7 @@ int main(int argc, char** argv) {
                 try_switch_reconnect(now);
 
                 pollfd descriptors[3 + ControlSocket::max_clients] {
-                    {tun.fd(), POLLIN, 0},
+                    {tun.poll_fd(), POLLIN, 0},
                     {switch_client.fd(), switch_client.poll_events(), 0},
                     {control ? control->poll_fd() : -1, POLLIN, 0},
                 };
@@ -322,6 +324,7 @@ int main(int argc, char** argv) {
                 const auto timeout_at = AdaptivePolling::Clock::now();
                 int timeout = switch_client.poll_timeout_ms(timeout_at, 1000);
                 if (control) timeout = control->poll_timeout_ms(timeout_at, timeout);
+                timeout = tun.poll_timeout_ms(timeout_at, timeout);
                 const auto poll_started = AdaptivePolling::Clock::now();
                 const int ready = ::poll(descriptors, 3 + ControlSocket::max_clients, timeout);
                 const auto poll_finished = AdaptivePolling::Clock::now();
@@ -337,6 +340,9 @@ int main(int argc, char** argv) {
                 }
                 if (switch_client.connecting())
                     try_switch_reconnect(poll_finished, descriptors[1].revents);
+
+                tun.poll_events(descriptors[0].revents);
+                if (control) control->poll_events(descriptors[2].revents);
 
                 // Control requests stay ahead of overload data batches.
                 if (control) handle_control((descriptors[2].revents & POLLIN) != 0);

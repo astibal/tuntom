@@ -1,6 +1,8 @@
 #pragma once
 
 #include "common.hpp"
+#include "accept_backoff.hpp"
+#include <poll.h>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -22,63 +24,21 @@ public:
         }
     }
 
+    using Clock = AcceptBackoff::Clock;
+    using Time = Clock::time_point;
+    static constexpr auto retry_interval = std::chrono::seconds(1);
+    static constexpr auto error_pause = std::chrono::milliseconds(100);
+
     void open_server(std::uint16_t port) {
-        fd_ = ::socket(
-            AF_INET6,
-            SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK,
-            0);
-        if (fd_ < 0) {
-            throw std::runtime_error(
-                "socket() failed: " +
-                std::string(std::strerror(errno)));
-        }
-
-        int reuse_address = 1;
-        if (
-            ::setsockopt(
-                fd_,
-                SOL_SOCKET,
-                SO_REUSEADDR,
-                &reuse_address,
-                sizeof(reuse_address)) < 0) {
-
-            const std::string error = std::strerror(errno);
-            ::close(fd_);
-            fd_ = -1;
-
-            throw std::runtime_error(
-                "setsockopt(SO_REUSEADDR) failed: " + error);
-        }
-
-        configure_pmtud_socket(AF_INET6);
-
-        int v6_only = 0;
-        ::setsockopt(
-            fd_,
-            IPPROTO_IPV6,
-            IPV6_V6ONLY,
-            &v6_only,
-            sizeof(v6_only));
-
+        server_ = true;
+        family_ = AF_INET6;
         sockaddr_in6 address {};
         address.sin6_family = AF_INET6;
         address.sin6_addr = in6addr_any;
         address.sin6_port = htons(port);
-
-        if (
-            ::bind(
-                fd_,
-                reinterpret_cast<sockaddr*>(&address),
-                sizeof(address)) < 0) {
-
-            throw std::runtime_error(
-                "bind() failed: " +
-                std::string(std::strerror(errno)));
-        }
-
-        // A dual-stack server socket is treated conservatively as IPv6 for
-        // transport-MTU calculations. IPv4-mapped peers therefore merely
-        // get 20 bytes of extra safety margin.
+        std::memcpy(&local_, &address, sizeof(address));
+        local_length_ = sizeof(address);
+        if (not create_socket()) startup_error();
         outer_ip_header_size_ = ipv6_header_size;
     }
 
@@ -86,76 +46,77 @@ public:
         addrinfo hints {};
         hints.ai_family = AF_UNSPEC;
         hints.ai_socktype = SOCK_DGRAM;
-
         addrinfo* result = nullptr;
         const std::string service = std::to_string(port);
-
-        const int rc =
-            ::getaddrinfo(
-                host.c_str(),
-                service.c_str(),
-                &hints,
-                &result);
-
-        if (rc != 0) {
-            throw std::runtime_error(
-                "getaddrinfo() failed: " +
-                std::string(gai_strerror(rc)));
-        }
-
-        for (addrinfo* item = result; item != nullptr; item = item->ai_next) {
-            const int candidate =
-                ::socket(
-                    item->ai_family,
-                    SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK,
-                    0);
-
-            if (candidate < 0) {
-                continue;
-            }
-
-            fd_ = candidate;
-            configure_pmtud_socket(item->ai_family);
-            std::memset(&peer_, 0, sizeof(peer_));
+        const int rc = ::getaddrinfo(host.c_str(), service.c_str(), &hints, &result);
+        if (rc != 0) throw std::runtime_error("getaddrinfo() failed: " + std::string(gai_strerror(rc)));
+        struct FreeAddresses {
+            addrinfo* value;
+            ~FreeAddresses() { ::freeaddrinfo(value); }
+        } guard {result};
+        server_ = false;
+        for (const addrinfo* item = result; item; item = item->ai_next) {
+            if ((item->ai_family != AF_INET and item->ai_family != AF_INET6) or
+                item->ai_addrlen > sizeof(peer_)) continue;
+            family_ = item->ai_family;
+            local_ = {};
+            local_.ss_family = static_cast<sa_family_t>(family_);
+            local_length_ = family_ == AF_INET ? sizeof(sockaddr_in) : sizeof(sockaddr_in6);
+            if (not create_socket()) continue;
             std::memcpy(&peer_, item->ai_addr, item->ai_addrlen);
             peer_length_ = static_cast<socklen_t>(item->ai_addrlen);
             peer_valid_ = true;
-
-            outer_ip_header_size_ =
-                item->ai_family == AF_INET
-                    ? ipv4_header_min_size
-                    : ipv6_header_size;
-
-            break;
+            outer_ip_header_size_ = family_ == AF_INET ? ipv4_header_min_size : ipv6_header_size;
+            return;
         }
-
-        ::freeaddrinfo(result);
-
-        if (fd_ < 0 or not peer_valid_) {
-            throw std::runtime_error("Cannot create UDP client socket");
-        }
+        startup_error();
     }
 
-    int fd() const {
-        return fd_;
+    int fd() const { return fd_; }
+    int poll_fd() const { return Clock::now() >= resume_at_ ? fd_ : -1; }
+    int poll_timeout_ms(Time now, int maximum) const {
+        return now < resume_at_ ? deadline_timeout_ms(now, resume_at_, maximum) : maximum;
+    }
+    void maintain(Time now) {
+        if (fd_ >= 0 or now < resume_at_) return;
+        ++reopen_attempts_;
+        if (create_socket()) {
+            ++reopens_;
+            resume_at_ = {};
+        } else {
+            last_error_ = errno;
+            resume_at_ = now + retry_interval;
+        }
+    }
+    void poll_events(short events) {
+        if (fd_ < 0) return;
+        if (events & (POLLHUP | POLLNVAL)) {
+            retire(events & POLLNVAL ? EBADF : EIO);
+        } else if (events & POLLERR) {
+            int error = 0;
+            socklen_t size = sizeof(error);
+            if (::getsockopt(fd_, SOL_SOCKET, SO_ERROR, &error, &size) < 0) error = errno;
+            // Even an unexplained/repeating error must not keep poll hot.
+            io_error(error ? error : EIO);
+        }
+    }
+    void write_stats(std::ostream& out) const {
+        out << "udp_endpoint_available=" << (fd_ >= 0 ? 1 : 0) << '\n'
+            << "udp_endpoint_errors=" << errors_ << '\n'
+            << "udp_endpoint_last_errno=" << last_error_ << '\n'
+            << "udp_reopen_attempts=" << reopen_attempts_ << '\n'
+            << "udp_reopens=" << reopens_ << '\n';
     }
 
-    ssize_t receive(
-        std::uint8_t* buffer,
-        std::size_t size,
-        sockaddr_storage& source,
-        socklen_t& source_length) {
-
+    ssize_t receive(std::uint8_t* buffer, std::size_t size,
+                    sockaddr_storage& source, socklen_t& source_length) {
         source = {};
         source_length = sizeof(source);
-
-        return ::recvfrom(
-            fd_,
-            buffer,
-            size,
-            0,
-            reinterpret_cast<sockaddr*>(&source),
-            &source_length);
+        if (poll_fd() < 0) { errno = EAGAIN; return -1; }
+        const auto received = ::recvfrom(fd_, buffer, size, 0,
+            reinterpret_cast<sockaddr*>(&source), &source_length);
+        if (received < 0) record_io_error();
+        return received;
     }
 
     bool set_peer(
@@ -187,22 +148,16 @@ public:
 
     ssize_t send_to(const std::uint8_t* buffer, std::size_t size,
                     const sockaddr_storage& destination, socklen_t length) {
-        return ::sendto(fd_, buffer, size, 0,
+        if (fd_ < 0) { errno = ENETDOWN; return -1; }
+        const auto sent = ::sendto(fd_, buffer, size, 0,
             reinterpret_cast<const sockaddr*>(&destination), length);
+        if (sent < 0) record_io_error();
+        return sent;
     }
 
     ssize_t send(const std::uint8_t* buffer, std::size_t size) {
-        if (not peer_valid_) {
-            return 0;
-        }
-
-        return ::sendto(
-            fd_,
-            buffer,
-            size,
-            0,
-            reinterpret_cast<const sockaddr*>(&peer_),
-            peer_length_);
+        if (not peer_valid_) return 0;
+        return send_to(buffer, size, peer_, peer_length_);
     }
 
     std::size_t outer_ip_header_size() const {
@@ -250,44 +205,83 @@ private:
         return std::memcmp(&peer_, &peer, peer_length) == 0;
     }
 
-    void configure_pmtud_socket(int family) {
+    void retire(int error) {
+        ++errors_;
+        last_error_ = error;
+        if (fd_ >= 0) ::close(fd_);
+        fd_ = -1;
+        resume_at_ = Clock::now() + retry_interval;
+    }
+    void io_error(int error) {
+        if (error == EAGAIN or error == EWOULDBLOCK or error == EINTR) return;
+        switch (error) {
+        case ECONNREFUSED: case EHOSTUNREACH: case ENETUNREACH: case ENETDOWN:
+        case EMSGSIZE: case ENOBUFS: case ENOMEM: case EACCES: case EPERM:
+            ++errors_;
+            last_error_ = error;
+            resume_at_ = Clock::now() + error_pause;
+            break;
+        default:
+            retire(error);
+        }
+    }
+    void record_io_error() {
+        const int error = errno;
+        io_error(error);
+        errno = error;
+    }
+    [[noreturn]] void startup_error() {
+        throw std::runtime_error("Cannot prepare UDP socket: " + std::string(std::strerror(errno)));
+    }
+    bool create_socket() {
+        const int candidate = ::socket(family_, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+        if (candidate < 0) return false;
+        const auto fail = [&] {
+            const int error = errno;
+            ::close(candidate);
+            errno = error;
+            return false;
+        };
+        if (server_) {
+            int reuse = 1, v6_only = 0;
+            if (::setsockopt(candidate, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0 or
+                ::setsockopt(candidate, IPPROTO_IPV6, IPV6_V6ONLY, &v6_only, sizeof(v6_only)) < 0)
+                return fail();
+        }
 #ifdef IP_MTU_DISCOVER
-        if (family == AF_INET) {
+        if (family_ == AF_INET) {
             int mode = IP_PMTUDISC_DO;
-            if (
-                ::setsockopt(
-                    fd_,
-                    IPPROTO_IP,
-                    IP_MTU_DISCOVER,
-                    &mode,
-                    sizeof(mode)) < 0) {
-
-                throw std::runtime_error(
-                    "setsockopt(IP_MTU_DISCOVER) failed: " +
-                    std::string(std::strerror(errno)));
-            }
+            if (::setsockopt(candidate, IPPROTO_IP, IP_MTU_DISCOVER, &mode, sizeof(mode)) < 0)
+                return fail();
         }
 #endif
-
 #ifdef IPV6_MTU_DISCOVER
-        if (family == AF_INET6) {
+        if (family_ == AF_INET6) {
             int mode = IPV6_PMTUDISC_DO;
-            if (
-                ::setsockopt(
-                    fd_,
-                    IPPROTO_IPV6,
-                    IPV6_MTU_DISCOVER,
-                    &mode,
-                    sizeof(mode)) < 0) {
-
-                throw std::runtime_error(
-                    "setsockopt(IPV6_MTU_DISCOVER) failed: " +
-                    std::string(std::strerror(errno)));
-            }
+            if (::setsockopt(candidate, IPPROTO_IPV6, IPV6_MTU_DISCOVER, &mode, sizeof(mode)) < 0)
+                return fail();
         }
 #endif
+        if (::bind(candidate, reinterpret_cast<const sockaddr*>(&local_), local_length_) < 0)
+            return fail();
+        sockaddr_storage bound {};
+        socklen_t length = sizeof(bound);
+        if (::getsockname(candidate, reinterpret_cast<sockaddr*>(&bound), &length) < 0)
+            return fail();
+        // Explicit client bind caches the ephemeral port before the first send.
+        local_ = bound;
+        local_length_ = length;
+        fd_ = candidate;
+        return true;
     }
 
+    bool server_ = false;
+    int family_ = AF_INET6;
+    sockaddr_storage local_ {};
+    socklen_t local_length_ = 0;
+    Time resume_at_ {};
+    std::uint64_t errors_ = 0, reopen_attempts_ = 0, reopens_ = 0;
+    int last_error_ = 0;
     int fd_ = -1;
     sockaddr_storage peer_ {};
     socklen_t peer_length_ = 0;

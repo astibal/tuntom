@@ -148,11 +148,12 @@ public:
                     if (control_) handle_control_request();
                     continue;
                 }
+                udp_.maintain(std::chrono::steady_clock::now());
                 pollfd descriptors[4 + ControlSocket::max_clients] {};
                 for (auto& descriptor : descriptors) descriptor.fd = -1;
-                descriptors[0].fd = tun_ ? tun_->fd() : -1;
+                descriptors[0].fd = tun_ ? tun_->poll_fd() : -1;
                 descriptors[0].events = POLLIN;
-                descriptors[1].fd = udp_.fd();
+                descriptors[1].fd = udp_.poll_fd();
                 descriptors[1].events = POLLIN;
                 descriptors[2].fd = switch_ ? switch_->fd() : -1;
                 descriptors[2].events = switch_ ? switch_->poll_events() : POLLIN;
@@ -163,6 +164,8 @@ public:
                 const auto timeout_at = AdaptivePolling::Clock::now();
                 int timeout = switch_ ? switch_->poll_timeout_ms(timeout_at, 1000) : 1000;
                 if (control_) timeout = control_->poll_timeout_ms(timeout_at, timeout);
+                timeout = udp_.poll_timeout_ms(timeout_at, timeout);
+                if (tun_) timeout = tun_->poll_timeout_ms(timeout_at, timeout);
                 const auto poll_started = AdaptivePolling::Clock::now();
                 const int rc = ::poll(descriptors, 4 + ControlSocket::max_clients, timeout);
                 const auto poll_finished = AdaptivePolling::Clock::now();
@@ -173,6 +176,11 @@ public:
                 }
 
                 adaptive_polling_.observe_poll(poll_finished - poll_started);
+
+                // Retire broken data FDs before control accepts can reuse a number.
+                if (tun_) tun_->poll_events(descriptors[0].revents);
+                udp_.poll_events(descriptors[1].revents);
+                if (control_) control_->poll_events(descriptors[3].revents);
 
                 // Control traffic is never held behind an overload data slice.
                 if (control_) {
@@ -305,7 +313,7 @@ private:
     }
 
     bool try_handle_tun_packet() {
-        if (not tun_) return false;
+        if (not tun_ or tun_->fd() < 0) return false;
         const ssize_t received = tun_->read_packet(
             tun_rx_buffer_.data(), tun_rx_buffer_.size());
         if (received <= 0) return false;
@@ -345,8 +353,8 @@ private:
 
     bool data_backlog_ready() const {
         pollfd descriptors[3] {
-            {tun_ ? tun_->fd() : -1, POLLIN, 0},
-            {udp_.fd(), POLLIN, 0},
+            {tun_ ? tun_->poll_fd() : -1, POLLIN, 0},
+            {udp_.poll_fd(), POLLIN, 0},
             {switch_ and switch_->connected() ? switch_->fd() : -1, POLLIN, 0},
         };
         const int ready = ::poll(descriptors, 3, 0);
@@ -1496,6 +1504,8 @@ private:
             << "switch_socket_other_errors=" << stats_.switch_socket_other_errors << "\n"
             << "switch_last_error_ts=" << stats_.switch_last_error_ts << "\n"
             << "switch_last_error_no=" << stats_.switch_last_error_no << "\n";
+        udp_.write_stats(output);
+        if (tun_) tun_->write_stats(output);
         recovery_.write_stats(output);
         logger.write_stats(output);
         adaptive_polling_.write_stats(output);

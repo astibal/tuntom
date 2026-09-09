@@ -170,3 +170,13 @@ Its syscall wrappers reject blocking polls in the handler and inject send
 backpressure/EINTR. `control_flow_test.py` checks packet forwarding and live
 statistics with idle control clients in switch, adapter and tunnel processes,
 including FD bounds and timer-driven expiration without data traffic.
+
+`endpoint_recovery_test.cpp` covers IPv4/IPv6 UDP recreation with stable local
+ports/peers, no DNS retry, failed socket/options/bind with bounded retries and
+no FD leak, plus transient/permanent TUN I/O errors.
+`endpoint_recovery_test.py` and `endpoint_faults.cpp` inject persistent UDP
+poll/read/send faults and recreation failures into both tunnel roles, check
+bounded CPU/RSS/retry counts and bidirectional DATA recovery, and verify TUN
+retirement in the real adapter/tunnel loops using a socketpair fixture.
+Separate control and data listener scenarios check backoff and forwarding during faults.
+No root, real TUN or changes to host network configuration are required.

@@ -61,6 +61,10 @@ public:
             if (client.fd >= 0) maximum = deadline_timeout_ms(now, client.deadline, maximum);
         return maximum;
     }
+    void poll_events(short events) {
+        if (events & (POLLERR | POLLHUP | POLLNVAL))
+            accept_backoff_.failed(events & POLLNVAL ? EBADF : EIO, AcceptBackoff::Clock::now());
+    }
     void write_stats(std::ostream& out) const {
         accept_backoff_.write_stats(out, "control", AcceptBackoff::Clock::now());
     }

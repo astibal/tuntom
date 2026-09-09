@@ -1,11 +1,15 @@
 #pragma once
 
+#include "accept_backoff.hpp"
+
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <ostream>
+#include <poll.h>
 #include <fcntl.h>
 #include <linux/if_tun.h>
 #include <net/if.h>
@@ -57,12 +61,46 @@ public:
         return fd_;
     }
 
+    int poll_fd() const { return AcceptBackoff::Clock::now() >= resume_at_ ? fd_ : -1; }
+    int poll_timeout_ms(AcceptBackoff::Time now, int maximum) const {
+        return now < resume_at_ ? deadline_timeout_ms(now, resume_at_, maximum) : maximum;
+    }
+    void poll_events(short events) {
+        if (fd_ >= 0 and (events & (POLLERR | POLLHUP | POLLNVAL)))
+            retire(events & POLLNVAL ? EBADF : EIO);
+    }
+    void write_stats(std::ostream& out) const {
+        out << "tun_endpoint_available=" << (fd_ >= 0 ? 1 : 0) << '\n'
+            << "tun_endpoint_failures=" << failures_ << '\n'
+            << "tun_endpoint_last_errno=" << last_error_ << '\n';
+    }
     ssize_t read_packet(std::uint8_t* buffer, std::size_t size) {
-        return ::read(fd_, buffer, size);
+        if (fd_ < 0) { errno = ENODEV; return -1; }
+        if (poll_fd() < 0) { errno = EAGAIN; return -1; }
+        const auto result = ::read(fd_, buffer, size);
+        if (result == 0) retire(ENODEV);
+        if (result < 0) {
+            const int error = errno;
+            if (error != EAGAIN and error != EWOULDBLOCK and error != EINTR and
+                error != ENOBUFS and error != ENOMEM) retire(error);
+            if (error == ENOBUFS or error == ENOMEM)
+                resume_at_ = AcceptBackoff::Clock::now() + std::chrono::milliseconds(100);
+            errno = error;
+        }
+        return result;
     }
 
     ssize_t write_packet(const std::uint8_t* buffer, std::size_t size) {
-        return ::write(fd_, buffer, size);
+        if (fd_ < 0) { errno = ENODEV; return -1; }
+        const auto result = ::write(fd_, buffer, size);
+        if (result < 0) {
+            const int error = errno;
+            // Invalid packet data (e.g. EINVAL/EMSGSIZE) must not disable TUN.
+            if (error == EBADF or error == ENODEV or error == ENXIO or error == EIO)
+                retire(error);
+            errno = error;
+        }
+        return result;
     }
 
     void set_up() {
@@ -90,6 +128,15 @@ public:
     }
 
 private:
+    void retire(int error) {
+        if (fd_ >= 0) ::close(fd_);
+        fd_ = -1;
+        ++failures_;
+        last_error_ = error;
+    }
+    AcceptBackoff::Time resume_at_ {};
+    std::uint64_t failures_ = 0;
+    int last_error_ = 0;
     void set_mtu(std::size_t mtu) {
         const int socket_fd = ::socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
         if (socket_fd < 0) {

@@ -27,6 +27,12 @@ if(BUILD_TESTING)
         target_compile_options(${name} PRIVATE -Wall -Wextra -Wconversion -pedantic)
         add_test(NAME ${name} COMMAND ${name})
     endforeach()
+    add_executable(endpoint_recovery_test tests/endpoint_recovery_test.cpp tests/adapter_tun_fixture.cpp)
+    target_compile_options(endpoint_recovery_test PRIVATE -Wall -Wextra -Wconversion -pedantic)
+    target_link_options(endpoint_recovery_test PRIVATE -Wl,--wrap=open -Wl,--wrap=ioctl
+        -Wl,--wrap=socket -Wl,--wrap=bind -Wl,--wrap=setsockopt -Wl,--wrap=getsockopt
+        -Wl,--wrap=getaddrinfo -Wl,--wrap=read -Wl,--wrap=write)
+    add_test(NAME endpoint_recovery_test COMMAND endpoint_recovery_test)
     target_link_options(control_socket_test PRIVATE -Wl,--wrap=poll -Wl,--wrap=send)
     target_link_options(switch_client_test PRIVATE
         -Wl,--wrap=connect -Wl,--wrap=send -Wl,--wrap=getsockopt)
@@ -44,6 +50,17 @@ if(BUILD_TESTING)
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/switch_capacity_test.py
             $<TARGET_FILE:tuntom-switch> $<TARGET_FILE:accept_faults>)
         set_tests_properties(switch_capacity_test PROPERTIES TIMEOUT 90)
+        add_library(endpoint_faults SHARED tests/endpoint_faults.cpp)
+        target_link_libraries(endpoint_faults PRIVATE ${CMAKE_DL_LIBS})
+        add_executable(tunnel_tun_fixture src/main.cpp tests/adapter_tun_fixture.cpp)
+        target_compile_options(tunnel_tun_fixture PRIVATE -Wall -Wextra -Wconversion -pedantic)
+        target_link_options(tunnel_tun_fixture PRIVATE -Wl,--wrap=open -Wl,--wrap=ioctl)
+        add_test(NAME endpoint_recovery_process_test COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/endpoint_recovery_test.py
+            $<TARGET_FILE:tuntom> $<TARGET_FILE:tuntom-switch>
+            $<TARGET_FILE:adapter_reconnect_fixture> $<TARGET_FILE:tunnel_tun_fixture>
+            $<TARGET_FILE:endpoint_faults>)
+        set_tests_properties(endpoint_recovery_process_test PROPERTIES TIMEOUT 180)
         add_library(runtime_faults SHARED tests/runtime_faults.cpp)
         target_link_libraries(runtime_faults PRIVATE ${CMAKE_DL_LIBS})
         add_library(logging_faults SHARED tests/logging_faults.cpp)

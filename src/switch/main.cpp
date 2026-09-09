@@ -510,8 +510,15 @@ int main(int argc, char** argv) {
                 }
                 adaptive_polling.observe_poll(poll_finished - poll_started);
                 expire_registrations(poll_finished);
+                if (descriptors[0].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+                    admission.failed(descriptors[0].revents & POLLNVAL ? EBADF : EIO, poll_finished);
+                    descriptors[0].revents = 0;
+                }
 
-                if (control) handle_control((descriptors[1].revents & POLLIN) != 0);
+                if (control) {
+                    control->poll_events(descriptors[1].revents);
+                    handle_control((descriptors[1].revents & POLLIN) != 0);
+                }
                 if (descriptors[0].revents & POLLIN) {
                     admission.attempted(poll_finished);
                     const int accepted = ::accept4(
