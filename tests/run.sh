@@ -5,6 +5,12 @@ tests_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 build_dir="$(mktemp -d "${TMPDIR:-/tmp}/tuntom-tests.XXXXXXXX")"
 trap 'rm -rf -- "$build_dir"' EXIT
 
+if command -v python3 >/dev/null 2>&1; then
+    python3 "${tests_dir}/mk_sudo_test.py"
+else
+    echo "SKIP: sudo environment tests require python3"
+fi
+
 echo "Checking self-contained headers"
 while IFS= read -r relative_header; do
     header="${tests_dir}/../${relative_header}"

@@ -31,7 +31,9 @@ format. The switch forwards by this rule:
 The local helpers need Linux, C++17 `g++`, Bash, `flock`, `timeout` and standard
 system utilities. The adapter also needs `iproute2` and `/dev/net/tun`.
 Commands below run from the repository root; the scripts build their own
-binaries and obtain root privileges through `sudo -E` when needed.
+binaries and obtain root privileges through `sudo` when needed. Only `TUNTOM_*`
+variables are explicitly preserved by name, with both classic `sudo` and `sudo-rs`.
+Other overrides such as `CXX` follow the normal sudo environment policy.
 
 For local build/start/restart/stop, use the companion bootstrap scripts:
 
@@ -48,7 +50,7 @@ For local build/start/restart/stop, use the companion bootstrap scripts:
 ```
 
 Adjust the example routes first. Both scripts operate only on the local host,
-use `sudo -E` when needed, and require no `TUNTOM_SECRET`. Repeat the start
+use `sudo` when needed, and require no `TUNTOM_SECRET`. Repeat the start
 command with the desired options to rebuild and restart. `--stop` needs only
 the switch name or adapter interface; saved endpoints and hook paths are used
 for teardown. Run `--help` for options, including socket paths, owner, adapter

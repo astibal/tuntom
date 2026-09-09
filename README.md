@@ -76,10 +76,17 @@ For the bootstrap workflow, both hosts need:
 - Synchronized clocks for the v5 handshake.
 
 The caller also needs `ssh`, working SSH key authentication, and `flock`.
-When started as a normal local user, the script uses `sudo -E` for privileged
-local operations. The remote SSH account must already have root privileges:
+When started as a normal local user, the script uses `sudo` for privileged
+local operations, explicitly preserving only `TUNTOM_*` variables by name.
+This works with both classic `sudo` and `sudo-rs`; it does not use `sudo -E`.
+The remote SSH account must already have root privileges:
 remote commands do not use `sudo`. A bare hostname selects `root@host`.
 The server's UDP port (`40000 + tunnel ID`) must be reachable from the client.
+
+To invoke the entire script through `sudo`, export the secret first and use
+`sudo --preserve-env=TUNTOM_SECRET ./mk_tunnel.sh ...`. Add other required
+`TUNTOM_*` variable names separated by commas. Prefer running the script directly
+so it can select all `TUNTOM_*` names and keep SSH in your user session.
 
 ### Start a tunnel
 

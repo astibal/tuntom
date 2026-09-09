@@ -79,7 +79,13 @@ local_validate() {
 
 local_require_root() {
     if (( EUID != 0 )); then
-        exec sudo -E bash "${script_dir}/mk_${kind}.sh" "${original_args[@]}"
+        # Named preservation works with both classic sudo and sudo-rs.
+        local env_name
+        local -a sudo_cmd=(sudo)
+        for env_name in "${!TUNTOM_@}"; do
+            sudo_cmd+=("--preserve-env=$env_name")
+        done
+        exec "${sudo_cmd[@]}" bash "${script_dir}/mk_${kind}.sh" "${original_args[@]}"
     fi
 }
 

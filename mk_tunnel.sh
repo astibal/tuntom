@@ -283,7 +283,12 @@ fi
 if [[ $EUID -eq 0 ]]; then
     root_cmd=()
 else
-    root_cmd=(sudo -E)
+    # Named preservation works with both classic sudo and sudo-rs.
+    # Pass only TUNTOM_* names; secret values stay out of the command line.
+    root_cmd=(sudo)
+    for env_name in "${!TUNTOM_@}"; do
+        root_cmd+=("--preserve-env=$env_name")
+    done
 fi
 
 mk_lock_file="${run_dir}/mk_${id}.lock"
