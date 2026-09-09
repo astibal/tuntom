@@ -1,5 +1,6 @@
 #include "../common.hpp"
 #include "../runtime_recovery.hpp"
+#include "../switch_admission.hpp"
 #include "../ipc/switch_protocol.hpp"
 #include "../adaptive_polling.hpp"
 #include "../control_socket.hpp"
@@ -60,12 +61,15 @@ struct RouteTarget {
 struct Connection {
     int fd = -1;
     std::string port_id;
+    tuntom::AcceptBackoff::Time registration_deadline {};
 };
 
 struct SwitchStats {
     std::uint64_t connections_accepted = 0;
     std::uint64_t registrations_ok = 0;
     std::uint64_t registrations_invalid = 0;
+    std::uint64_t registrations_timed_out = 0;
+    std::uint64_t registrations_capacity_rejected = 0;
     std::uint64_t frames_rx = 0;
     std::uint64_t bytes_rx = 0;
     std::uint64_t frames_tx = 0;
@@ -87,8 +91,19 @@ void usage(const char* program) {
         << "      [--route <in-port>:<label>=<out-port>:<label> ...]\n"
         << "      [--exit-port <port-id> ...]\n"
         << "      [--control-socket <unix-path>]\n"
+        << "      [--max-ports <1..65535>] [--max-pending <1..65535>]\n"
         << "      [--default-back=off|on]\n\n"
-        << "Each client registers a stable port ID after connecting.\n";
+        << "Each client registers a stable port ID within 5 seconds.\n"
+        << "Default limits: 256 ports, 16 pending registrations; reduced to fit FD capacity.\n";
+}
+
+std::size_t parse_capacity(const std::string& text) {
+    if (text.empty() or text.find_first_not_of("0123456789") != std::string::npos)
+        throw std::runtime_error("Connection limit must be in range 1..65535");
+    const auto value = std::stoull(text);
+    if (value == 0 or value > 65535)
+        throw std::runtime_error("Connection limit must be in range 1..65535");
+    return static_cast<std::size_t>(value);
 }
 
 std::uint64_t parse_label(const std::string& text) {
@@ -191,6 +206,7 @@ int main(int argc, char** argv) {
             {stats.frames_rx, stats.bytes_rx},
             {stats.frames_tx, stats.bytes_tx}});
         bool default_back = false;
+        tuntom::SwitchCapacity configured_capacity;
 
         for (int index = 1; index < argc; ++index) {
             const std::string option = argv[index];
@@ -210,6 +226,11 @@ int main(int argc, char** argv) {
                         RouteKey {input.first, input.second},
                         RouteTarget {output.first, output.second}).second)
                     throw std::runtime_error("Duplicate switch route");
+            } else if (option == "--max-ports" or option == "--max-pending") {
+                if (++index >= argc) throw std::runtime_error(option + " requires a value");
+                const auto value = parse_capacity(argv[index]);
+                if (option == "--max-ports") configured_capacity.ports = value;
+                else configured_capacity.pending = value;
             } else if (option == "--exit-port") {
                 if (++index >= argc) throw std::runtime_error("--exit-port requires a value");
                 const std::string port = argv[index];
@@ -236,6 +257,9 @@ int main(int argc, char** argv) {
         std::unique_ptr<tuntom::ControlSocket> control;
         if (not control_path.empty())
             control = std::make_unique<tuntom::ControlSocket>(control_path);
+        const auto capacity = configured_capacity.for_process();
+        connections.reserve(capacity.ports + capacity.pending);
+        tuntom::SwitchAdmission admission(std::chrono::steady_clock::now());
         struct sigaction action {};
         action.sa_handler = request_stop;
         ::sigemptyset(&action.sa_mask);
@@ -251,8 +275,39 @@ int main(int argc, char** argv) {
         std::vector<pollfd> descriptors;
         std::vector<pollfd> backlog_descriptors;
         std::vector<bool> initially_ready;
+        descriptors.reserve(capacity.ports + capacity.pending + 2);
+        backlog_descriptors.reserve(capacity.ports + capacity.pending);
+        initially_ready.reserve(capacity.ports + capacity.pending);
+
+        const auto connection_counts = [&] {
+            std::pair<std::size_t, std::size_t> counts {};
+            for (const auto& connection : connections) {
+                if (connection.fd < 0) continue;
+                if (connection.port_id.empty()) ++counts.second;
+                else ++counts.first;
+            }
+            return counts;
+        };
+        const auto expire_registrations = [&](tuntom::AcceptBackoff::Time now) {
+            for (auto& connection : connections) {
+                if (connection.fd >= 0 and connection.port_id.empty() and
+                    now >= connection.registration_deadline) {
+                    ::close(connection.fd);
+                    connection.fd = -1;
+                    ++stats.registrations_timed_out;
+                }
+            }
+        };
 
         const auto try_handle_connection = [&](Connection& connection) {
+            // A ready record does not extend the registration's fixed lifetime.
+            if (connection.port_id.empty() and std::chrono::steady_clock::now() >=
+                connection.registration_deadline) {
+                ::close(connection.fd);
+                connection.fd = -1;
+                ++stats.registrations_timed_out;
+                return true;
+            }
             const ssize_t received = ::recv(
                 connection.fd, buffer.data(), buffer.size(), MSG_TRUNC);
             if (received < 0) {
@@ -279,13 +334,20 @@ int main(int argc, char** argv) {
                         connection.fd = -1;
                         return true;
                     }
-                    if (auto* old = find_connection(connections, registered_id)) {
-                        if (old != &connection) {
-                            ::close(old->fd);
-                            old->fd = -1;
-                        }
+                    auto* old = find_connection(connections, registered_id);
+                    if (not old and connection_counts().first >= capacity.ports) {
+                        ++stats.registrations_capacity_rejected;
+                        ::close(connection.fd);
+                        connection.fd = -1;
+                        return true;
                     }
-                    connection.port_id = std::move(registered_id);
+                    // All allocating work precedes the replacement. Swapping
+                    // std::string with its default allocator cannot throw.
+                    connection.port_id.swap(registered_id);
+                    if (old and old != &connection) {
+                        ::close(old->fd);
+                        old->fd = -1;
+                    }
                     ++stats.registrations_ok;
                     return true;
                 } catch (const std::bad_alloc&) {
@@ -355,19 +417,26 @@ int main(int argc, char** argv) {
                 throughput.update(snapshot_at, {
                     {stats.frames_rx, stats.bytes_rx},
                     {stats.frames_tx, stats.bytes_tx}});
-                std::size_t connected = 0;
-                for (const auto& item : connections)
-                    if (item.fd >= 0 and not item.port_id.empty()) ++connected;
+                const auto counts = connection_counts();
                 const auto uptime = std::chrono::duration_cast<std::chrono::seconds>(
                     snapshot_at - started_at).count();
                 std::ostringstream out;
                 out.exceptions(std::ios::badbit);
                 out << "format=txt\nformat_version=1\ncomponent=switch\n"
                     << "pid=" << ::getpid() << "\nuptime_seconds=" << uptime << "\n"
-                    << "connections_current=" << connected << "\n"
+                    << "connections_current=" << counts.first << "\n"
+                    << "connections_pending=" << counts.second << "\n"
+                    << "connections_total=" << counts.first + counts.second << "\n"
+                    << "connections_limit_ports_configured=" << configured_capacity.ports << "\n"
+                    << "connections_limit_pending_configured=" << configured_capacity.pending << "\n"
+                    << "connections_limit_ports=" << capacity.ports << "\n"
+                    << "connections_limit_pending=" << capacity.pending << "\n"
+                    << "connections_fd_reserve=" << tuntom::SwitchCapacity::fd_reserve << "\n"
                     << "connections_accepted=" << stats.connections_accepted << "\n"
                     << "registrations_ok=" << stats.registrations_ok << "\n"
                     << "registrations_invalid=" << stats.registrations_invalid << "\n"
+                    << "registrations_timed_out=" << stats.registrations_timed_out << "\n"
+                    << "registrations_capacity_rejected=" << stats.registrations_capacity_rejected << "\n"
                     << "frames_rx=" << stats.frames_rx << "\nbytes_rx=" << stats.bytes_rx << "\n"
                     << "frames_tx=" << stats.frames_tx << "\nbytes_tx=" << stats.bytes_tx << "\n"
                     << "route_hits=" << stats.route_hits << "\nroute_misses=" << stats.route_misses << "\n"
@@ -378,6 +447,8 @@ int main(int argc, char** argv) {
                     << "send_errors=" << stats.send_errors << "\n"
                     << "send_backpressure_drops=" << stats.send_backpressure_drops << "\n";
                 recovery.write_stats(out);
+                admission.write_stats(out, snapshot_at);
+                control->write_stats(out);
                 tuntom::logger.write_stats(out);
                 adaptive_polling.write_stats(out);
                 throughput.write(out);
@@ -390,41 +461,62 @@ int main(int argc, char** argv) {
 
         while (not stop_requested) {
             try {
-                if (recovery.wait_for_retry(control ? control->fd() : -1)) {
+                // Expire even during PF-02 recovery; this maintenance cannot allocate.
+                expire_registrations(std::chrono::steady_clock::now());
+                if (recovery.wait_for_retry(control ? control->poll_fd() : -1)) {
                     handle_control();
                     continue;
                 }
+                // Compact before polling; descriptor indexes stay stable until
+                // all events from this poll have been serviced.
+                connections.erase(std::remove_if(connections.begin(), connections.end(),
+                    [](const Connection& connection) { return connection.fd < 0; }), connections.end());
+                if (connections.empty()) next_connection = 0;
+                else next_connection %= connections.size();
+                const auto now = std::chrono::steady_clock::now();
+                const bool pending_space = connection_counts().second < capacity.pending;
                 descriptors.clear();
                 descriptors.reserve(connections.size() + 2);
-                descriptors.push_back({listener, POLLIN, 0});
-                descriptors.push_back({control ? control->fd() : -1, POLLIN, 0});
+                descriptors.push_back({pending_space and admission.ready(now) ? listener : -1, POLLIN, 0});
+                descriptors.push_back({control ? control->poll_fd() : -1, POLLIN, 0});
                 for (const auto& connection : connections)
                     descriptors.push_back({connection.fd, POLLIN, 0});
 
+                int timeout = pending_space ? admission.poll_timeout_ms(now, 1000) : 1000;
+                if (control) timeout = control->poll_timeout_ms(now, timeout);
+                for (const auto& connection : connections) {
+                    if (connection.port_id.empty()) timeout = tuntom::deadline_timeout_ms(
+                        now, connection.registration_deadline, timeout);
+                }
+                // Adaptive polling measures the syscall, not deadline bookkeeping.
                 const auto poll_started = tuntom::AdaptivePolling::Clock::now();
-                const int ready = ::poll(descriptors.data(), descriptors.size(), 1000);
+                const int ready = ::poll(descriptors.data(), descriptors.size(), timeout);
                 const auto poll_finished = tuntom::AdaptivePolling::Clock::now();
                 if (ready < 0) {
                     if (errno != EINTR) recovery.poll_failed(errno);
                     continue;
                 }
                 adaptive_polling.observe_poll(poll_finished - poll_started);
+                expire_registrations(poll_finished);
 
+                if (control and (descriptors[1].revents & POLLIN)) handle_control();
                 if (descriptors[0].revents & POLLIN) {
+                    admission.attempted(poll_finished);
                     const int accepted = ::accept4(
                         listener, nullptr, nullptr, SOCK_CLOEXEC | SOCK_NONBLOCK);
                     if (accepted >= 0) {
                         try {
-                            connections.push_back({accepted, {}});
+                            connections.push_back({accepted, {}, std::chrono::steady_clock::now() +
+                                tuntom::SwitchAdmission::registration_timeout});
                         } catch (...) {
                             ::close(accepted);
                             throw;
                         }
                         ++stats.connections_accepted;
+                    } else {
+                        admission.failed(errno, std::chrono::steady_clock::now());
                     }
                 }
-
-                if (control and (descriptors[1].revents & POLLIN)) handle_control();
 
                 const std::size_t polled_connections = descriptors.size() - 2;
                 initially_ready.assign(polled_connections, false);

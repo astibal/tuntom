@@ -298,7 +298,7 @@ int main(int argc, char** argv) {
 
         while (not stop_requested) {
             try {
-                if (recovery.wait_for_retry(control ? control->fd() : -1)) {
+                if (recovery.wait_for_retry(control ? control->poll_fd() : -1)) {
                     handle_control();
                     continue;
                 }
@@ -308,11 +308,13 @@ int main(int argc, char** argv) {
                 pollfd descriptors[3] {
                     {tun.fd(), POLLIN, 0},
                     {switch_client.fd(), switch_client.poll_events(), 0},
-                    {control ? control->fd() : -1, POLLIN, 0},
+                    {control ? control->poll_fd() : -1, POLLIN, 0},
                 };
+                const auto timeout_at = AdaptivePolling::Clock::now();
+                int timeout = switch_client.poll_timeout_ms(timeout_at, 1000);
+                if (control) timeout = control->poll_timeout_ms(timeout_at, timeout);
                 const auto poll_started = AdaptivePolling::Clock::now();
-                const int ready = ::poll(descriptors, 3,
-                    switch_client.poll_timeout_ms(poll_started, 1000));
+                const int ready = ::poll(descriptors, 3, timeout);
                 const auto poll_finished = AdaptivePolling::Clock::now();
                 if (ready < 0) {
                     if (errno != EINTR) recovery.poll_failed(errno);

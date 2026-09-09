@@ -1187,6 +1187,57 @@ The switch listener itself is also nonblocking. A stale readiness indication
 therefore cannot leave `accept4()` waiting for a new connection. Nonblocking
 flags on the accepted socket alone would not provide this protection.
 
+### Switch admission and FD capacity
+
+The standalone switch bounds registered ports and unregistered clients
+separately. Defaults are 256 ports and 16 pending registrations; CLI options
+`--max-ports` and `--max-pending` also work through `mk_switch.sh`. Startup
+counts already open descriptors below the soft `RLIMIT_NOFILE` (including
+inherited descriptors, excluding the temporary enumeration FD), subtracts
+16 slots for control/operations, and assigns pending capacity first while
+preserving at least one port slot. Both kinds require at least one slot.
+The effective pool and poll-vector capacities are allocated before the loop.
+
+Pending clients have a fixed five-second monotonic deadline from accept,
+checked before dispatch and even during PF-02 recovery. Registered ports have
+no idle timeout. Registration of an existing ID prepares the replacement
+before closing the old connection; it remains possible at the port limit if
+a pending slot is available. Distinct IDs exceeding the port limit close.
+
+Data accept attempts consume a token bucket (16 burst, 32/s), including failed
+attempts. A full pending pool or empty bucket removes the listener from poll;
+timers and established ports remain active. Accept errors other than
+`EAGAIN`/`EWOULDBLOCK`/`EINTR` pause only that listener for one second. No
+sleep or global PF-02 recovery is started by such an accept error. Control
+accept has independent error backoff in all three daemons; its poll descriptor
+is also suppressed in the PF-02 fallback while paused. The existing control
+request read still has its 10ms bound; a fully asynchronous control protocol
+is a separate change.
+
+Switch control snapshots add the following fields (all counters are cumulative
+since process start; limits and connection counts are gauges):
+
+| Field | Meaning |
+| --- | --- |
+| `connections_current` | Existing field: live registered ports only. |
+| `connections_pending`, `connections_total` | Accepted unregistered clients; all live client connections. |
+| `connections_limit_ports_configured`, `connections_limit_pending_configured` | Requested limits before the FD budget clamp. |
+| `connections_limit_ports`, `connections_limit_pending` | Effective startup limits. |
+| `connections_fd_reserve` | Descriptor headroom excluded from client capacity (16). |
+| `registrations_timed_out` | Unregistered connections closed at their deadline. |
+| `registrations_capacity_rejected` | Valid new port IDs refused at the registered-port limit. |
+| `listener_accept_errors`, `control_accept_errors` | Accept errors causing backoff on each listener. |
+| `listener_accept_last_errno`, `control_accept_last_errno` | Last error causing backoff; initially zero. |
+| `listener_accept_backoff`, `control_accept_backoff` | Whether that listener is in error backoff at snapshot time. |
+| `listener_accept_rate_limit_hits` | Charged accept attempts leaving fewer than one token. |
+
+`connections_accepted` still counts accepted sockets, including those later
+rejected or expired. Pending/capacity deferrals do not count as accept errors.
+The FD budget protects against this switch's client flood. It does not reserve
+system-wide file-table entries or recalculate on runtime `prlimit` changes;
+unexpected shortages use bounded retry. In particular, during true `ENFILE`
+new control connections cannot be guaranteed. No IPC or UDP wire format changes.
+
 ### Processing latency statistics
 
 Tuntom samples the first and then every 1024th TUN packet / UDP datagram using

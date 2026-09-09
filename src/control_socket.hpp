@@ -1,5 +1,6 @@
 #pragma once
 
+#include "accept_backoff.hpp"
 #include <cerrno>
 #include <cstddef>
 #include <cstring>
@@ -38,11 +39,22 @@ public:
     }
 
     int fd() const { return fd_; }
+    int poll_fd() const { return accept_backoff_.ready(AcceptBackoff::Clock::now()) ? fd_ : -1; }
+    int poll_timeout_ms(AcceptBackoff::Time now, int maximum) const {
+        return accept_backoff_.poll_timeout_ms(now, maximum);
+    }
+    void write_stats(std::ostream& out) const {
+        accept_backoff_.write_stats(out, "control", AcceptBackoff::Clock::now());
+    }
 
     template<typename StatsProvider>
     void handle(StatsProvider provider) {
+        if (poll_fd() < 0) return;
         const int client = ::accept4(fd_, nullptr, nullptr, SOCK_CLOEXEC | SOCK_NONBLOCK);
-        if (client < 0) return;
+        if (client < 0) {
+            accept_backoff_.failed(errno, AcceptBackoff::Clock::now());
+            return;
+        }
         struct CloseClient {
             int fd;
             ~CloseClient() { ::close(fd); }
@@ -85,6 +97,7 @@ private:
     int fd_ = -1;
     bool bound_ = false;
     std::string path_;
+    AcceptBackoff accept_backoff_;
 };
 
 } // namespace tuntom
