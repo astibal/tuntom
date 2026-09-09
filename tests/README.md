@@ -159,3 +159,7 @@ through `tests/run.sh`, which reuses its compiled fixtures.
 stats files, continued processing and reassembly-span sampling, and completed
 BPS/PPS throughput buckets without resetting history. Uses only
 disposable unprivileged switch/UDP processes; run automatically by `run.sh`.
+
+`control_timeout_test.py` checks CLI replies (including the size limit), peer
+closure, a silent server, a full Unix socket backlog, and a shared five-second
+deadline across backlog recovery and response waiting. Runs without TUN/root.

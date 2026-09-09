@@ -264,7 +264,9 @@ retention. Inspect the `log_*` control counters for suppressed logs and output
 errors; see [logging details](docs/DETAILS.md#runtime-logging).
 
 Statistics are collected continuously in memory and returned on demand by
-`tuntomctl <control-socket> show stats`. The daemon does not write statistics
+`tuntomctl <control-socket> show stats`. The CLI uses one five-second timeout
+for connecting, sending the request and receiving the response; a timeout
+prints an error to stderr and exits with status 1. The daemon does not write statistics
 files. File-export options (`--stats-file`, `--stats-format`, `--no-stats`) and
 `TUNTOM_STATS_FORMAT` have been removed; update existing launch commands.
 SIGUSR1/SIGUSR2 no longer control statistics and have their default signal action.

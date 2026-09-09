@@ -34,6 +34,9 @@ if(BUILD_TESTING)
     set_tests_properties(logging_test PROPERTIES TIMEOUT 40)
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME control_timeout_test COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/control_timeout_test.py $<TARGET_FILE:tuntomctl>)
+        set_tests_properties(control_timeout_test PROPERTIES TIMEOUT 35)
         add_library(accept_faults SHARED tests/accept_faults.cpp)
         target_link_libraries(accept_faults PRIVATE ${CMAKE_DL_LIBS})
         add_test(NAME switch_capacity_test COMMAND ${Python3_EXECUTABLE}

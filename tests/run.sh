@@ -23,6 +23,7 @@ echo "Building application"
     "${tests_dir}/../src/control/main.cpp" -o "${build_dir}/tuntomctl"
 
 if command -v python3 >/dev/null 2>&1; then
+    python3 "${tests_dir}/control_timeout_test.py" "${build_dir}/tuntomctl"
     "${CXX:-g++}" -std=c++17 -pthread -O2 -Wall -Wextra -Wconversion -pedantic \
         "${tests_dir}/../src/adapter/main.cpp" "${tests_dir}/adapter_tun_fixture.cpp" \
         -Wl,--wrap=open -Wl,--wrap=ioctl -o "${build_dir}/adapter_reconnect_fixture"
