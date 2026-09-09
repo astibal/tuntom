@@ -47,7 +47,7 @@ extern "C" int poll(pollfd* fds, nfds_t count, int timeout) {
     static auto original = reinterpret_cast<int (*)(pollfd*, nfds_t, int)>(::dlsym(RTLD_NEXT, "poll"));
     const char* fault = mode();
     const bool target_udp = std::strncmp(fault, "udp_", 4) == 0;
-    const bool target_tun = std::strncmp(fault, "tun_", 4) == 0;
+    const bool target_tun = std::strncmp(fault, "tun_", 4) == 0 and std::strcmp(fault, "tun_down") != 0;
     const bool target_control = std::strncmp(fault, "control_", 8) == 0;
     const bool target_listener = std::strncmp(fault, "listener_", 9) == 0;
     for (nfds_t i = 0; i < count; ++i) {
@@ -101,5 +101,11 @@ extern "C" ssize_t sendto(int fd, const void* data, size_t size, int flags, cons
 extern "C" ssize_t read(int fd, void* data, size_t size) {
     static auto original = reinterpret_cast<ssize_t (*)(int, void*, size_t)>(::dlsym(RTLD_NEXT, "read"));
     if (tun(fd) and std::strcmp(mode(), "tun_read") == 0) { errno = ENODEV; return -1; }
+    return original(fd, data, size);
+}
+extern "C" ssize_t write(int fd, const void* data, size_t size) {
+    static auto original = reinterpret_cast<ssize_t (*)(int, const void*, size_t)>(::dlsym(RTLD_NEXT, "write"));
+    // Linux TUN returns EIO on write while IFF_UP is clear; the fd stays valid.
+    if (tun(fd) and std::strcmp(mode(), "tun_down") == 0) { errno = EIO; return -1; }
     return original(fd, data, size);
 }

@@ -299,6 +299,9 @@ the local port, cached peer address and PMTUD options. Ordinary network errors
 pause UDP receive polling for 100 ms. DNS is resolved at startup only.
 A permanently failed TUN is taken out of service while control and healthy
 transports keep running; automatic TUN recreation is not implemented yet.
+An administratively DOWN TUN stays open: incoming packets are dropped and counted
+in `tun_write_errors`, without buffering or retries. Traffic resumes when the
+interface is brought UP again; the daemon does not change its administrative state.
 
 ### Networking and hooks
 

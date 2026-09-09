@@ -95,8 +95,10 @@ public:
         const auto result = ::write(fd_, buffer, size);
         if (result < 0) {
             const int error = errno;
+            // Linux returns EIO while IFF_UP is clear. Drop this packet but keep
+            // the fd: a later write can succeed as soon as the interface is UP.
             // Invalid packet data (e.g. EINVAL/EMSGSIZE) must not disable TUN.
-            if (error == EBADF or error == ENODEV or error == ENXIO or error == EIO)
+            if (error == EBADF or error == ENODEV or error == ENXIO)
                 retire(error);
             errno = error;
         }

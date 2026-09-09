@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PF-06 part1: UDP recovery and TUN retirement in real, unprivileged loops."""
+"""PF-06 part1: UDP recovery, TUN DOWN/UP and retirement in real unprivileged loops."""
 import contextlib
 import os
 from pathlib import Path
@@ -106,6 +106,63 @@ def tun_case(binary, library, component, fault):
         wire = bytes([1, 2]) + frame(7, packet)[2:]
         peer.sendall(wire)
         assert tun.recv(65536) == packet
+        if fault == "tun_down":
+            return_peer = peer
+            if component == "tuntom":
+                # TUN replies leave tuntom via UDP, not through its local switch.
+                remote_path, remote_ctl = directory + "/remote.sock", directory + "/remote.ctl"
+                remote_listener = listen(stack, remote_path)
+                remote_env = dict(os.environ, TUNTOM_SECRET=env["TUNTOM_SECRET"])
+                start(stack, [binary, "client", "242", "-", "localhost", "--quiet", "--no-pmtud",
+                              "--switch-socket", remote_path, "--switch-port-id", "remote",
+                              "--switch-label", "7", "--control-socket", remote_ctl], env=remote_env)
+                return_peer = accept_port(stack, remote_listener, "remote")
+                until(lambda: snapshot(remote_ctl)["session_confirmed"] == "1")
+            reply = packet[:12] + packet[16:20] + packet[12:16]
+            tun.sendall(reply)
+            assert return_peer.recv(65536) == frame(7, reply)
+            for cycle in range(2):
+                before = snapshot(ctl)
+                marker.touch()
+                began, ticks, baseline_rss = time.monotonic(), cpu_ticks(process), rss_bytes(process)
+                for count in range(1, 13):
+                    peer.sendall(wire)
+                    until(lambda: int(snapshot(ctl)["tun_write_errors"]) ==
+                          int(before["tun_write_errors"]) + count)
+                    fields = snapshot(ctl)
+                    assert fields["tun_endpoint_available"] == "1", fields
+                    assert fields["tun_endpoint_failures"] == "0", fields
+                    assert fields["tun_tx_packets"] == before["tun_tx_packets"], fields
+                    if component == "tuntom":
+                        peer.sendall(frame(7, packet))
+                        assert return_peer.recv(65536) == frame(7, packet)
+                    time.sleep(0.05)
+                check_cpu(process, ticks, began, baseline_rss)
+                tun.settimeout(0.1)
+                try:
+                    tun.recv(65536)
+                    raise AssertionError("DOWN packet was delivered")
+                except TimeoutError:
+                    pass
+                marker.unlink()
+                # A distinct fresh IP packet detects replay of any DOWN packets.
+                fresh = packet[:4] + bytes([0, cycle + 1]) + packet[6:]
+                peer.sendall(bytes([1, 2]) + frame(7, fresh)[2:])
+                tun.settimeout(1)
+                assert tun.recv(65536) == fresh
+                tun.sendall(reply)
+                assert return_peer.recv(65536) == frame(7, reply)
+                tun.settimeout(0.1)
+                try:
+                    tun.recv(65536)
+                    raise AssertionError("UP replayed a dropped packet")
+                except TimeoutError:
+                    pass
+                fields = snapshot(ctl)
+                assert fields["tun_endpoint_available"] == "1" and fields["tun_endpoint_failures"] == "0"
+                assert int(fields["tun_tx_packets"]) == int(before["tun_tx_packets"]) + 1
+            print(f"PASS: {component} repeated DOWN/UP, drops without replay, bounded CPU/RSS, live control and bidirectional recovery (simulated TUN)", flush=True)
+            return
         marker.touch()
         until(lambda: snapshot(ctl)["tun_endpoint_available"] == "0")
         began, ticks, baseline_rss = time.monotonic(), cpu_ticks(process), rss_bytes(process)
@@ -155,7 +212,7 @@ if __name__ == "__main__":
         for fault in ("udp_pollerr", "udp_hup", "udp_nval", "udp_read", "udp_send", "udp_socket", "udp_bind", "udp_refused"):
             udp_case(tunnel, library, role, fault)
     for component, binary in (("adapter", adapter), ("tuntom", tun_fixture)):
-        for fault in ("tun_pollerr", "tun_hup", "tun_nval", "tun_read"):
+        for fault in ("tun_pollerr", "tun_hup", "tun_nval", "tun_read", "tun_down"):
             tun_case(binary, library, component, fault)
     for target in ("control", "listener"):
         control_case(switch, library, target)

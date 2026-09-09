@@ -146,7 +146,31 @@ static void tun_case() {
         write_error = EINVAL;
         require(tun.write_packet(buffer, sizeof(buffer)) < 0 and tun.fd() >= 0, "bad packet retains TUN");
         write_error = EIO;
-        require(tun.write_packet(buffer, sizeof(buffer)) < 0 and tun.fd() < 0, "write fault retires TUN");
+        for (int packet = 0; packet < 32; ++packet)
+            require(tun.write_packet(buffer, sizeof(buffer)) < 0 and errno == EIO and
+                tun.fd() == tun_fd, "DOWN drops packets without closing TUN");
+        write_error = 0;
+        require(::recv(pair[1], buffer, sizeof(buffer), MSG_DONTWAIT) < 0 and
+            errno == EAGAIN, "DOWN packets are dropped");
+        buffer[0] = 42;
+        require(tun.write_packet(buffer, sizeof(buffer)) == sizeof(buffer), "UP resumes TUN writes");
+        std::uint8_t received[8] {};
+        require(::recv(pair[1], received, sizeof(received), MSG_DONTWAIT) == sizeof(received) and
+            std::memcmp(buffer, received, sizeof(buffer)) == 0, "UP delivers fresh packet");
+        require(::recv(pair[1], received, sizeof(received), MSG_DONTWAIT) < 0 and
+            errno == EAGAIN, "UP does not replay dropped packets");
+        std::ostringstream stats;
+        tun.write_stats(stats);
+        require(stats.str().find("tun_endpoint_failures=0\n") != std::string::npos,
+            "DOWN is not a permanent endpoint failure");
+    }
+    for (int error : {EBADF, ENODEV, ENXIO}) {
+        tuntom::TunDevice tun("test", 1500);
+        tun_fd = tun.fd();
+        write_error = error;
+        std::uint8_t byte = 0;
+        require(tun.write_packet(&byte, 1) < 0 and errno == error and tun.fd() == -1,
+            "permanent write fault retires TUN");
         write_error = 0;
     }
     {
@@ -169,5 +193,5 @@ int main() {
     udp_case("127.0.0.1");
     udp_case("::1");
     tun_case();
-    std::cout << "PASS: UDP recovery/ports/DNS/backoff and TUN retirement\n";
+    std::cout << "PASS: UDP recovery/ports/DNS/backoff, TUN DOWN/UP and retirement\n";
 }

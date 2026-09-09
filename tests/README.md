@@ -174,9 +174,26 @@ including FD bounds and timer-driven expiration without data traffic.
 `endpoint_recovery_test.cpp` covers IPv4/IPv6 UDP recreation with stable local
 ports/peers, no DNS retry, failed socket/options/bind with bounded retries and
 no FD leak, plus transient/permanent TUN I/O errors.
+Repeated TUN write EIO errors must drop packets without closing the descriptor;
+successful writes resume afterward without replaying dropped packets.
 `endpoint_recovery_test.py` and `endpoint_faults.cpp` inject persistent UDP
 poll/read/send faults and recreation failures into both tunnel roles, check
 bounded CPU/RSS/retry counts and bidirectional DATA recovery, and verify TUN
 retirement in the real adapter/tunnel loops using a socketpair fixture.
 Separate control and data listener scenarios check backoff and forwarding during faults.
 No root, real TUN or changes to host network configuration are required.
+
+The process test also exercises repeated simulated DOWN/UP cycles in both tuntom
+and the adapter, checking drop counters, live control, bounded CPU/RSS and fresh
+bidirectional traffic after UP.
+
+`tun_down_test.cpp` is a separate manual regression against the actual Linux TUN
+driver. It runs three DOWN/UP cycles, checks EIO on 96 dropped writes, preserves
+the same descriptor/interface and verifies successful writes after each UP.
+Run it in a disposable user/network namespace; it requires `/dev/net/tun` and
+permission to create these namespaces, and is not part of `run.sh` or CTest:
+
+```bash
+g++ -std=c++17 -O2 -Wall -Wextra -Wconversion -Werror -pedantic tests/tun_down_test.cpp -o /tmp/tun-down-test
+unshare --user --map-root-user --net /tmp/tun-down-test
+```
