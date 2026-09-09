@@ -138,11 +138,18 @@ public:
 
         while (true) {
             try {
-                if (recovery_.wait_for_retry(control_ ? control_->poll_fd() : -1)) {
+                pollfd control_clients[ControlSocket::max_clients] {};
+                if (control_) control_->poll_clients(control_clients);
+                const int recovery_timeout = control_ ? control_->poll_timeout_ms(
+                    std::chrono::steady_clock::now(), 100) : 100;
+                if (recovery_.wait_for_retry(control_ ? control_->poll_fd() : -1,
+                        control_clients, control_ ? ControlSocket::max_clients : 0,
+                        recovery_timeout)) {
                     if (control_) handle_control_request();
                     continue;
                 }
-                pollfd descriptors[4] {};
+                pollfd descriptors[4 + ControlSocket::max_clients] {};
+                for (auto& descriptor : descriptors) descriptor.fd = -1;
                 descriptors[0].fd = tun_ ? tun_->fd() : -1;
                 descriptors[0].events = POLLIN;
                 descriptors[1].fd = udp_.fd();
@@ -151,12 +158,13 @@ public:
                 descriptors[2].events = switch_ ? switch_->poll_events() : POLLIN;
                 descriptors[3].fd = control_ ? control_->poll_fd() : -1;
                 descriptors[3].events = POLLIN;
+                if (control_) control_->poll_clients(descriptors + 4);
 
                 const auto timeout_at = AdaptivePolling::Clock::now();
                 int timeout = switch_ ? switch_->poll_timeout_ms(timeout_at, 1000) : 1000;
                 if (control_) timeout = control_->poll_timeout_ms(timeout_at, timeout);
                 const auto poll_started = AdaptivePolling::Clock::now();
-                const int rc = ::poll(descriptors, 4, timeout);
+                const int rc = ::poll(descriptors, 4 + ControlSocket::max_clients, timeout);
                 const auto poll_finished = AdaptivePolling::Clock::now();
 
                 if (rc < 0) {
@@ -167,8 +175,8 @@ public:
                 adaptive_polling_.observe_poll(poll_finished - poll_started);
 
                 // Control traffic is never held behind an overload data slice.
-                if (control_ and (descriptors[3].revents & POLLIN)) {
-                    handle_control_request();
+                if (control_) {
+                    handle_control_request((descriptors[3].revents & POLLIN) != 0);
                 }
 
                 const bool initially_ready[3] {
@@ -287,13 +295,13 @@ private:
                   << " active=" << m.active_entries << "\n";
     }
 
-    void handle_control_request() {
+    void handle_control_request(bool accept_ready = true) {
         control_->handle([this] {
             std::ostringstream output;
             output.exceptions(std::ios::badbit);
             format_stats(output);
             return output.str();
-        });
+        }, accept_ready);
     }
 
     bool try_handle_tun_packet() {

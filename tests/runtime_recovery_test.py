@@ -68,7 +68,7 @@ def check_failure(process, ctl, marker, fault, send, receive):
     assert int(snapshot(ctl)[counter]) >= int(fields[counter])
 
 
-def switch_case(binary, library, fault):
+def switch_case(binary, library, fault, check=check_failure):
     with tempfile.TemporaryDirectory(prefix="switch-pf02.") as directory, contextlib.ExitStack() as stack:
         path, ctl = directory + "/switch.sock", directory + "/control"
         marker = Path(directory) / "fault"
@@ -86,10 +86,10 @@ def switch_case(binary, library, fault):
         def receive():
             assert peer.recv(65536) == expected
 
-        check_failure(process, ctl, marker, fault, lambda: peer.sendall(wire), receive)
+        check(process, ctl, marker, fault, lambda: peer.sendall(wire), receive)
 
 
-def adapter_case(binary, library, fault):
+def adapter_case(binary, library, fault, check=check_failure):
     with tempfile.TemporaryDirectory(prefix="adapter-pf02.") as directory, contextlib.ExitStack() as stack:
         path, ctl = directory + "/switch.sock", directory + "/control"
         marker = Path(directory) / "fault"
@@ -114,10 +114,10 @@ def adapter_case(binary, library, fault):
         def receive():
             assert peer.recv(65536) == frame(7, reply)
 
-        check_failure(process, ctl, marker, fault, lambda: tun.sendall(reply), receive)
+        check(process, ctl, marker, fault, lambda: tun.sendall(reply), receive)
 
 
-def tunnel_case(binary, library, fault, role="server"):
+def tunnel_case(binary, library, fault, role="server", check=check_failure):
     with tempfile.TemporaryDirectory(prefix="tunnel-pf02.") as directory, contextlib.ExitStack() as stack:
         marker = Path(directory) / "fault"
         if fault == "random_always":
@@ -155,7 +155,7 @@ def tunnel_case(binary, library, fault, role="server"):
             peers["client"].sendall(wire)
             receive()
         else:
-            check_failure(processes[role], controls[role], marker, fault,
+            check(processes[role], controls[role], marker, fault,
                           lambda: peers["client"].sendall(wire), receive)
 
 

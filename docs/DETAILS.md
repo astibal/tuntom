@@ -1209,9 +1209,19 @@ timers and established ports remain active. Accept errors other than
 `EAGAIN`/`EWOULDBLOCK`/`EINTR` pause only that listener for one second. No
 sleep or global PF-02 recovery is started by such an accept error. Control
 accept has independent error backoff in all three daemons; its poll descriptor
-is also suppressed in the PF-02 fallback while paused. The existing control
-request read still has its 10ms bound; a fully asynchronous control protocol
-is a separate change.
+is also suppressed in the PF-02 fallback while paused.
+
+Control accepts at most one client per event-loop turn and holds at most four
+accepted clients per daemon, within the existing FD reserve. At capacity the
+listener is omitted from polling until a slot opens. Each client has one 10 ms
+monotonic waiting deadline from acceptance, covering request and response.
+Ready I/O is attempted before timeout cleanup, so scheduler delays do not
+discard already queued requests or writable responses. Pending
+requests use `POLLIN`; a response that encountered `EAGAIN` uses `POLLOUT` and
+retains the original snapshot (at most 65536 bytes). No handler waits for input
+or output. Expiration closes the client, including when no packets arrive.
+The recovery `pselect()` watches these clients too and respects their deadlines.
+Malformed oversized requests are rejected rather than silently truncated.
 
 Switch control snapshots add the following fields (all counters are cumulative
 since process start; limits and connection counts are gauges):

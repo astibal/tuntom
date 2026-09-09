@@ -270,7 +270,11 @@ prints an error to stderr and exits with status 1. The daemon does not write sta
 files. File-export options (`--stats-file`, `--stats-format`, `--no-stats`) and
 `TUNTOM_STATS_FORMAT` have been removed; update existing launch commands.
 SIGUSR1/SIGUSR2 no longer control statistics and have their default signal action.
-Use the control socket for snapshots.
+Use the control socket for snapshots. Control clients are served without blocking
+packet processing: each daemon admits up to four clients and gives each an
+10 ms waiting budget from acceptance through response sending. Ready I/O is
+serviced before timeout cleanup; clients still unable to make progress after
+that budget are closed. Waiting uses the main event loop.
 
 ### Runtime statistics control
 

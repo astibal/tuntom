@@ -275,7 +275,7 @@ int main(int argc, char** argv) {
         std::vector<pollfd> descriptors;
         std::vector<pollfd> backlog_descriptors;
         std::vector<bool> initially_ready;
-        descriptors.reserve(capacity.ports + capacity.pending + 2);
+        descriptors.reserve(capacity.ports + capacity.pending + 2 + tuntom::ControlSocket::max_clients);
         backlog_descriptors.reserve(capacity.ports + capacity.pending);
         initially_ready.reserve(capacity.ports + capacity.pending);
 
@@ -410,7 +410,7 @@ int main(int argc, char** argv) {
         };
 
         tuntom::RuntimeRecovery recovery;
-        const auto handle_control = [&] {
+        const auto handle_control = [&](bool accept_ready = true) {
             if (not control) return;
             control->handle([&] {
                 const auto snapshot_at = std::chrono::steady_clock::now();
@@ -453,7 +453,7 @@ int main(int argc, char** argv) {
                 adaptive_polling.write_stats(out);
                 throughput.write(out);
                 return out.str();
-            });
+            }, accept_ready);
         };
 
         tuntom::logger.start();
@@ -463,7 +463,13 @@ int main(int argc, char** argv) {
             try {
                 // Expire even during PF-02 recovery; this maintenance cannot allocate.
                 expire_registrations(std::chrono::steady_clock::now());
-                if (recovery.wait_for_retry(control ? control->poll_fd() : -1)) {
+                pollfd control_clients[tuntom::ControlSocket::max_clients] {};
+                if (control) control->poll_clients(control_clients);
+                const int recovery_timeout = control ? control->poll_timeout_ms(
+                    std::chrono::steady_clock::now(), 100) : 100;
+                if (recovery.wait_for_retry(control ? control->poll_fd() : -1,
+                        control_clients, control ? tuntom::ControlSocket::max_clients : 0,
+                        recovery_timeout)) {
                     handle_control();
                     continue;
                 }
@@ -476,11 +482,17 @@ int main(int argc, char** argv) {
                 const auto now = std::chrono::steady_clock::now();
                 const bool pending_space = connection_counts().second < capacity.pending;
                 descriptors.clear();
-                descriptors.reserve(connections.size() + 2);
+                descriptors.reserve(connections.size() + 2 + tuntom::ControlSocket::max_clients);
                 descriptors.push_back({pending_space and admission.ready(now) ? listener : -1, POLLIN, 0});
                 descriptors.push_back({control ? control->poll_fd() : -1, POLLIN, 0});
                 for (const auto& connection : connections)
                     descriptors.push_back({connection.fd, POLLIN, 0});
+
+                const std::size_t polled_connections = connections.size();
+                if (control) {
+                    control->poll_clients(control_clients);
+                    for (const auto& descriptor : control_clients) descriptors.push_back(descriptor);
+                }
 
                 int timeout = pending_space ? admission.poll_timeout_ms(now, 1000) : 1000;
                 if (control) timeout = control->poll_timeout_ms(now, timeout);
@@ -499,7 +511,7 @@ int main(int argc, char** argv) {
                 adaptive_polling.observe_poll(poll_finished - poll_started);
                 expire_registrations(poll_finished);
 
-                if (control and (descriptors[1].revents & POLLIN)) handle_control();
+                if (control) handle_control((descriptors[1].revents & POLLIN) != 0);
                 if (descriptors[0].revents & POLLIN) {
                     admission.attempted(poll_finished);
                     const int accepted = ::accept4(
@@ -518,7 +530,6 @@ int main(int argc, char** argv) {
                     }
                 }
 
-                const std::size_t polled_connections = descriptors.size() - 2;
                 initially_ready.assign(polled_connections, false);
                 for (std::size_t index = 0; index < polled_connections; ++index) {
                     auto& connection = connections[index];

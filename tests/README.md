@@ -163,3 +163,10 @@ disposable unprivileged switch/UDP processes; run automatically by `run.sh`.
 `control_timeout_test.py` checks CLI replies (including the size limit), peer
 closure, a silent server, a full Unix socket backlog, and a shared five-second
 deadline across backlog recovery and response waiting. Runs without TUN/root.
+
+`control_socket_test.cpp` verifies deferred control requests and output, resource
+recovery wakeups, four-client admission, expiration and oversized commands.
+Its syscall wrappers reject blocking polls in the handler and inject send
+backpressure/EINTR. `control_flow_test.py` checks packet forwarding and live
+statistics with idle control clients in switch, adapter and tunnel processes,
+including FD bounds and timer-driven expiration without data traffic.

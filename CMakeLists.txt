@@ -22,11 +22,12 @@ target_compile_options(tuntomctl PRIVATE -Wall -Wextra -pedantic)
 
 include(CTest)
 if(BUILD_TESTING)
-    foreach(name compact_protocol_test switch_protocol_test switch_options_test switch_client_test switch_admission_test runtime_state_test logging_test exit_adapter_test session_stats_test session_latency_test x25519_test akdf_test pfs_session_test replay_test mac_test aead_test encrypted_session_test session_test processing_stats_test throughput_stats_test adaptive_polling_test reassembly_test)
+    foreach(name control_socket_test compact_protocol_test switch_protocol_test switch_options_test switch_client_test switch_admission_test runtime_state_test logging_test exit_adapter_test session_stats_test session_latency_test x25519_test akdf_test pfs_session_test replay_test mac_test aead_test encrypted_session_test session_test processing_stats_test throughput_stats_test adaptive_polling_test reassembly_test)
         add_executable(${name} tests/${name}.cpp)
         target_compile_options(${name} PRIVATE -Wall -Wextra -Wconversion -pedantic)
         add_test(NAME ${name} COMMAND ${name})
     endforeach()
+    target_link_options(control_socket_test PRIVATE -Wl,--wrap=poll -Wl,--wrap=send)
     target_link_options(switch_client_test PRIVATE
         -Wl,--wrap=connect -Wl,--wrap=send -Wl,--wrap=getsockopt)
     target_link_options(runtime_state_test PRIVATE -Wl,--wrap=getrandom)
@@ -54,6 +55,11 @@ if(BUILD_TESTING)
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/switch_reconnect_test.py
             $<TARGET_FILE:tuntom> $<TARGET_FILE:adapter_reconnect_fixture> $<TARGET_FILE:tuntom-switch>)
         set_tests_properties(switch_reconnect_test PROPERTIES TIMEOUT 40)
+        add_test(NAME control_flow_test COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/control_flow_test.py
+            $<TARGET_FILE:tuntom> $<TARGET_FILE:tuntom-switch>
+            $<TARGET_FILE:adapter_reconnect_fixture> $<TARGET_FILE:runtime_faults>)
+        set_tests_properties(control_flow_test PROPERTIES TIMEOUT 40)
         add_test(NAME runtime_recovery_test COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/runtime_recovery_test.py
             $<TARGET_FILE:tuntom> $<TARGET_FILE:tuntom-switch>

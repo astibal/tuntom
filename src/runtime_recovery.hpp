@@ -1,5 +1,8 @@
 #pragma once
 
+#include <algorithm>
+#include <cstddef>
+#include <poll.h>
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
@@ -28,20 +31,33 @@ public:
         retry_after_ = Clock::now() + retry_interval;
     }
 
-    bool wait_for_retry(int control_fd) const {
+    bool wait_for_retry(int control_fd, const pollfd* clients = nullptr,
+                        std::size_t count = 0, int maximum_ms = 100) const {
         const auto now = Clock::now();
         if (now >= retry_after_) return false;
-        const auto left = std::chrono::duration_cast<std::chrono::nanoseconds>(retry_after_ - now);
+        const auto left = std::min(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(retry_after_ - now),
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::milliseconds(maximum_ms)));
         const timespec timeout {0, static_cast<long>(left.count())};
         fd_set input;
         FD_ZERO(&input);
         const bool selectable = control_fd >= 0 and control_fd < FD_SETSIZE;
         if (selectable) FD_SET(control_fd, &input);
+        fd_set output;
+        FD_ZERO(&output);
+        int highest = selectable ? control_fd : -1;
+        for (std::size_t i = 0; i < count; ++i) {
+            const int fd = clients[i].fd;
+            if (fd < 0 or fd >= FD_SETSIZE) continue;
+            if (clients[i].events & POLLIN) FD_SET(fd, &input);
+            if (clients[i].events & POLLOUT) FD_SET(fd, &output);
+            highest = std::max(highest, fd);
+        }
         // Use a fixed-size, allocation-free fallback instead of retrying a
         // failing poll in a hot loop. Only control can wake the backoff early.
         // Large control FDs are serviced nonblocking after this <=100ms wait.
-        if (::pselect(selectable ? control_fd + 1 : 0,
-                      selectable ? &input : nullptr, nullptr, nullptr,
+        if (::pselect(highest + 1, &input, &output, nullptr,
                       &timeout, nullptr) < 0 and errno != EINTR) {
             // A bad control FD must not turn the recovery path into a spin.
             ::pselect(0, nullptr, nullptr, nullptr, &timeout, nullptr);
