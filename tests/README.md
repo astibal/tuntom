@@ -15,6 +15,10 @@ live tunnel, or network access are needed.
 
 - `replay_test.cpp`: reordered timestamps, duplicates, window eviction,
   integer boundaries, and reassembly of 64 fragments received in reverse order.
+- `udp_batch_test.cpp`: real loopback datagram boundaries and ordering, one-call
+  fragment batches, partial success followed by completion or EMSGSIZE/EAGAIN,
+  interruption, the 64-fragment bound and the single-datagram fast path.
+  Linker wrappers inject send outcomes only into this test.
 - `logging_test.cpp`: bounded allocation-free formatting, errno preservation,
   SIGPIPE/EPIPE, a full queue with a stalled writer, flood limiting and recovery,
   ordered queue wraparound, failed thread creation, inherited closed stderr,
@@ -118,8 +122,9 @@ firewall rules and requires root. It is deliberately not run by `run.sh`.
   control socket.
 - `switch_tunnel_test.py`: two unprivileged tuntom processes carrying an opaque
   payload through a live UDP session and the label switch without creating TUNs;
-  also checks encrypted 9000-byte fragmentation and reassembly counters while
-  automatic statistics are disabled.
+  also checks encrypted 9000-byte fragmentation in both directions, TX buffer
+  reuse across changing fragment counts and reassembly counters while automatic
+  statistics are disabled.
 
 `switch_admission_test.cpp` checks the accept-rate bound under continuous demand,
 idle burst cap, retry deadlines and FD headroom calculations with simulated time.

@@ -63,10 +63,12 @@ else
     echo "SKIP: tuntom-switch process test requires python3"
 fi
 
-for name in compact_protocol_test switch_protocol_test switch_options_test switch_client_test switch_admission_test runtime_state_test logging_test exit_adapter_test stats_control_test session_stats_test session_latency_test x25519_test akdf_test pfs_session_test replay_test mac_test aead_test encrypted_session_test session_test adaptive_polling_test reassembly_test; do
+for name in udp_batch_test compact_protocol_test switch_protocol_test switch_options_test switch_client_test switch_admission_test runtime_state_test logging_test exit_adapter_test stats_control_test session_stats_test session_latency_test x25519_test akdf_test pfs_session_test replay_test mac_test aead_test encrypted_session_test session_test adaptive_polling_test reassembly_test; do
     echo "Building ${name}"
     link_flags=()
-    if [[ "$name" == switch_client_test ]]; then
+    if [[ "$name" == udp_batch_test ]]; then
+        link_flags=(-Wl,--wrap=sendmmsg -Wl,--wrap=sendto)
+    elif [[ "$name" == switch_client_test ]]; then
         link_flags=(-Wl,--wrap=connect -Wl,--wrap=send -Wl,--wrap=getsockopt)
     elif [[ "$name" == runtime_state_test ]]; then
         link_flags=(-Wl,--wrap=getrandom)

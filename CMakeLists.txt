@@ -22,18 +22,23 @@ target_compile_options(tuntomctl PRIVATE -Wall -Wextra -pedantic)
 
 include(CTest)
 if(BUILD_TESTING)
-    foreach(name compact_protocol_test switch_protocol_test switch_options_test switch_client_test switch_admission_test runtime_state_test logging_test exit_adapter_test stats_control_test session_stats_test session_latency_test x25519_test akdf_test pfs_session_test replay_test mac_test aead_test encrypted_session_test session_test processing_stats_test throughput_stats_test adaptive_polling_test reassembly_test)
+    foreach(name udp_batch_test compact_protocol_test switch_protocol_test switch_options_test switch_client_test switch_admission_test runtime_state_test logging_test exit_adapter_test stats_control_test session_stats_test session_latency_test x25519_test akdf_test pfs_session_test replay_test mac_test aead_test encrypted_session_test session_test processing_stats_test throughput_stats_test adaptive_polling_test reassembly_test)
         add_executable(${name} tests/${name}.cpp)
         target_compile_options(${name} PRIVATE -Wall -Wextra -Wconversion -pedantic)
         add_test(NAME ${name} COMMAND ${name})
     endforeach()
     target_link_options(switch_client_test PRIVATE
         -Wl,--wrap=connect -Wl,--wrap=send -Wl,--wrap=getsockopt)
+    target_link_options(udp_batch_test PRIVATE -Wl,--wrap=sendmmsg -Wl,--wrap=sendto)
     target_link_options(runtime_state_test PRIVATE -Wl,--wrap=getrandom)
     target_link_options(logging_test PRIVATE -Wl,--wrap=write -Wl,--wrap=pthread_create)
     set_tests_properties(logging_test PROPERTIES TIMEOUT 40)
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME switch_tunnel_test COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/switch_tunnel_test.py
+            $<TARGET_FILE:tuntom> $<TARGET_FILE:tuntom-switch> $<TARGET_FILE:tuntomctl>)
+        set_tests_properties(switch_tunnel_test PROPERTIES TIMEOUT 30)
         add_library(accept_faults SHARED tests/accept_faults.cpp)
         target_link_libraries(accept_faults PRIVATE ${CMAKE_DL_LIBS})
         add_test(NAME switch_capacity_test COMMAND ${Python3_EXECUTABLE}

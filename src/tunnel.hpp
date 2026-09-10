@@ -15,6 +15,7 @@
 #include "control_socket.hpp"
 #include "runtime_recovery.hpp"
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
@@ -404,6 +405,10 @@ private:
 
         tx_encoded_buffer_.reserve(
             protocol_fragment_v5_size + maximum_payload);
+        const std::size_t fragments =
+            (options_.tun_mtu + maximum_payload - 1) / maximum_payload;
+        for (std::size_t i = 0; i < fragments; ++i)
+            tx_encoded_fragments_[i].reserve(protocol_fragment_v5_size + maximum_payload);
         tx_mac_buffer_.reserve(32 + maximum_payload);
         rx_mac_buffer_.reserve(32 + options_.tun_mtu);
         reassembled_packet_.reserve(options_.tun_mtu);
@@ -499,44 +504,22 @@ private:
                         offset + fragment_size));
 
             if (not protocol_v5_.encode_into(
-                fragment, tx_encoded_buffer_, tx_mac_buffer_)) return;
+                fragment, tx_encoded_fragments_[index], tx_mac_buffer_)) return;
+            offset += fragment_size;
+        }
 
-            const ssize_t sent =
-                udp_.send(
-                    tx_encoded_buffer_.data(),
-                    tx_encoded_buffer_.size());
+        const auto sent = udp_.send_batch(tx_encoded_fragments_.data(), plan.count);
+        if (tx_sample_active_ and sent.packets == plan.count)
+            tx_processing_.finish(tx_sample_start_);
+        stats_.udp_tx_packets += sent.packets;
+        stats_.udp_tx_bytes += sent.bytes;
+        stats_.fragments_tx += sent.packets;
 
-            if (sent < 0) {
-                ++stats_.udp_send_errors;
-                const int send_error = errno;
-
-                if (log_enabled(LogLevel::info)) {
-                    LogLine()
-                        << "UDP send failed: "
-                        << "errno=" << send_error
-                        << "\n";
-                }
-
-                if (
-                    options_.pmtud_auto and
-                    send_error == EMSGSIZE) {
-
-                    restart_pmtud(
-                        "data datagram exceeded path MTU");
-                }
-
-                return;
-            }
-
-            if (tx_sample_active_ and index + 1 == plan.count) {
-                tx_processing_.finish(tx_sample_start_);
-            }
-            ++stats_.udp_tx_packets;
-            stats_.udp_tx_bytes +=
-                static_cast<std::uint64_t>(sent);
-            ++stats_.fragments_tx;
-
-            if (log_enabled(LogLevel::debug)) {
+        if (log_enabled(LogLevel::debug)) {
+            offset = 0;
+            for (std::size_t index = 0; index < sent.packets; ++index) {
+                const std::size_t fragment_size =
+                    plan.base_size + (index < plan.larger_fragments ? 1 : 0);
                 LogLine()
                     << "FRAGMENT "
                     << (index + 1) << "/" << plan.count
@@ -544,9 +527,15 @@ private:
                     << " offset=" << offset
                     << " size=" << fragment_size
                     << "\n";
+                offset += fragment_size;
             }
+        }
 
-            offset += fragment_size;
+        if (sent.error != 0) {
+            ++stats_.udp_send_errors;
+            log_info("UDP send failed: errno=", sent.error);
+            if (options_.pmtud_auto and sent.error == EMSGSIZE)
+                restart_pmtud("data datagram exceeded path MTU");
         }
     }
 
@@ -1618,6 +1607,7 @@ private:
     Packet rx_logical_packet_;
 
     std::vector<std::uint8_t> tx_encoded_buffer_;
+    std::array<std::vector<std::uint8_t>, max_fragments_per_packet> tx_encoded_fragments_;
     std::vector<std::uint8_t> tx_mac_buffer_;
     std::vector<std::uint8_t> rx_mac_buffer_;
     std::vector<std::uint8_t> reassembled_packet_;

@@ -1,12 +1,14 @@
 #pragma once
 
 #include "common.hpp"
+#include <array>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <vector>
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <sys/socket.h>
@@ -203,6 +205,52 @@ public:
             0,
             reinterpret_cast<const sockaddr*>(&peer_),
             peer_length_);
+    }
+
+    struct BatchResult {
+        std::size_t packets = 0;
+        std::size_t bytes = 0;
+        int error = 0;
+    };
+
+    BatchResult send_batch(
+        const std::vector<std::uint8_t>* buffers, std::size_t count) {
+        if (count == 0) return {};
+        if (count > max_fragments_per_packet) return {0, 0, EINVAL};
+        if (not peer_valid_) return {0, 0, EDESTADDRREQ};
+        if (count == 1) {
+            const ssize_t sent = send(buffers[0].data(), buffers[0].size());
+            if (sent < 0) return {0, 0, errno};
+            return {1, static_cast<std::size_t>(sent), 0};
+        }
+
+        std::array<iovec, max_fragments_per_packet> vectors;
+        std::array<mmsghdr, max_fragments_per_packet> messages;
+        for (std::size_t i = 0; i < count; ++i) {
+            vectors[i] = {const_cast<std::uint8_t*>(buffers[i].data()), buffers[i].size()};
+            messages[i] = {};
+            messages[i].msg_hdr.msg_name = &peer_;
+            messages[i].msg_hdr.msg_namelen = peer_length_;
+            messages[i].msg_hdr.msg_iov = &vectors[i];
+            messages[i].msg_hdr.msg_iovlen = 1;
+        }
+
+        BatchResult result;
+        while (result.packets < count) {
+            const int sent = ::sendmmsg(
+                fd_, messages.data() + result.packets,
+                static_cast<unsigned>(count - result.packets), MSG_DONTWAIT);
+            if (sent <= 0) {
+                result.error = sent < 0 ? errno : EIO;
+                break;
+            }
+            // A short batch hides the later error. Retry only the unsent
+            // suffix, preserving both the wire bytes and successful counters.
+            const std::size_t end = result.packets + static_cast<std::size_t>(sent);
+            for (; result.packets < end; ++result.packets)
+                result.bytes += messages[result.packets].msg_len;
+        }
+        return result;
     }
 
     std::size_t outer_ip_header_size() const {

@@ -42,17 +42,19 @@ def start_switch(binary, path):
         "--socket", path,
         "--route", "app:10=client:99",
         "--route", "server:2=app:11",
+        "--route", "app:12=server:99",
+        "--route", "client:1=app:13",
     ], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
 
-def exchange(app, payload, expected, live_processes):
+def exchange(app, payload, expected, live_processes, label=10):
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         for process in live_processes:
             if process.poll() is not None:
                 error = process.stderr.read().decode(errors="replace")
                 raise RuntimeError(f"test process exited: {error}")
-        app.sendall(frame(10, payload))
+        app.sendall(frame(label, payload))
         try:
             received = app.recv(65535)
             if received != expected:
@@ -138,6 +140,11 @@ def main():
             fragmented_payload = bytes(range(256)) * 35 + bytes(range(40))
             exchange(app, fragmented_payload, frame(11, fragmented_payload),
                      [switch_process, server, client])
+            for size in (9000, 2048, 73, 8999):
+                # Reuse TX buffers across changing fragment counts, on both peers.
+                data = bytes(i % 251 for i in range(size))
+                exchange(app, data, frame(11, data), [switch_process, server, client])
+                exchange(app, data, frame(13, data), [switch_process, server, client], label=12)
 
             wait_for([server_control, client_control], [server, client])
             client_snapshot = subprocess.check_output(
