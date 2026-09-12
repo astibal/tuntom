@@ -167,6 +167,21 @@ inline Assignment schedule(const std::vector<Kind> &ports, std::size_t budget,
             totals[role] += cost;
         }
     }
+    // A small tunnel <-> adapter path starts with one worker per forwarding
+    // direction. The next topology change recomputes the ordinary role shards.
+    // Pair only while both combined direction costs fit the configured target.
+    if (ports.size() == 2 && budget >= 2 && jobs[0].size() == 1 && jobs[2].size() == 1 &&
+        ports[jobs[2][0].first] == Kind::adapter &&
+        totals[0] + totals[3] <= policy.work_per_thread &&
+        totals[2] + totals[1] <= policy.work_per_thread) {
+        result.owners[jobs[0][0].first] = {0, 1};
+        result.owners[jobs[2][0].first] = {1, 0};
+        result.worker_roles[0] = (1U << 0) | (1U << 3);
+        result.worker_roles[1] = (1U << 2) | (1U << 1);
+        result.shards = {1, 1, 1, 1};
+        result.active = 2;
+        return result;
+    }
     result.shards = {1, 1, jobs[2].empty() ? 0U : 1U, jobs[3].empty() ? 0U : 1U};
     std::size_t used = result.shards[0] + result.shards[1] + result.shards[2] + result.shards[3];
     while (used < budget) {

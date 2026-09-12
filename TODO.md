@@ -1,5 +1,26 @@
 # Project TODO
 
+## Switch IPC: mmap with grouped references (approved 2026-09-12)
+
+Implement the [accepted mmap transport direction](docs/SWITCH_MMAP_EXTENSION_DRAFT.md#accepted-implementation-direction-batched-mmap-references):
+optional shared-memory payloads, with multiple references in one negotiated
+SOCK_SEQPACKET record. Default maximum batch 8, configurable to 16; send only
+already-ready frames for the same socket and flush partial batches immediately.
+Keep legacy inline compatibility, per-slot ownership, ordering, RX/TX fairness
+and the existing switch architecture. Single-frame mmap or mmsg alone is not
+the complete desired implementation.
+
+Status: selected for the next phase; only the isolated mmap benchmark exists so far.
+The compatible socket/worker prerequisite is implemented and measured as of
+2026-09-12: per-worker readiness, wake handling, cached lookup/queue state and
+small-topology pairing. Its 81-run comparison shows lower CPU at light/sparse
+loads; saturated active topologies have similar throughput. Keep mmap as a
+separate follow-up, as requested. See [socket-phase reproduction](experiments/switch_mp/README.md#socket-phase-ab-comparison).
+Finalize the batch capability/wire format and bounded send/receive integration,
+then verify the real tuntom -> switch -> adapter path, including multiple ports,
+backpressure, reconnect, CPU cache placement and equal offered-load comparisons.
+See the [experiment and reproduction instructions](experiments/ipc_batch/README.md).
+
 ## Statistics write strategy
 
 The text statistics export is approaching 100 fields and currently rewrites an

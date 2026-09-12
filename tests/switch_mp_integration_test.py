@@ -339,6 +339,101 @@ def pool_exhaustion(binary):
     print("PASS: exhausted pool isolation, ingress HUP, source generation reclamation", flush=True)
 
 
+def readiness(binary):
+    with Switch(binary, "--workers", "1", "--route", "a:1=b:2",
+                "--route", "c:1=d:2") as switch:
+        a, b, c, d = (switch.connect(name) for name in ("a", "b", "c", "d"))
+        idle = [switch.connect(f"idle{i}") for i in range(20)]
+        for i in range(8):
+            a.sendall(frame([1], b"warm"))
+            assert b.recv(70000) == frame([2], b"warm")
+        before = switch.stats()
+        began = time.monotonic()
+        for i in range(200):
+            body = struct.pack("!Q", i)
+            a.sendall(frame([1], body))
+            assert b.recv(70000) == frame([2], body)
+        after = switch.stats()
+        assert after["recv_calls"] - before["recv_calls"] <= 4 * 200 + 20, after
+        assert after["cpu_samples"] - before["cpu_samples"] <= 15 * (time.monotonic()-began) + 5
+
+        # More than one RR turn must be consumed from a single readiness edge.
+        for i in range(64):
+            a.sendall(frame([1], struct.pack("!Q", i)))
+        for i in range(64):
+            assert b.recv(70000) == frame([2], struct.pack("!Q", i))
+
+        # Discover a previously idle input even while another input keeps work available.
+        stop = threading.Event()
+        failures = []
+        def hot_path():
+            try:
+                while not stop.is_set():
+                    a.sendall(frame([1], b"hot"))
+                    assert b.recv(70000) == frame([2], b"hot")
+            except BaseException as error:
+                failures.append(error)
+        thread = threading.Thread(target=hot_path)
+        thread.start()
+        try:
+            for i in range(30):
+                body = struct.pack("!Q", i) + b"new readiness"
+                c.sendall(frame([1], body))
+                assert d.recv(70000) == frame([2], body)
+                time.sleep(.001)
+        finally:
+            stop.set()
+            thread.join(timeout=6)
+        assert not thread.is_alive() and not failures, failures
+        until(lambda: switch.stats()["buffers_in_use"] == 0)
+        assert switch.stats()["queue_full_drops"] == 0
+        assert len(idle) == 20
+    print("PASS: sparse RX syscalls, retained ET readiness, new input fairness, sampled CPU stats", flush=True)
+
+
+def paired_start(binary):
+    with Switch(binary, "--workers", "8", "--exit-port", "adapter",
+                "--route", "a:1=adapter:2", "--route", "adapter:1=a:2") as switch:
+        a, adapter = switch.connect("a"), switch.connect("adapter")
+        initial = switch.stats()
+        if initial["workers_pool"] >= 2:
+            mapping = owners(initial)
+            assert initial["workers_active"] == 2
+            assert mapping["a"][0] == mapping["adapter"][1]
+            assert mapping["adapter"][0] == mapping["a"][1]
+        stop = threading.Event()
+        failures, count = [], [0]
+        def traffic():
+            try:
+                while not stop.is_set():
+                    body = struct.pack("!Q", count[0]) + b"paired" * 200
+                    a.sendall(frame([1], body))
+                    assert adapter.recv(70000) == frame([2], body, 2)
+                    adapter.sendall(frame([1], body))
+                    assert a.recv(70000) == frame([2], body)
+                    count[0] += 1
+            except BaseException as error:
+                failures.append(error)
+        thread = threading.Thread(target=traffic)
+        thread.start()
+        try:
+            for _ in range(3):
+                extra = switch.connect("extra")
+                assert switch.stats()["workers_active"] == min(4, initial["workers_pool"])
+                extra.close()
+                until(lambda: switch.stats()["connections_current"] == 2)
+                assert switch.stats()["workers_active"] == min(2, initial["workers_pool"])
+            until(lambda: count[0] >= 200)
+        finally:
+            stop.set()
+            thread.join(timeout=6)
+        assert not thread.is_alive() and not failures, failures
+        final = switch.stats()
+        assert final["frames_rx"] == final["frames_tx"] == 2 * count[0]
+        assert final["queue_full_drops"] == final["reconfiguration_drops"] == 0
+    print("PASS: paired startup, duplex forwarding and live transition to/from split roles", flush=True)
+
+
 def main():
     binary = str(Path(sys.argv[1]).resolve())
     protocol(binary)
@@ -346,6 +441,8 @@ def main():
         live_migration(binary, workers)
         blocked(binary, workers)
     pool_exhaustion(binary)
+    readiness(binary)
+    paired_start(binary)
     limits(binary)
 
 

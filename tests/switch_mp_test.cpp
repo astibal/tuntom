@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdlib>
 #include <iostream>
+#include <poll.h>
 #include <thread>
 #include <vector>
 
@@ -60,6 +61,14 @@ void scheduling() {
     require(asymmetric.shards[0] == 1 && asymmetric.shards[1] == 2);
     auto trunk = schedule(std::vector<Kind>(3, Kind::trunk), 8);
     require(trunk.shards[2] == 2 && trunk.shards[3] == 2);
+    auto paired = schedule({Kind::tunnel, Kind::adapter}, 8);
+    require(paired.active == 2 && paired.worker_roles[0] == 9 && paired.worker_roles[1] == 6);
+    require(paired.owners[0][0] == paired.owners[1][1] && paired.owners[1][0] == paired.owners[0][1]);
+    require(schedule({Kind::adapter, Kind::tunnel}, 8).owners[0] == paired.owners[1]);
+    require(schedule({Kind::tunnel, Kind::adapter, Kind::tunnel}, 8).active == 4);
+    Policy heavy;
+    heavy.adapter_weight = 8;
+    require(schedule({Kind::tunnel, Kind::adapter}, 8, heavy).active == 4);
     require(quota_workers(250000, 100000) == 2 && quota_workers(50000, 100000) == 1);
     auto hardware = detect_hardware();
     require(hardware.limit() >= 1 && hardware.limit() <= hardware.physical &&
@@ -127,11 +136,43 @@ void queues_and_pool() {
     require(p0.in_use() == 0 && p1.in_use() == 0);
 }
 
+void wake_handshake() {
+    using namespace tuntom::mp;
+    Wake wake;
+    Spsc<int> queue(8);
+    constexpr std::size_t count = 20000;
+    std::vector<int> values(count);
+    std::thread consumer([&] {
+        std::size_t next = 0;
+        while (next < count) {
+            auto *value = queue.pop();
+            if (!value) {
+                wake.arm();
+                value = queue.pop(); // Publish -> notify must race safely with this recheck.
+                if (!value) {
+                    pollfd fd{wake.fd(), POLLIN, 0};
+                    require(::poll(&fd, 1, 2000) == 1);
+                    wake.drain(); // Only after readiness; one read consumes the counter.
+                }
+                wake.cancel();
+            }
+            if (value) require(*value == static_cast<int>(next++));
+        }
+    });
+    for (std::size_t i = 0; i < count; ++i) {
+        values[i] = static_cast<int>(i);
+        while (!queue.push(&values[i])) std::this_thread::yield();
+        wake.notify();
+        if (i % 17 == 0) std::this_thread::yield();
+    }
+    consumer.join();
+}
 } // namespace
 
 int main() {
     scheduling();
     queues_and_pool();
+    wake_handshake();
     std::cout
         << "PASS: hardware budget, weighted splits/merges, mixed roles, SPSC FIFO and pool reuse\n";
 }

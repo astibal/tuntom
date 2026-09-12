@@ -264,3 +264,11 @@ live port additions/removals, RX/TX migration, pressure, reconnect generations,
 protocol and admission tests with 1, 2 and up to 8 data workers. CTest and
 `tests/run.sh` include both, plus the existing tunnel integration against the new
 target. See [MP architecture and build options](../README_SWITCHING_MP.md).
+
+The socket-phase regressions additionally check the arm/recheck/wait wake
+handshake, RX syscall counts with 20 inactive ports, retained edge-triggered
+readiness and fairness when an idle input becomes active. A tunnel/adapter pair
+starts with two forwarding workers, splits when another port arrives and merges
+again while duplex traffic continues. CPU sampling is checked independently of
+packet rate. Resource-failure and multi-port stress tools, plus a reproducible
+before/after MP benchmark, live in [experiments/switch_mp](../experiments/switch_mp/README.md).

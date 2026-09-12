@@ -9,6 +9,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <sys/socket.h>
+#include <sys/epoll.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -43,8 +44,13 @@ bool fail_call(const char* operation) {
     // Poll failures persist until the marker is removed. EINTR/send EAGAIN are
     // finite bursts; the fixture itself must not turn them into an endless loop.
     static std::atomic<unsigned> calls {0};
+    const auto* skip_text = std::getenv("TOMTOM_TEST_SYSCALL_SKIP");
+    const unsigned skip = skip_text ? static_cast<unsigned>(std::strtoul(skip_text, nullptr, 10)) : 0;
+    const unsigned call = calls.fetch_add(1, std::memory_order_relaxed);
+    if (call < skip) return false;
     return std::strcmp(operation, "poll") == 0 || std::strcmp(operation, "ppoll") == 0 ||
-        calls.fetch_add(1, std::memory_order_relaxed) < 100;
+        std::strcmp(operation, "epoll_wait") == 0 ||
+        call - skip < 100;
 }
 } // namespace
 
@@ -100,4 +106,22 @@ extern "C" int ppoll(pollfd* fds, nfds_t count, const timespec* timeout, const s
     static auto original = reinterpret_cast<int(*)(pollfd*, nfds_t, const timespec*, const sigset_t*)>(::dlsym(RTLD_NEXT, "ppoll"));
     if (fail_call("ppoll")) { errno = ENOMEM; return -1; }
     return original(fds, count, timeout, mask);
+}
+
+extern "C" int epoll_wait(int fd, epoll_event* events, int count, int timeout) {
+    static auto original = reinterpret_cast<int(*)(int, epoll_event*, int, int)>(::dlsym(RTLD_NEXT, "epoll_wait"));
+    if (fail_call("epoll_wait")) { errno = ENOMEM; return -1; }
+    return original(fd, events, count, timeout);
+}
+
+extern "C" int epoll_create1(int flags) {
+    static auto original = reinterpret_cast<int(*)(int)>(::dlsym(RTLD_NEXT, "epoll_create1"));
+    if (fail_call("epoll_create1")) { errno = EMFILE; return -1; }
+    return original(flags);
+}
+
+extern "C" int epoll_ctl(int fd, int operation, int target, epoll_event* event) {
+    static auto original = reinterpret_cast<int(*)(int, int, int, epoll_event*)>(::dlsym(RTLD_NEXT, "epoll_ctl"));
+    if (fail_call("epoll_ctl")) { errno = ENOMEM; return -1; }
+    return original(fd, operation, target, event);
 }

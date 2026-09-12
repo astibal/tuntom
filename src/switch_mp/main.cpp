@@ -72,8 +72,8 @@ int main(int argc, char **argv) {
         std::unique_ptr<tuntom::ControlSocket> control;
         if (!config.control.empty())
             control = std::make_unique<tuntom::ControlSocket>(config.control);
-        Engine engine(config, budget); // Allocate eventfds before calculating FD capacity.
-        const auto capacity = config.capacity.for_process();
+        Engine engine(config, budget); // Count current eventfds/epolls in FD capacity.
+        const auto capacity = config.capacity.for_process(budget); // Reserve the next plan's epolls.
         std::vector<Pending> pending;
         std::vector<pollfd> descriptors;
         pending.reserve(capacity.pending);
@@ -121,7 +121,7 @@ int main(int argc, char **argv) {
                     << "\nconnections_limit_pending_configured=" << config.capacity.pending
                     << "\nconnections_limit_ports=" << capacity.ports
                     << "\nconnections_limit_pending=" << capacity.pending
-                    << "\nconnections_fd_reserve=" << tuntom::SwitchCapacity::fd_reserve
+                    << "\nconnections_fd_reserve=" << tuntom::SwitchCapacity::fd_reserve + budget
                     << "\nconnections_accepted=" << stats.accepted
                     << "\nregistrations_ok=" << stats.registered
                     << "\nregistrations_invalid=" << stats.invalid
@@ -271,6 +271,9 @@ int main(int argc, char **argv) {
                 update_throughput();
             } catch (const std::bad_alloc &) {
                 recovery.allocation_failed();
+            } catch (const PollSetupError &error) {
+                // The unpublished epoll sets are RAII-owned; the old plan is intact.
+                recovery.poll_failed(error.error);
             }
         }
         engine.stop();

@@ -108,6 +108,41 @@ python3 experiments/switch_mp/fault_checks.py --switch /tmp/tomtom-switch-mp-opt
 Do not preload this fixture into normal applications. It uses a marker file
 owned by the test and does not change system settings or other processes.
 
+The socket-phase probes also inject `epoll_wait`, `epoll_create1` and
+`epoll_ctl` failures. They check bounded worker recovery, pool retry under
+backpressure, preservation of the old plan after failed replacement and cleanup
+of partially prepared epoll sets under a low FD limit.
+
+## Socket-phase A/B comparison
+
+`socket_bench.py` compares a saved MP binary before the socket changes with the
+updated MP binary. An optional `--readiness` binary contains the same socket
+changes with the original scheduler, separating their effect from the two-worker
+tunnel/adapter pairing. Build all variants with identical compiler options.
+
+```bash
+python3 experiments/switch_mp/socket_bench.py \
+  --baseline /tmp/mp-before --improved /tmp/mp-after \
+  --readiness /tmp/mp-readiness --driver /tmp/tomtom-mp-stress-load \
+  --output /tmp/socket-phase-results
+```
+
+The default matrix uses one active tunnel and one adapter, the same traffic
+with 19 additional inactive tunnel ports, 10 tunnels/one adapter, and 20 tunnels/
+three adapters. It runs 25k, 160k and unlimited offered rates, a two-jumbo/one-small
+payload mix, and three serial repetitions with rotated variant order. Each
+switch has the same four-core affinity and worker-pool limit. Two sender and
+two receiver threads run on the other four physical cores. `--driver-threads 1`
+provides a separate source-limit control. The script requires eight physical
+cores and a fresh output directory; rates, sizes, cases and duration are tunable.
+
+JSONL includes CPU, latency, exact accepted/delivered frame and byte accounting,
+source backpressure, internal drops, per-thread context switches and syscall
+counter deltas. `summary.json` gives medians. Latency spans source IPC, switch
+and receiver scheduling; these measurements do not include TUN, UDP encryption,
+NICs or mmap. The underlying harness verifies payload endpoints and ordering
+for every received frame; full byte checking belongs to the correctness runs.
+
 The performance matrix runs 540 serial four-second cases by default: three
 repetitions, four tunnel counts, three adapter counts, four payload patterns
 and offered rates of 160k, 240k and saturation. The 9000-byte cases also run

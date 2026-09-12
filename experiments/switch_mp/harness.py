@@ -198,6 +198,9 @@ def load_case(binary, driver_binary, case, cpus, directory, tag, extra_options=(
         options += ["--workers", str(case["workers"])]
     switch_cpus = cpus[:case.get("switch_cores", 6)]
     with Switch(binary, options, switch_cpus, directory / (tag + ".switch.log")) as switch:
+        idle_ports = case.get("idle_ports", 0)
+        for index in range(idle_ports):
+            switch.connect(f"bench-idle{index}")
         driver = None
         with open(directory / (tag + ".driver.log"), "w+") as errors:
             try:
@@ -213,7 +216,7 @@ def load_case(binary, driver_binary, case, cpus, directory, tag, extra_options=(
                 driver = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                           stderr=errors, text=True, start_new_session=True)
                 assert readline(driver, 15) == "READY"
-                until(lambda: switch.stats()["connections_current"] == tunnels + adapters,
+                until(lambda: switch.stats()["connections_current"] == tunnels + adapters + idle_ports,
                       description="all driver registrations")
                 initial = switch.stats()
                 before = metrics(switch.process.pid)
@@ -258,7 +261,7 @@ def load_case(binary, driver_binary, case, cpus, directory, tag, extra_options=(
                 received = sum(row["received_by_port"])
                 assert row["invalid"] == 0 and sum(row["sent_by_port"]) == sent
                 assert final["frames_tx"] == received and final["bytes_tx"] == row["received_bytes"] + 16 * received
-                assert switch.stats()["connections_current"] == tunnels + adapters or during
+                assert switch.stats()["connections_current"] == tunnels + adapters + idle_ports or during
                 assert row["offered"] == sent + sum(row["source_backpressure_by_port"])
                 for index, count in enumerate(row["received_by_port"]):
                     if row.get("sent_to_port", row["output_weights"])[index]:

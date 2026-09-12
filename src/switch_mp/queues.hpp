@@ -15,8 +15,10 @@ namespace tuntom::mp {
 // Ownership changes only while both endpoints are at the scheduler barrier.
 template <class T> class Spsc {
     alignas(64) std::atomic<std::size_t> write_{0};
+    std::size_t read_cache_ = 0; // Producer-owned; refresh only when apparently full.
     alignas(64) std::atomic<std::size_t> read_{0};
-    const std::size_t count_;
+    std::size_t write_cache_ = 0; // Consumer-owned; refresh only when apparently empty.
+    alignas(64) const std::size_t count_;
     std::unique_ptr<T *[]> slots_;
 
   public:
@@ -28,16 +30,22 @@ template <class T> class Spsc {
     bool push(T *item) {
         const auto current = write_.load(std::memory_order_relaxed);
         const auto next = current + 1 == count_ ? 0 : current + 1;
-        if (next == read_.load(std::memory_order_acquire))
-            return false;
+        if (next == read_cache_) {
+            read_cache_ = read_.load(std::memory_order_acquire);
+            if (next == read_cache_)
+                return false;
+        }
         slots_[current] = item;
         write_.store(next, std::memory_order_release);
         return true;
     }
     T *pop() {
         const auto current = read_.load(std::memory_order_relaxed);
-        if (current == write_.load(std::memory_order_acquire))
-            return nullptr;
+        if (current == write_cache_) {
+            write_cache_ = write_.load(std::memory_order_acquire);
+            if (current == write_cache_)
+                return nullptr;
+        }
         T *item = slots_[current];
         read_.store(current + 1 == count_ ? 0 : current + 1, std::memory_order_release);
         return item;
@@ -116,12 +124,9 @@ class Wake {
     }
     void drain() const {
         std::uint64_t count;
-        for (;;) {
-            if (::read(fd_, &count, sizeof(count)) == sizeof(count))
-                continue;
-            if (errno != EINTR)
-                return;
-        }
+        // Without EFD_SEMAPHORE one successful read clears the entire counter.
+        // Concurrent later writes remain readable for the next event collection.
+        while (::read(fd_, &count, sizeof(count)) < 0 && errno == EINTR) {}
     }
 };
 

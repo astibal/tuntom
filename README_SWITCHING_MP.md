@@ -125,7 +125,8 @@ port directions, with exactly one RX owner and one TX owner per registered port.
                    generic worker pool (fixed hardware budget)
                   +-----------------------------------------+
 initial roles     | RX(tunnels) | TX(tunnels) | idle | idle ..|
-with adapters     | RX(tunnels) | TX(tunnels) | RXa  | TXa ...|
+1 tunnel+adapter  | RX + TXa    | RXa + TX    | idle | idle ..|
+more ports        | RX(tunnels) | TX(tunnels) | RXa  | TXa ...|
 after threshold   | RX group 0  | RX group 1  | TX ..| RXa ...|
                   +-----------------------------------------+
 
@@ -162,12 +163,24 @@ port stays indivisible. Ports are assigned greedily by weight within the group.
 When baseline roles exceed the CPU budget, one worker executes multiple roles;
 even a single worker can progress in RX and TX without oversubscribing the pool.
 
+For exactly one tunnel and one adapter, the startup policy co-locates the
+forwarding directions: `RX(tunnel) + TX(adapter)` and `RX(adapter) + TX(tunnel)`.
+It uses two workers when both combined weights fit `--work-per-thread`, avoiding
+inter-worker notifications on these two paths. Other allocated workers sleep.
+Adding a third port returns to the general role scheduler through the normal
+barrier; removing it can restore this pairing. A trunk or a heavier combination
+uses the general policy. This is a topology/weight rule, not measured-load scaling.
+For this 1+1 topology, `--work-per-thread 2` with the default weights keeps the
+four separate roles when the pool permits it. Pairing favors CPU efficiency;
+it does not guarantee the same saturation throughput as four busy workers.
+
 With at least eight available workers, the defaults produce:
 
 | Connected ports | Active data workers |
 |---|---|
 | 0–8 tunnels | 1 RX + 1 TX |
 | 9–16 tunnels | 2 RX + 2 TX |
+| 1 tunnel + 1 adapter | 2: RX+TXa, RXa+TX |
 | 8 tunnels + 1–4 adapters | 1 RX + 1 TX + 1 RXa + 1 TXa |
 | 8 tunnels + 5 adapters | 1 RX + 1 TX + 2 RXa + 2 TXa |
 
@@ -196,15 +209,28 @@ round-robin order with quota **one frame per turn**, and sends one IPC record
 per frame. Only the destination's current TX worker receives a packet wakeup.
 All-worker wakeups happen at reconfiguration/shutdown barriers, not on data.
 
-TX retains a pending buffer on `EAGAIN`, polls `POLLOUT`, and continues other
-jobs. Under continuously active sibling jobs, a blocked TX is retried after
-50 microseconds. An exhausted RX pool is retried after 50 microseconds while
+Each worker has an edge-triggered epoll set. Only ready RX sockets are read;
+readiness stays set across round-robin turns until `recv()` returns `EAGAIN`.
+New events are collected after at least 32 successful job operations, at the
+end of that round-robin pass, or when the worker has no runnable work. This
+avoids repeatedly reading inactive ports without starving newly active inputs.
+The eventfd is read only when reported ready, with one successful read clearing
+its accumulated count. Sleeping still uses arm/recheck/wait to avoid lost wakes.
+
+TX retains a pending buffer on `EAGAIN`, enables `EPOLLOUT`, and continues other
+jobs. A writable event enables the next attempt and removes output interest;
+there is no periodic TX retry in normal operation. An exhausted RX pool is
+retried after 50 microseconds while
 other inputs continue. A full pointer ring drops the new frame and increments
 `queue_full_drops`. Thus one congested destination can exhaust its source's pool
 and backpressure that source's other traffic; other ingress pools remain usable.
 
 Main constructs a complete next plan before pausing workers, including private
-RX lookup tables and poll storage. At a bounded operation boundary all workers
+RX lookup tables, resolved TX worker IDs and new epoll sets. The separate sets
+keep old readiness tokens from referring to new port generations. FD admission
+reserves another epoll FD per worker while both plans coexist. Failed preparation
+closes the unpublished resources and leaves the current plan usable.
+At a bounded operation boundary all workers
 park; main publishes the version, swaps owners, and resumes them. There is no
 packet allocation or shared route-map lock on the forwarding path. Tables are
 compiled per ingress with resolved outputs, unlike the reference switch's
@@ -227,6 +253,14 @@ no common ordering. Shutdown drops/reclaims outstanding userspace buffers.
 It includes the hardware budget, pool/active/idle worker counts, role group
 counts, plan and per-worker versions, port generations and RX/TX owners, worker
 CPU time and poll counts, queue/pool pressure, barrier time and discarded frames.
+`worker_io_backend=epoll` identifies this socket phase. `recv_calls`,
+`recv_eagain`, `send_calls`, `send_eagain`, `wake_calls`, `wake_reads` and
+`cpu_samples` make syscall activity observable. `worker_N_poll_calls` counts
+epoll waits (including nonblocking event collection); it excludes the extra
+`ppoll()` on the epoll FD used for sub-millisecond RX pool retries.
+Worker CPU snapshots refresh at most every 100 ms while the worker runs and at
+shutdown; a sleeping worker may retain its last sample until its next wake.
+Use process CPU deltas over a measured interval for benchmark comparisons.
 Counters are concurrent observations, not an atomic cross-worker snapshot.
 `workers_active` counts assigned roles (including the two empty startup roles),
 not runnable threads. The reference switch's adaptive-polling counters are not

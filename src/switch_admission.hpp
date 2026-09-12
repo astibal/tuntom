@@ -28,7 +28,7 @@ struct SwitchCapacity {
     // Startup only, before the logger thread starts. Count inherited FDs too,
     // excluding the temporary directory FD and FDs above the soft limit (which
     // can exist if the parent lowered its limit after opening them).
-    SwitchCapacity for_process() const {
+    SwitchCapacity for_process(std::size_t additional_reserve = 0) const {
         rlimit limit {};
         if (::getrlimit(RLIMIT_NOFILE, &limit) < 0)
             throw std::runtime_error("Cannot read switch RLIMIT_NOFILE");
@@ -49,8 +49,9 @@ struct SwitchCapacity {
         }
         if (errno != 0) throw std::runtime_error("Cannot enumerate switch descriptors");
         const auto free_fds = limit.rlim_cur > used ? limit.rlim_cur - used : 0;
-        return limited_to(static_cast<std::size_t>(std::min<rlim_t>(
-            free_fds, std::numeric_limits<std::size_t>::max())));
+        const auto available = static_cast<std::size_t>(std::min<rlim_t>(
+            free_fds, std::numeric_limits<std::size_t>::max()));
+        return limited_to(available - std::min(available, additional_reserve));
     }
 };
 
