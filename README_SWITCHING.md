@@ -3,8 +3,9 @@
 [Back to the tuntom README](README.md)
 
 The separate [tomtom-switch-mp target](README_SWITCHING_MP.md) provides a generic
-worker pool and runtime RX/TX scheduling. The helpers below continue to build
-the existing single-thread `tuntom-switch`.
+worker pool and runtime RX/TX scheduling. Use `mk_switch_mp.sh` for that target,
+including CPU planning with `--auto-pool --dry-run`. `mk_switch.sh` builds the
+existing single-thread `tuntom-switch`.
 
 Label switching connects tuntom tunnel links through explicit relay and exit
 paths. Forwarding uses the incoming port and label, so a relay can choose the
@@ -59,6 +60,11 @@ command with the desired options to rebuild and restart. `--stop` needs only
 the switch name or adapter interface; saved endpoints and hook paths are used
 for teardown. Run `--help` for options, including socket paths, owner, adapter
 cache settings and inline switch `--route` / `--exit-port` arguments.
+
+`mk_switch.sh NAME` and `mk_switch_mp.sh NAME` manage the same named instance,
+state and lock. Changing the helper replaces the implementation after the new
+build and configuration have been checked. Either helper can stop that switch.
+Use different names for separate switches; see [MP lifecycle and migration](README_SWITCHING_MP.md#local-helper-and-automatic-pool).
 
 ### Restart and socket ownership
 

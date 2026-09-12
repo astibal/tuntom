@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Shared local lifecycle for mk_switch.sh and mk_adapter.sh. Linux /proc required.
+# Shared local switch/adapter lifecycle. Linux /proc required.
 
 local_die() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -15,6 +15,7 @@ local_number() {
 
 local_init() {
     kind="$1"; shift
+    helper_kind="$kind"; source_kind="$kind"
     if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then usage; exit 0; fi
     (( $# )) || { usage >&2; exit 1; }
     name="$1"
@@ -85,7 +86,7 @@ local_require_root() {
         for env_name in "${!TUNTOM_@}"; do
             sudo_cmd+=("--preserve-env=$env_name")
         done
-        exec "${sudo_cmd[@]}" bash "${script_dir}/mk_${kind}.sh" "${original_args[@]}"
+        exec "${sudo_cmd[@]}" bash "${script_dir}/mk_${helper_kind}.sh" "${original_args[@]}"
     fi
 }
 
@@ -122,6 +123,7 @@ local_identity() {
 
 local_find_processes() {
     local proc pid identity exe
+    local executable="${1:-$binary}" old_executable="${2:-${instance_dir}/main}"
     local -a argv
     targets=(); identities=()
     for proc in /proc/[0-9]*; do
@@ -129,7 +131,7 @@ local_find_processes() {
         argv=()
         { mapfile -d '' -t argv < "$proc/cmdline"; } 2>/dev/null || continue
         # Also recognize instances started before binaries moved out of /run.
-        [[ "${argv[0]:-}" == "$binary" || "${argv[0]:-}" == "${instance_dir}/main" ]] || continue
+        [[ "${argv[0]:-}" == "$executable" || "${argv[0]:-}" == "$old_executable" ]] || continue
         exe="$(readlink -- "$proc/exe" 2>/dev/null)" || continue
         [[ "$exe" == "${argv[0]}" || "$exe" == "${argv[0]} (deleted)" ]] || continue
         identity="$(local_identity "$pid")" || continue
@@ -199,7 +201,7 @@ local_hook() {
         TUNTOM_PID_FILE="$pid_file" TUNTOM_LOG_FILE="$log_file" bash "$hook"
 }
 
-local_down() (
+local_down_one() (
     # Hooks and cleanup must use the previous endpoints, including --stop with
     # only the instance name, or a restart that changes socket paths/port/MTU.
     local -a saved
@@ -224,6 +226,23 @@ local_down() (
     rm -f -- "$state_file"
 )
 
+local_legacy_switch_context() {
+    instance_dir="${state_root}/switch-mp-${name}"
+    bin_dir="${bin_root}/switch-mp-${name}"
+    binary="${bin_dir}/main"; control_binary="${bin_dir}/tuntomctl"
+    pid_file="${instance_dir}/pid"; state_file="${instance_dir}/endpoints"
+    log_file="${instance_dir}/log"; rules_file="${instance_dir}/rules"
+}
+
+local_down() {
+    local_down_one || return 1
+    if [[ "$kind" == switch ]]; then
+        # Retire instances created by the first MP helper as well. Keep the
+        # compatibility lock inode: deleting it would let another helper race.
+        ( local_legacy_switch_context; local_down_one ) || return 1
+    fi
+}
+
 local_wait_ready() {
     local pid="$1" identity="$2" ctl="$3" socket="$4" component="$5"
     local deadline=$((SECONDS + 10)) current stats
@@ -247,6 +266,9 @@ local_read_rules() {
         [[ -n "$value" && -z "$extra" ]] || local_die "Invalid rules line $line"
         case "$directive" in
             route|exit-port) service_args+=("--$directive" "$value") ;;
+            trunk-port)
+                [[ "$source_kind" == switch_mp ]] || local_die "trunk-port requires mk_switch_mp.sh"
+                service_args+=(--trunk-port "$value") ;;
             default-back)
                 [[ "$value" == on || "$value" == off ]] || local_die "Invalid default-back on line $line"
                 service_args+=("--default-back=$value") ;;
@@ -255,20 +277,39 @@ local_read_rules() {
     done < "$rules_file"
 }
 
+local_owned_endpoints() {
+    local record="$1"
+    local -a saved
+    local_find_processes "$2" "$3"
+    if [[ -f "$record" ]]; then
+        mapfile -d '' -t saved < "$record"
+        (( ${#saved[@]} == 7 )) || local_die "Invalid saved state: $record"
+        [[ -z "${saved[0]}" ]] || local_socket_path "${saved[0]}"
+        local_socket_path "${saved[1]}"
+        if (( ${#targets[@]} )); then
+            owned_endpoints+=("${saved[1]}")
+            [[ "$kind" != switch ]] || owned_endpoints+=("${saved[0]}")
+        fi
+    fi
+}
+
 local_check_endpoints() {
-    local path old_data="" old_control=""
-    local -a saved paths=("$control_socket")
-    [[ "$kind" != switch ]] || paths+=("$switch_socket")
-    local_find_processes
-    if [[ -f "$state_file" && ${#targets[@]} -gt 0 ]]; then
-        mapfile -d '' -t saved < "$state_file"
-        old_data="${saved[0]:-}"; old_control="${saved[1]:-}"
+    local path endpoint owned
+    local -a owned_endpoints=() paths=("$control_socket")
+    local_owned_endpoints "$state_file" "$binary" "${instance_dir}/main"
+    if [[ "$kind" == switch ]]; then
+        paths+=("$switch_socket")
+        local_owned_endpoints "${state_root}/switch-mp-${name}/endpoints" \
+            "${bin_root}/switch-mp-${name}/main" "${state_root}/switch-mp-${name}/main"
     fi
     for path in "${paths[@]}"; do
         [[ ! -L "$path" && ( ! -e "$path" || -S "$path" ) ]] ||
             local_die "Socket path is a symlink or non-socket: $path"
-        if local_socket_bound "$path" && [[ "$path" != "$old_control" &&
-             ( "$kind" != switch || "$path" != "$old_data" ) ]]; then
+        owned=0
+        for endpoint in "${owned_endpoints[@]}"; do
+            [[ "$path" != "$endpoint" ]] || owned=1
+        done
+        if local_socket_bound "$path" && (( ! owned )); then
             local_die "Socket is used by another instance: $path"
         fi
     done
@@ -283,7 +324,7 @@ local_check_switch() {
     # duplicating the binary's option parser in shell.
     "${stage}/main" --socket "${stage}/probe.sock" \
         --control-socket "${stage}/probe.control" "${service_args[@]}" \
-        >"${stage}/probe.log" 2>&1 </dev/null 9>&- &
+        >"${stage}/probe.log" 2>&1 </dev/null 8>&- 9>&- &
     probe_pid=$!
     local identity
     identity="$(local_identity "$probe_pid")" || identity=""
@@ -295,6 +336,10 @@ local_check_switch() {
     wait "$probe_pid"
     probe_pid=""
 }
+
+# Optional switch-specific preparation after pre/up and rules parsing, while
+# the old instance is still running. The MP helper supplies its CPU plan here.
+local_prepare_switch() { :; }
 
 local_cleanup() {
     local rc=$?
@@ -330,6 +375,13 @@ local_run() {
     chmod 700 "$instance_dir"
     exec 9>"${instance_dir}/lock"
     flock -n 9 || local_die "Another mk_ process is operating on $kind $name"
+    if [[ "$kind" == switch ]]; then
+        local compatibility_dir="${state_root}/switch-mp-${name}"
+        [[ ! -L "$compatibility_dir" ]] || local_die "Legacy MP instance directory is a symlink"
+        local_private_dir "$compatibility_dir"
+        exec 8>"${compatibility_dir}/lock"
+        flock -n 8 || local_die "Another mk_ process is operating on switch $name (legacy MP lock)"
+    fi
     binary="${bin_dir}/main"; control_binary="${bin_dir}/tuntomctl"
     pid_file="${instance_dir}/pid"; state_file="${instance_dir}/endpoints"
     log_file="${instance_dir}/log"; rules_file="${instance_dir}/rules"
@@ -366,7 +418,7 @@ local_run() {
     local_check_endpoints
     echo "[1] Compile staged $kind and tuntomctl"
     "${CXX:-g++}" -std=c++17 -pthread -O3 -march=native -mtune=native -Wall -Wextra -pedantic \
-        "${script_dir}/src/${kind}/main.cpp" -o "${stage}/main"
+        "${script_dir}/src/${source_kind}/main.cpp" -o "${stage}/main"
     "${CXX:-g++}" -std=c++17 -pthread -O3 -march=native -mtune=native -Wall -Wextra -pedantic \
         "${script_dir}/src/control/main.cpp" -o "${stage}/ctl"
     for path in "${stage}/main" "${stage}/ctl"; do
@@ -378,6 +430,7 @@ local_run() {
         if [[ -n "$rules_source" ]]; then cp -- "$rules_source" "$rules_file"; else : > "$rules_file"; fi
         local_hook pre up
         local_read_rules
+        local_prepare_switch
         local_check_switch
     fi
 
@@ -408,7 +461,7 @@ local_run() {
     fi
     command+=(--control-socket "$control_socket" "${service_args[@]}")
     echo "[4] Start and check $kind"
-    nohup "${command[@]}" > "$log_file" 2>&1 </dev/null 9>&- &
+    nohup "${command[@]}" > "$log_file" 2>&1 </dev/null 8>&- 9>&- &
     local pid=$! identity
     printf '%s\n' "$pid" > "$pid_file"
     identity="$(local_identity "$pid")" || local_die "Process exited during startup"

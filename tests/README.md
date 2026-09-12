@@ -241,6 +241,23 @@ Like `ipc_bench`, this is manual and does not require root, TUN or deployment.
 
 ## Multithread switch target
 
+`switch_mp_plan_test.cpp` checks automatic helper allocation for physical versus
+logical cores, CPU quotas, small budgets, aggregate role splitting and explicit
+overrides. `mk_switch_mp_test.py` covers the helper's options, seed rules and
+read-only dry run without sudo/hooks/runtime writes. Both run under CTest.
+`mk_local_test.py MP_BINARY ADAPTER_FIXTURE CTL_BINARY mp` repeats the real local
+lifecycle checks for the MP helper, including hook-generated adapter/trunk roles,
+auto planning before restart, and preserving a running instance when planning
+fails. `tests/run.sh` runs both lifecycle variants and the MP sudo handoff check.
+
+`mk_switch_replacement_test.py` exercises single-thread/MP replacement in both
+directions using the shared name, lock and state. It checks forwarding after
+handoff, cross-helper stop, failed preparation preserving the old process,
+custom saved endpoints, name isolation and migration of old `switch-mp-NAME`
+instances, including stale PID files, duplicate instances and legacy hooks.
+It uses disposable local sockets and replaces privilege/account setup; it runs
+under CTest and `tests/run.sh` without creating real TUN devices.
+
 `switch_mp_test.cpp` checks the weighted scheduler, hardware budget and concurrent
 SPSC/pool reuse. `switch_mp_integration_test.py` runs `tomtom-switch-mp` through
 live port additions/removals, RX/TX migration, pressure, reconnect generations,

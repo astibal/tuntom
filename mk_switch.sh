@@ -9,6 +9,7 @@ usage() {
     cat <<EOF
 Usage: $0 <name> [options]
 Build and restart one local switch; no SSH or tunnel secret is needed.
+The name/state/lock are shared with mk_switch_mp.sh; either can replace or stop it.
 
   --socket <path>          Listener (default /run/tuntom/<name>.sock)
   --control-socket <path>  Stats socket (default /run/tuntom/<name>.control)

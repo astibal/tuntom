@@ -49,11 +49,13 @@ sys.exit(77)
         run('mk_tunnel.sh', ['42', 'example.invalid'], settings, settings)
         run('mk_tunnel.sh', ['42', 'example.invalid', '--stop'], {}, {'TUNTOM_SECRET': ''})
         print('PASS: tunnel start/stop preserve only TUNTOM_*; values stay out of argv')
-        for kind in ('switch', 'adapter'):
+        for kind in ('switch', 'switch_mp', 'adapter'):
             script = f'mk_{kind}.sh'
             if not (ROOT / script).exists():
                 continue
-            args = ['sw' if kind == 'switch' else 'exit0']
+            args = ['exit0' if kind == 'adapter' else 'sw']
+            if kind == 'switch_mp':
+                args += ['--auto-pool', '--reserve-cpus', '0', '--exit-port', 'internet']
             if kind == 'adapter':
                 args += ['--switch-socket', str(directory / 'switch.sock'), '--switch-port-id', 'internet']
             args += ['--control-socket', str(directory / 'control with spaces.sock')]

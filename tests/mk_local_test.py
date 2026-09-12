@@ -41,14 +41,16 @@ def executable(path, content):
 
 
 def main():
+    mp_mode = len(sys.argv) == 5 and sys.argv[4] == "mp"
+    switch_storage = "switch"
     with tempfile.TemporaryDirectory(prefix="tmk-") as tmp:
         directory = pathlib.Path(tmp)
-        if len(sys.argv) == 4:
-            switch, adapter, ctl = map(lambda p: pathlib.Path(p).resolve(), sys.argv[1:])
+        if len(sys.argv) in (4, 5):
+            switch, adapter, ctl = map(lambda p: pathlib.Path(p).resolve(), sys.argv[1:4])
         else:
             switch, adapter, ctl = [directory / n for n in ("switch", "adapter", "ctl")]
             for output, source, extra in (
-                (switch, "switch/main.cpp", []),
+                (switch, "switch_mp/main.cpp" if mp_mode else "switch/main.cpp", []),
                 (adapter, "adapter/main.cpp", [str(ROOT / "tests/adapter_tun_fixture.cpp"),
                                                "-Wl,--wrap=open", "-Wl,--wrap=ioctl"]),
                 (ctl, "control/main.cpp", []),
@@ -57,6 +59,11 @@ def main():
                                 str(ROOT / "src" / source), *extra, "-o", str(output)], check=True)
 
         env = os.environ.copy()
+        if mp_mode:
+            planner = directory / "planner"
+            subprocess.run([os.environ.get("CXX", "g++"), "-std=c++17", "-pthread", "-O2",
+                            str(ROOT / "tools/switch_mp_plan.cpp"), "-o", str(planner)], check=True)
+            env.update(TEST_PLANNER=str(planner), TEST_MP="1")
         env.update(TUNTOM_RUN_DIR=str(directory / "run"),
                    TUNTOM_STATE_DIR=str(directory / "state"),
                    TUNTOM_BIN_DIR=str(directory / "bin"),
@@ -70,7 +77,8 @@ def main():
 set -euo pipefail
 [[ "${FAIL_BUILD:-0}" != 1 ]] || exit 42
 case "$*" in
-  *src/switch/main.cpp*) input="$TEST_SWITCH" ;;
+  *src/switch/main.cpp*|*src/switch_mp/main.cpp*) input="$TEST_SWITCH" ;;
+  *tools/switch_mp_plan.cpp*) input="$TEST_PLANNER" ;;
   *src/adapter/main.cpp*) input="$TEST_ADAPTER" ;;
   *src/control/main.cpp*) input="$TEST_CTL" ;;
   *) exit 90 ;;
@@ -96,6 +104,9 @@ printf '%s %s/%s %s %s %s %s %s\n' "$TUNTOM_COMPONENT" "$TUNTOM_PHASE" \
   "$TUNTOM_MTU" "$TUNTOM_SWITCH_SOCKET" >> "$TEST_EVENTS"
 if [[ "$TUNTOM_COMPONENT/$TUNTOM_PHASE/$TUNTOM_ACTION" == switch/pre/up ]]; then
     printf 'route a:17=b:83\n' >> "$TUNTOM_RULES_FILE"
+    if [[ "${TEST_MP:-0}" == 1 ]]; then
+        printf 'exit-port internet\ntrunk-port trunk0\n' >> "$TUNTOM_RULES_FILE"
+    fi
     [[ "${FAIL_RULES:-0}" != 1 ]] || printf 'route invalid\n' >> "$TUNTOM_RULES_FILE"
     if [[ -n "${TEST_BLOCK:-}" ]]; then
         touch "$TEST_BLOCK.ready"
@@ -116,6 +127,9 @@ main "$@"
 '''
 
         def command(kind, *args):
+            if mp_mode and kind == "switch":
+                kind = "switch_mp"
+                args = (args[0], "--workers", "2", *args[1:])
             return ["bash", "-c", harness, "--", str(ROOT / f"mk_{kind}.sh"), *map(str, args)]
 
         def run(kind, *args, ok=True, extra=None):
@@ -133,6 +147,8 @@ main "$@"
             return result
 
         def pid(kind, name):
+            if kind == "switch":
+                kind = switch_storage
             return int((directory / "state" / f"{kind}-{name}" / "pid").read_text())
 
         def events():
@@ -161,7 +177,10 @@ main "$@"
                 run(kind, *args, ok=False)
             assert not (directory / "state").exists()
 
-            run("switch", "sw", "--max-ports", "8", "--max-pending", "3")
+            auto_args = ("--auto-pool", "--reserve-cpus", "0", "--workers", "1") if mp_mode else ()
+            started = run("switch", "sw", "--max-ports", "8", "--max-pending", "3", *auto_args)
+            if mp_mode:
+                assert "configured.adapters=1" in started.stdout and "configured.trunks=1" in started.stdout
             first = pid("switch", "sw")
             with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as query:
                 query.settimeout(2)
@@ -170,6 +189,9 @@ main "$@"
                 fields = dict(line.split("=", 1) for line in query.recv(65536).decode().splitlines())
                 assert fields["connections_limit_ports_configured"] == "8"
                 assert fields["connections_limit_pending_configured"] == "3"
+                if mp_mode:
+                    assert fields["workers_requested"] == "1" and fields["adapter_weight"] == "4"
+                    assert fields["trunk_weight"] == "8" and fields["implementation"] == "tomtom-switch-mp"
             print("PASS: local startup and argument validation", flush=True)
             assert alive(first)
             assert [e.split()[1:4] for e in events()] == [
@@ -195,6 +217,9 @@ main "$@"
             assert pid("switch", "sw") == first and alive(first)
             run("switch", "sw", "--route", "a:17=c:99", ok=False)
             assert alive(first)  # Duplicate rule discovered by real parser.
+            if mp_mode:
+                run("switch", "sw", "--auto-pool", "--reserve-cpus", "65535", ok=False)
+                assert pid("switch", "sw") == first and alive(first)
 
             # A listener reached through an alias must never be unlinked.
             foreign_path = directory / "run/foreign.sock"
@@ -236,8 +261,8 @@ main "$@"
             # also duplicated without appearing in the PID file.
             other = subprocess.Popen(["sleep", "60"])
             children.append(other)
-            state = directory / "state/switch-sw"
-            duplicate = subprocess.Popen([str(directory / "bin/switch-sw/main"),
+            state = directory / "state" / f"{switch_storage}-sw"
+            duplicate = subprocess.Popen([str(directory / "bin" / f"{switch_storage}-sw/main"),
                                           "--socket", str(directory / "dup.sock")])
             children.append(duplicate)
             until(lambda: (directory / "dup.sock").exists())
@@ -319,10 +344,10 @@ main "$@"
                                    "TUNTOM_BIN_DIR": str(directory / "storage-bin")}
                     try:
                         run("switch", "storage", extra=storage_env)
-                        storage_pid = int((pathlib.Path(runtime) / "switch-storage/pid").read_text())
+                        storage_pid = int((pathlib.Path(runtime) / f"{switch_storage}-storage/pid").read_text())
                         assert alive(storage_pid)
-                        assert not (pathlib.Path(runtime) / "switch-storage/main").exists()
-                        assert os.access(directory / "storage-bin/switch-storage/main", os.X_OK)
+                        assert not (pathlib.Path(runtime) / f"{switch_storage}-storage/main").exists()
+                        assert os.access(directory / "storage-bin" / f"{switch_storage}-storage/main", os.X_OK)
                         failed = run("switch", "storage", ok=False,
                                      extra=storage_env | {"TUNTOM_BIN_DIR": runtime})
                         assert "Cannot execute files" in failed.stderr

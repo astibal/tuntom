@@ -7,6 +7,7 @@ trap 'rm -rf -- "$build_dir"' EXIT
 
 if command -v python3 >/dev/null 2>&1; then
     python3 "${tests_dir}/mk_sudo_test.py"
+    python3 "${tests_dir}/mk_switch_mp_test.py"
 else
     echo "SKIP: sudo environment tests require python3"
 fi
@@ -51,11 +52,17 @@ if command -v python3 >/dev/null 2>&1; then
     python3 "${tests_dir}/runtime_recovery_test.py" \
         "${build_dir}/tuntom" "${build_dir}/tuntom-switch" \
         "${build_dir}/adapter_reconnect_fixture" "${build_dir}/runtime_faults.so"
-    for script in mk_switch.sh mk_adapter.sh tools/mk_local.sh; do
+    for script in mk_switch.sh mk_switch_mp.sh mk_adapter.sh tools/mk_local.sh; do
         bash -n "${tests_dir}/../${script}"
     done
     python3 "${tests_dir}/mk_local_test.py" "${build_dir}/tuntom-switch" \
         "${build_dir}/adapter_reconnect_fixture" "${build_dir}/tuntomctl"
+    python3 "${tests_dir}/mk_local_test.py" "${build_dir}/tomtom-switch-mp" \
+        "${build_dir}/adapter_reconnect_fixture" "${build_dir}/tuntomctl" mp
+    "${CXX:-g++}" -std=c++17 -pthread -O2 -Wall -Wextra -Wconversion -pedantic \
+        "${tests_dir}/../tools/switch_mp_plan.cpp" -o "${build_dir}/switch_mp_plan"
+    python3 "${tests_dir}/mk_switch_replacement_test.py" "${build_dir}/tuntom-switch" \
+        "${build_dir}/tomtom-switch-mp" "${build_dir}/tuntomctl" "${build_dir}/switch_mp_plan"
     python3 "${tests_dir}/switch_reconnect_test.py" \
         "${build_dir}/tuntom" "${build_dir}/adapter_reconnect_fixture" "${build_dir}/tuntom-switch"
     python3 "${tests_dir}/switch_test.py" \
@@ -68,7 +75,7 @@ else
     echo "SKIP: tuntom-switch process test requires python3"
 fi
 
-for name in switch_mp_test udp_batch_test compact_protocol_test switch_protocol_test switch_options_test switch_client_test switch_admission_test runtime_state_test logging_test exit_adapter_test stats_control_test session_stats_test session_latency_test x25519_test akdf_test pfs_session_test replay_test mac_test aead_test encrypted_session_test session_test adaptive_polling_test reassembly_test; do
+for name in switch_mp_plan_test switch_mp_test udp_batch_test compact_protocol_test switch_protocol_test switch_options_test switch_client_test switch_admission_test runtime_state_test logging_test exit_adapter_test stats_control_test session_stats_test session_latency_test x25519_test akdf_test pfs_session_test replay_test mac_test aead_test encrypted_session_test session_test adaptive_polling_test reassembly_test; do
     echo "Building ${name}"
     link_flags=()
     if [[ "$name" == udp_batch_test ]]; then

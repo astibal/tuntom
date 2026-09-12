@@ -25,6 +25,11 @@ target_compile_options(tuntomctl PRIVATE -Wall -Wextra -pedantic)
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(switch_mp_plan_fixture tools/switch_mp_plan.cpp)
+    target_compile_options(switch_mp_plan_fixture PRIVATE -Wall -Wextra -Wconversion -pedantic)
+    add_executable(switch_mp_plan_test tests/switch_mp_plan_test.cpp)
+    target_compile_options(switch_mp_plan_test PRIVATE -Wall -Wextra -Wconversion -pedantic)
+    add_test(NAME switch_mp_plan_test COMMAND switch_mp_plan_test)
     add_executable(switch_mp_test tests/switch_mp_test.cpp)
     target_compile_options(switch_mp_test PRIVATE -Wall -Wextra -Wconversion -pedantic)
     add_test(NAME switch_mp_test COMMAND switch_mp_test)
@@ -42,6 +47,14 @@ if(BUILD_TESTING)
     set_tests_properties(logging_test PROPERTIES TIMEOUT 40)
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME mk_switch_mp_test COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/mk_switch_mp_test.py $<TARGET_FILE:switch_mp_plan_fixture>)
+        set_tests_properties(mk_switch_mp_test PROPERTIES TIMEOUT 30)
+        add_test(NAME mk_switch_replacement_test COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/mk_switch_replacement_test.py
+            $<TARGET_FILE:tuntom-switch> $<TARGET_FILE:tomtom-switch-mp>
+            $<TARGET_FILE:tuntomctl> $<TARGET_FILE:switch_mp_plan_fixture>)
+        set_tests_properties(mk_switch_replacement_test PROPERTIES TIMEOUT 300)
         add_test(NAME switch_mp_integration_test COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/switch_mp_integration_test.py
             $<TARGET_FILE:tomtom-switch-mp>)
