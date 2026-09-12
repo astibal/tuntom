@@ -99,15 +99,19 @@ firewall rules and requires root. It is deliberately not run by `run.sh`.
   stages/suites, LRU insertion and reassembly; entropy failures/backoff at every
   suite-2 RNG step, continued old-session traffic, replay/TX nonce safety,
   expired candidate retirement and control FD cleanup on allocation failure.
-- `runtime_recovery_test.py`: one-shot/persistent main-poll and forwarding
-  allocation failures in live tuntom, switch and adapter loops; control
-  responsiveness, bounded retry/CPU and fresh DATA recovery. Also covers client
+- `runtime_recovery_test.py`: one-shot/persistent main-poll failures in live
+  tuntom, switch and adapter loops; control responsiveness, bounded retry/CPU
+  and fresh DATA recovery. With the former frame-buffer allocation failure
+  armed, forwarding must now succeed without entering recovery. Also covers client
   and server startup entropy failure/recovery. `runtime_faults.cpp` is loaded
   only into disposable test processes; the adapter uses the TUN fixture.
 - `switch_client_test.cpp`: real full Unix accept queue and recovery; injected
   asynchronous connect, registration backpressure/interruption, socket errors,
   fixed shared deadline and registration-before-DATA ordering. Linker wrappers
-  affect only this test; an alarm bounds any blocking regression.
+  affect only this test; an alarm bounds any blocking regression. Also checks
+  allocation-free scatter/gather sends, exact record boundaries and bytes for
+  1/8 labels and 64/1500/9000/65535-byte payloads, send errors, real full-queue
+  recovery and closed peers.
 - `switch_reconnect_test.py`: full queue during tuntom startup and reconnect,
   live UDP handshake/data reception and responsive control during the outage,
   bounded retries and bidirectional recovery. Also runs the real adapter loop
@@ -132,7 +136,9 @@ idle burst cap, retry deadlines and FD headroom calculations with simulated time
 inherited descriptors: a full pending pool preserves control and bidirectional
 forwarding; pending expiry preserves idle registered ports; replacement at full
 port capacity survives an injected allocation failure. Repeated churn checks
-bounded acceptance, CPU, FD count and RSS. `accept_faults.cpp` injects one-shot
+bounded acceptance, CPU, FD count and RSS. Forwarding from an already registered
+63-character port must also survive faults on the former per-packet port-name
+allocation. `accept_faults.cpp` injects one-shot
 and persistent accept errors on either listener, including control accept failure
 during PF-02 poll recovery. Tests check actual new packets and new registrations
 after recovery without restarting. Faults are confined to disposable processes;

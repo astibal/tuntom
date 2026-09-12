@@ -122,8 +122,8 @@ def capacity_case(binary, library, inherited):
 
 def registration_case(binary, library):
     with contextlib.ExitStack() as stack:
-        switch = Switch(stack, binary, library, options=("--max-ports", "1", "--max-pending", "2"))
         name = "r" * 63
+        switch = Switch(stack, binary, library, options=("--max-ports", "1", "--max-pending", "2"))
         original = switch.port(name)
         baseline = 6  # stdio, two listeners, one port
         until(lambda: switch.fd_count() == baseline)
@@ -131,6 +131,17 @@ def registration_case(binary, library):
         closed(denied)
         assert switch.stats()["registrations_capacity_rejected"] == 1
         echo(original)
+        # A registered long port ID must not allocate a temporary route key
+        # for each packet, including route misses/default-back.
+        before_errors = switch.stats()["runtime_allocation_errors"]
+        switch.alloc_marker.touch()
+        try:
+            for label in (7, 19, 31, 7):
+                original.sendall(frame(1, [label], b"no port-name copy"))
+                assert original.recv(65536) == frame(2, [label], b"no port-name copy")
+        finally:
+            switch.alloc_marker.unlink()
+        assert switch.stats()["runtime_allocation_errors"] == before_errors
         invalid = switch.connect()
         invalid.sendall(b"invalid registration")
         closed(invalid)

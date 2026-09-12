@@ -18,9 +18,20 @@ static int socket_error = 0;
 static int getsockopt_error = 0;
 static bool short_send = false;
 static unsigned sends = 0;
+static bool forbid_allocations = false;
+
+[[gnu::noinline]] void* operator new(std::size_t size) {
+    if (forbid_allocations) throw std::bad_alloc();
+    void* memory = std::malloc(size ? size : 1);
+    if (not memory) throw std::bad_alloc();
+    return memory;
+}
+[[gnu::noinline]] void operator delete(void* memory) noexcept { std::free(memory); }
+[[gnu::noinline]] void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
 
 extern "C" int __real_connect(int, const sockaddr*, socklen_t);
 extern "C" ssize_t __real_send(int, const void*, size_t, int);
+extern "C" ssize_t __real_sendmsg(int, const msghdr*, int);
 extern "C" int __real_getsockopt(int, int, int, void*, socklen_t*);
 
 extern "C" int __wrap_connect(int fd, const sockaddr* address, socklen_t size) {
@@ -48,6 +59,14 @@ extern "C" ssize_t __wrap_send(int fd, const void* data, size_t size, int flags)
     }
     if (short_send) return static_cast<ssize_t>(size) - 1;
     return __real_send(fd, data, size, flags);
+}
+
+extern "C" ssize_t __wrap_sendmsg(int fd, const msghdr* message, int flags) {
+    require((flags & MSG_DONTWAIT) != 0 and (flags & MSG_NOSIGNAL) != 0,
+            "frame send must neither block nor raise SIGPIPE");
+    require(message->msg_iovlen == 2, "separate header and payload");
+    if (send_error != 0) { errno = send_error; return -1; }
+    return __real_sendmsg(fd, message, flags);
 }
 
 extern "C" int __wrap_getsockopt(int fd, int level, int option, void* value, socklen_t* size) {
@@ -134,6 +153,9 @@ static void pending_registration() {
         "registration backpressure must stay pending");
     std::uint8_t byte = 0;
     require(client.send(&byte, 1) == -1 and errno == ENOTCONN, "no DATA before registration");
+    const std::uint64_t label = 1;
+    require(client.send_frame(tuntom::SwitchOpcode::switch_packet, &label, 1, &byte, 1) == -1 and
+        errno == ENOTCONN, "no scatter/gather DATA before registration");
     require(client.receive(&byte, 1) == -1 and errno == ENOTCONN, "no receive before registration");
     const auto before = sends;
     client.advance_connect(now + 1s, 0);
@@ -217,11 +239,78 @@ static void failed_attempts() {
     short_send = false;
 }
 
+static void frame_send() {
+    Listener listener;
+    Client client(listener.path, "test");
+    client.start_connect(Client::Clock::now());
+    const int peer = listener.accept();
+    registration_and_data(client, peer);
+    const std::vector<std::uint64_t> labels {17, 83, 9, 10, 11, 12, 13, UINT64_MAX};
+    std::vector<std::uint8_t> payload(65535), received(65535 + 72);
+    for (std::size_t i = 0; i < payload.size(); ++i)
+        payload[i] = static_cast<std::uint8_t>(i % 251);
+    for (std::size_t size : {64U, 1500U, 9000U, 65535U}) {
+        for (std::size_t count : {1U, 8U}) {
+            const auto opcode = count == 1 ? tuntom::SwitchOpcode::switch_packet :
+                                             tuntom::SwitchOpcode::exit_packet;
+            const std::vector<std::uint64_t> stack(labels.begin(), labels.begin() +
+                static_cast<std::ptrdiff_t>(count));
+            const auto expected = tuntom::encode_switch_frame(opcode, stack, payload.data(), size);
+            forbid_allocations = true;
+            const auto sent = client.send_frame(opcode, labels.data(), count, payload.data(), size);
+            forbid_allocations = false;
+            require(sent == static_cast<ssize_t>(expected.size()), "scatter/gather size");
+            require(::recv(peer, received.data(), received.size(), MSG_TRUNC) == sent,
+                    "header and payload must form one record");
+            require(std::equal(expected.begin(), expected.end(), received.begin()),
+                    "wire-compatible scatter/gather frame");
+        }
+    }
+    for (int error : {EAGAIN, EINTR, EPIPE}) {
+        send_error = error;
+        require(client.send_frame(tuntom::SwitchOpcode::switch_packet, labels.data(), 1,
+                                  payload.data(), 64) == -1 and errno == error,
+                "frame error propagation");
+        require(::recv(peer, received.data(), received.size(), 0) == -1 and errno == EAGAIN,
+                "failed frame must not leave a partial record");
+    }
+    send_error = 0;
+    const auto jumbo = tuntom::encode_switch_frame(
+        tuntom::SwitchOpcode::switch_packet, {labels[0]}, payload.data(), 9000);
+    std::size_t queued = 0;
+    while (queued < 10000) {
+        const auto sent = client.send_frame(tuntom::SwitchOpcode::switch_packet,
+            labels.data(), 1, payload.data(), 9000);
+        if (sent < 0) {
+            require(errno == EAGAIN or errno == EWOULDBLOCK, "full socket backpressure");
+            break;
+        }
+        require(sent == static_cast<ssize_t>(jumbo.size()), "whole record before backpressure");
+        ++queued;
+    }
+    require(queued > 0 and queued < 10000, "bounded full socket test");
+    for (std::size_t i = 0; i < queued; ++i) {
+        require(::recv(peer, received.data(), received.size(), MSG_TRUNC) ==
+                    static_cast<ssize_t>(jumbo.size()) and
+                std::equal(jumbo.begin(), jumbo.end(), received.begin()),
+                "full queue preserves complete records");
+    }
+    require(::recv(peer, received.data(), received.size(), 0) == -1 and errno == EAGAIN,
+            "failed send did not enqueue a partial header");
+    require(client.send_frame(tuntom::SwitchOpcode::switch_packet, labels.data(), 1,
+                              payload.data(), 64) == 80, "send resumes after queue drains");
+    require(::recv(peer, received.data(), received.size(), 0) == 80, "resumed whole record");
+    ::close(peer);
+    require(client.send_frame(tuntom::SwitchOpcode::switch_packet, labels.data(), 1,
+                              payload.data(), 64) == -1, "closed peer without SIGPIPE");
+}
+
 int main() {
     ::alarm(10); // A blocking-connect regression must fail, not hang the suite.
     full_accept_queue();
     pending_registration();
     pending_connect_and_timeout();
     failed_attempts();
-    std::cout << "PASS: nonblocking switch connect, registration and deadlines\n";
+    frame_send();
+    std::cout << "PASS: switch connect, deadlines and allocation-free frame sends\n";
 }

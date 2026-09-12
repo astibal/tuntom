@@ -726,13 +726,14 @@ private:
                 ++stats_.switch_drops;
                 return;
             }
-            const auto frame = encode_switch_frame(
+            const auto frame_size = switch_base_header_size + switch_label_size +
+                packet.payload.size();
+            const ssize_t written = switch_->send_frame(
                 SwitchOpcode::switch_packet,
-                {options_.switch_label},
+                &options_.switch_label, 1,
                 packet.payload.data(),
                 packet.payload.size());
-            const ssize_t written = switch_->send(frame.data(), frame.size());
-            if (written != static_cast<ssize_t>(frame.size())) {
+            if (written != static_cast<ssize_t>(frame_size)) {
                 const int error = written < 0 ? errno : EIO;
                 ++stats_.switch_drops;
                 if (error == EAGAIN or error == EWOULDBLOCK)

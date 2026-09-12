@@ -60,7 +60,7 @@ struct RouteTarget {
 
 struct Connection {
     int fd = -1;
-    std::string port_id;
+    RouteKey lookup;
     tuntom::AcceptBackoff::Time registration_deadline {};
 };
 
@@ -158,15 +158,15 @@ int create_listener(const std::string& path) {
 Connection* find_connection(
     std::vector<Connection>& connections, const std::string& port_id) {
     for (auto& connection : connections) {
-        if (connection.fd >= 0 and connection.port_id == port_id) return &connection;
+        if (connection.fd >= 0 and connection.lookup.port == port_id) return &connection;
     }
     return nullptr;
 }
 
-bool send_frame(int fd, const std::vector<std::uint8_t>& frame, SwitchStats& stats) {
+bool send_frame(int fd, const std::uint8_t* frame, std::size_t size, SwitchStats& stats) {
     const ssize_t sent = ::send(
-        fd, frame.data(), frame.size(), MSG_DONTWAIT | MSG_NOSIGNAL);
-    if (sent != static_cast<ssize_t>(frame.size())) {
+        fd, frame, size, MSG_DONTWAIT | MSG_NOSIGNAL);
+    if (sent != static_cast<ssize_t>(size)) {
         if (sent < 0 and (errno == EAGAIN or errno == EWOULDBLOCK))
             ++stats.send_backpressure_drops;
         else
@@ -174,7 +174,7 @@ bool send_frame(int fd, const std::vector<std::uint8_t>& frame, SwitchStats& sta
         return false;
     }
     ++stats.frames_tx;
-    stats.bytes_tx += frame.size();
+    stats.bytes_tx += size;
     return true;
 }
 
@@ -283,14 +283,14 @@ int main(int argc, char** argv) {
             std::pair<std::size_t, std::size_t> counts {};
             for (const auto& connection : connections) {
                 if (connection.fd < 0) continue;
-                if (connection.port_id.empty()) ++counts.second;
+                if (connection.lookup.port.empty()) ++counts.second;
                 else ++counts.first;
             }
             return counts;
         };
         const auto expire_registrations = [&](tuntom::AcceptBackoff::Time now) {
             for (auto& connection : connections) {
-                if (connection.fd >= 0 and connection.port_id.empty() and
+                if (connection.fd >= 0 and connection.lookup.port.empty() and
                     now >= connection.registration_deadline) {
                     ::close(connection.fd);
                     connection.fd = -1;
@@ -301,7 +301,7 @@ int main(int argc, char** argv) {
 
         const auto try_handle_connection = [&](Connection& connection) {
             // A ready record does not extend the registration's fixed lifetime.
-            if (connection.port_id.empty() and std::chrono::steady_clock::now() >=
+            if (connection.lookup.port.empty() and std::chrono::steady_clock::now() >=
                 connection.registration_deadline) {
                 ::close(connection.fd);
                 connection.fd = -1;
@@ -324,7 +324,7 @@ int main(int argc, char** argv) {
             }
             const std::size_t size = static_cast<std::size_t>(received);
 
-            if (connection.port_id.empty()) {
+            if (connection.lookup.port.empty()) {
                 try {
                     std::string registered_id;
                     if (not tuntom::decode_switch_registration(
@@ -343,7 +343,7 @@ int main(int argc, char** argv) {
                     }
                     // All allocating work precedes the replacement. Swapping
                     // std::string with its default allocator cannot throw.
-                    connection.port_id.swap(registered_id);
+                    connection.lookup.port.swap(registered_id);
                     if (old and old != &connection) {
                         ::close(old->fd);
                         old->fd = -1;
@@ -368,8 +368,10 @@ int main(int argc, char** argv) {
             ++stats.frames_rx;
             stats.bytes_rx += size;
 
-            std::vector<std::uint8_t> output(buffer.begin(), buffer.begin() + received);
-            const auto route = routes.find({connection.port_id, frame.label(0)});
+            // Reuse the port name: a temporary RouteKey would copy it and
+            // allocate on every packet when the name exceeds string SSO.
+            connection.lookup.label = frame.label(0);
+            const auto route = routes.find(connection.lookup);
             if (route != routes.end()) {
                 ++stats.route_hits;
                 auto* target = find_connection(connections, route->second.port);
@@ -377,17 +379,19 @@ int main(int argc, char** argv) {
                     ++stats.target_disconnected;
                     return true;
                 }
-                tuntom::replace_top_switch_label(output, route->second.label);
+                // Only the validated header changes; reuse the receive buffer.
+                tuntom::store_be64(buffer.data() + tuntom::switch_base_header_size,
+                                  route->second.label);
                 if (exit_ports.count(route->second.port) != 0) {
-                    tuntom::set_switch_opcode(output, SwitchOpcode::exit_packet);
+                    buffer[1] = static_cast<std::uint8_t>(SwitchOpcode::exit_packet);
                     ++stats.exit_deliveries;
                 }
-                send_frame(target->fd, output, stats);
+                send_frame(target->fd, buffer.data(), size, stats);
             } else if (default_back) {
                 ++stats.route_misses;
                 ++stats.default_back;
-                tuntom::set_switch_opcode(output, SwitchOpcode::exit_packet);
-                send_frame(connection.fd, output, stats);
+                buffer[1] = static_cast<std::uint8_t>(SwitchOpcode::exit_packet);
+                send_frame(connection.fd, buffer.data(), size, stats);
             } else {
                 ++stats.route_misses;
             }
@@ -485,7 +489,7 @@ int main(int argc, char** argv) {
                 int timeout = pending_space ? admission.poll_timeout_ms(now, 1000) : 1000;
                 if (control) timeout = control->poll_timeout_ms(now, timeout);
                 for (const auto& connection : connections) {
-                    if (connection.port_id.empty()) timeout = tuntom::deadline_timeout_ms(
+                    if (connection.lookup.port.empty()) timeout = tuntom::deadline_timeout_ms(
                         now, connection.registration_deadline, timeout);
                 }
                 // Adaptive polling measures the syscall, not deadline bookkeeping.

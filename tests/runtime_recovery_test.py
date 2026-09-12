@@ -28,6 +28,19 @@ def check_failure(process, ctl, marker, fault, send, receive):
     counter = "runtime_poll_errors" if fault.startswith("poll") else "runtime_allocation_errors"
     before = snapshot(ctl)
     marker.touch()
+    if fault.startswith("alloc"):
+        # Forwarding formerly allocated a 1200-byte contiguous frame per packet.
+        # Keep that allocation failure armed: the new path must deliver DATA
+        # without hitting it or entering resource-recovery backoff at all.
+        for _ in range(20):
+            send()
+            receive()
+        assert process.poll() is None
+        assert snapshot(ctl)[counter] == before[counter]
+        marker.unlink()
+        send()
+        receive()
+        return
     began = time.monotonic()
     ticks = cpu_ticks(process)
     while time.monotonic() - began < 1.3:
@@ -166,7 +179,7 @@ if __name__ == "__main__":
                                        ("adapter", adapter_case, adapter),
                                        ("tuntom", tunnel_case, tunnel)):
             function(binary, library, fault)
-            print(f"PASS: {name} {fault}, live control, bounded retries and DATA recovery", flush=True)
+            print(f"PASS: {name} {fault}, live control and DATA; removed frame allocations stay absent", flush=True)
     for role in ("client", "server"):
         tunnel_case(tunnel, library, "random_always", role)
         print(f"PASS: {role} RNG failure at startup, control and handshake recovery", flush=True)

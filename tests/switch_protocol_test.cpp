@@ -57,6 +57,16 @@ int main() {
     }
     require(rejected, "empty label stack accepted");
 
+    for (const std::size_t payload_size : {std::size_t(UINT32_MAX), SIZE_MAX}) {
+        SwitchFrameHeader header;
+        rejected = false;
+        const std::uint64_t label = 1;
+        try {
+            encode_switch_header(header, SwitchOpcode::switch_packet, &label, 1, payload_size);
+        } catch (const std::runtime_error&) { rejected = true; }
+        require(rejected, "frame length overflow accepted");
+    }
+
     auto bad_registration = registration;
     bad_registration[5] = 1;
     require(not decode_switch_registration(

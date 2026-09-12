@@ -69,7 +69,7 @@ for name in udp_batch_test compact_protocol_test switch_protocol_test switch_opt
     if [[ "$name" == udp_batch_test ]]; then
         link_flags=(-Wl,--wrap=sendmmsg -Wl,--wrap=sendto)
     elif [[ "$name" == switch_client_test ]]; then
-        link_flags=(-Wl,--wrap=connect -Wl,--wrap=send -Wl,--wrap=getsockopt)
+        link_flags=(-Wl,--wrap=connect -Wl,--wrap=send -Wl,--wrap=sendmsg -Wl,--wrap=getsockopt)
     elif [[ "$name" == runtime_state_test ]]; then
         link_flags=(-Wl,--wrap=getrandom)
     elif [[ "$name" == logging_test ]]; then

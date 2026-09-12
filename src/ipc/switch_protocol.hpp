@@ -2,6 +2,7 @@
 
 #include "../wire.hpp"
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
@@ -126,37 +127,53 @@ inline bool decode_switch_frame(
     return frame.payload_size != 0;
 }
 
+using SwitchFrameHeader = std::array<std::uint8_t,
+    switch_base_header_size + switch_max_labels * switch_label_size>;
+
+inline std::size_t encode_switch_header(
+    SwitchFrameHeader& output,
+    SwitchOpcode opcode,
+    const std::uint64_t* labels,
+    std::size_t label_count,
+    std::size_t payload_size) {
+
+    if ((opcode != SwitchOpcode::switch_packet and
+         opcode != SwitchOpcode::exit_packet) or
+        label_count == 0 or label_count > switch_max_labels or
+        payload_size == 0) {
+        throw std::runtime_error("Invalid switch frame");
+    }
+
+    const std::size_t header_size =
+        switch_base_header_size + label_count * switch_label_size;
+    if (payload_size > UINT32_MAX - header_size) {
+        throw std::runtime_error("Switch frame is too large");
+    }
+
+    output[0] = switch_protocol_version;
+    output[1] = static_cast<std::uint8_t>(opcode);
+    output[2] = 0;
+    output[3] = static_cast<std::uint8_t>(label_count);
+    store_be32(output.data() + 4, static_cast<std::uint32_t>(header_size + payload_size));
+    for (std::size_t index = 0; index < label_count; ++index) {
+        store_be64(
+            output.data() + switch_base_header_size + index * switch_label_size,
+            labels[index]);
+    }
+    return header_size;
+}
+
 inline std::vector<std::uint8_t> encode_switch_frame(
     SwitchOpcode opcode,
     const std::vector<std::uint64_t>& labels,
     const std::uint8_t* payload,
     std::size_t payload_size) {
 
-    if ((opcode != SwitchOpcode::switch_packet and
-         opcode != SwitchOpcode::exit_packet) or
-        labels.empty() or labels.size() > switch_max_labels or
-        payload_size == 0) {
-        throw std::runtime_error("Invalid switch frame");
-    }
-
-    const std::size_t header_size =
-        switch_base_header_size + labels.size() * switch_label_size;
-    const std::size_t total_size = header_size + payload_size;
-    if (total_size > UINT32_MAX) {
-        throw std::runtime_error("Switch frame is too large");
-    }
-
-    std::vector<std::uint8_t> output(total_size);
-    output[0] = switch_protocol_version;
-    output[1] = static_cast<std::uint8_t>(opcode);
-    output[2] = 0;
-    output[3] = static_cast<std::uint8_t>(labels.size());
-    store_be32(output.data() + 4, static_cast<std::uint32_t>(total_size));
-    for (std::size_t index = 0; index < labels.size(); ++index) {
-        store_be64(
-            output.data() + switch_base_header_size + index * switch_label_size,
-            labels[index]);
-    }
+    SwitchFrameHeader header;
+    const auto header_size = encode_switch_header(
+        header, opcode, labels.data(), labels.size(), payload_size);
+    std::vector<std::uint8_t> output(header_size + payload_size);
+    std::copy_n(header.data(), header_size, output.data());
     std::copy(payload, payload + payload_size, output.begin() +
         static_cast<std::ptrdiff_t>(header_size));
     return output;

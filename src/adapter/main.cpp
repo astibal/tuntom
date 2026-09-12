@@ -138,6 +138,9 @@ int main(int argc, char** argv) {
         std::vector<std::uint8_t> frame_buffer(
             switch_base_header_size + switch_max_labels * switch_label_size +
             std::numeric_limits<std::uint16_t>::max());
+        std::vector<std::uint64_t> tx_labels, rx_labels;
+        tx_labels.reserve(switch_max_labels);
+        rx_labels.reserve(switch_max_labels);
         auto next_connect = std::chrono::steady_clock::now();
         AdaptivePolling adaptive_polling;
         unsigned next_data_source = 0;
@@ -174,16 +177,16 @@ int main(int argc, char** argv) {
 
             ++stats.tun_rx_packets;
             stats.tun_rx_bytes += static_cast<std::uint64_t>(size);
-            std::vector<std::uint64_t> labels;
             if (not switch_client.connected()) {
                 ++stats.switch_disconnected_drops;
             } else if (routes.lookup(
-                    packet.data(), static_cast<std::size_t>(size), labels)) {
-                const auto frame = encode_switch_frame(
-                    SwitchOpcode::switch_packet, labels, packet.data(),
+                    packet.data(), static_cast<std::size_t>(size), tx_labels)) {
+                const auto frame_size = switch_base_header_size +
+                    tx_labels.size() * switch_label_size + static_cast<std::size_t>(size);
+                const ssize_t sent = switch_client.send_frame(
+                    SwitchOpcode::switch_packet, tx_labels.data(), tx_labels.size(), packet.data(),
                     static_cast<std::size_t>(size));
-                const ssize_t sent = switch_client.send(frame.data(), frame.size());
-                if (sent != static_cast<ssize_t>(frame.size())) {
+                if (sent != static_cast<ssize_t>(frame_size)) {
                     if (sent < 0 and (errno == EAGAIN or errno == EWOULDBLOCK)) {
                         ++stats.switch_backpressure_drops;
                     } else {
@@ -192,7 +195,7 @@ int main(int argc, char** argv) {
                     }
                 } else {
                     ++stats.switch_tx_packets;
-                    stats.switch_tx_bytes += frame.size();
+                    stats.switch_tx_bytes += frame_size;
                 }
             } else {
                 ++stats.cache_miss_drops;
@@ -221,11 +224,10 @@ int main(int argc, char** argv) {
                 frame.opcode == SwitchOpcode::exit_packet) {
                 ++stats.switch_rx_packets;
                 stats.switch_rx_bytes += static_cast<std::uint64_t>(size);
-                std::vector<std::uint64_t> labels;
-                labels.reserve(frame.label_count);
+                rx_labels.clear();
                 for (std::size_t index = 0; index < frame.label_count; ++index)
-                    labels.push_back(frame.label(index));
-                if (routes.learn(frame.payload, frame.payload_size, labels)) {
+                    rx_labels.push_back(frame.label(index));
+                if (routes.learn(frame.payload, frame.payload_size, rx_labels)) {
                     if (tun.write_packet(frame.payload, frame.payload_size) !=
                         static_cast<ssize_t>(frame.payload_size)) {
                         ++stats.tun_write_errors;

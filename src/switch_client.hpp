@@ -135,6 +135,28 @@ public:
         return ::send(fd_, buffer, size, MSG_DONTWAIT | MSG_NOSIGNAL);
     }
 
+    ssize_t send_frame(SwitchOpcode opcode, const std::uint64_t* labels,
+                       std::size_t label_count, const std::uint8_t* payload,
+                       std::size_t payload_size) {
+        if (not connected()) {
+            errno = ENOTCONN;
+            return -1;
+        }
+        SwitchFrameHeader header;
+        const auto header_size = encode_switch_header(
+            header, opcode, labels, label_count, payload_size);
+        // One SOCK_SEQPACKET record, without allocating/copying the payload
+        // into a contiguous frame first. sendmsg consumes both buffers here.
+        iovec parts[2] {
+            {header.data(), header_size},
+            {const_cast<std::uint8_t*>(payload), payload_size},
+        };
+        msghdr message {};
+        message.msg_iov = parts;
+        message.msg_iovlen = 2;
+        return ::sendmsg(fd_, &message, MSG_DONTWAIT | MSG_NOSIGNAL);
+    }
+
 private:
     enum class State { disconnected, connecting, registering, connected };
 

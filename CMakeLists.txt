@@ -28,13 +28,17 @@ if(BUILD_TESTING)
         add_test(NAME ${name} COMMAND ${name})
     endforeach()
     target_link_options(switch_client_test PRIVATE
-        -Wl,--wrap=connect -Wl,--wrap=send -Wl,--wrap=getsockopt)
+        -Wl,--wrap=connect -Wl,--wrap=send -Wl,--wrap=sendmsg -Wl,--wrap=getsockopt)
     target_link_options(udp_batch_test PRIVATE -Wl,--wrap=sendmmsg -Wl,--wrap=sendto)
     target_link_options(runtime_state_test PRIVATE -Wl,--wrap=getrandom)
     target_link_options(logging_test PRIVATE -Wl,--wrap=write -Wl,--wrap=pthread_create)
     set_tests_properties(logging_test PROPERTIES TIMEOUT 40)
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME switch_test COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/switch_test.py
+            $<TARGET_FILE:tuntom-switch> $<TARGET_FILE:tuntomctl>)
+        set_tests_properties(switch_test PROPERTIES TIMEOUT 15)
         add_test(NAME switch_tunnel_test COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/switch_tunnel_test.py
             $<TARGET_FILE:tuntom> $<TARGET_FILE:tuntom-switch> $<TARGET_FILE:tuntomctl>)
