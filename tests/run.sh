@@ -24,6 +24,8 @@ echo "Building application"
 "${CXX:-g++}" -std=c++17 -pthread -O2 -Wall -Wextra -Wconversion -pedantic \
     "${tests_dir}/../src/switch/main.cpp" -o "${build_dir}/tuntom-switch"
 "${CXX:-g++}" -std=c++17 -pthread -O2 -Wall -Wextra -Wconversion -pedantic \
+    "${tests_dir}/../src/switch_mp/main.cpp" -o "${build_dir}/tomtom-switch-mp"
+"${CXX:-g++}" -std=c++17 -pthread -O2 -Wall -Wextra -Wconversion -pedantic \
     "${tests_dir}/../src/adapter/main.cpp" -o "${build_dir}/tuntom-switch-adapter"
 "${CXX:-g++}" -std=c++17 -pthread -O2 -Wall -Wextra -Wconversion -pedantic \
     "${tests_dir}/../src/control/main.cpp" -o "${build_dir}/tuntomctl"
@@ -32,6 +34,9 @@ if command -v python3 >/dev/null 2>&1; then
     "${CXX:-g++}" -std=c++17 -pthread -O2 -Wall -Wextra -Wconversion -pedantic \
         "${tests_dir}/../src/adapter/main.cpp" "${tests_dir}/adapter_tun_fixture.cpp" \
         -Wl,--wrap=open -Wl,--wrap=ioctl -o "${build_dir}/adapter_reconnect_fixture"
+    python3 "${tests_dir}/switch_mp_integration_test.py" "${build_dir}/tomtom-switch-mp"
+    python3 "${tests_dir}/switch_tunnel_test.py" \
+        "${build_dir}/tuntom" "${build_dir}/tomtom-switch-mp" "${build_dir}/tuntomctl"
     "${CXX:-g++}" -std=c++17 -pthread -shared -fPIC -O2 -Wall -Wextra -Wconversion -pedantic \
         "${tests_dir}/runtime_faults.cpp" -ldl -o "${build_dir}/runtime_faults.so"
     "${CXX:-g++}" -std=c++17 -pthread -shared -fPIC -O2 -Wall -Wextra -Wconversion -pedantic \
@@ -63,7 +68,7 @@ else
     echo "SKIP: tuntom-switch process test requires python3"
 fi
 
-for name in udp_batch_test compact_protocol_test switch_protocol_test switch_options_test switch_client_test switch_admission_test runtime_state_test logging_test exit_adapter_test stats_control_test session_stats_test session_latency_test x25519_test akdf_test pfs_session_test replay_test mac_test aead_test encrypted_session_test session_test adaptive_polling_test reassembly_test; do
+for name in switch_mp_test udp_batch_test compact_protocol_test switch_protocol_test switch_options_test switch_client_test switch_admission_test runtime_state_test logging_test exit_adapter_test stats_control_test session_stats_test session_latency_test x25519_test akdf_test pfs_session_test replay_test mac_test aead_test encrypted_session_test session_test adaptive_polling_test reassembly_test; do
     echo "Building ${name}"
     link_flags=()
     if [[ "$name" == udp_batch_test ]]; then

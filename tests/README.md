@@ -175,3 +175,75 @@ unusable path, untouched/missing files under `--no-stats`, continued processing
 and reassembly-span sampling, completed BPS/PPS throughput buckets, file-only SIGUSR1
 toggles without history resets, and explicit SIGUSR2 file snapshots. Uses only
 disposable unprivileged switch/UDP processes; run automatically by `run.sh`.
+
+`ipc_bench.cpp` / `ipc_bench.py` form a manual A/B benchmark of the real switch
+and IPC frame producer. Compile both switch versions with identical flags;
+compile the producer against each version's `src/` headers, adding
+`-DTUNTOM_IPC_GATHER` for the scatter/gather version. Example producer build:
+
+```bash
+g++ -std=c++17 -pthread -O3 -march=native -mtune=native -Isrc \
+    -DTUNTOM_IPC_GATHER tests/ipc_bench.cpp -o /tmp/ipc-producer-new
+python3 tests/ipc_bench.py OLD_SWITCH OLD_PRODUCER NEW_SWITCH NEW_PRODUCER OUTPUT.json
+```
+
+The runner uses temporary Unix sockets and three distinct available physical
+cores for switch, source and sink. It alternates three paired 3-second runs
+for 64/1500/9000-byte payloads at saturation and 9000-byte payloads at 15 kpps.
+It records delivered PPS, losses, CPU seconds per process/thread, binary hashes
+and affinity. It needs no root, TUN or live network configuration changes.
+Results include all three participants; this is neither a standalone switch
+limit nor a prediction of encrypted tunnel throughput. Affinity does not
+reserve the cores against other workloads. This benchmark is not run by CTest.
+
+`ipc_scale.cpp` / `ipc_scale.py` measure eleven full-duplex IPC ports: ten
+tunnels in five pairs, plus an exit adapter. By default each tunnel sends 80%
+of frames to its partner and 20% to the adapter; the adapter has twice each
+tunnel's ingress rate and splits its traffic equally among the ten tunnels.
+Use `--adapter-weight 1` for equal rates on all ports instead. A `mixed`
+payload is two 9000-byte packets per 64-byte packet; these are opaque test
+records, not actual IP/TCP sessions. Size 0 in the C++ driver selects this mix.
+
+```bash
+g++ -std=c++17 -pthread -O3 -march=native -mtune=native -Isrc \
+    tests/ipc_scale.cpp -o /tmp/ipc-scale
+python3 tests/ipc_scale.py --switch NEW_SWITCH --baseline OLD_SWITCH \
+    --driver /tmp/ipc-scale --output /tmp/ipc-scale.json \
+    --case mixed:180000 --case mixed:240000 --case 9000:0
+```
+
+`--baseline` is optional; both switches use the same scatter/gather driver,
+so this comparison isolates the switch changes. Three paired 5-second runs
+per case alternate order. Rate is aggregate offered **forwarded frames/s**:
+one frame accounts for one source TX and one destination RX, not two switch
+forwards. At 180 kframes/s the default mix means 30 k IPC TX+RX frames/s per
+tunnel and 60 k per adapter. This models packet rates, not worker CPU burn.
+
+The runner waits for all registrations via the control socket, pins switch,
+sender and receiver to separate physical cores, and saves binary hashes and
+raw counters, host CPU load and switch runqueue wait (zero when kernel scheduler
+statistics are disabled). The reader drains at most 16 records per tunnel port
+and 32 per weighted adapter per round. It cross-checks source/sink counts with switch RX/TX/drop stats,
+and validates length, output opcode, label, destination and sequence order.
+Per-port source EAGAIN counts and switch output drops are recorded separately.
+P50/P99 end-to-end IPC latency samples every 32nd source sequence; maximum
+latency includes every received record. Timestamps precede the source send,
+so latency includes socket queues and reader scheduling, not just switch CPU.
+
+The source sends paced rounds (12 frames by default); overdue rounds can
+catch up in bursts. At rate 0 it attempts unlimited sends and counts EAGAIN
+without retrying. Thus saturation `offered_loss_percent` includes rejected
+source writes: consult `switch_loss_percent` for losses after switch ingress.
+The receiver drains for 200 ms before reconciling counters. CPU accounting
+includes startup/drain overhead but divides by the actual sending interval.
+Do not treat a source/sink saturated result as a pure switch capacity limit.
+Like `ipc_bench`, this is manual and does not require root, TUN or deployment.
+
+## Multithread switch target
+
+`switch_mp_test.cpp` checks the weighted scheduler, hardware budget and concurrent
+SPSC/pool reuse. `switch_mp_integration_test.py` runs `tomtom-switch-mp` through
+live port additions/removals, RX/TX migration, pressure, reconnect generations,
+protocol and admission tests with 1, 2 and up to 8 data workers. CTest and
+`tests/run.sh` include both, plus the existing tunnel integration against the new
+target. See [MP architecture and build options](../README_SWITCHING_MP.md).

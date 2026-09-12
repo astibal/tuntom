@@ -2,6 +2,10 @@
 
 [Back to the tuntom README](README.md)
 
+The separate [tomtom-switch-mp target](README_SWITCHING_MP.md) provides a generic
+worker pool and runtime RX/TX scheduling. The helpers below continue to build
+the existing single-thread `tuntom-switch`.
+
 Label switching connects tuntom tunnel links through explicit relay and exit
 paths. Forwarding uses the incoming port and label, so a relay can choose the
 next tunnel without creating a TUN or configuring kernel IP routes for each
