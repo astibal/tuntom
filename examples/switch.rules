@@ -1,9 +1,12 @@
-# One directive and one value per line. No shell expansion or inline comments.
-exit-port internet
-route client-42:17=internet:1001
-route internet:1001=client-42:44
-default-back off
+# New ruleset format. Increase serial before applying an edited configuration.
+format 1
+serial 2026091301
 
-# Alternative bidirectional tunnel-group rules (replace the routes above):
-# route internet:1001=edge-42*:44
-# route edge-42*:17=internet:1001
+exit internet
+
+switch client-42*,17 to internet,1001 allow
+switch internet,1001 to client-42*,44 allow
+# All other traffic is implicitly dropped.
+
+label client-42*,17 to internet, [1001, ...]
+label internet,1001 to client-42*, [44, ...]

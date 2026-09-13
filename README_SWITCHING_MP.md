@@ -241,11 +241,13 @@ At a bounded operation boundary all workers
 park; main publishes the version, swaps owners, and resumes them. There is no
 packet allocation or shared route-map lock on the forwarding path. Tables are
 compiled per ingress with resolved output groups, unlike the reference switch's
-linear target-name search. Prefix matching occurs at plan preparation; the RX
-path selects a live member without allocation or pattern matching. Every
+linear target-name search. Ingress and route-target patterns are resolved at plan preparation. Format-1
+switch policies check candidate ports and input/output labels in file order;
+member selection requires no packet-path allocation. Every
 connected ECMP source/destination pair has its own ring in the existing matrix.
-Routes themselves currently come from startup CLI;
-live route-edit commands are not implemented. Registration changes refresh
+Routes may come from legacy startup CLI or a versioned `--rules-file`.
+The control socket supports atomic `rules check/load/show` for the
+[ordered ruleset format](docs/SWITCH_RULESET_V1.md). Registration changes refresh
 the resolved targets through the same versioned plan mechanism.
 
 Queues, pool cursors and pending TX pointers survive a worker migration.

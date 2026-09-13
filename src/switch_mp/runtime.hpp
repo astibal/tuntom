@@ -103,11 +103,19 @@ struct ResolvedRoute {
 struct ResolvedGroup {
     std::vector<ResolvedRoute> members;
 };
+struct ResolvedMapping {
+    const RuleStatement *rule = nullptr;
+    ResolvedGroup targets;
+};
 struct RxTask {
     Port *port;
     std::unordered_map<std::uint64_t, ResolvedGroup> routes;
     ResolvedRoute fallback;
     bool ready = false; // Retain readiness across RR turns until recv returns EAGAIN.
+    bool rules_enabled = false;
+    RulesProgram program;
+    std::vector<ResolvedMapping> mappings;
+    std::unordered_map<const RuleStatement *, std::size_t> mapping_indices;
 };
 struct TxTask {
     Port *port;
@@ -129,6 +137,7 @@ struct PollSetupError : std::runtime_error {
     int error;
     explicit PollSetupError(int value) : std::runtime_error("Cannot prepare worker epoll"), error(value) {}
 };
+struct RulesPlanError : std::runtime_error { using std::runtime_error::runtime_error; };
 struct WorkerPlan {
     std::vector<RxTask> rx;
     std::vector<TxTask> tx;
@@ -147,6 +156,8 @@ struct Plan {
     std::vector<WorkerPlan> workers;
     Assignment assignment;
     std::unordered_map<Port *, std::size_t> tx_owner;
+    std::shared_ptr<const SwitchRuleset> ruleset;
+    std::vector<Kind> kinds;
 };
 
 #define TUNTOM_MP_COUNTERS(X)                                                                      \
@@ -154,7 +165,7 @@ struct Plan {
     X(bytes_rx) X(frames_tx) X(bytes_tx) X(route_hits) X(route_misses) X(target_disconnected) X(ecmp_packets) \
         X(default_back) X(exit_deliveries) X(malformed_frames) X(rx_errors) X(send_errors)         \
             X(queue_full_drops) X(pool_stalls) X(send_eagain) X(wake_calls) X(worker_poll_errors) \
-        X(recv_calls) X(recv_eagain) X(send_calls) X(wake_reads) X(cpu_samples)
+        X(recv_calls) X(recv_eagain) X(send_calls) X(wake_reads) X(cpu_samples) X(policy_drops) X(rewrite_drops)
 
 struct alignas(64) Counters {
 #define MP_FIELD(name) std::atomic<std::uint64_t> name{0};
@@ -273,7 +284,37 @@ class Engine {
         Link *link = nullptr;
         std::size_t tx_worker = 0;
         const auto route = task.routes.find(frame.label(0));
-        if (route != task.routes.end()) {
+        if (task.rules_enabled) {
+            const auto *rule = task.program.mapping(frame.label(0));
+            if (!rule) { Counters::add(stats.route_misses); buffer->release(); return true; }
+            const auto *mapping = &task.mappings[task.mapping_indices.at(rule)];
+            Counters::add(stats.route_hits);
+            std::array<std::uint64_t, switch_max_labels> labels{};
+            std::size_t count = 0;
+            if (!mapping->rule->stack.apply(frame, labels, count) ||
+                switch_base_header_size + count * switch_label_size + frame.payload_size > wire_capacity) {
+                Counters::add(stats.rewrite_drops); buffer->release(); return true;
+            }
+            EcmpSelector selector(frame);
+            const ResolvedRoute *selected = nullptr;
+            bool connected = false;
+            for (const auto &member : mapping->targets.members) {
+                const auto &target = *member.link->target;
+                if (target.disconnected.load(std::memory_order_relaxed)) continue;
+                connected = true;
+                if (!task.program.allowed(frame.label(0), target.name, labels[0])) continue;
+                if (selector.consider(target.identity, target.name)) selected = &member;
+            }
+            if (!selected) {
+                if (connected) Counters::add(stats.policy_drops);
+                else Counters::add(stats.target_disconnected);
+            } else {
+                if (selector.multipath()) Counters::add(stats.ecmp_packets);
+                link = selected->link; tx_worker = selected->tx_worker;
+                rewrite_rules_frame(buffer->data, buffer->size, frame, labels, count, selected->exit);
+                if (selected->exit) Counters::add(stats.exit_deliveries);
+            }
+        } else if (route != task.routes.end()) {
             Counters::add(stats.route_hits);
             EcmpSelector selector(frame);
             const ResolvedRoute *selected = nullptr;
@@ -519,18 +560,23 @@ class Engine {
         worker.cpu_ns.store(cpu_now(), std::memory_order_relaxed);
     }
 
-    std::unique_ptr<Plan> make_plan(std::vector<std::shared_ptr<Port>> ports) {
+    std::unique_ptr<Plan> make_plan(std::vector<std::shared_ptr<Port>> ports,
+                                  std::shared_ptr<const SwitchRuleset> ruleset) {
         auto plan = std::make_unique<Plan>();
         plan->version = plan_ ? plan_->version + 1 : 1;
         plan->ports = std::move(ports);
+        plan->ruleset = std::move(ruleset);
         plan->workers.resize(workers_.size());
         std::vector<Kind> kinds;
         std::unordered_map<std::string, std::shared_ptr<Port>> names;
         for (const auto &port : plan->ports) {
-            kinds.push_back(port->kind);
+            kinds.push_back(plan->ruleset ?
+                (plan->ruleset->role(port->name, RuleStatement::Type::exit) ? Kind::adapter :
+                 plan->ruleset->role(port->name, RuleStatement::Type::trunk) ? Kind::trunk : Kind::tunnel) : port->kind);
             names.emplace(port->name, port);
         }
         plan->assignment = schedule(kinds, workers_.size(), config_.policy);
+        plan->kinds = std::move(kinds);
         for (std::size_t i = 0; i < plan->ports.size(); ++i)
             plan->tx_owner.emplace(plan->ports[i].get(), plan->assignment.owners[i][1]);
         const auto link_for = [&](const std::shared_ptr<Port> &source,
@@ -551,10 +597,29 @@ class Engine {
             plan->links.emplace(key, std::move(link));
             return result;
         };
+        std::size_t resolution_work = 0;
         for (std::size_t i = 0; i < plan->ports.size(); ++i) {
             auto &port = plan->ports[i];
-            RxTask rx{port.get(), {}, {}};
-            const auto routes = routes_for_port(config_.routes, port->name);
+            RxTask rx{port.get(), {}, {}, false, false, {}, {}, {}};
+            rx.rules_enabled = static_cast<bool>(plan->ruleset);
+            if (plan->ruleset) {
+                rx.program = RulesProgram(*plan->ruleset, port->name);
+                for (const auto *mapping : rx.program.mappings) {
+                    ResolvedMapping compiled{mapping, {}};
+                    for (std::size_t target_index = 0; target_index < plan->ports.size(); ++target_index) {
+                        const auto &target = plan->ports[target_index];
+                        if (++resolution_work > 1024 * 1024)
+                            throw RulesPlanError("ruleset resolution exceeds 1048576 mapping/port pairs");
+                        if (!route_port_matches(mapping->output.port, target->name)) continue;
+                        auto *link = link_for(port, target);
+                        compiled.targets.members.push_back({link, plan->tx_owner.at(target.get()), 0,
+                            plan->kinds[target_index] == Kind::adapter});
+                    }
+                    rx.mapping_indices.emplace(mapping, rx.mappings.size());
+                    rx.mappings.push_back(std::move(compiled));
+                }
+            }
+            const auto routes = plan->ruleset ? SwitchPortRoutes{} : routes_for_port(config_.routes, port->name);
             for (const auto &item : routes) {
                 ResolvedGroup group;
                 const auto add_member = [&](const std::shared_ptr<Port> &target) {
@@ -573,7 +638,7 @@ class Engine {
                 // a route miss and must never trigger default-back.
                 rx.routes.emplace(item.first, std::move(group));
             }
-            if (config_.default_back)
+            if (!plan->ruleset && config_.default_back)
                 rx.fallback = {link_for(port, port), plan->tx_owner.at(port.get()), 0, true};
             plan->workers[plan->assignment.owners[i][0]].rx.push_back(std::move(rx));
         }
@@ -649,7 +714,7 @@ class Engine {
             worker->name = "tomtom-mp-" + std::to_string(i);
             workers_.push_back(std::move(worker));
         }
-        plan_ = make_plan({});
+        plan_ = make_plan({}, config_.ruleset);
     }
     ~Engine() { stop(); }
     void start() {
@@ -686,16 +751,19 @@ class Engine {
         publish(prepare(std::move(ports)));
     }
     std::unique_ptr<Plan> prepare(std::vector<std::shared_ptr<Port>> ports) {
-        return make_plan(std::move(ports));
+        return make_plan(std::move(ports), config_.ruleset);
     }
-    void publish(std::unique_ptr<Plan> next) {
+    std::unique_ptr<Plan> prepare_rules(std::shared_ptr<const SwitchRuleset> ruleset) {
+        return make_plan(plan_->ports, std::move(ruleset));
+    }
+    void publish(std::unique_ptr<Plan> next, bool rules_changed = false) {
         // ACTIVE has been queued. Everything below is allocation-free.
         const auto began = Clock::now();
         pause();
         for (auto &port : plan_->ports)
-            reconfiguration_drops_ += discard_pending(*port, next.get());
+            reconfiguration_drops_ += discard_pending(*port, rules_changed ? nullptr : next.get());
         for (auto &link : plan_->links)
-            if (!next->links.count(link.first))
+            if (rules_changed || !next->links.count(link.first))
                 reconfiguration_drops_ += link.second->discard();
         plan_.swap(next);
         next.reset(); // Close retired FDs and release pools while every worker is parked.
@@ -758,7 +826,7 @@ class Engine {
             if (port.transport) port.transport->write_stats(out, "port_" + std::to_string(i) + "_ipc_");
             out << "port_" << i << "_name=" << port.name << "\nport_" << i
                 << "_generation=" << port.generation << "\nport_" << i
-                << "_kind=" << kind_name(port.kind) << "\nport_" << i
+                << "_kind=" << kind_name(plan_->kinds[i]) << "\nport_" << i
                 << "_rx_owner=" << plan_->assignment.owners[i][0] << "\nport_" << i
                 << "_tx_owner=" << plan_->assignment.owners[i][1] << '\n';
         }

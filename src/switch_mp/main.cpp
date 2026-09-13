@@ -69,11 +69,13 @@ int main(int argc, char **argv) {
     (void)::prctl(PR_SET_NAME, "tomtom-switch", 0UL, 0UL, 0UL);
     tuntom::logger.ignore_sigpipe();
     try {
-        const auto config = parse_config(argc, argv);
+        auto config = parse_config(argc, argv);
         if (config.help) {
             usage(std::cout, argv[0]);
             return 0;
         }
+        if (!config.ruleset && config.routes.empty() && config.exits.empty() && config.trunks.empty() && !config.default_back)
+            config.ruleset = tuntom::parse_switch_ruleset("format 1\nserial 0\n");
         const auto hardware = detect_hardware();
         const auto budget =
             config.workers ? std::min(config.workers, hardware.limit()) : hardware.limit();
@@ -155,12 +157,31 @@ int main(int argc, char **argv) {
                 out << "ipc_version_max=2\nipc_memory_budget=" << config.mmap_budget
                     << "\nipc_mapping_bytes=" << mapping_bytes() << '\n';
                 engine.write_stats(out);
+                if (config.ruleset) out << "ruleset_format=1\nruleset_serial=" << config.ruleset->serial << '\n';
                 recovery.write_stats(out);
                 admission.write_stats(out, now);
                 control->write_stats(out);
                 tuntom::logger.write_stats(out);
                 throughput.write(out);
                 return out.str();
+            }, [&](const std::string &operation, const std::string &body) {
+                if (operation == "show") {
+                    if (!config.ruleset) throw std::runtime_error("legacy CLI routes are active; load a format-1 ruleset to enable export");
+                    return config.ruleset->text();
+                }
+                auto next = tuntom::parse_switch_ruleset(body);
+                const bool changed = tuntom::ruleset_changed(config.ruleset, *next);
+                auto response = std::string(operation == "check" ? "checked" : changed ? "applied" : "unchanged") +
+                    " serial=" + std::to_string(next->serial) + "\n";
+                if (changed || operation == "check") {
+                    auto plan = engine.prepare_rules(next);
+                    if (operation == "load") {
+                        engine.publish(std::move(plan), true);
+                        config.ruleset.swap(next);
+                        config.routes.clear(); config.exits.clear(); config.trunks.clear(); config.default_back = false;
+                    }
+                }
+                return response;
             });
         };
 
@@ -297,6 +318,10 @@ int main(int argc, char **argv) {
             } catch (const PollSetupError &error) {
                 // The unpublished epoll sets are RAII-owned; the old plan is intact.
                 recovery.poll_failed(error.error);
+            } catch (const RulesPlanError &) {
+                // A new registration can exceed the compiled-plan bound even
+                // when the active ruleset fitted the previous topology.
+                ++stats.rejected;
             }
         }
         engine.stop();

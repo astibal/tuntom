@@ -58,6 +58,16 @@ inline StartupProfile startup_profile(Config config, const Hardware &hardware,
         add_name(source.first);
         for (const auto &route : source.second) add_name(route.second.port);
     }
+    if (config.ruleset) {
+        for (const auto &statement : config.ruleset->statements) {
+            if (statement.type == RuleStatement::Type::mapping) {
+                add_name(statement.input.port);
+                add_name(statement.output.port);
+            } else if (statement.type == RuleStatement::Type::exit || statement.type == RuleStatement::Type::trunk) {
+                add_name(statement.output.port);
+            }
+        }
+    }
     result.wildcard_patterns = patterns.size();
     for (const auto &name : names) {
         const auto kind = config.kind(name);

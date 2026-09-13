@@ -3,6 +3,7 @@
 #include "../switch_admission.hpp"
 #include "../ipc/switch_protocol.hpp"
 #include "../switch_routes.hpp"
+#include "../switch_ruleset.hpp"
 #include "../switch_ecmp.hpp"
 #include "../adaptive_polling.hpp"
 #include "../control_socket.hpp"
@@ -44,6 +45,8 @@ struct Connection {
     tuntom::AcceptBackoff::Time registration_deadline {};
     tuntom::SwitchPortRoutes routes;
     std::uint64_t identity = 0;
+    tuntom::RulesProgram program;
+    bool exit_role = false;
 };
 
 struct SwitchStats {
@@ -65,6 +68,7 @@ struct SwitchStats {
     std::uint64_t malformed_frames = 0;
     std::uint64_t send_errors = 0;
     std::uint64_t send_backpressure_drops = 0;
+    std::uint64_t policy_drops = 0, rewrite_drops = 0;
 };
 
 void usage(const char* program) {
@@ -74,6 +78,7 @@ void usage(const char* program) {
         << "      [--route <in-port>:<label>=<out-port>:<label> ...]\n"
         << "      [--exit-port <port-id> ...]\n"
         << "      [--control-socket <unix-path>]\n"
+        << "      [--rules-file <format-1-config>]\n"
         << "      [--max-ports <1..65535>] [--max-pending <1..65535>]\n"
         << "      [--default-back=off|on]\n\n"
         << "Route ports accept a trailing *; multiple matching outputs use ECMP.\n"
@@ -156,6 +161,8 @@ int main(int argc, char** argv) {
     std::vector<Connection> connections;
     try {
         tuntom::SwitchRoutes routes;
+        std::shared_ptr<const tuntom::SwitchRuleset> ruleset;
+        std::string rules_file;
         std::unordered_set<std::string> exit_ports;
         SwitchStats stats;
         tuntom::ThroughputStats throughput({"switch_rx", "switch_tx"});
@@ -178,6 +185,9 @@ int main(int argc, char** argv) {
             } else if (option == "--route") {
                 if (++index >= argc) throw std::runtime_error("--route requires a value");
                 tuntom::add_switch_route(routes, argv[index]);
+            } else if (option == "--rules-file") {
+                if (++index >= argc || !rules_file.empty()) throw std::runtime_error("--rules-file requires one path");
+                rules_file = argv[index];
             } else if (option == "--max-ports" or option == "--max-pending") {
                 if (++index >= argc) throw std::runtime_error(option + " requires a value");
                 const auto value = parse_capacity(argv[index]);
@@ -203,6 +213,13 @@ int main(int argc, char** argv) {
         if (socket_path.empty()) {
             usage(argv[0]);
             throw std::runtime_error("--socket is required");
+        }
+        if (!rules_file.empty()) {
+            if (!routes.empty() || !exit_ports.empty() || default_back)
+                throw std::runtime_error("--rules-file cannot be combined with legacy routing options");
+            ruleset = tuntom::parse_switch_ruleset(tuntom::read_rules_file(rules_file));
+        } else if (routes.empty() && exit_ports.empty() && !default_back) {
+            ruleset = tuntom::parse_switch_ruleset("format 1\nserial 0\n");
         }
 
         listener = create_listener(socket_path);
@@ -296,7 +313,10 @@ int main(int argc, char** argv) {
                     // All allocating work precedes the replacement. Swapping
                     // std::string with its default allocator cannot throw.
                     auto resolved = tuntom::routes_for_port(routes, registered_id);
+                    auto program = ruleset ? tuntom::RulesProgram(*ruleset, registered_id) : tuntom::RulesProgram();
+                    connection.exit_role = ruleset && ruleset->role(registered_id, tuntom::RuleStatement::Type::exit);
                     connection.identity = tuntom::ecmp_port_identity(registered_id);
+                    connection.program = std::move(program);
                     connection.routes.swap(resolved);
                     connection.port.swap(registered_id);
                     if (old and old != &connection) {
@@ -322,6 +342,39 @@ int main(int argc, char** argv) {
             }
             ++stats.frames_rx;
             stats.bytes_rx += size;
+
+            if (ruleset) {
+                const auto *mapping = connection.program.mapping(frame.label(0));
+                if (!mapping) { ++stats.route_misses; return true; }
+                ++stats.route_hits;
+                std::array<std::uint64_t, tuntom::switch_max_labels> labels{};
+                std::size_t count = 0;
+                if (!mapping->stack.apply(frame, labels, count) ||
+                    tuntom::switch_base_header_size + count * tuntom::switch_label_size + frame.payload_size > buffer.size()) {
+                    ++stats.rewrite_drops; return true;
+                }
+                Connection *target = nullptr;
+                bool connected = false;
+                tuntom::EcmpSelector selector(frame);
+                for (auto &candidate : connections) {
+                    if (candidate.fd < 0 || candidate.port.empty() ||
+                        !tuntom::route_port_matches(mapping->output.port, candidate.port)) continue;
+                    connected = true;
+                    if (!connection.program.allowed(frame.label(0), candidate.port, labels[0])) continue;
+                    if (selector.consider(candidate.identity, candidate.port)) target = &candidate;
+                }
+                if (!target) {
+                    if (connected) ++stats.policy_drops; else ++stats.target_disconnected;
+                    return true;
+                }
+                if (selector.multipath()) ++stats.ecmp_packets;
+                const bool exit = target->exit_role;
+                auto output_size = size;
+                tuntom::rewrite_rules_frame(buffer.data(), output_size, frame, labels, count, exit);
+                if (exit) ++stats.exit_deliveries;
+                send_frame(target->fd, buffer.data(), output_size, stats);
+                return true;
+            }
 
             const auto route = connection.routes.find(frame.label(0));
             if (route != connection.routes.end()) {
@@ -414,6 +467,8 @@ int main(int argc, char** argv) {
                     << "malformed_frames=" << stats.malformed_frames << "\n"
                     << "send_errors=" << stats.send_errors << "\n"
                     << "send_backpressure_drops=" << stats.send_backpressure_drops << "\n";
+                out << "policy_drops=" << stats.policy_drops << "\nrewrite_drops=" << stats.rewrite_drops << '\n';
+                if (ruleset) out << "ruleset_format=1\nruleset_serial=" << ruleset->serial << '\n';
                 recovery.write_stats(out);
                 admission.write_stats(out, snapshot_at);
                 control->write_stats(out);
@@ -421,6 +476,32 @@ int main(int argc, char** argv) {
                 adaptive_polling.write_stats(out);
                 throughput.write(out);
                 return out.str();
+            }, [&](const std::string &operation, const std::string &body) {
+                if (operation == "show") {
+                    if (!ruleset) throw std::runtime_error("legacy CLI routes are active; load a format-1 ruleset to enable export");
+                    return ruleset->text();
+                }
+                auto next = tuntom::parse_switch_ruleset(body);
+                const bool changed = tuntom::ruleset_changed(ruleset, *next);
+                std::vector<tuntom::RulesProgram> programs;
+                std::vector<bool> exits;
+                programs.reserve(connections.size());
+                exits.reserve(connections.size());
+                for (const auto &connection : connections) {
+                    programs.emplace_back(*next, connection.port);
+                    exits.push_back(next->role(connection.port, tuntom::RuleStatement::Type::exit));
+                }
+                auto response = std::string(operation == "check" ? "checked" : changed ? "applied" : "unchanged") +
+                    " serial=" + std::to_string(next->serial) + "\n";
+                if (operation == "load" && changed) {
+                    for (std::size_t i = 0; i < connections.size(); ++i) {
+                        connections[i].program = std::move(programs[i]);
+                        connections[i].exit_role = exits[i];
+                    }
+                    ruleset.swap(next);
+                    routes.clear(); exit_ports.clear(); default_back = false;
+                }
+                return response;
             });
         };
 
@@ -475,7 +556,7 @@ int main(int argc, char** argv) {
                     if (accepted >= 0) {
                         try {
                             connections.push_back({accepted, {}, std::chrono::steady_clock::now() +
-                                tuntom::SwitchAdmission::registration_timeout, {}, 0});
+                                tuntom::SwitchAdmission::registration_timeout, {}, 0, {}, false});
                         } catch (...) {
                             ::close(accepted);
                             throw;

@@ -89,7 +89,7 @@ def capacity_case(binary, library, inherited):
         switch = Switch(stack, binary, library, inherited=inherited,
                         options=("--route", "a:11=b:12", "--route", "b:11=a:12"))
         a, b = switch.port("a"), switch.port("b")
-        baseline = 5 + inherited + 2  # stdio, two listeners, inherited FDs, two ports
+        baseline = 6 + inherited + 2  # stdio, two listeners, control epoll, inherited FDs, two ports
         # Receiving a snapshot can race its server-side client's RAII close.
         until(lambda: switch.fd_count() == baseline)
         stats = switch.stats()
@@ -125,7 +125,7 @@ def registration_case(binary, library):
         name = "r" * 63
         switch = Switch(stack, binary, library, options=("--max-ports", "1", "--max-pending", "2"))
         original = switch.port(name)
-        baseline = 6  # stdio, two listeners, one port
+        baseline = 7  # stdio, two listeners, control epoll, one port
         until(lambda: switch.fd_count() == baseline)
         denied = switch.connect("new-port")
         closed(denied)
@@ -175,7 +175,7 @@ def churn_case(binary, library):
     with contextlib.ExitStack() as stack:
         switch = Switch(stack, binary, library)
         live = switch.port("live")
-        baseline = 6
+        baseline = 7
         until(lambda: switch.fd_count() == baseline)
         accepted_before = switch.stats()["connections_accepted"]
         memory_before = switch.rss_kib()

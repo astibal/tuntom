@@ -108,6 +108,16 @@ cp -- "$TEST_PLANNER" "${@: -1}"
         assert fields["configured.port_counts"] == "lower_bound" and fields["configured.tunnels"] == "0"
         command = shlex.split(next(line for line in output.splitlines() if line.startswith("Command:")))
         assert "internet:1001=edge-42*:44" in command and "edge-42*:17=internet:1001" in command
+        rules.write_text("# format-1\nformat 1 # inline\nserial 10\nexit internet*\ntrunk backbone\n"
+                         "label client,17 to internet*, [1001,...]\nswitch allow\n")
+        fields, output = run("--dry-run", "--auto-pool", "--rules-file", rules)
+        assert fields["configured.wildcard_patterns"] == "1"
+        assert fields["configured.tunnels"] == "1" and fields["configured.trunks"] == "1"
+        command = shlex.split(next(line for line in output.splitlines() if line.startswith("Command:")))
+        assert command[command.index("--rules-file") + 1] == str(rules)
+        run("--dry-run", "--rules-file", rules, "--route", "a:1=b:2", ok=False)
+        rules.write_text("format 1\nserial 11\nswitch capture\n")
+        run("--dry-run", "--rules-file", rules, ok=False)
         rules.write_text("unknown nope\n")
         run("--dry-run", "--rules-file", rules, ok=False)
         print("PASS: MP dry-run, options, rules, manual precedence and no deployment side effects")

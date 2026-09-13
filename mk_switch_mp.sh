@@ -11,7 +11,7 @@ Usage: $0 <name> [options]
 Build and restart a local tomtom-switch-mp instance.
 
   --socket <path>          Listener (default /run/tuntom/<name>.sock)
-  --control-socket <path>  Stats socket (default /run/tuntom/<name>.control)
+  --control-socket <path>  Control socket (default /run/tuntom/<name>.control)
   --route <in>:<label>=<out>:<label>   Trailing * on either port; multiple outputs use ECMP
   --exit-port <port>       Repeatable adapter port (EXIT delivery)
   --trunk-port <port>      Repeatable aggregate port (SWITCH delivery)
@@ -41,7 +41,7 @@ Build and restart a local tomtom-switch-mp instance.
   --dry-run               Print CPU/worker plan and arguments; no sudo, hooks,
                           daemon startup or changes to managed instances
 
-  --rules-file <path>      Seed rules (route / exit-port / trunk-port / default-back)
+  --rules-file <path>      Seed rules (format 1 or legacy directives)
   --pre-hook <path>        Default /etc/tuntom/switch-pre.sh
   --post-hook <path>       Default /etc/tuntom/switch-post.sh
   --socket-owner <u:g>     Default tuntom:tuntom; socket mode 0660

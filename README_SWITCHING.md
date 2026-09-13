@@ -136,7 +136,7 @@ Hooks receive:
 - `TUNTOM_MTU`: adapter - configured TUN MTU in bytes; unused by switch.
 - `TUNTOM_SWITCH_PORT_ID`: adapter - registered switch port name usable in flow rules; empty for switch.
 - `TUNTOM_SWITCH_SOCKET`: switch, adapter - switch data socket path to listen on or connect to.
-- `TUNTOM_CONTROL_SOCKET`: switch, adapter - component's control socket path for stats queries.
+- `TUNTOM_CONTROL_SOCKET`: switch, adapter - component's control socket path for stats and switch rules commands.
 - `TUNTOM_SOCKET_OWNER`: switch, adapter - `user:group` assigned to the component's own sockets.
 - `TUNTOM_BIN`: switch, adapter - installed component binary path.
 - `TUNTOM_CTL`: switch, adapter - installed `tuntomctl` binary path.
@@ -146,11 +146,35 @@ Hooks receive:
 For switch `pre/up`, `TUNTOM_RULES_FILE` points to a fresh private staging file,
 initially empty or copied from `--rules-file` / `TUNTOM_SWITCH_RULES_FILE`.
 The hook may replace or append to it. Lines contain `route in:label=out:label`,
-`exit-port port`, or `default-back off|on`; blank lines and full-line `#`
-comments are ignored. No shell code is evaluated. These entries follow inline
-CLI rules; duplicate routes fail validation. On success the file is saved as
-the instance's `rules`. Other switch hooks see that saved file. Flow changes
-require restarting the switch because its control protocol only exposes stats.
+`exit-port port`, or `default-back off|on`; blank lines are ignored and `#`
+begins a comment through the end of its line. No shell code is evaluated. These legacy entries follow inline
+CLI rules; duplicate routes fail validation. Hooks may instead write a complete
+format-1 ruleset, which cannot be combined with legacy CLI rules. On success the
+file is saved as the instance's `rules`. Other switch hooks see that saved file.
+Format-1 rules can also be loaded over the control socket without a restart.
+
+## Versioned rulesets and live reload
+
+Both implementations support the ordered configuration in
+[examples/switch.rules](examples/switch.rules). `format 1` and a manual `serial`
+precede wildcard-capable `exit`/`trunk` declarations, `switch` allow/drop policies,
+and `label` destination/stack mappings. Each list uses first-match file order;
+missing policy or mapping means drop. `#` begins a comment through end of line.
+
+```bash
+./mk_switch.sh switch --rules-file examples/switch.rules
+sudo /var/lib/tuntom-mk/switch-switch/tuntomctl /run/tuntom/switch.control rules check examples/switch.rules
+sudo /var/lib/tuntom-mk/switch-switch/tuntomctl /run/tuntom/switch.control rules load examples/switch.rules
+sudo /var/lib/tuntom-mk/switch-switch/tuntomctl /run/tuntom/switch.control rules show > saved.rules
+```
+
+The daemon also accepts `--rules-file PATH` directly. `check` prepares without
+publishing; `load` applies the complete ruleset atomically and preserves connected
+ports. `show` writes a reloadable configuration with its active serial to stdout.
+Increase the serial when editing rules. Runtime loads do not overwrite startup
+files. Capture syntax is reserved and currently rejected as unsupported.
+See [ruleset format and control protocol](docs/SWITCH_RULESET_V1.md) for full
+syntax, queue behavior, limits, legacy compatibility, and persistence.
 
 ## Connect tunnel endpoints
 
@@ -311,7 +335,7 @@ the same physical return path through independently configured switches.
 
 Availability means a locally registered IPC connection. The switch has no
 remote UDP path-health signal; a live tunnel process whose remote link fails
-can remain an ECMP member. Rule changes still require a switch restart.
+can remain an ECMP member. Legacy CLI rules are fixed at startup; format-1 rulesets support live reload.
 `ecmp_packets` counts received packets selected with more than one available
 member, including packets later dropped by output backpressure.
 

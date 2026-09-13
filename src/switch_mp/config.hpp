@@ -2,6 +2,7 @@
 
 #include "../ipc/switch_protocol.hpp"
 #include "../switch_routes.hpp"
+#include "../switch_ruleset.hpp"
 #include "../switch_admission.hpp"
 #include "scheduler.hpp"
 #include "../ipc/switch_v2.hpp"
@@ -22,6 +23,7 @@ struct Config {
     std::string socket, control;
     std::unordered_map<std::string, PortRoutes> routes;
     std::unordered_set<std::string> exits, trunks;
+    std::shared_ptr<const SwitchRuleset> ruleset;
     SwitchCapacity capacity;
     Policy policy;
     ipc::Options ipc;
@@ -30,6 +32,8 @@ struct Config {
     bool default_back = false, help = false;
 
     Kind kind(const std::string &port) const {
+        if (ruleset) return ruleset->role(port, RuleStatement::Type::exit) ? Kind::adapter :
+            ruleset->role(port, RuleStatement::Type::trunk) ? Kind::trunk : Kind::tunnel;
         return exits.count(port) ? Kind::adapter : trunks.count(port) ? Kind::trunk : Kind::tunnel;
     }
 };
@@ -37,6 +41,7 @@ struct Config {
 inline void usage(std::ostream &out, const char *program) {
     out << "Usage: " << program << " --socket PATH [options]\n"
         << "  --control-socket PATH            tuntomctl show stats endpoint\n"
+        << "  --rules-file PATH                format-1 ruleset; live rules check/load/show via control\n"
         << "  --route IN:LABEL=OUT:LABEL       trailing * on either port; multiple outputs use ECMP\n"
         << "  --exit-port ID                  adapter group; deliver EXIT opcode\n"
         << "  --trunk-port ID                 aggregate group; preserve SWITCH opcode\n"
@@ -72,6 +77,7 @@ inline void validate_port(const std::string &port) { (void)encode_switch_registr
 
 inline Config parse_config(int argc, char **argv) {
     Config config;
+    std::string rules_file;
     for (int i = 1; i < argc; ++i) {
         const std::string option = argv[i];
         if (option == "--help" || option == "-h") {
@@ -96,6 +102,9 @@ inline Config parse_config(int argc, char **argv) {
             path = value;
         } else if (option == "--route") {
             add_switch_route(config.routes, value);
+        } else if (option == "--rules-file") {
+            if (!rules_file.empty()) throw std::runtime_error("Duplicate --rules-file");
+            rules_file = value;
         } else if (option == "--exit-port" || option == "--trunk-port") {
             validate_port(value);
             auto &ports = option == "--exit-port" ? config.exits : config.trunks;
@@ -146,6 +155,11 @@ inline Config parse_config(int argc, char **argv) {
     for (const auto &port : config.exits)
         if (config.trunks.count(port))
             throw std::runtime_error("Port is both adapter and trunk: " + port);
+    if (!rules_file.empty()) {
+        if (!config.routes.empty() || !config.exits.empty() || !config.trunks.empty() || config.default_back)
+            throw std::runtime_error("--rules-file cannot be combined with legacy routing options");
+        config.ruleset = parse_switch_ruleset(read_rules_file(rules_file));
+    }
     if (!config.help && config.socket.empty())
         throw std::runtime_error("--socket is required");
     return config;

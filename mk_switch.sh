@@ -12,7 +12,7 @@ Build and restart one local switch; no SSH or tunnel secret is needed.
 The name/state/lock are shared with mk_switch_mp.sh; either can replace or stop it.
 
   --socket <path>          Listener (default /run/tuntom/<name>.sock)
-  --control-socket <path>  Stats socket (default /run/tuntom/<name>.control)
+  --control-socket <path>  Control socket (default /run/tuntom/<name>.control)
   --route <in>:<label>=<out>:<label>   Trailing * on either port; multiple outputs use ECMP
   --exit-port <port>       Repeatable exit adapter port
   --default-back=off|on    Default off

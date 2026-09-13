@@ -13,6 +13,13 @@ The C++ tests are also available through CMake/CTest in CLion.
 Builds use a temporary directory that is removed on exit. No root privileges,
 live tunnel, or network access are needed.
 
+- `switch_ruleset_test.cpp`: format-1 grammar, inline comments, canonical
+  export/reload, manual serial validation, first-match policy/mapping semantics,
+  wildcard roles and resizing label-stack templates.
+- `switch_ruleset_integration_test.py`: ST/MP live reload without disconnecting
+  peers, output policy before ECMP, capture rejection, interrupted/oversized
+  control transfers, exports larger than 64 KiB, concurrent loads and restart
+  persistence. Uses disposable Unix sockets and no network interfaces.
 - `replay_test.cpp`: reordered timestamps, duplicates, window eviction,
   integer boundaries, and reassembly of 64 fragments received in reverse order.
 - `udp_batch_test.cpp`: real loopback datagram boundaries and ordering, one-call

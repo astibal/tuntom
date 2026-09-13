@@ -82,7 +82,7 @@ main "$@"
 
         def command(kind, name, *args):
             options = ["--workers", "2"] if kind == "switch_mp" else []
-            if "--stop" not in args:
+            if "--stop" not in args and "--rules-file" not in args:
                 options += ["--route", "a:17=b:83"]
             return ["bash", "-c", harness, "--", str(ROOT / f"mk_{kind}.sh"), name, *options, *map(str, args)]
 
@@ -206,6 +206,20 @@ main "$@"
             run("switch", "sw", "--stop")
             run("switch", "other", "--stop")
             print("PASS: legacy MP migration, duplicate retirement, stale PID and saved legacy hooks", flush=True)
+            seed = directory / "rules with spaces"
+            seed.write_text("# new rules\nformat 1 # inline\nserial 10\nswitch allow\nlabel a,17 to b,[83,...]\n")
+            for kind in ("switch", "switch_mp"):
+                run(kind, "sw", "--rules-file", seed)
+                flow()
+                exported = subprocess.check_output([str(ctl), str(control), "rules", "show"], text=True)
+                assert exported.startswith("format 1\nserial 10\n")
+                assert (state / "rules").read_text() == seed.read_text()
+                # Staging is gone; the running command must refer to saved rules.
+                args = Path(f"/proc/{pid()}/cmdline").read_bytes().split(b"\0")
+                assert str(state / "rules").encode() in args
+                assert not list((directory / "bin").glob("stage.*"))
+            run("switch", "sw", "--stop")
+            print("PASS: format-1 rules survive staging and single/MP helper replacement", flush=True)
         finally:
             for child in children:
                 if child.poll() is None:

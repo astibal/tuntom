@@ -259,10 +259,18 @@ local_wait_ready() {
 }
 
 local_read_rules() {
-    local directive value extra line=0
-    while read -r directive value extra || [[ -n "$directive$value$extra" ]]; do
+    local directive value extra raw line=0 first=1
+    while IFS= read -r raw || [[ -n "$raw" ]]; do
         line=$((line + 1))
-        [[ -n "$directive" && "$directive" != \#* ]] || continue
+        raw="${raw%%#*}"
+        read -r directive value extra <<< "$raw"
+        [[ -n "$directive" ]] || continue
+        if (( first )) && [[ "$directive" == format ]]; then
+            # The daemon owns the new grammar. Preserve the file and its order.
+            service_args+=(--rules-file "$rules_file")
+            return
+        fi
+        first=0
         [[ -n "$value" && -z "$extra" ]] || local_die "Invalid rules line $line"
         case "$directive" in
             route|exit-port) service_args+=("--$directive" "$value") ;;
@@ -446,7 +454,15 @@ local_run() {
     echo "[3] Install staged binaries"
     mv -f -- "${stage}/main" "$binary"
     mv -f -- "${stage}/ctl" "$control_binary"
-    if [[ "$kind" == switch ]]; then mv -f -- "$rules_file" "${instance_dir}/rules"; fi
+    if [[ "$kind" == switch ]]; then
+        local arg_index
+        for ((arg_index=0; arg_index<${#service_args[@]}; ++arg_index)); do
+            if [[ "${service_args[arg_index]}" == --rules-file ]]; then
+                service_args[arg_index+1]="${instance_dir}/rules"
+            fi
+        done
+        mv -f -- "$rules_file" "${instance_dir}/rules"
+    fi
     rules_file="${instance_dir}/rules"
     # Metadata stays on the runtime filesystem; replace it atomically there.
     printf '%s\0' "$switch_socket" "$control_socket" "$port_id" "$mtu" "$socket_owner" \

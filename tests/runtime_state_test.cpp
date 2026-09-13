@@ -244,7 +244,9 @@ static void control_allocation_failure() {
                 "connect control test peer");
         require(::send(peer, "show stats", 10, MSG_NOSIGNAL) == 10, "control request");
         try {
-            control.handle([]() -> std::string { throw std::bad_alloc(); });
+            // Accept and request dispatch are separate nonblocking readiness turns.
+            for (unsigned turn = 0; turn < 4; ++turn)
+                control.handle([]() -> std::string { throw std::bad_alloc(); });
             require(false, "allocation error must reach runtime accounting");
         } catch (const std::bad_alloc&) {}
         char buffer[64] {};
