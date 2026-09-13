@@ -3,6 +3,7 @@
 #include "../ipc/switch_protocol.hpp"
 #include "../switch_admission.hpp"
 #include "scheduler.hpp"
+#include "../ipc/switch_v2.hpp"
 #include <cstdint>
 #include <ostream>
 #include <stdexcept>
@@ -25,6 +26,8 @@ struct Config {
     std::unordered_set<std::string> exits, trunks;
     SwitchCapacity capacity;
     Policy policy;
+    ipc::Options ipc;
+    std::uint64_t mmap_budget = 256ULL * 1024 * 1024;
     std::size_t workers = 0, pool_size = 128, queue_size = 128;
     bool default_back = false, help = false;
 
@@ -49,7 +52,12 @@ inline void usage(std::ostream &out, const char *program) {
         << "  --trunk-weight N                trunk port cost (default 4)\n"
         << "  --pool-size N --queue-size N    buffers per ingress / pointers per pair (defaults "
            "128 / 128)\n"
-        << "All numeric options: 1..65535. Workers never exceed the detected CPU budget.\n";
+        << "  --ipc-mode auto|v1|inline        default auto; negotiate V2 mmap or legacy inline\n"
+        << "  --ipc-batch N                    maximum references per record, 1..16 (default 8)\n"
+        << "  --ipc-slots N                    slots per direction, 1..128 (default 128)\n"
+        << "  --ipc-frame-capacity N           bytes per slot, 17..65607 (default 16384)\n"
+        << "  --ipc-memory-mib N               active + pending mmap budget (default 256)\n"
+        << "All other numeric options: 1..65535. Workers never exceed the detected CPU budget.\n";
 }
 
 inline std::size_t number(const std::string &text) {
@@ -118,7 +126,26 @@ inline Config parse_config(int argc, char **argv) {
             auto &ports = option == "--exit-port" ? config.exits : config.trunks;
             if (!ports.insert(value).second)
                 throw std::runtime_error("Duplicate port role: " + value);
-        } else if (option == "--max-ports")
+        } else if (option == "--ipc-mode")
+            config.ipc.mode = ipc::parse_mode(value);
+        else if (option == "--ipc-batch") {
+            const auto n = number(value);
+            if (n > ipc::max_batch) throw std::runtime_error("--ipc-batch must be 1..16");
+            config.ipc.batch = static_cast<std::uint32_t>(n);
+        } else if (option == "--ipc-slots") {
+            const auto n = number(value);
+            if (n > ipc::max_slots) throw std::runtime_error("--ipc-slots must be 1..128");
+            config.ipc.slots = static_cast<std::uint32_t>(n);
+        } else if (option == "--ipc-frame-capacity") {
+            if (value.empty() || value.find_first_not_of("0123456789") != std::string::npos)
+                throw std::runtime_error("--ipc-frame-capacity must be 17..65607");
+            const auto n = std::stoull(value);
+            if (n < ipc::min_frame || n > ipc::max_frame)
+                throw std::runtime_error("--ipc-frame-capacity must be 17..65607");
+            config.ipc.frame_capacity = static_cast<std::uint32_t>(n);
+        } else if (option == "--ipc-memory-mib")
+            config.mmap_budget = number(value) * 1024ULL * 1024;
+        else if (option == "--max-ports")
             config.capacity.ports = number(value);
         else if (option == "--max-pending")
             config.capacity.pending = number(value);

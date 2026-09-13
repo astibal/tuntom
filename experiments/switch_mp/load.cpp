@@ -91,8 +91,15 @@ struct alignas(64) Receiver {
   double cpu = 0;
 };
 int main(int argc, char **argv) {
-  if (argc != 12)
+  if (argc != 12 && argc != 14)
     return 2;
+  tuntom::ipc::Options ipc_options{tuntom::ipc::Mode::legacy};
+  if (argc == 14) {
+    ipc_options.mode = tuntom::ipc::parse_mode(argv[12]);
+    ipc_options.batch = static_cast<std::uint32_t>(std::stoul(argv[13]));
+    if (!ipc_options.batch || ipc_options.batch > tuntom::ipc::max_batch) return 2;
+  }
+  const unsigned source_batch = argc == 14 ? ipc_options.batch : 1;
   const bool poll_source = true;
   unsigned size = std::stoul(argv[2]);
   double duration = std::stod(argv[3]), rate = std::stod(argv[4]);
@@ -133,8 +140,13 @@ int main(int argc, char **argv) {
   for (unsigned i = 0; i < ports; ++i) {
     clients[i] = std::make_unique<tuntom::SwitchClient>(
         argv[1], i >= tunnels ? "adapter" + std::to_string(i - tunnels)
-                              : "tunnel" + std::to_string(i));
+                              : "tunnel" + std::to_string(i), ipc_options);
     clients[i]->start_connect(Clock::now());
+    while (clients[i]->connecting()) {
+      pollfd fd{clients[i]->fd(), clients[i]->poll_events(), 0};
+      ::poll(&fd, 1, clients[i]->poll_timeout_ms(Clock::now(), 100));
+      clients[i]->advance_connect(Clock::now(), fd.revents);
+    }
     if (!clients[i]->connected())
       return 3;
   }
@@ -247,8 +259,12 @@ int main(int argc, char **argv) {
       std::vector<bool> blocked(ports);
       std::vector<pollfd> writable;
       writable.reserve(sg[k].size());
-      std::vector<std::uint8_t> payload(size ? size : 9000, 42);
-      std::size_t previous_size = 0;
+      std::array<std::vector<std::uint8_t>, tuntom::ipc::max_batch> payloads;
+      for (auto &payload : payloads) payload.assign(size ? size : 9000, 42);
+      std::array<std::size_t, tuntom::ipc::max_batch> previous_sizes{};
+      std::array<tuntom::SwitchFrameHeader, tuntom::ipc::max_batch> headers;
+      std::array<tuntom::ipc::FrameParts, tuntom::ipc::max_batch> frames;
+      std::array<unsigned, tuntom::ipc::max_batch> destinations{};
       ++ready;
       while (!go.load(std::memory_order_acquire))
         std::this_thread::yield();
@@ -286,38 +302,48 @@ int main(int argc, char **argv) {
           if (Clock::now() >= deadline)
             break;
         }
-        ++rounds;
+        unsigned available = source_batch;
+        if (rate) {
+          // Only packets whose scheduled arrival has already elapsed are ready.
+          // Never generate a future packet to fill a batch at low offered load.
+          const auto due = static_cast<std::uint64_t>(std::chrono::duration<double>(Clock::now() - began).count() * rate / total_weight) + 1;
+          available = static_cast<unsigned>(std::min<std::uint64_t>(source_batch, std::max<std::uint64_t>(1, due > rounds ? due - rounds : 1)));
+        }
+        rounds += available;
         for (auto i : slots) {
           if (!rate && poll_source && blocked[i])
             continue;
-          auto seq = ++sequences[i];
-          auto dest = target(i, seq);
-          std::uint64_t label = i >= tunnels ? 100 + dest : 18;
-          auto nbytes = bytes(size, seq);
-          // Restore locations occupied by the preceding packet's tail.
-          // The payload is reused exactly as in tuntom's scatter/gather IPC.
-          if (previous_size)
-            std::fill(payload.begin() + previous_size - 16,
-                      payload.begin() + previous_size, 42);
-          previous_size = nbytes;
-          tuntom::store_be64(payload.data(), i);
-          tuntom::store_be64(payload.data() + 8, seq);
-          tuntom::store_be64(payload.data() + 16, now_ns());
-          tuntom::store_be64(payload.data() + nbytes - 16, i);
-          tuntom::store_be64(payload.data() + nbytes - 8, seq);
-          ++s.offered;
-          auto n = clients[i]->send_frame(tuntom::SwitchOpcode::switch_packet,
-                                          &label, 1, payload.data(), nbytes);
-          if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            ++s.backpressure[i];
-            blocked[i] = true;
-          } else if (n != ssize_t(nbytes + 16)) {
-            failed.store(true);
-            break;
-          } else {
-            ++s.sent[i];
-            ++s.sent_to[dest];
+          for (unsigned j = 0; j < available; ++j) {
+            auto seq = ++sequences[i];
+            auto dest = target(i, seq); destinations[j] = dest;
+            std::uint64_t label = i >= tunnels ? 100 + dest : 18;
+            auto nbytes = bytes(size, seq);
+            auto &payload = payloads[j]; auto &previous_size = previous_sizes[j];
+            if (previous_size)
+              std::fill(payload.begin() + previous_size - 16, payload.begin() + previous_size, 42);
+            previous_size = nbytes;
+            tuntom::store_be64(payload.data(), i);
+            tuntom::store_be64(payload.data() + 8, seq);
+            tuntom::store_be64(payload.data() + 16, now_ns());
+            tuntom::store_be64(payload.data() + nbytes - 16, i);
+            tuntom::store_be64(payload.data() + nbytes - 8, seq);
+            const auto header_size = tuntom::encode_switch_header(headers[j], tuntom::SwitchOpcode::switch_packet, &label, 1, nbytes);
+            frames[j] = {headers[j].data(), header_size, payload.data(), nbytes};
           }
+          s.offered += available;
+          unsigned submitted = 0;
+          while (submitted < available) {
+            const auto n = clients[i]->send_batch(frames.data() + submitted, available - submitted);
+            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+              s.backpressure[i] += available - submitted;
+              blocked[i] = true;
+              break;
+            }
+            if (n <= 0 || n > available - submitted) { failed.store(true); break; }
+            s.sent[i] += static_cast<std::uint64_t>(n);
+            for (ssize_t j = 0; j < n; ++j) ++s.sent_to[destinations[submitted++]];
+          }
+
         }
       }
       s.cpu = cpu_now() - cpu;
@@ -436,7 +462,15 @@ int main(int argc, char **argv) {
       std::cout << ',';
     arr(rg[i]);
   }
-  std::cout << "]}\n";
+  std::uint64_t ipc_tx_records = 0, ipc_rx_records = 0, ipc_tx_mapped = 0, ipc_rx_mapped = 0;
+  for (const auto &client : clients) {
+    ipc_tx_records += client->transport().tx.records.load();
+    ipc_rx_records += client->transport().rx.records.load();
+    ipc_tx_mapped += client->transport().tx.mapped_frames.load();
+    ipc_rx_mapped += client->transport().rx.mapped_frames.load();
+  }
+  std::cout << "],\"ipc_tx_records\":" << ipc_tx_records << ",\"ipc_rx_records\":" << ipc_rx_records
+            << ",\"ipc_tx_mapped\":" << ipc_tx_mapped << ",\"ipc_rx_mapped\":" << ipc_rx_mapped << "}\n";
   std::cout << std::flush;
   std::string finish;
   if (!(std::cin >> finish) || finish != "STOP") failed.store(true);

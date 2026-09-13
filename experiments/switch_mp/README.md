@@ -188,3 +188,37 @@ Generate a table of medians, ranges and driver/role CPU from a completed run:
 python3 experiments/switch_mp/summarize.py \
   /tmp/mp-stress-results/performance-native.jsonl --output /tmp/mp-stress-results
 ```
+
+## IPC V2 comparison
+
+The [2026-09-13 results](RESULTS_V2_2026-09-13.md) include the full variant
+matrix, achieved batches, CPU and latency tradeoffs, correctness checks and a
+separate V1 comparison against the preceding commit.
+
+`mmap_bench.py` compares V1, V2 inline, mmap references and maximum batches of
+8/16 using the same current MP binary, scheduler, CPU placement and offered load.
+The load driver waits for the complete negotiated connection before READY.
+At a finite rate it groups only frames already due; saturation has an immediately
+available backlog. A failed source send drops the unsubmitted prefix rather than
+replaying successfully accepted frames. Logical accounting is exact per output.
+
+```sh
+g++ -std=c++17 -pthread -O2 -I src experiments/switch_mp/load.cpp -o /tmp/mp-v2-load
+python3 experiments/switch_mp/mmap_bench.py \
+  --switch /path/to/tomtom-switch-mp --driver /tmp/mp-v2-load \
+  --output /tmp/mp-v2-results --cases single 20x3 \
+  --rates 25000 160000 0 --duration 4 --repeats 3
+```
+
+Needs eight available physical cores. The switch uses the first four, source
+threads the next two, sinks the last two. Metadata records L3 placement, affinity,
+CPU model, kernel and binary hashes. Payloads are two 9000-byte frames for each
+64-byte frame. No TUN, physical NIC, UDP or V5 crypto is present in this benchmark.
+`--verify-all` checks every payload byte; the performance mode still checks
+headers, sequence order, length and payload sentinels and reconciles all frames.
+
+`source_frames_per_record` and `switch_frames_per_record` show achieved batching;
+`mapped_*_percent` exposes inline fallback. `total_cpu_cores` includes both driver
+sides and the switch. Compare equal offered rates separately from saturation.
+The default 16 KiB slots and 128 slots per direction cover all generated frames
+inside the 256 MiB shared-memory budget, including 20 tunnels + 3 adapters.

@@ -2,6 +2,7 @@
 
 #include "config.hpp"
 #include "queues.hpp"
+#include "../ipc/switch_transport.hpp"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -62,12 +63,16 @@ struct Port {
     std::atomic<bool> disconnected{false};
     alignas(64) Pool pool; // RX-owned state must not share TX's writable cache line.
     Clock::time_point rx_retry{};
-    alignas(64) Buffer *pending = nullptr;
-    Port *pending_source = nullptr;
+    std::unique_ptr<ipc::Transport> transport;
+    struct PendingFrame { Buffer *buffer = nullptr; Port *source = nullptr; };
+    alignas(64) std::array<PendingFrame, ipc::max_batch> pending{};
+    std::size_t pending_count = 0;
     std::size_t source_cursor = 0;
 
-    Port(Fd socket, std::string id, std::uint64_t serial, Kind role, std::size_t size)
-        : fd(std::move(socket)), name(std::move(id)), generation(serial), kind(role), pool(size) {}
+    Port(Fd socket, std::string id, std::uint64_t serial, Kind role, std::size_t size,
+         std::unique_ptr<ipc::Transport> ipc_transport = {})
+        : fd(std::move(socket)), name(std::move(id)), generation(serial), kind(role), pool(size),
+          transport(std::move(ipc_transport)) {}
 };
 
 struct Link {
@@ -232,6 +237,7 @@ class Engine {
         }
         Counters::add(stats.recv_calls);
         const auto received =
+            port.transport ? port.transport->receive(port.fd.get(), buffer->data, wire_capacity) :
             ::recv(port.fd.get(), buffer->data, wire_capacity, MSG_DONTWAIT | MSG_TRUNC);
         if (received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
             buffer->release();
@@ -318,38 +324,48 @@ class Engine {
         auto &port = *task.port;
         if (task.blocked || port.disconnected.load(std::memory_order_relaxed))
             return false;
-        if (!port.pending && !task.incoming.empty()) {
-            for (std::size_t step = 0; step < task.incoming.size(); ++step) {
+        const auto limit = port.transport ? port.transport->batch_limit() : 1;
+        if (!port.pending_count && !task.incoming.empty()) {
+            // One complete RR sweep, quota 1 per ingress queue. Never revisit a
+            // source just to fill a batch. A partial batch is submitted now.
+            for (std::size_t step = 0; step < task.incoming.size() && port.pending_count < limit; ++step) {
                 const auto index = port.source_cursor % task.incoming.size();
                 port.source_cursor = (index + 1) % task.incoming.size();
                 auto *link = task.incoming[index];
-                if ((port.pending = link->queue.pop())) {
-                    port.pending_source = link->source.get();
-                    break; // RR quota 1; next invocation starts at the next RX.
-                }
+                if (auto *buffer = link->queue.pop())
+                    port.pending[port.pending_count++] = {buffer, link->source.get()};
             }
         }
-        if (!port.pending)
-            return false;
-        const auto size = port.pending->size;
+        if (!port.pending_count) return false;
+        std::array<ipc::FrameParts, ipc::max_batch> frames{};
+        for (std::size_t i = 0; i < port.pending_count; ++i)
+            frames[i] = {port.pending[i].buffer->data, port.pending[i].buffer->size};
         Counters::add(worker.counters.send_calls);
-        const auto sent =
-            ::send(port.fd.get(), port.pending->data, size, MSG_DONTWAIT | MSG_NOSIGNAL);
+        ssize_t sent;
+        if (port.transport) sent = port.transport->send_batch(port.fd.get(), frames.data(), port.pending_count);
+        else {
+            sent = ::send(port.fd.get(), frames[0].first, frames[0].first_size, MSG_DONTWAIT | MSG_NOSIGNAL);
+            if (sent == static_cast<ssize_t>(frames[0].size())) sent = 1;
+            else if (sent >= 0) { errno = EIO; sent = -1; }
+        }
         if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
-            if (errno == EINTR)
-                return true;
+            if (errno == EINTR) return true;
             Counters::add(worker.counters.send_eagain);
             task.blocked = set_output_interest(tasks, task, true);
-            return false; // Retain the pointer; only EPOLLOUT makes this TX runnable again.
+            return false; // Retain the entire unsubmitted prefix until EPOLLOUT.
         }
-        port.pending->release();
-        port.pending = nullptr;
-        port.pending_source = nullptr;
-        if (sent == static_cast<ssize_t>(size)) {
-            Counters::add(worker.counters.frames_tx);
-            Counters::add(worker.counters.bytes_tx, size);
+        if (sent > 0 && static_cast<std::size_t>(sent) <= port.pending_count) {
+            const auto done = static_cast<std::size_t>(sent);
+            for (std::size_t i = 0; i < done; ++i) {
+                Counters::add(worker.counters.frames_tx);
+                Counters::add(worker.counters.bytes_tx, port.pending[i].buffer->size);
+                port.pending[i].buffer->release();
+            }
+            port.pending_count -= done;
+            for (std::size_t i = 0; i < port.pending_count; ++i) port.pending[i] = port.pending[i + done];
         } else {
-            Counters::add(worker.counters.send_errors);
+            Counters::add(worker.counters.send_errors, port.pending_count);
+            discard_pending(port);
             disconnect(port);
         }
         return true;
@@ -461,8 +477,10 @@ class Engine {
             if (tasks.fresh) {
                 worker.version.store(plan.version, std::memory_order_relaxed);
                 tasks.fresh = false;
-                for (auto &rx : tasks.rx)
-                    rx.port->rx_retry = {}; // Re-evaluate pool state under the new owner.
+                for (auto &rx : tasks.rx) {
+                    rx.ready = rx.port->transport && rx.port->transport->receive_pending();
+                    rx.port->rx_retry = {};
+                } // Re-evaluate pool state under the new owner.
                 collect_events(tasks, worker, false);
                 worker.since_events = 0;
             }
@@ -589,10 +607,17 @@ class Engine {
         return plan;
     }
 
-    static void discard_pending(Port &port) {
-        port.pending->release();
-        port.pending = nullptr;
-        port.pending_source = nullptr;
+    static std::uint64_t discard_pending(Port &port, const Plan *next = nullptr) {
+        std::size_t kept = 0;
+        std::uint64_t dropped = 0;
+        for (std::size_t i = 0; i < port.pending_count; ++i) {
+            const auto frame = port.pending[i];
+            if (next && next->tx_owner.count(&port) && next->tx_owner.count(frame.source))
+                port.pending[kept++] = frame;
+            else { frame.buffer->release(); ++dropped; }
+        }
+        port.pending_count = kept;
+        return dropped;
     }
 
   public:
@@ -625,10 +650,7 @@ class Engine {
         if (!plan_)
             return;
         for (auto &port : plan_->ports)
-            if (port->pending) {
-                discard_pending(*port);
-                ++shutdown_drops_;
-            }
+            shutdown_drops_ += discard_pending(*port);
         for (auto &link : plan_->links)
             shutdown_drops_ += link.second->discard();
     }
@@ -639,16 +661,17 @@ class Engine {
     void replace(std::vector<std::shared_ptr<Port>> ports) {
         // All allocation (including private lookup tables and poll scratch)
         // precedes the barrier. Failure leaves the current plan fully usable.
-        auto next = make_plan(std::move(ports));
+        publish(prepare(std::move(ports)));
+    }
+    std::unique_ptr<Plan> prepare(std::vector<std::shared_ptr<Port>> ports) {
+        return make_plan(std::move(ports));
+    }
+    void publish(std::unique_ptr<Plan> next) {
+        // ACTIVE has been queued. Everything below is allocation-free.
         const auto began = Clock::now();
         pause();
-        for (auto &port : plan_->ports) {
-            if (port->pending && (!next->tx_owner.count(port.get()) ||
-                                  !next->tx_owner.count(port->pending_source))) {
-                discard_pending(*port);
-                ++reconfiguration_drops_;
-            }
-        }
+        for (auto &port : plan_->ports)
+            reconfiguration_drops_ += discard_pending(*port, next.get());
         for (auto &link : plan_->links)
             if (!next->links.count(link.first))
                 reconfiguration_drops_ += link.second->discard();
@@ -710,6 +733,7 @@ class Engine {
         for (std::size_t i = 0; i < plan_->ports.size(); ++i) {
             const auto &port = *plan_->ports[i];
             in_use += port.pool.in_use();
+            if (port.transport) port.transport->write_stats(out, "port_" + std::to_string(i) + "_ipc_");
             out << "port_" << i << "_name=" << port.name << "\nport_" << i
                 << "_generation=" << port.generation << "\nport_" << i
                 << "_kind=" << kind_name(port.kind) << "\nport_" << i

@@ -272,3 +272,22 @@ starts with two forwarding workers, splits when another port arrives and merges
 again while duplex traffic continues. CPU sampling is checked independently of
 packet rate. Resource-failure and multi-port stress tools, plus a reproducible
 before/after MP benchmark, live in [experiments/switch_mp](../experiments/switch_mp/README.md).
+
+## Switch IPC V2
+
+- `switch_v2_test`: strict record codecs, sealed memfds, token generations,
+  mixed inline/mmap, batch prefixes, rollback, FD cleanup, client probe and
+  independent-process transfer of 32,768 mixed-size frames.
+- `switch_v2_integration_test`: independent Python/libatomic wire peer, V1/V2
+  variants, invalid records/references, replacement/timeout, injected allocation
+  and ACTIVE failures, blocked-output worker migration and 20 tunnels with
+  1/2/3 adapters.
+- `switch_v2_path_test`: real tuntom V5 crypto/reassembly and adapter loop with
+  only TUN I/O substituted by a private socketpair. Verifies mmap and client
+  mapping-failure fallback, payloads, reverse routing and actual multi-frame TX
+  batches from already queued adapter input. No real service or interface changes.
+
+The bounded V1 test double in `switch_reconnect_test` rejects unnamed V2 probes
+before accepting the original registration. Historical IPC experiments explicitly
+select V1. The MP load driver additionally accepts `MODE BATCH` after its original
+arguments for the [V2 comparison](../experiments/switch_mp/mmap_bench.py).

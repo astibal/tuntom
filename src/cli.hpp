@@ -27,6 +27,8 @@ inline void usage(const char* program_name) {
            "tuntom routing hop\n"
         << "  --switch-socket <path>  Exchange labeled packets with tuntom-switch\n"
         << "  --switch-port-id <name> Stable identity of this switch connection\n"
+        << "  --switch-ipc <mode>    auto (default), v1, inline (V2 without mmap)\n"
+        << "  --switch-ipc-batch <n> Maximum references per record, 1..16 (default 8)\n"
         << "  --switch-label <n>      Label assigned to DATA received from UDP\n"
         << "  --switch-exit-node      Allow IPC EXIT delivery through a local TUN\n"
         << "\n"
@@ -117,6 +119,12 @@ inline void parse_options(
             options.switch_socket = argv[i];
             if (options.switch_socket.empty())
                 throw std::runtime_error("--switch-socket must not be empty");
+        } else if (option == "--switch-ipc") {
+            if (++i >= argc) throw std::runtime_error("--switch-ipc requires a value");
+            options.switch_ipc.mode = ipc::parse_mode(argv[i]);
+        } else if (option == "--switch-ipc-batch") {
+            if (++i >= argc) throw std::runtime_error("--switch-ipc-batch requires a value");
+            options.switch_ipc.batch = static_cast<std::uint32_t>(parse_size_option(option, argv[i], 1, ipc::max_batch));
         } else if (option == "--switch-label") {
             if (++i >= argc) throw std::runtime_error("--switch-label requires a value");
             if (argv[i][0] == '-') throw std::runtime_error("Invalid --switch-label");

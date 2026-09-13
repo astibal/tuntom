@@ -45,12 +45,20 @@ def fill_queue(stack, path):
 
 
 def accept_port(stack, listener, port):
-    peer, _ = listener.accept()
-    stack.enter_context(peer)
-    peer.settimeout(2)
+    # Emulate an actual V1 switch: reject an unnamed V2 probe, then accept
+    # the client's single legacy retry. Do not pretend HELLO is a registration.
     encoded = port.encode()
-    assert peer.recv(128) == b"TTP\x01" + bytes([len(encoded), 0, 0, 0]) + encoded
-    return peer
+    for attempt in range(2):
+        peer, _ = listener.accept()
+        stack.enter_context(peer)
+        peer.settimeout(2)
+        data = peer.recv(128)
+        if attempt == 0 and data.startswith(b"TTX\x02"):
+            peer.close()
+            continue
+        assert data == b"TTP\x01" + bytes([len(encoded), 0, 0, 0]) + encoded
+        return peer
+    raise AssertionError("legacy registration missing after probe")
 
 
 def drain_fillers(listener):

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common.hpp"
+#include "ipc/switch_v2.hpp"
 #include <algorithm>
 #include <cstdint>
 #include <iomanip>
@@ -60,6 +61,7 @@ struct Options {
     std::string control_socket;
     StatsFormat stats_format = StatsFormat::txt;
     std::string switch_socket;
+    ipc::Options switch_ipc;
     std::string switch_port_id;
     std::uint64_t switch_label = 0;
     bool switch_label_set = false;

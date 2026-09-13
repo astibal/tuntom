@@ -325,3 +325,11 @@ compile directly and do not require CMake.
 - [Nonblocking switch connection](docs/DETAILS.md#nonblocking-switch-connection) - reconnect state machine and deadlines.
 - [Test coverage](tests/README.md) - switching, adapters and lifecycle regression tests.
 - [tuntom README](README.md) - UDP tunnel setup, transport, security and operations.
+
+## Optional IPC V2
+
+`tomtom-switch-mp` and new tuntom/adapter clients support negotiated
+[V2 shared-memory payloads and grouped references](docs/SWITCH_PROTOCOL_V2.md).
+The single-thread `tuntom-switch` continues serving V1; automatic clients probe
+without a port name and fall back to V1. `--switch-ipc v1` skips the probe and
+`--switch-ipc inline` explicitly selects V2 without shared payloads.

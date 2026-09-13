@@ -10,16 +10,25 @@ Keep legacy inline compatibility, per-slot ownership, ordering, RX/TX fairness
 and the existing switch architecture. Single-frame mmap or mmsg alone is not
 the complete desired implementation.
 
-Status: selected for the next phase; only the isolated mmap benchmark exists so far.
-The compatible socket/worker prerequisite is implemented and measured as of
-2026-09-12: per-worker readiness, wake handling, cached lookup/queue state and
-small-topology pairing. Its 81-run comparison shows lower CPU at light/sparse
-loads; saturated active topologies have similar throughput. Keep mmap as a
-separate follow-up, as requested. See [socket-phase reproduction](experiments/switch_mp/README.md#socket-phase-ab-comparison).
-Finalize the batch capability/wire format and bounded send/receive integration,
-then verify the real tuntom -> switch -> adapter path, including multiple ports,
-backpressure, reconnect, CPU cache placement and equal offered-load comparisons.
-See the [experiment and reproduction instructions](experiments/ipc_batch/README.md).
+Status: implemented on 2026-09-13 as [switch IPC V2](docs/SWITCH_PROTOCOL_V2.md),
+with a [Czech mechanism guide](docs/SWITCH_MMAP_CZ.md). MP and the tunnel/adapter
+clients negotiate optional sealed mmap pools and single/grouped references;
+legacy clients and the single-thread V1 switch remain compatible. Bounded TX
+batches, pending RX references, worker migration, backpressure and reconnect
+handling are integrated. Default slots carry 16 KiB and larger valid frames go
+inline; memory and batch limits are configurable.
+
+Verification includes independent wire peers, invalid mappings/references,
+fault injection, 20 tunnels + 1/2/3 adapters, cached batches across worker
+migration, and the real V5 tunnel/adapter path with a simulated kernel TUN.
+ASan, UBSan and TSan checks pass. The actual MP comparison is in
+[the V2 results](experiments/switch_mp/RESULTS_V2_2026-09-13.md), with
+[a reproduction harness](experiments/switch_mp/README.md#ipc-v2-comparison).
+Do not equate its whole-switch results with the older isolated mmap experiment:
+actual batches depend on ready traffic and unchanged per-ingress RR quotas.
+
+The earlier compatible socket/worker phase remains implemented and measured;
+see [its reproduction](experiments/switch_mp/README.md#socket-phase-ab-comparison).
 
 ## Statistics write strategy
 

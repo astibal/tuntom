@@ -1,8 +1,8 @@
 # Switch IPC: optional mmap payload transport
 
-Status: **implementation direction approved by the user on 2026-09-12;
-not implemented in production**. Byte assignments below remain draft
-assignments. The existing [v1 protocol](SWITCH_PROTOCOL_V1.md) remains valid.
+Status: **historical design and benchmark rationale**. The implemented
+[V2 protocol](SWITCH_PROTOCOL_V2.md) supersedes the original draft byte
+assignments and single-reference assumptions below. V1 remains unchanged.
 
 ## Accepted implementation direction: batched mmap references
 

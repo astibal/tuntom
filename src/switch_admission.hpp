@@ -17,18 +17,18 @@ struct SwitchCapacity {
 
     // Pending slots remain separate so a full port table still permits a
     // replacement registration. At least one slot of each kind is required.
-    SwitchCapacity limited_to(std::size_t free_fds) const {
-        if (free_fds < fd_reserve + 2)
+    SwitchCapacity limited_to(std::size_t free_fds, std::size_t pending_fds = 1) const {
+        if (!pending_fds || free_fds < fd_reserve + pending_fds + 1)
             throw std::runtime_error("Insufficient FD capacity for switch ports, registration and control reserve");
         const auto budget = free_fds - fd_reserve;
-        const auto effective_pending = std::min(pending, budget - 1);
-        return {std::min(ports, budget - effective_pending), effective_pending};
+        const auto effective_pending = std::min(pending, (budget - 1) / pending_fds);
+        return {std::min(ports, budget - effective_pending * pending_fds), effective_pending};
     }
 
     // Startup only, before the logger thread starts. Count inherited FDs too,
     // excluding the temporary directory FD and FDs above the soft limit (which
     // can exist if the parent lowered its limit after opening them).
-    SwitchCapacity for_process(std::size_t additional_reserve = 0) const {
+    SwitchCapacity for_process(std::size_t additional_reserve = 0, std::size_t pending_fds = 1) const {
         rlimit limit {};
         if (::getrlimit(RLIMIT_NOFILE, &limit) < 0)
             throw std::runtime_error("Cannot read switch RLIMIT_NOFILE");
@@ -51,7 +51,7 @@ struct SwitchCapacity {
         const auto free_fds = limit.rlim_cur > used ? limit.rlim_cur - used : 0;
         const auto available = static_cast<std::size_t>(std::min<rlim_t>(
             free_fds, std::numeric_limits<std::size_t>::max()));
-        return limited_to(available - std::min(available, additional_reserve));
+        return limited_to(available - std::min(available, additional_reserve), pending_fds);
     }
 };
 

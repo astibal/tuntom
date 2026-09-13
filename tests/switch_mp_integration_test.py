@@ -31,7 +31,7 @@ def until(check, timeout=8):
 
 
 class Switch:
-    def __init__(self, binary, *options, affinity=None):
+    def __init__(self, binary, *options, affinity=None, env=None):
         self.directory = tempfile.TemporaryDirectory(prefix="tomtom-mp-test.")
         self.root = Path(self.directory.name)
         self.data, self.control = self.root / "data", self.root / "control"
@@ -39,7 +39,7 @@ class Switch:
         self.peers = []
         self.process = subprocess.Popen(
             [binary, "--socket", str(self.data), "--control-socket", str(self.control), *options],
-            stdout=subprocess.DEVNULL, stderr=self.stderr,
+            stdout=subprocess.DEVNULL, stderr=self.stderr, env=env,
             preexec_fn=(lambda: os.sched_setaffinity(0, affinity)) if affinity else None)
         try:
             def ready():

@@ -3,8 +3,9 @@
 For setup, flow rules and lifecycle hooks, see the
 [label-switching README](../README_SWITCHING.md).
 
-An optional [mmap transport extension](SWITCH_MMAP_EXTENSION_DRAFT.md) is proposed
-separately. It is not implemented and does not change the v1 format below.
+The optional [V2 mmap transport](SWITCH_PROTOCOL_V2.md) adds negotiated shared
+pools and grouped references in the MP switch and clients. It preserves the V1
+format below and automatic fallback to V1-only switches.
 
 The switch protocol connects tuntom link processes to a deliberately small
 label switch. All processes connect to one Unix `SOCK_SEQPACKET` listener in

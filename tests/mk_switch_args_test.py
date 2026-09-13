@@ -21,7 +21,9 @@ printf '%s\n' \
   "server_tun=$server_has_tun" \
   "switch_enabled=$switch_enabled" \
   "all_tools=$all_tools" \
-  "crypto_option=$crypto_option"
+  "crypto_option=$crypto_option" \
+  "client_ipc=${client_ipc_args[*]}" \
+  "server_ipc=${server_ipc_args[*]}"
 '''
 
 
@@ -57,6 +59,7 @@ expected = {
     "switch_enabled=1",
     "all_tools=0",
     "crypto_option=",
+    "client_ipc=", "server_ipc=",
 }
 if set(output.splitlines()) != expected:
     raise RuntimeError(f"unexpected parsed switch options:\n{output}")
@@ -82,3 +85,10 @@ for required in (
         raise RuntimeError(f"all-tools build is missing: {required}")
 
 print("PASS: mk_tunnel per-side switch options and TUN selection")
+
+output = run("--client-switch", "/tmp/x", "a", "1", "--server-switch", "/tmp/y", "b", "2",
+             "--client-switch-ipc", "v1", "--server-switch-ipc", "auto", "--server-switch-ipc-batch", "16")
+assert "client_ipc=--switch-ipc v1" in output
+assert "server_ipc=--switch-ipc auto --switch-ipc-batch 16" in output
+run("--client-switch-ipc", "auto", ok=False)
+run("--client-switch", "/tmp/x", "a", "1", "--client-switch-ipc-batch", "17", ok=False)

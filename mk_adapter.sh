@@ -11,6 +11,8 @@ Usage: $0 <ifname> --switch-socket <path> --switch-port-id <port> [options]
 Build and restart one local TUN adapter; no SSH or tunnel secret is needed.
 
   --control-socket <path>  Default /run/tuntom/<ifname>.control
+  --switch-ipc <mode>     auto (default), v1, inline (V2 without mmap)
+  --switch-ipc-batch <n>  Maximum references per record (1..16, default 8)
   --mtu <n>               Default TUNTOM_MTU or 1500 (576..65535)
   --l4-capacity <n>        Default 1000000 (1..100000000)
   --l3-capacity <n>        Default 250000 (1..100000000)
@@ -35,6 +37,13 @@ main() {
         case "$1" in
             --switch-socket) local_value "$@"; switch_socket="$2"; shift ;;
             --switch-port-id) local_value "$@"; port_id="$2"; shift ;;
+            --switch-ipc)
+                local_value "$@"
+                [[ "$2" == auto || "$2" == v1 || "$2" == inline ]] || local_die "Invalid IPC mode"
+                service_args+=("$1" "$2"); shift ;;
+            --switch-ipc-batch)
+                local_value "$@"; local_number "$1" "$2" 1 16
+                service_args+=("$1" "$2"); shift ;;
             --mtu) local_value "$@"; mtu="$2"; shift ;;
             --l4-capacity|--l3-capacity|--l4-timeout|--l3-timeout)
                 local_value "$@"

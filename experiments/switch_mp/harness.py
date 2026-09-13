@@ -213,6 +213,8 @@ def load_case(binary, driver_binary, case, cpus, directory, tag, extra_options=(
                 command = [str(driver_binary), str(switch.data), str(case["size"]), str(case["duration"]),
                            str(case["rate"]), csv(source_cpus), csv(sink_cpus), str(int(case.get("verify_all", False))),
                            str(tunnels), str(adapters), case.get("direction", "duplex"), case.get("shape", "equal")]
+                if "ipc_mode" in case:
+                    command += [case["ipc_mode"], str(case.get("ipc_batch", 8))]
                 driver = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                           stderr=errors, text=True, start_new_session=True)
                 assert readline(driver, 15) == "READY"

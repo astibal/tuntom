@@ -280,3 +280,20 @@ pending-buffer migration, exhausted pools, reconnect generation cleanup,
 registration limits/timeouts and interoperability with the existing tunnel.
 The same unit and IPC suites can run against ThreadSanitizer builds. These
 tests do not create TUN devices or change host network configuration.
+
+## IPC V2: shared payload pools
+
+MP and new clients negotiate [V2 mmap transport](docs/SWITCH_PROTOCOL_V2.md) by
+default. Old clients remain V1; new clients automatically retry V1 on an old
+switch. V2 retains the same routing, pointer matrix, scheduler and V1 label frame.
+
+`--ipc-mode auto|v1|inline`, `--ipc-batch 1..16` (default 8),
+`--ipc-slots 1..128` (default 128), `--ipc-frame-capacity 17..65607` (default
+16384) and `--ipc-memory-mib N` (default 256) are
+also accepted by `mk_switch_mp.sh`, including dry-run/auto-pool. The default geometry costs about 4 MiB per
+connection and covers 9000-byte jumbo payloads. Larger frames go inline; a
+connection that cannot fit the memory budget also negotiates inline. The budget includes pending same-name replacements.
+
+See the protocol guide for ownership/token diagrams, resource bounds, fallback,
+backpressure, per-port statistics and a source map. `--switch-ipc` and
+`--switch-ipc-batch` select client behavior in tuntom and the adapter.

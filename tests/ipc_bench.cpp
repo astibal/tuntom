@@ -30,7 +30,7 @@ int main(int argc, char** argv) {
     const double rate = std::stod(argv[4]);
     if (size < 8 or size > 65535 or duration <= 0 or rate < 0) return 2;
     pin(std::stoi(argv[5]));
-    tuntom::SwitchClient source(argv[1], "source"), sink(argv[1], "sink");
+    tuntom::SwitchClient source(argv[1], "source", {tuntom::ipc::Mode::legacy}), sink(argv[1], "sink", {tuntom::ipc::Mode::legacy});
     source.start_connect(Clock::now());
     sink.start_connect(Clock::now());
     if (not source.connected() or not sink.connected()) return 3;

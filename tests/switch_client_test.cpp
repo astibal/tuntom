@@ -3,7 +3,12 @@
 #include <fcntl.h>
 #include <iostream>
 
-using Client = tuntom::SwitchClient;
+// These tests pin the original V1 contract. V2 negotiation has separate tests.
+class Client : public tuntom::SwitchClient {
+public:
+    Client(const std::string &path, const std::string &id)
+        : SwitchClient(path, id, {tuntom::ipc::Mode::legacy}) {}
+};
 using namespace std::chrono_literals;
 
 static void require(bool ok, const char* message) {

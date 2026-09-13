@@ -28,6 +28,12 @@ Build and restart a local tomtom-switch-mp instance.
   --queue-size <n>         Pointers per RX-TX pair (default 128)
                           All numbers above: 1..65535
 
+  --ipc-mode <mode>       auto (default), v1, inline (V2 without mmap)
+  --ipc-batch <n>         Maximum references per socket record (1..16, default 8)
+  --ipc-slots <n>         Shared slots per direction (1..128, default 128)
+  --ipc-frame-capacity <n> Bytes per shared slot (17..65607, default 16384)
+  --ipc-memory-mib <n>    Active + pending mmap budget (default 256)
+
   --auto-pool             Inspect affinity, physical cores and cgroup v2 quota;
                           choose worker cap and aggregate weights after pre/up
   --reserve-cpus <n>      With --auto-pool: leave N CPUs outside the worker budget
@@ -115,6 +121,19 @@ main() {
                 local_value "$@"; service_args+=("$1" "$2"); shift ;;
             --max-ports|--max-pending|--workers|--work-per-thread|--rx-weight|--tx-weight|--adapter-weight|--trunk-weight|--pool-size|--queue-size)
                 local_value "$@"; local_number "$1" "$2" 1 65535
+                service_args+=("$1" "$2"); shift ;;
+            --ipc-mode)
+                local_value "$@"
+                [[ "$2" == auto || "$2" == v1 || "$2" == inline ]] || local_die "Invalid IPC mode"
+                service_args+=("$1" "$2"); shift ;;
+            --ipc-batch|--ipc-slots|--ipc-frame-capacity|--ipc-memory-mib)
+                local_value "$@"
+                case "$1" in
+                    --ipc-batch) local_number "$1" "$2" 1 16 ;;
+                    --ipc-slots) local_number "$1" "$2" 1 128 ;;
+                    --ipc-frame-capacity) local_number "$1" "$2" 17 65607 ;;
+                    *) local_number "$1" "$2" 1 65535 ;;
+                esac
                 service_args+=("$1" "$2"); shift ;;
             --reserve-cpus)
                 local_value "$@"; local_number "$1" "$2" 0 65535

@@ -20,6 +20,10 @@ Switch ports (the tuntom-switch listener must already be running):
   --server-switch <socket> <port-id> <label>
   --client-switch-exit-node
   --server-switch-exit-node
+  --client-switch-ipc <auto|v1|inline>
+  --server-switch-ipc <auto|v1|inline>
+  --client-switch-ipc-batch <1..16>
+  --server-switch-ipc-batch <1..16>
 EOF
 }
 
@@ -46,6 +50,8 @@ server_switch_socket=""
 server_switch_port_id=""
 server_switch_label=""
 server_switch_exit_node=0
+client_ipc_args=()
+server_ipc_args=()
 
 while (( $# > 0 )); do
     case "$1" in
@@ -100,6 +106,18 @@ while (( $# > 0 )); do
             fi
             shift 3
             ;;
+        --client-switch-ipc|--server-switch-ipc|--client-switch-ipc-batch|--server-switch-ipc-batch)
+            if (( $# < 2 )); then echo "$1 requires a value" >&2; exit 1; fi
+            ipc_option="--switch-ipc"
+            if [[ "$1" == *-batch ]]; then
+                ipc_option="--switch-ipc-batch"
+                if ! [[ "$2" =~ ^([1-9]|1[0-6])$ ]]; then echo "IPC batch must be 1..16" >&2; exit 1; fi
+            elif [[ "$2" != auto && "$2" != v1 && "$2" != inline ]]; then
+                echo "IPC mode must be auto, v1 or inline" >&2; exit 1
+            fi
+            if [[ "$1" == --client-* ]]; then client_ipc_args+=("$ipc_option" "$2")
+            else server_ipc_args+=("$ipc_option" "$2"); fi
+            shift ;;
         --client-switch-exit-node)
             client_switch_exit_node=1
             ;;
@@ -128,6 +146,12 @@ if (( server_switch_exit_node )) && [[ -z "$server_switch_socket" ]]; then
     exit 1
 fi
 
+if (( ${#client_ipc_args[@]} )) && [[ -z "$client_switch_socket" ]]; then
+    echo "Client IPC options require --client-switch" >&2; exit 1
+fi
+if (( ${#server_ipc_args[@]} )) && [[ -z "$server_switch_socket" ]]; then
+    echo "Server IPC options require --server-switch" >&2; exit 1
+fi
 client_has_tun=1
 server_has_tun=1
 if [[ -n "$client_switch_socket" ]] && (( ! client_switch_exit_node )); then
@@ -146,8 +170,8 @@ shell_join() {
     printf '%s' "$output"
 }
 
-client_switch_args=()
-server_switch_args=()
+client_switch_args=("${client_ipc_args[@]}")
+server_switch_args=("${server_ipc_args[@]}")
 if [[ -n "$client_switch_socket" ]]; then
     client_switch_args+=(
         --switch-socket "$client_switch_socket"

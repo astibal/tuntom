@@ -4,6 +4,7 @@
 #include "../throughput_stats.hpp"
 #include "config.hpp"
 #include "runtime.hpp"
+#include "../ipc/switch_handshake.hpp"
 #include <algorithm>
 #include <array>
 #include <csignal>
@@ -50,6 +51,14 @@ class Listener {
 struct Pending {
     Fd fd;
     Clock::time_point deadline;
+    tuntom::ipc::ServerHandshake handshake;
+    std::shared_ptr<Port> candidate;
+    int socket() const { return candidate ? candidate->fd.get() : fd.get(); }
+    void discard() { fd = Fd(); candidate.reset(); handshake = tuntom::ipc::ServerHandshake(); }
+    std::uint64_t mapping_bytes() const {
+        const auto *transport = candidate ? candidate->transport.get() : handshake.transport.get();
+        return transport ? transport->mapping_bytes() : 0;
+    }
 };
 struct AdmissionStats {
     std::uint64_t accepted = 0, registered = 0, invalid = 0, timed_out = 0, rejected = 0;
@@ -73,21 +82,25 @@ int main(int argc, char **argv) {
         if (!config.control.empty())
             control = std::make_unique<tuntom::ControlSocket>(config.control);
         Engine engine(config, budget); // Count current eventfds/epolls in FD capacity.
-        const auto capacity = config.capacity.for_process(budget); // Reserve the next plan's epolls.
+        const auto capacity = config.capacity.for_process(budget, config.ipc.mode == tuntom::ipc::Mode::automatic ? 3 : 1); // Reserve the next plan's epolls.
         std::vector<Pending> pending;
         std::vector<pollfd> descriptors;
         pending.reserve(capacity.pending);
         descriptors.reserve(capacity.ports + capacity.pending + 3);
-        std::array<std::uint8_t,
-                   tuntom::switch_registration_header_size + tuntom::switch_max_port_id_size>
-            registration;
         const auto started_at = Clock::now();
         tuntom::SwitchAdmission admission(started_at);
         tuntom::RuntimeRecovery recovery;
         tuntom::ThroughputStats throughput({"switch_rx", "switch_tx"});
         throughput.update(started_at, {{0, 0}, {0, 0}});
         AdmissionStats stats;
-        std::uint64_t generation = 0;
+        std::uint64_t generation = 0, epoch = 0;
+        const auto mapping_bytes = [&] {
+            std::uint64_t bytes = 0;
+            for (const auto &port : engine.plan().ports)
+                if (port->transport) bytes += port->transport->mapping_bytes();
+            for (const auto &entry : pending) bytes += entry.mapping_bytes();
+            return bytes;
+        };
 
         struct sigaction action{};
         action.sa_handler = request_stop;
@@ -139,6 +152,8 @@ int main(int argc, char **argv) {
                     << "\ntrunk_weight=" << config.policy.trunk_weight
                     << "\npool_size=" << config.pool_size << "\nqueue_size=" << config.queue_size
                     << '\n';
+                out << "ipc_version_max=2\nipc_memory_budget=" << config.mmap_budget
+                    << "\nipc_mapping_bytes=" << mapping_bytes() << '\n';
                 engine.write_stats(out);
                 recovery.write_stats(out);
                 admission.write_stats(out, now);
@@ -154,7 +169,7 @@ int main(int argc, char **argv) {
                 const auto now = Clock::now();
                 pending.erase(std::remove_if(pending.begin(), pending.end(),
                                              [&](const auto &entry) {
-                                                 if (entry.fd.get() < 0)
+                                                 if (entry.socket() < 0)
                                                      return true;
                                                  if (now < entry.deadline)
                                                      return false;
@@ -183,7 +198,7 @@ int main(int argc, char **argv) {
                 descriptors.push_back({control ? control->poll_fd() : -1, POLLIN, 0});
                 descriptors.push_back({engine.event_fd(), POLLIN, 0});
                 for (const auto &entry : pending)
-                    descriptors.push_back({entry.fd.get(), POLLIN, 0});
+                    descriptors.push_back({entry.socket(), entry.handshake.events(), 0});
                 // HUP monitoring also retires a closed ingress whose pool is full.
                 for (const auto &port : engine.plan().ports)
                     descriptors.push_back({port->fd.get(), 0, 0});
@@ -206,50 +221,58 @@ int main(int argc, char **argv) {
                     if (!descriptors[3 + i].revents)
                         continue;
                     if (Clock::now() >= entry.deadline) {
-                        entry.fd = Fd();
-                        ++stats.timed_out;
-                        continue;
-                    }
-                    const auto received = ::recv(entry.fd.get(), registration.data(),
-                                                 registration.size(), MSG_DONTWAIT | MSG_TRUNC);
-                    if (received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
-                        continue;
-                    if (received <= 0) {
-                        entry.fd = Fd();
-                        continue;
+                        entry.discard(); ++stats.timed_out; continue;
                     }
                     try {
-                        std::string id;
-                        if (static_cast<std::size_t>(received) > registration.size() ||
-                            !tuntom::decode_switch_registration(
-                                registration.data(), static_cast<std::size_t>(received), id)) {
-                            ++stats.invalid;
-                            entry.fd = Fd();
-                            continue;
+                        auto &handshake = entry.handshake;
+                        if (!handshake.activation_ready()) handshake.step(entry.socket(), config.ipc, epoch);
+                        if (handshake.failed()) { ++stats.invalid; entry.discard(); continue; }
+                        const auto admission_allowed = [&] {
+                            const auto &ports = engine.plan().ports;
+                            return ports.size() < capacity.ports || std::any_of(ports.begin(), ports.end(),
+                                [&](const auto &port) { return port->name == handshake.id; });
+                        };
+                        if (handshake.identified()) {
+                            if (!admission_allowed()) { ++stats.rejected; entry.discard(); continue; }
+                            const auto used = mapping_bytes();
+                            handshake.prepare(config.mmap_budget - std::min(used, config.mmap_budget));
+                        }
+                        if (!handshake.activation_ready()) continue;
+                        // Recheck capacity: another pending registration may have
+                        // activated while this peer was mapping its pools.
+                        if (!admission_allowed()) { ++stats.rejected; entry.discard(); continue; }
+                        if (!entry.candidate) {
+                            entry.candidate = std::make_shared<Port>(std::move(entry.fd), handshake.id, ++generation,
+                                config.kind(handshake.id), config.pool_size, std::move(handshake.transport));
                         }
                         auto ports = engine.plan().ports;
                         auto old = std::find_if(ports.begin(), ports.end(),
-                                                [&](const auto &port) { return port->name == id; });
-                        if (old == ports.end() && ports.size() >= capacity.ports) {
-                            ++stats.rejected;
-                            entry.fd = Fd();
-                            continue;
+                            [&](const auto &port) { return port->name == handshake.id; });
+                        if (old == ports.end()) ports.push_back(entry.candidate);
+                        else *old = entry.candidate;
+                        // Prepare against the CURRENT plan on every attempt. An
+                        // EAGAIN cannot leave a stale plan that revives retired ports.
+                        auto next = engine.prepare(std::move(ports));
+                        if (Clock::now() >= entry.deadline) {
+                            ++stats.timed_out; entry.discard(); continue;
                         }
-                        auto port = std::make_shared<Port>(std::move(entry.fd), id, ++generation,
-                                                           config.kind(id), config.pool_size);
-                        if (old == ports.end())
-                            ports.push_back(std::move(port));
-                        else
-                            *old = std::move(port);
-                        engine.replace(std::move(ports));
+                        if (!handshake.legacy) {
+                            const auto active = tuntom::ipc::state(tuntom::ipc::Type::active, handshake.parameters());
+                            const auto sent = tuntom::ipc::send_record(entry.socket(), active);
+                            if (sent < 0 && tuntom::ipc::retry_error()) continue;
+                            if (sent != static_cast<ssize_t>(active.size)) { entry.discard(); continue; }
+                        }
+                        entry.candidate->transport->close_pool_fds();
+                        engine.publish(std::move(next)); // Allocation-free activation after ACTIVE.
+                        entry.candidate.reset();
                         ++stats.registered;
                     } catch (...) {
-                        // The registration record is consumed; force a reconnect
-                        // on allocation failure, preserving any old live port.
-                        entry.fd = Fd();
+                        // No unsuccessful handshake can replace the old named port.
+                        entry.discard();
                         throw;
                     }
                 }
+
                 // Accept after processing poll indices, since this grows pending.
                 if (descriptors[0].revents & POLLIN) {
                     const auto accepted_at = Clock::now();
@@ -263,7 +286,7 @@ int main(int argc, char **argv) {
                             ++stats.accepted;
                             pending.push_back(
                                 {Fd(fd),
-                                 accepted_at + tuntom::SwitchAdmission::registration_timeout});
+                                 accepted_at + tuntom::SwitchAdmission::registration_timeout, {}, {}});
                         }
                     }
                 }

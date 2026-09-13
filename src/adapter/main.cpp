@@ -56,6 +56,8 @@ void usage(const char* program) {
         << "Usage: " << program << " <ifname> --switch-socket <path>"
         << " --switch-port-id <name> [options]\n"
         << "  --control-socket <path>  Local tuntomctl socket\n"
+        << "  --switch-ipc <mode>   auto (default), v1, inline (V2 without mmap)\n"
+        << "  --switch-ipc-batch <n> Maximum references per record, 1..16 (default 8)\n"
         << "  --mtu <n>             TUN MTU (default 1500)\n"
         << "  --l4-capacity <n>     L4 LRU entries (default 1000000)\n"
         << "  --l3-capacity <n>     L3 LRU entries (default 250000)\n"
@@ -77,6 +79,7 @@ int main(int argc, char** argv) {
             return 1;
         }
         const std::string interface_name = argv[1];
+        ipc::Options ipc_options;
         std::string socket_path;
         std::string port_id;
         std::string control_path;
@@ -92,7 +95,10 @@ int main(int argc, char** argv) {
                 return 0;
             }
             if (++index >= argc) throw std::runtime_error(option + " requires a value");
-            if (option == "--switch-socket") socket_path = argv[index];
+            if (option == "--switch-ipc") ipc_options.mode = ipc::parse_mode(argv[index]);
+            else if (option == "--switch-ipc-batch")
+                ipc_options.batch = static_cast<std::uint32_t>(parse_size(option, argv[index], 1, ipc::max_batch));
+            else if (option == "--switch-socket") socket_path = argv[index];
             else if (option == "--switch-port-id") port_id = argv[index];
             else if (option == "--control-socket") control_path = argv[index];
             else if (option == "--mtu") mtu = parse_size(option, argv[index], 576, 65535);
@@ -111,7 +117,7 @@ int main(int argc, char** argv) {
 
         TunDevice tun(interface_name, mtu);
         tun.set_up();
-        SwitchClient switch_client(socket_path, port_id);
+        SwitchClient switch_client(socket_path, port_id, ipc_options);
         ExitAdapterRoutes routes(
             l3_capacity, l4_capacity,
             std::chrono::seconds(l3_timeout),
@@ -147,8 +153,16 @@ int main(int argc, char** argv) {
 
         const auto disconnect_switch = [&] {
             ++stats.switch_disconnects;
+            stats.switch_disconnected_drops += switch_client.discard_staged().drops;
             switch_client.disconnect();
             next_connect = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        };
+
+        const auto account_switch_output = [&](const SwitchClient::Outcome &out) {
+            stats.switch_tx_packets += out.frames; stats.switch_tx_bytes += out.bytes;
+            stats.switch_backpressure_drops += out.backpressure;
+            stats.switch_send_errors += out.drops - out.backpressure;
+            if (out.error) disconnect_switch();
         };
 
         const auto try_switch_reconnect = [&](SwitchClient::Time now, short revents = 0) {
@@ -181,22 +195,9 @@ int main(int argc, char** argv) {
                 ++stats.switch_disconnected_drops;
             } else if (routes.lookup(
                     packet.data(), static_cast<std::size_t>(size), tx_labels)) {
-                const auto frame_size = switch_base_header_size +
-                    tx_labels.size() * switch_label_size + static_cast<std::size_t>(size);
-                const ssize_t sent = switch_client.send_frame(
+                account_switch_output(switch_client.append_frame(
                     SwitchOpcode::switch_packet, tx_labels.data(), tx_labels.size(), packet.data(),
-                    static_cast<std::size_t>(size));
-                if (sent != static_cast<ssize_t>(frame_size)) {
-                    if (sent < 0 and (errno == EAGAIN or errno == EWOULDBLOCK)) {
-                        ++stats.switch_backpressure_drops;
-                    } else {
-                        ++stats.switch_send_errors;
-                        disconnect_switch();
-                    }
-                } else {
-                    ++stats.switch_tx_packets;
-                    stats.switch_tx_bytes += frame_size;
-                }
+                    static_cast<std::size_t>(size)));
             } else {
                 ++stats.cache_miss_drops;
             }
@@ -243,6 +244,7 @@ int main(int argc, char** argv) {
         };
 
         const auto data_backlog_ready = [&] {
+            if (switch_client.receive_pending()) return true;
             pollfd pending[2] {
                 {tun.fd(), POLLIN, 0},
                 {switch_client.connected() ? switch_client.fd() : -1, POLLIN, 0},
@@ -287,6 +289,7 @@ int main(int argc, char** argv) {
                     << "switch_backpressure_drops=" << stats.switch_backpressure_drops << "\n"
                     << "switch_reconnect_attempts=" << stats.switch_reconnect_attempts << "\n"
                     << "switch_reconnects=" << stats.switch_reconnects << "\n";
+                switch_client.write_stats(out);
                 recovery.write_stats(out);
                 tuntom::logger.write_stats(out);
                 adaptive_polling.write_stats(out);
@@ -337,7 +340,7 @@ int main(int argc, char** argv) {
                 const bool initially_ready[2] {
                     (descriptors[0].revents & POLLIN) != 0,
                     switch_client.connected() and
-                        (descriptors[1].revents & POLLIN) != 0,
+                        ((descriptors[1].revents & POLLIN) != 0 || switch_client.receive_pending()),
                 };
                 const unsigned rounds = adaptive_polling.batch_size();
                 const auto slice_started = AdaptivePolling::Clock::now();
@@ -358,6 +361,8 @@ int main(int argc, char** argv) {
                     }
                 }
 
+                if (switch_client.connected()) account_switch_output(switch_client.flush());
+
                 if (adaptive_polling.should_check_backlog())
                     adaptive_polling.observe_backlog(
                         data_backlog_ready(), AdaptivePolling::Clock::now());
@@ -368,6 +373,7 @@ int main(int argc, char** argv) {
                     {stats.switch_rx_packets, stats.switch_rx_bytes},
                     {stats.switch_tx_packets, stats.switch_tx_bytes}});
             } catch (const std::bad_alloc&) {
+                stats.switch_send_errors += switch_client.discard_staged().drops;
                 recovery.allocation_failed();
             }
         }

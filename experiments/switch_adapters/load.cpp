@@ -126,7 +126,7 @@ int main(int argc, char **argv) {
   for (unsigned i = 0; i < ports; ++i) {
     clients[i] = std::make_unique<tuntom::SwitchClient>(
         argv[1], i >= tunnels ? "adapter" + std::to_string(i - tunnels)
-                              : "tunnel" + std::to_string(i));
+                              : "tunnel" + std::to_string(i), tuntom::ipc::Options{tuntom::ipc::Mode::legacy});
     clients[i]->start_connect(Clock::now());
     if (!clients[i]->connected())
       return 3;

@@ -65,7 +65,7 @@ public:
         }
         if (not options_.switch_socket.empty()) {
             switch_ = std::make_unique<SwitchClient>(
-                options_.switch_socket, options_.switch_port_id);
+                options_.switch_socket, options_.switch_port_id, options_.switch_ipc);
         }
         if (not options_.control_socket.empty())
             control_ = std::make_unique<ControlSocket>(options_.control_socket);
@@ -183,7 +183,7 @@ public:
                 const bool initially_ready[3] {
                     (descriptors[0].revents & POLLIN) != 0,
                     (descriptors[1].revents & POLLIN) != 0,
-                    (descriptors[2].revents & POLLIN) != 0,
+                    (descriptors[2].revents & POLLIN) != 0 || (switch_ && switch_->receive_pending()),
                 };
                 const unsigned rounds = adaptive_polling_.batch_size();
                 const auto slice_started = AdaptivePolling::Clock::now();
@@ -207,6 +207,8 @@ public:
                         break;
                     }
                 }
+
+                if (switch_ && switch_->connected()) account_switch_output(switch_->flush());
 
                 if (switch_ and
                     (descriptors[2].revents & (POLLHUP | POLLERR | POLLNVAL)) != 0) {
@@ -272,6 +274,7 @@ public:
                     last_stats_write = now;
                 }
             } catch (const std::bad_alloc&) {
+                if (switch_) stats_.switch_drops += switch_->discard_staged().drops;
                 recovery_.allocation_failed();
             }
         }
@@ -353,6 +356,7 @@ private:
     }
 
     bool data_backlog_ready() const {
+        if (switch_ && switch_->receive_pending()) return true;
         pollfd descriptors[3] {
             {tun_ ? tun_->fd() : -1, POLLIN, 0},
             {udp_.fd(), POLLIN, 0},
@@ -726,31 +730,25 @@ private:
                 ++stats_.switch_drops;
                 return;
             }
-            const auto frame_size = switch_base_header_size + switch_label_size +
-                packet.payload.size();
-            const ssize_t written = switch_->send_frame(
-                SwitchOpcode::switch_packet,
-                &options_.switch_label, 1,
-                packet.payload.data(),
-                packet.payload.size());
-            if (written != static_cast<ssize_t>(frame_size)) {
-                const int error = written < 0 ? errno : EIO;
-                ++stats_.switch_drops;
-                if (error == EAGAIN or error == EWOULDBLOCK)
-                    ++stats_.switch_backpressure_drops;
-                else {
-                    ++stats_.switch_send_errors;
-                    disconnect_switch(error);
-                }
-                return;
-            }
-            ++stats_.switch_tx_packets;
-            stats_.switch_tx_bytes += static_cast<std::uint64_t>(written);
-            ++stats_.data_rx_packets;
+            account_switch_output(switch_->append_frame(
+                SwitchOpcode::switch_packet, &options_.switch_label, 1,
+                packet.payload.data(), packet.payload.size()));
             return;
         }
 
         deliver_to_tun(packet);
+    }
+
+    void account_switch_output(const SwitchClient::Outcome &out) {
+        stats_.switch_tx_packets += out.frames;
+        stats_.switch_tx_bytes += out.bytes;
+        stats_.data_rx_packets += out.frames;
+        stats_.switch_drops += out.drops;
+        stats_.switch_backpressure_drops += out.backpressure;
+        if (out.error) {
+            ++stats_.switch_send_errors;
+            disconnect_switch(out.error);
+        }
     }
 
     void deliver_to_tun(Packet& packet) {
@@ -858,6 +856,7 @@ private:
     void disconnect_switch(int error) {
         if (not switch_ or not switch_->connected()) return;
         record_switch_error(error);
+        stats_.switch_drops += switch_->discard_staged().drops;
         switch_->disconnect();
         ++stats_.switch_disconnects;
         next_switch_reconnect_ =
@@ -1507,6 +1506,7 @@ private:
             << "switch_socket_other_errors=" << stats_.switch_socket_other_errors << "\n"
             << "switch_last_error_ts=" << stats_.switch_last_error_ts << "\n"
             << "switch_last_error_no=" << stats_.switch_last_error_no << "\n";
+        if (switch_) switch_->write_stats(output);
         recovery_.write_stats(output);
         logger.write_stats(output);
         adaptive_polling_.write_stats(output);

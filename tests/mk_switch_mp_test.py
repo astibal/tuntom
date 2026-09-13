@@ -86,6 +86,15 @@ cp -- "$TEST_PLANNER" "${@: -1}"
         assert shlex.split(command)[1] == str(directory / "bin/switch-demo/main")
         fields, _ = run("--dry-run", "--workers", "1")
         assert fields["option.adapter-weight"] == "2" and fields["reserved_cpus"] == "0"
+        _, output = run("--dry-run", "--auto-pool", "--ipc-mode", "inline", "--ipc-batch", "16",
+                        "--ipc-slots", "32", "--ipc-frame-capacity", "65607", "--ipc-memory-mib", "512")
+        command = shlex.split(next(line for line in output.splitlines() if line.startswith("Command:")))
+        for option, value in (("--ipc-mode", "inline"), ("--ipc-batch", "16"), ("--ipc-slots", "32"),
+                              ("--ipc-frame-capacity", "65607"), ("--ipc-memory-mib", "512")):
+            assert command[command.index(option) + 1] == value
+        for option, value in (("--ipc-mode", "wrong"), ("--ipc-batch", "17"), ("--ipc-slots", "129"),
+                              ("--ipc-frame-capacity", "16"), ("--ipc-frame-capacity", "65608")):
+            run("--dry-run", option, value, ok=False)
         for arguments in (("--workers", "0"), ("--pool-size", "65536"), ("--queue-size", "-1"),
                           ("--tx-weight",), ("--reserve-cpus", "1"), ("--stop",),
                           ("--auto-pool", "--reserve-cpus", str(available)),
