@@ -17,6 +17,8 @@ inline void usage(const char* program_name) {
         << "  " << program_name
         << " client <id> <ifname> <host> [options]\n"
         << "\n"
+        << "Tunnel IDs: 1..255, optionally followed by _1.._63 for a group member\n"
+        << "\n"
         << "Transport options:\n"
         << "  --mtu <n>             TUN/inner MTU (default 1500)\n"
         << "  --transport-mtu <n>   Transport MTU / initial PMTUD target "
@@ -217,14 +219,21 @@ inline void parse_options(
 }
 
 inline std::uint16_t parse_tunnel_id(const char* value) {
-    const unsigned long parsed = std::stoul(value);
-
-    if (parsed == 0 or parsed > 255) {
-        throw std::runtime_error(
-            "Tunnel id must be in range 1..255");
-    }
-
-    return static_cast<std::uint16_t>(parsed);
+    const std::string text(value);
+    const auto separator = text.find('_');
+    const auto parse_part = [](const std::string& part, unsigned maximum) {
+        if (part.empty() or part.size() > 3 or part.front() == '0' or
+            part.find_first_not_of("0123456789") != std::string::npos)
+            throw std::runtime_error("Invalid tunnel ID; use 1..255 or ID_1..ID_63");
+        const auto number = std::stoul(part);
+        if (number > maximum)
+            throw std::runtime_error("Invalid tunnel ID; use 1..255 or ID_1..ID_63");
+        return number;
+    };
+    const auto group = parse_part(text.substr(0, separator), 255);
+    const auto member = separator == std::string::npos ? 0UL :
+        parse_part(text.substr(separator + 1), 63);
+    return static_cast<std::uint16_t>(group + 256 * member);
 }
 
 } // namespace tuntom

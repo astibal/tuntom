@@ -23,6 +23,16 @@ bool parse_fails(std::vector<std::string> arguments) {
 }
 
 int main() {
+    require(parse_tunnel_id("42") == 42, "base tunnel ID changed");
+    require(parse_tunnel_id("42_1") == 298, "member key is incorrect");
+    require(parse_tunnel_id("255_63") == 16383, "maximum member key is incorrect");
+    for (const auto* bad : {"", "0", "256", "298", "42_0", "42_64", "42_1_2",
+                            "42_", "42x", "042", "42_01", "-1", "+42", " 42"}) {
+        bool rejected = false;
+        try { (void)parse_tunnel_id(bad); }
+        catch (const std::exception&) { rejected = true; }
+        require(rejected, "invalid tunnel/member ID accepted");
+    }
     std::vector<std::string> arguments {
         "--switch-socket", "/run/tuntom/a.sock",
         "--switch-port-id", "edge-42",

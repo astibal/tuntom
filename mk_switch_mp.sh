@@ -12,7 +12,7 @@ Build and restart a local tomtom-switch-mp instance.
 
   --socket <path>          Listener (default /run/tuntom/<name>.sock)
   --control-socket <path>  Stats socket (default /run/tuntom/<name>.control)
-  --route <in>:<label>=<out>:<label>   Repeatable static flow rule
+  --route <in>:<label>=<out>:<label>   Trailing * on either port; multiple outputs use ECMP
   --exit-port <port>       Repeatable adapter port (EXIT delivery)
   --trunk-port <port>      Repeatable aggregate port (SWITCH delivery)
   --default-back=off|on    Default off
@@ -48,6 +48,8 @@ Build and restart a local tomtom-switch-mp instance.
   --stop                  Stop this named switch, either implementation
   -h, --help
 
+Quote wildcard routes, e.g. --route 'internet:1001=edge-42*:44'.
+Wildcard port counts are unknown until clients register.
 Explicit weights override auto weights. Auto scheduling uses declared ports,
 not measured traffic. The printed role plan assumes those ports are connected;
 the switch assigns roles as ports actually register. Reserve is a worker-count

@@ -75,13 +75,15 @@ For the bootstrap workflow, both hosts need:
 - Standard system utilities, including `tar`, `mktemp`, `getent`, `useradd`, and `groupadd`.
 - Synchronized clocks for the v5 handshake.
 
-The caller also needs `ssh`, working SSH key authentication, and `flock`.
+The caller also needs `ssh` and working SSH key authentication. Both hosts need
+`flock`; the server also uses `ss` from iproute2 to check new member UDP ports.
 When started as a normal local user, the script uses `sudo` for privileged
 local operations, explicitly preserving only `TUNTOM_*` variables by name.
 This works with both classic `sudo` and `sudo-rs`; it does not use `sudo -E`.
 The remote SSH account must already have root privileges:
 remote commands do not use `sudo`. A bare hostname selects `root@host`.
-The server's UDP port (`40000 + tunnel ID`) must be reachable from the client.
+The server's UDP ports (`40000 + group ID + 256 * member index`) must be
+reachable from the client; a single tunnel uses index zero.
 
 To invoke the entire script through `sudo`, export the secret first and use
 `sudo --preserve-env=TUNTOM_SECRET ./mk_tunnel.sh ...`. Add other required
@@ -137,21 +139,82 @@ For a local smoke test, use `localhost` as the host (root SSH access is still re
 
 ## Configuration
 
-Tunnel IDs range from **1 to 255** and determine interface names, addresses,
-and the server UDP port.
+Group IDs range from **1 to 255**. Each group supports up to **64 simultaneous
+tunnels**, named `42`, `42_1`, `42_2`, and so on. A single-member group keeps the
+original interface names, addresses and UDP port.
 
 ### Bootstrap options
 
 | Option | Effect |
 | --- | --- |
+| `--count <1..64>` | Start/restart a group with this many members; omitted: saved count, or 1 for a new group |
 | `--crypto-auth-only` | Disable payload encryption and PFS; retain AMAC authentication |
 | `--no-stats` | Disable automatic stats file writes; keep live metrics and socket queries |
+| `--no-address` | Skip TUN IPv4/IPv6 address assignment, peer address routes and tunnel pings on both hosts |
 | `--snat` / `--no-snat` | Enable / disable IPv4 MASQUERADE; default: off |
 | `--mss-clamp` / `--no-mss-clamp` | Enable / disable TCP MSS clamping; default: on |
-| `--stop` | Stop and clean up the tunnel on both hosts |
+| `--stop` | Stop and clean up the entire saved group on both hosts |
 
 Switch attachment and companion-tool build options are documented in
 [label-switch bootstrap options](README_SWITCHING.md#connect-tunnel-endpoints).
+
+Use `./mk_tunnel.sh 42 sx2 --no-address` when routing directly to the TUN device
+or using label switching without endpoint IP addresses. Any retained TUN is
+still brought up with the configured MTU; network helpers and lifecycle hooks
+still run. The final check verifies both processes instead of pinging the peer;
+it does not verify end-to-end data delivery. `TUNTOM_PREFIX16` is ignored in this
+mode. Hooks receive `TUNTOM_NO_ADDRESS=1` and empty endpoint address variables
+(see [lifecycle hooks](docs/DETAILS.md#lifecycle-hooks)). Pass `--no-address` on
+restart as well; stop uses the saved configuration and hook snapshots.
+
+### Tunnel groups
+
+```bash
+./mk_tunnel.sh 42 sx2 --count 4 --no-address
+./mk_tunnel.sh 42 sx2 --count 2 --no-address  # Resize/restart the whole group
+./mk_tunnel.sh 42 sx2 --stop                 # Stop every saved member
+```
+
+Both hosts compile once per operation. Members run as separate processes, each
+with its own TUN (unless it is a pure switch port), session keys, UDP port,
+connection mark, policy table, firewall chains, log, stats and control socket.
+Startup and network configuration are sequential; all members remain running
+together. For member index `i`, the numeric instance key is `ID + 256*i`:
+
+| Instance | TUN client/server | IPv4 client/server | UDP port | Policy table |
+| --- | --- | --- | --- | --- |
+| `42` | `ut42c` / `ut42s` | `10.254.42.1` / `.2` | `40042` | `10042` |
+| `42_1` | `ut42_1c` / `ut42_1s` | `10.254.42.5` / `.6` | `40298` | `10298` |
+| `42_2` | `ut42_2c` / `ut42_2s` | `10.254.42.9` / `.10` | `40554` | `10554` |
+
+IPv4 endpoint host numbers are `4*i+1` and `4*i+2`. IPv6 uses the same host
+numbers in hexadecimal in the final hextet. Point-to-point address setup is
+unchanged. `--no-address` skips both families for every member.
+
+The bootstrap reserves mark bits `0xffff0000`, with `instance_key << 16`, and
+table `10000 + instance_key`. Existing legacy rules are cleaned with their old
+mask before replacement. Multi-member groups require automatic `TUNTOM_MARK`,
+`TUNTOM_MARK_MASK` and `TUNTOM_TABLE`; explicit overrides are rejected.
+`TUNTOM_CHAIN` supplies a common base (1..20 letters/digits/underscores), with
+the member suffix appended. Switch port IDs likewise gain `_1`, `_2`, etc.;
+their labels remain as supplied. Configure the switch routes for these ports,
+or use group hooks for shared routing policy. Starting several tunnels does
+not itself distribute traffic among them.
+
+Root-owned state and hook snapshots are saved under
+`/var/lib/tuntom-mk/client/ID` locally and `/var/lib/tuntom-mk/server/ID` remotely.
+The `active/manifest.tsv` lists endpoint resources, switch sockets and whether
+each side has a TUN; configuration excludes
+`TUNTOM_SECRET`. Locks cover both hosts, and a saved owner prevents another
+caller from taking over the same server group. A group stays bound to its
+recorded SSH target until stopped. Restart/resize tears down the old group
+using its saved hooks and settings, then starts the requested configuration.
+
+Build/preflight failures leave the old group running. If startup or a group
+up hook fails after teardown, the attempted new members and shared hook
+resources are cleaned up; the old processes are not restarted automatically.
+The saved state remains available for a retry or `--stop`. A failed stop also
+retains state for retry. There is no automatic runtime failover or supervisor.
 
 ### Environment
 
@@ -164,6 +227,8 @@ Switch attachment and companion-tool build options are documented in
 | `TUNTOM_STATS_FORMAT` | `txt` | Statistics format; currently only `txt` |
 | `TUNTOM_PRE_HOOK` | `/etc/tuntom/tuntom-pre.sh` | Local source for pre-action hooks |
 | `TUNTOM_POST_HOOK` | `/etc/tuntom/tuntom-post.sh` | Local source for post-action hooks |
+| `TUNTOM_GROUP_PRE_HOOK` | Unset | Local source for a hook run once per host before group up/down |
+| `TUNTOM_GROUP_POST_HOOK` | Unset | Local source for a hook run once per host after group up/down |
 
 For example:
 
@@ -311,8 +376,10 @@ marking, policy routing for replies, forwarding rules, MSS clamping, and optiona
 MASQUERADE. Configure the routes, forwarding sysctls, and application-specific
 policy needed by your topology; IPv6 forwarding/firewall policy is separate.
 
-Optional hook files exist on the caller only. Their content runs locally and
-is streamed over SSH for remote execution. Missing hooks are skipped.
+Optional hook source files live on the caller. Their content is snapshotted
+with the group configuration, runs locally and is streamed over SSH for remote
+execution. Missing hooks are skipped. Teardown uses the saved snapshots even
+if the original source files have changed or disappeared.
 
 ```text
 pre/down -> network cleanup -> post/down
@@ -322,6 +389,11 @@ pre/up   -> network setup   -> post/up
 Hooks receive `TUNTOM_SIDE=local|remote`, `TUNTOM_ACTION=up|down`,
 `TUNTOM_PHASE=pre|post`, plus tunnel addresses, interface names, and networking
 settings. Use `post/up` to add custom routes or DNAT rules.
+Per-member hooks also receive `TUNTOM_INSTANCE`, `TUNTOM_INSTANCE_KEY`,
+`TUNTOM_MEMBER_INDEX`, and `TUNTOM_MEMBER_COUNT`; `TUNTOM_ID` remains the group
+ID. Use the instance key for member-specific numeric priorities, and keep shared
+routes or service publication in the group hooks. Group `post/up` runs after
+all member checks; group `pre/down` runs before stopping any member.
 See [hook context](docs/DETAILS.md#lifecycle-hooks) and the
 [service ingress example](examples/tuntom-service-ingress-hook.example.sh).
 

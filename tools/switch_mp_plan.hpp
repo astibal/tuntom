@@ -15,6 +15,7 @@ struct PlanOptions {
 struct StartupProfile {
     Config config;
     std::size_t budget = 1, reserved = 0, tunnels = 0, adapters = 0, trunks = 0;
+    std::size_t wildcard_patterns = 0;
     std::vector<Kind> ports;
     Assignment assignment;
 };
@@ -48,11 +49,16 @@ inline StartupProfile startup_profile(Config config, const Hardware &hardware,
 
     std::set<std::string> names(config.exits.begin(), config.exits.end());
     names.insert(config.trunks.begin(), config.trunks.end());
+    std::set<std::string> patterns;
+    const auto add_name = [&](const std::string &name) {
+        if (wildcard_port(name)) patterns.insert(name);
+        else names.insert(name);
+    };
     for (const auto &source : config.routes) {
-        names.insert(source.first);
-        for (const auto &route : source.second)
-            names.insert(route.second.port);
+        add_name(source.first);
+        for (const auto &route : source.second) add_name(route.second.port);
     }
+    result.wildcard_patterns = patterns.size();
     for (const auto &name : names) {
         const auto kind = config.kind(name);
         result.ports.push_back(kind);

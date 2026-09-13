@@ -1,6 +1,7 @@
 #pragma once
 
 #include "config.hpp"
+#include "../switch_ecmp.hpp"
 #include "queues.hpp"
 #include "../ipc/switch_transport.hpp"
 #include <atomic>
@@ -60,6 +61,7 @@ struct Port {
     const std::string name;
     const std::uint64_t generation;
     const Kind kind;
+    const std::uint64_t identity;
     std::atomic<bool> disconnected{false};
     alignas(64) Pool pool; // RX-owned state must not share TX's writable cache line.
     Clock::time_point rx_retry{};
@@ -71,7 +73,8 @@ struct Port {
 
     Port(Fd socket, std::string id, std::uint64_t serial, Kind role, std::size_t size,
          std::unique_ptr<ipc::Transport> ipc_transport = {})
-        : fd(std::move(socket)), name(std::move(id)), generation(serial), kind(role), pool(size),
+        : fd(std::move(socket)), name(std::move(id)), generation(serial), kind(role),
+          identity(ecmp_port_identity(name)), pool(size),
           transport(std::move(ipc_transport)) {}
 };
 
@@ -97,9 +100,12 @@ struct ResolvedRoute {
     std::uint64_t label = 0;
     bool exit = false;
 };
+struct ResolvedGroup {
+    std::vector<ResolvedRoute> members;
+};
 struct RxTask {
     Port *port;
-    std::unordered_map<std::uint64_t, ResolvedRoute> routes;
+    std::unordered_map<std::uint64_t, ResolvedGroup> routes;
     ResolvedRoute fallback;
     bool ready = false; // Retain readiness across RR turns until recv returns EAGAIN.
 };
@@ -145,7 +151,7 @@ struct Plan {
 
 #define TUNTOM_MP_COUNTERS(X)                                                                      \
     X(frames_rx)                                                                                   \
-    X(bytes_rx) X(frames_tx) X(bytes_tx) X(route_hits) X(route_misses) X(target_disconnected)      \
+    X(bytes_rx) X(frames_tx) X(bytes_tx) X(route_hits) X(route_misses) X(target_disconnected) X(ecmp_packets) \
         X(default_back) X(exit_deliveries) X(malformed_frames) X(rx_errors) X(send_errors)         \
             X(queue_full_drops) X(pool_stalls) X(send_eagain) X(wake_calls) X(worker_poll_errors) \
         X(recv_calls) X(recv_eagain) X(send_calls) X(wake_reads) X(cpu_samples)
@@ -269,14 +275,21 @@ class Engine {
         const auto route = task.routes.find(frame.label(0));
         if (route != task.routes.end()) {
             Counters::add(stats.route_hits);
-            link = route->second.link;
-            tx_worker = route->second.tx_worker;
-            if (!link || link->target->disconnected.load(std::memory_order_relaxed)) {
+            EcmpSelector selector(frame);
+            const ResolvedRoute *selected = nullptr;
+            for (const auto &member : route->second.members) {
+                const auto &target = *member.link->target;
+                if (target.disconnected.load(std::memory_order_relaxed)) continue;
+                if (selector.consider(target.identity, target.name)) selected = &member;
+            }
+            if (selector.multipath()) Counters::add(stats.ecmp_packets);
+            if (!selected) {
                 Counters::add(stats.target_disconnected);
-                link = nullptr;
             } else {
-                store_be64(buffer->data + switch_base_header_size, route->second.label);
-                if (route->second.exit) {
+                link = selected->link;
+                tx_worker = selected->tx_worker;
+                store_be64(buffer->data + switch_base_header_size, selected->label);
+                if (selected->exit) {
                     buffer->data[1] = static_cast<std::uint8_t>(SwitchOpcode::exit_packet);
                     Counters::add(stats.exit_deliveries);
                 }
@@ -541,15 +554,24 @@ class Engine {
         for (std::size_t i = 0; i < plan->ports.size(); ++i) {
             auto &port = plan->ports[i];
             RxTask rx{port.get(), {}, {}};
-            const auto routes = config_.routes.find(port->name);
-            if (routes != config_.routes.end()) {
-                for (const auto &item : routes->second) {
+            const auto routes = routes_for_port(config_.routes, port->name);
+            for (const auto &item : routes) {
+                ResolvedGroup group;
+                const auto add_member = [&](const std::shared_ptr<Port> &target) {
+                    auto *link = link_for(port, target);
+                    group.members.push_back({link, plan->tx_owner.at(target.get()), item.second.label,
+                                             config_.exits.count(target->name) != 0});
+                };
+                if (wildcard_port(item.second.port)) {
+                    for (const auto &target : plan->ports)
+                        if (route_port_matches(item.second.port, target->name)) add_member(target);
+                } else {
                     const auto target = names.find(item.second.port);
-                    Link *link = target == names.end() ? nullptr : link_for(port, target->second);
-                    rx.routes.emplace(item.first,
-                                      ResolvedRoute{link, link ? plan->tx_owner.at(link->target.get()) : 0, item.second.label,
-                                                    config_.exits.count(item.second.port) != 0});
+                    if (target != names.end()) add_member(target->second);
                 }
+                // Keep empty groups: a configured but unavailable target is not
+                // a route miss and must never trigger default-back.
+                rx.routes.emplace(item.first, std::move(group));
             }
             if (config_.default_back)
                 rx.fallback = {link_for(port, port), plan->tx_owner.at(port.get()), 0, true};

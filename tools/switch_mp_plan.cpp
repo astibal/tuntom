@@ -38,6 +38,8 @@ int main(int argc, char **argv) {
                   << "\nconfigured.tunnels=" << profile.tunnels
                   << "\nconfigured.adapters=" << profile.adapters
                   << "\nconfigured.trunks=" << profile.trunks
+                  << "\nconfigured.wildcard_patterns=" << profile.wildcard_patterns
+                  << "\nconfigured.port_counts=" << (profile.wildcard_patterns ? "lower_bound" : "exact")
                   << "\nworkers.pool=" << profile.budget
                   << "\nworkers.active_when_connected=" << profile.assignment.active
                   << "\nworkers.idle_when_connected=" << profile.budget - profile.assignment.active << '\n';

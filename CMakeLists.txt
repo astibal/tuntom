@@ -34,7 +34,7 @@ if(BUILD_TESTING)
     target_compile_options(switch_mp_test PRIVATE -Wall -Wextra -Wconversion -pedantic)
     add_test(NAME switch_mp_test COMMAND switch_mp_test)
     set_tests_properties(switch_mp_test PROPERTIES TIMEOUT 30)
-    foreach(name udp_batch_test compact_protocol_test switch_protocol_test switch_v2_test switch_options_test switch_client_test switch_admission_test runtime_state_test logging_test exit_adapter_test stats_control_test session_stats_test session_latency_test x25519_test akdf_test pfs_session_test replay_test mac_test aead_test encrypted_session_test session_test processing_stats_test throughput_stats_test adaptive_polling_test reassembly_test)
+    foreach(name switch_ecmp_test udp_batch_test compact_protocol_test switch_protocol_test switch_v2_test switch_options_test switch_client_test switch_admission_test runtime_state_test logging_test exit_adapter_test stats_control_test session_stats_test session_latency_test x25519_test akdf_test pfs_session_test replay_test mac_test aead_test encrypted_session_test session_test processing_stats_test throughput_stats_test adaptive_polling_test reassembly_test)
         add_executable(${name} tests/${name}.cpp)
         target_compile_options(${name} PRIVATE -Wall -Wextra -Wconversion -pedantic)
         add_test(NAME ${name} COMMAND ${name})
@@ -47,6 +47,16 @@ if(BUILD_TESTING)
     set_tests_properties(logging_test PROPERTIES TIMEOUT 40)
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME switch_ecmp_integration_test COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/switch_ecmp_integration_test.py
+            $<TARGET_FILE:tuntom-switch> $<TARGET_FILE:tomtom-switch-mp>)
+        set_tests_properties(switch_ecmp_integration_test PROPERTIES TIMEOUT 90)
+        add_test(NAME mk_group_test COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/mk_group_test.py)
+        set_tests_properties(mk_group_test PROPERTIES TIMEOUT 90)
+        add_test(NAME mk_no_address_test COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/mk_no_address_test.py)
+        set_tests_properties(mk_no_address_test PROPERTIES TIMEOUT 30)
         add_test(NAME mk_switch_mp_test COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/mk_switch_mp_test.py $<TARGET_FILE:switch_mp_plan_fixture>)
         set_tests_properties(mk_switch_mp_test PROPERTIES TIMEOUT 30)

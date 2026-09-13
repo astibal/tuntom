@@ -41,6 +41,13 @@ int main() {
     }
     profile = startup_profile(topology(20, 3), Hardware{32, 16, quota_workers(250000, 100000)}, automatic);
     check(profile.budget == 1 && profile.reserved == 1, "Fractional quota is rounded down before reserving");
+    Config wildcard_config;
+    tuntom::add_switch_route(wildcard_config.routes, "internet:1001=edge-42*:44");
+    tuntom::add_switch_route(wildcard_config.routes, "edge-42*:17=internet:1001");
+    wildcard_config.exits.insert("internet");
+    const auto wildcard_profile = startup_profile(wildcard_config, xeon, automatic);
+    check(wildcard_profile.wildcard_patterns == 1 && wildcard_profile.tunnels == 0 &&
+          wildcard_profile.adapters == 1, "Wildcard is not a fictitious connected port");
     automatic.reserve = 0;
     profile = startup_profile(topology(20, 3), xeon, automatic);
     check(profile.budget == 16, "Zero reserve explicitly permits the full physical budget");

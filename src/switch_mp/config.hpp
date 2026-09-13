@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../ipc/switch_protocol.hpp"
+#include "../switch_routes.hpp"
 #include "../switch_admission.hpp"
 #include "scheduler.hpp"
 #include "../ipc/switch_v2.hpp"
@@ -14,11 +15,8 @@
 
 namespace tuntom::mp {
 
-struct RouteTarget {
-    std::string port;
-    std::uint64_t label = 0;
-};
-using PortRoutes = std::unordered_map<std::uint64_t, RouteTarget>;
+using RouteTarget = SwitchRouteTarget;
+using PortRoutes = SwitchPortRoutes;
 
 struct Config {
     std::string socket, control;
@@ -39,7 +37,7 @@ struct Config {
 inline void usage(std::ostream &out, const char *program) {
     out << "Usage: " << program << " --socket PATH [options]\n"
         << "  --control-socket PATH            tuntomctl show stats endpoint\n"
-        << "  --route IN:LABEL=OUT:LABEL       repeatable, same wire protocol as tuntom-switch\n"
+        << "  --route IN:LABEL=OUT:LABEL       trailing * on either port; multiple outputs use ECMP\n"
         << "  --exit-port ID                  adapter group; deliver EXIT opcode\n"
         << "  --trunk-port ID                 aggregate group; preserve SWITCH opcode\n"
         << "  --default-back=off|on           default off\n"
@@ -71,21 +69,6 @@ inline std::size_t number(const std::string &text) {
 
 inline void validate_port(const std::string &port) { (void)encode_switch_registration(port); }
 
-inline std::pair<std::string, std::uint64_t> endpoint(const std::string &text) {
-    const auto colon = text.rfind(':');
-    if (colon == std::string::npos || colon == 0 || colon + 1 == text.size())
-        throw std::runtime_error("Invalid route endpoint: " + text);
-    const auto port = text.substr(0, colon);
-    validate_port(port);
-    const auto label = text.substr(colon + 1);
-    if (label[0] == '-' || label.find_first_of(" \t\r\n") != std::string::npos)
-        throw std::runtime_error("Invalid label: " + label);
-    std::size_t used = 0;
-    const auto value = std::stoull(label, &used, 0);
-    if (used != label.size())
-        throw std::runtime_error("Invalid label: " + label);
-    return {port, value};
-}
 
 inline Config parse_config(int argc, char **argv) {
     Config config;
@@ -112,15 +95,7 @@ inline Config parse_config(int argc, char **argv) {
                 throw std::runtime_error("Duplicate " + option);
             path = value;
         } else if (option == "--route") {
-            const auto equals = value.find('=');
-            if (equals == std::string::npos)
-                throw std::runtime_error("Invalid route: " + value);
-            const auto input = endpoint(value.substr(0, equals));
-            const auto output = endpoint(value.substr(equals + 1));
-            if (!config.routes[input.first]
-                     .emplace(input.second, RouteTarget{output.first, output.second})
-                     .second)
-                throw std::runtime_error("Duplicate route: " + value);
+            add_switch_route(config.routes, value);
         } else if (option == "--exit-port" || option == "--trunk-port") {
             validate_port(value);
             auto &ports = option == "--exit-port" ? config.exits : config.trunks;

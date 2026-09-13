@@ -165,6 +165,8 @@ as described in the [tuntom quick start](README.md#quick-start).
 | `--server-switch <socket> <port-id> <label>` | Connect the remote/server side to an existing switch listener |
 | `--client-switch-exit-node` | Retain the client TUN and permit IPC `EXIT` delivery |
 | `--server-switch-exit-node` | Retain the server TUN and permit IPC `EXIT` delivery |
+| `--no-address` | Skip address assignment and peer address routes on retained TUNs; check processes instead of tunnel pings |
+| `--count <1..64>` | Start a group; append member suffixes to switch port IDs while retaining the supplied labels |
 
 Use `--all-tools` during deployment when the standalone switch utilities should
 be rebuilt together with the tunnel. They are installed as `/tmp/tuntom-switch`,
@@ -180,6 +182,13 @@ already running on that endpoint host:
 ./mk_tunnel.sh 42 site-router \
   --server-switch /run/tuntom/switch.sock edge-42 17
 ```
+
+With `--count 3`, the server ports above are `edge-42`, `edge-42_1` and
+`edge-42_2`, all using ingress label `17`. A route targeting `edge-42*` balances
+flows across the connected members; bootstrap does not create the switch rules.
+Per-group hooks receive a
+manifest containing every member's port and address resources. See
+[tunnel groups](README.md#tunnel-groups) for lifecycle and stop behavior.
 
 A pure switch side creates no TUN and skips its address, hook and kernel-network
 setup. Adding `--server-switch-exit-node` (or its client counterpart) retains
@@ -238,6 +247,75 @@ tuntom-switch --socket /run/tuntom/switch.sock \
   --route client-42:17=internet:1001 \
   --route internet:1001=client-42:44
 ```
+
+### Wildcard ports and ECMP
+
+Both switch implementations accept one trailing `*` in either route port ID.
+It matches zero or more characters after a literal prefix; `*` alone matches
+every registered port. Labels remain exact numbers. Quote CLI rules to prevent
+shell filename expansion:
+
+```bash
+--route 'internet:1001=edge-42*:44' \
+--route 'edge-42*:17=internet:1001'
+```
+
+The equivalent rules file is:
+
+```text
+exit-port internet
+route internet:1001=edge-42*:44
+route edge-42*:17=internet:1001
+```
+
+`edge-42*` includes `edge-42`, `edge-42_1`, `edge-42_2`, and also `edge-420` or
+`edge-42-backup`. Matching is case-sensitive. Interior/repeated stars are
+rejected; `?`, brackets and other characters are literal. A star in a route
+port ID is now reserved for this wildcard syntax; there is no escape syntax.
+`exit-port` and MP's `trunk-port` still name individual ports, not patterns.
+
+For each input label, an exact ingress port takes precedence over wildcard
+rules, then the longest matching prefix wins. CLI/rules-file order does not
+affect precedence. Duplicate input-pattern/label pairs remain an error. An
+unavailable target of a more specific rule does not fall through to a broader
+rule. Ingress matching is compiled at registration or MP plan preparation.
+
+One matching connected output forwards normally. Multiple outputs use equal
+cost multipath (ECMP), sending each packet to exactly one member and replacing
+the top label with the rule's output label. The chosen port's `exit-port` role
+determines whether delivery uses `EXIT`; labels below the top are preserved.
+Zero matching outputs drops the packet and increments `target_disconnected`,
+even with default-back enabled. Default-back only applies to an ingress route
+miss. A wildcard may match the ingress port itself; such a member is not
+implicitly excluded.
+
+ECMP uses vendored Linux SipHash-2-4. TCP/UDP packets use
+`H(source IP, source port) XOR H(destination IP, destination port)`; other IP
+packets use `H(source IP) XOR H(destination IP)`. Endpoint encoding includes
+the IP version and, for L4, the transport protocol. All IPv4 fragments and all
+IPv6 packets containing a fragment header use L3, including the first fragment.
+Switching between fragmented and unfragmented packets can therefore change a
+flow's path. Opaque/non-parseable IP payloads keep a stable path per label stack.
+Payload contents, TCP sequence numbers, worker IDs and connection generations
+do not affect the flow hash. A single available member skips flow hashing.
+
+Rendezvous selection uses stable public hash keys and the output port's full
+name. It gives the same result across ST/MP, IPC versions, restarts and
+registration order when the active names and packet key are the same. Adding
+a member moves flows only to that member; removing one moves only its flows.
+Registration, replacement and disconnection update membership automatically.
+Queued packets are not moved to another output on congestion. A membership
+change can briefly reorder packets; ECMP balances flows rather than bytes and
+one TCP connection uses one member. Symmetric flow keys alone do not guarantee
+the same physical return path through independently configured switches.
+
+Availability means a locally registered IPC connection. The switch has no
+remote UDP path-health signal; a live tunnel process whose remote link fails
+can remain an ECMP member. Rule changes still require a switch restart.
+`ecmp_packets` counts received packets selected with more than one available
+member, including packets later dropped by output backpressure.
+
+### Exit adapter behavior
 
 The adapter creates the named TUN and brings its link state up. IP addresses,
 routes, forwarding and any NAT rules remain explicit host configuration.

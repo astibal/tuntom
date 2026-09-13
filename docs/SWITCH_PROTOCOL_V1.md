@@ -18,6 +18,12 @@ TUN devices. Its data-plane operation is:
 (input port, top label) -> (output port, replacement top label)
 ```
 
+Route configuration also accepts trailing `*` port patterns. Multiple matched
+outputs use symmetric SipHash ECMP; the frame and registration formats stay
+unchanged. See [wildcard routes](../README_SWITCHING.md#wildcard-ports-and-ecmp)
+for precedence, membership, IP parsing and opaque-payload fallback. This local
+selection does not add labels or change the tuntom UDP wire protocol.
+
 ## Frame
 
 All integers use network byte order.

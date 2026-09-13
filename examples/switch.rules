@@ -3,3 +3,7 @@ exit-port internet
 route client-42:17=internet:1001
 route internet:1001=client-42:44
 default-back off
+
+# Alternative bidirectional tunnel-group rules (replace the routes above):
+# route internet:1001=edge-42*:44
+# route edge-42*:17=internet:1001

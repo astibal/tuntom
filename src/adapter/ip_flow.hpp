@@ -60,6 +60,7 @@ struct ParsedIpFlow {
     IpPairKey l3;
     FlowKey l4;
     bool has_l4 = false;
+    bool fragmented = false;
 };
 
 inline std::uint16_t load_u16(const std::uint8_t* data) {
@@ -82,17 +83,20 @@ inline bool parse_ip_flow(
         const std::size_t total_size = load_u16(packet + 2);
         if (header_size < 20 or header_size > size or total_size < header_size or
             total_size > size) return false;
+        size = total_size;
         parsed.l3.version = 4;
         std::memcpy(parsed.l3.source.data(), packet + 12, 4);
         std::memcpy(parsed.l3.destination.data(), packet + 16, 4);
         protocol = packet[9];
         offset = header_size;
         const std::uint16_t fragment = load_u16(packet + 6);
+        parsed.fragmented = (fragment & 0x3fffU) != 0;
         if ((fragment & 0x1fffU) != 0) return true;
     } else if (version == 6) {
         if (size < 40) return false;
         const std::size_t total_size = 40U + load_u16(packet + 4);
         if (total_size > size) return false;
+        size = total_size;
         parsed.l3.version = 6;
         std::memcpy(parsed.l3.source.data(), packet + 8, 16);
         std::memcpy(parsed.l3.destination.data(), packet + 24, 16);
@@ -101,6 +105,7 @@ inline bool parse_ip_flow(
         for (std::size_t count = 0; count < 8; ++count) {
             if (protocol == 44) {
                 if (offset + 8 > total_size) return false;
+                parsed.fragmented = true;
                 const std::uint16_t fragment = load_u16(packet + offset + 2);
                 protocol = packet[offset];
                 offset += 8;

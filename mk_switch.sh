@@ -13,7 +13,7 @@ The name/state/lock are shared with mk_switch_mp.sh; either can replace or stop 
 
   --socket <path>          Listener (default /run/tuntom/<name>.sock)
   --control-socket <path>  Stats socket (default /run/tuntom/<name>.control)
-  --route <in>:<label>=<out>:<label>   Repeatable static flow rule
+  --route <in>:<label>=<out>:<label>   Trailing * on either port; multiple outputs use ECMP
   --exit-port <port>       Repeatable exit adapter port
   --default-back=off|on    Default off
   --max-ports <n>          Registered port limit (default 256, range 1..65535)
@@ -25,6 +25,7 @@ The name/state/lock are shared with mk_switch_mp.sh; either can replace or stop 
   --stop                  Stop by name, using saved endpoints
   -h, --help
 
+Quote wildcard routes, e.g. --route 'internet:1001=edge-42*:44'.
 pre/up can write TUNTOM_RULES_FILE before configuration validation and restart.
 TUNTOM_RUN_DIR and TUNTOM_STATE_DIR override /run/tuntom and /run/tuntom-mk.
 TUNTOM_BIN_DIR overrides /var/lib/tuntom-mk (must allow execution).

@@ -102,6 +102,12 @@ cp -- "$TEST_PLANNER" "${@: -1}"
                           ("--route", "a:1=b:2", "--route", "a:1=c:2"), ("--route", "bad"),
                           ("--unknown", "1")):
             run("--dry-run", *arguments, ok=False)
+        rules.write_text("route internet:1001=edge-42*:44\nroute edge-42*:17=internet:1001\nexit-port internet\n")
+        fields, output = run("--dry-run", "--rules-file", rules)
+        assert fields["configured.wildcard_patterns"] == "1"
+        assert fields["configured.port_counts"] == "lower_bound" and fields["configured.tunnels"] == "0"
+        command = shlex.split(next(line for line in output.splitlines() if line.startswith("Command:")))
+        assert "internet:1001=edge-42*:44" in command and "edge-42*:17=internet:1001" in command
         rules.write_text("unknown nope\n")
         run("--dry-run", "--rules-file", rules, ok=False)
         print("PASS: MP dry-run, options, rules, manual precedence and no deployment side effects")

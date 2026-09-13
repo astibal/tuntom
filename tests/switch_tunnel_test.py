@@ -93,6 +93,65 @@ def check_startup_permission_failure(tuntom, switch):
             terminate(switch_process)
 
 
+def check_group_links(tuntom, switch, ctl):
+    """Three simultaneous encrypted links, distinct ports/keys, common labels."""
+    processes = []
+    with tempfile.TemporaryDirectory(prefix="tuntom-group-links.") as directory:
+        path = os.path.join(directory, "switch.sock")
+        routes = []
+        for index in range(3):
+            suffix = f"_{index}" if index else ""
+            routes += ["--route", f"app:{10 + 4 * index}=client{suffix}:99",
+                       "--route", f"server{suffix}:2=app:{11 + 4 * index}",
+                       "--route", f"app:{12 + 4 * index}=server{suffix}:99",
+                       "--route", f"client{suffix}:1=app:{13 + 4 * index}"]
+        try:
+            sw = subprocess.Popen([switch, "--socket", path, *routes],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            processes.append(sw)
+            wait_for([path], processes)
+            env = os.environ | {"TUNTOM_SECRET": "00112233445566778899aabbccddeeff"}
+            controls = []
+            for index in range(3):
+                suffix = f"_{index}" if index else ""
+                for side, label in (("server", "2"), ("client", "1")):
+                    control = os.path.join(directory, f"{side}{suffix}.control")
+                    controls.append(control)
+                    args = [tuntom, side, f"237{suffix}", "-"]
+                    if side == "client":
+                        args.append("localhost")
+                    args += ["--quiet", "--no-stats", "--switch-socket", path,
+                             "--switch-port-id", f"{side}{suffix}", "--switch-label", label,
+                             "--control-socket", control]
+                    processes.append(subprocess.Popen(args, env=env,
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.PIPE))
+            wait_for(controls, processes)
+            with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as app:
+                app.connect(path)
+                app.sendall(b"TTP\x01\x03\x00\x00\x00app")
+                app.settimeout(0.2)
+                for index in range(3):
+                    payload = b"\x45\x00\x00\x14group-link-" + bytes([index])
+                    for direction in (0, 2):
+                        label = 10 + 4 * index + direction
+                        exchange(app, payload, frame(label + 1, payload), processes, label)
+                    stats = subprocess.check_output([ctl, controls[2 * index], "show", "stats"],
+                                                    text=True)
+                    fields = dict(line.split("=", 1) for line in stats.splitlines())
+                    if fields.get("tunnel_id") != str(237 + 256 * index):
+                        raise RuntimeError("group member did not use its own numeric identity")
+                # Losing one member must not stop either of the other sessions.
+                terminate(processes[3])
+                live = [p for p in processes if p.poll() is None]
+                for index in (0, 2):
+                    label = 10 + 4 * index
+                    payload = b"\x45\x00\x00\x14surviving-link" + bytes([index])
+                    exchange(app, payload, frame(label + 1, payload), live, label)
+        finally:
+            for process in reversed(processes):
+                terminate(process)
+
+
 def main():
     tuntom = sys.argv[1]
     switch = sys.argv[2]
@@ -185,7 +244,8 @@ def main():
                 terminate(process)
 
     check_startup_permission_failure(tuntom, switch)
-    print("PASS: switch traffic, tuntomctl stats, reconnect and permission validation")
+    check_group_links(tuntom, switch, ctl)
+    print("PASS: switch traffic, concurrent group members, stats, reconnect and permissions")
 
 
 if __name__ == "__main__":

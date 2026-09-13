@@ -55,14 +55,12 @@ temporary src/ -> remote g++ -> remove temporary src/
 1. compiles the client locally from `../src/main.cpp`
 2. sends `../src/` as a tar stream over SSH into a temporary directory
 3. compiles it remotely and cleans up the temporary source directory
-4. stops the previous instance
-5. starts the server
-6. creates/configures the server TUN interface
-7. starts the client
-8. creates/configures the client TUN interface
-9. configures optional per-tunnel Linux networking
-10. runs lifecycle hooks
-11. tests the tunnel with ping
+4. saves the new group configuration and tears down the previous group using its saved hooks
+5. runs group `pre/up` on both hosts
+6. starts each member's server and client
+7. configures retained TUNs and their per-member network helpers/hooks
+8. checks each member (ping with addresses, process checks otherwise)
+9. rechecks all processes and runs group `post/up` on both hosts
 
 For normal remote use, the remote login defaults to `root`.
 
@@ -85,7 +83,14 @@ remote/server IP: 10.254.X.2
 UDP port: 40000 + X
 ```
 
-The current script accepts IDs from 1 to 255.
+The script accepts group IDs from 1 to 255 and `--count 1..64`. Additional
+members use names `X_1`, `X_2`, etc., numeric key `X + 256*i`, UDP port
+`40000 + X + 256*i`, and IPv4 endpoint host numbers `4*i+1` / `4*i+2`.
+IPv6 uses these host numbers in hexadecimal in its last hextet. `--no-address`
+omits address assignment and peer address routes. The binary itself accepts
+the canonical member names, for example `tuntom server 42_1 ut42_1s`.
+The numeric key is also the protocol's implicit tunnel context and its
+`tunnel_id` statistics field. See [tunnel groups](../README.md#tunnel-groups).
 
 MTU is intentionally configured separately from tunnel identity.
 
@@ -763,7 +768,8 @@ pre/up
 post/up
 ```
 
-Hook files are stored only on the local/caller host.
+Hook source files are supplied on the local/caller host. The bootstrap saves
+root-owned snapshots with the group state on both hosts for consistent teardown.
 
 Defaults:
 
@@ -784,7 +790,7 @@ The same hook file content is:
 - executed directly on the local side
 - streamed through SSH stdin and executed using `bash -s` on the remote side
 
-The remote machine therefore does not need a persistent copy of the hook file.
+The remote machine does not need a preinstalled copy of the source hook file.
 
 The side is exposed as:
 
@@ -797,14 +803,25 @@ Useful exported values include:
 
 ```text
 TUNTOM_ID
+TUNTOM_GROUP_ID
+TUNTOM_INSTANCE
+TUNTOM_INSTANCE_KEY
+TUNTOM_MEMBER_INDEX
+TUNTOM_MEMBER_COUNT
+TUNTOM_MEMBERS
+TUNTOM_SCOPE
+TUNTOM_GROUP_MANIFEST
 TUNTOM_ACTION
 TUNTOM_PHASE
 TUNTOM_SIDE
 TUNTOM_IF
+TUNTOM_NO_ADDRESS
 TUNTOM_LOCAL_IP
 TUNTOM_PEER_IP
 TUNTOM_CLIENT_IP
 TUNTOM_SERVER_IP
+TUNTOM_CLIENT_IPV6
+TUNTOM_SERVER_IPV6
 TUNTOM_UDP_PORT
 TUNTOM_MTU
 TUNTOM_TRANSPORT_MTU
@@ -819,6 +836,34 @@ TUNTOM_SNAT_CHAIN
 TUNTOM_MANGLE_CHAIN
 TUNTOM_FORWARD_CHAIN
 ```
+
+`TUNTOM_NO_ADDRESS` is `1` with `mk_tunnel.sh --no-address`, otherwise `0`.
+With `--no-address`, all six endpoint address variables above are empty on both
+sides. The script skips IPv4/IPv6 address assignment, peer address routes and
+tunnel pings, while retaining TUN MTU/up configuration, network helpers and
+hooks. Hooks can use `TUNTOM_IF` for device routes without a peer address.
+The final process checks do not establish data-path connectivity. Use the same
+`--no-address` option on restart; stop and restart teardown load saved context.
+
+`TUNTOM_ID` and `TUNTOM_GROUP_ID` identify the group. `TUNTOM_INSTANCE` is the
+canonical member name; `TUNTOM_INSTANCE_KEY` is `ID + 256*index`.
+`TUNTOM_MEMBERS` lists space-separated member names. `TUNTOM_SCOPE=member`
+identifies existing per-TUN hooks. They retain their original ordering:
+`pre/up` runs after TUN creation/address setup and before the network helper.
+Pure switch ports skip per-member TUN hooks and networking in both directions.
+
+Optional `TUNTOM_GROUP_PRE_HOOK` and `TUNTOM_GROUP_POST_HOOK` run once per host
+with `TUNTOM_SCOPE=group`. Group `pre/up` precedes all member starts; group
+`post/up` follows their checks. Group `pre/down` precedes member teardown,
+and group `post/down` follows it. Member-specific identity, interface, address,
+UDP port, mark, table and chain fields are empty for group hooks. The
+`TUNTOM_GROUP_MANIFEST` path points to that host's saved TSV manifest, including
+both endpoints, switch socket/port IDs and `client_has_tun`/`server_has_tun`
+flags for each member. Group hooks run even when
+both endpoints are pure switch ports. Shared service routes, DNAT publication
+and traffic distribution belong in group hooks rather than being repeated by
+each member. Up-hook failures abort startup and trigger down hooks for cleanup;
+down hooks should be idempotent, including after partial initialization.
 
 `post/up` is the natural point for custom routes, DNAT rules, forwarding policy,
 and other networking that depends on tuntom-created chains/tables.

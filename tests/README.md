@@ -155,6 +155,20 @@ runs it automatically when both are available.
 `mk_switch_args_test.py` checks per-side switch argument validation, exit-node
 dependencies and whether pure switch sides correctly suppress TUN setup.
 
+`mk_no_address_test.py` executes the bootstrap's argument parsing, endpoint
+setup, hooks and health checks with stubbed network/process operations. Covers
+default addressing, `--no-address`, mixed/pure switch and exit-node setups,
+hook context on both hosts, MTU/link setup and startup/health-check failures.
+No root, SSH connection or host network changes are needed.
+
+`mk_group_test.py` exercises group startup, resize, rollback after partial
+startup/hook failure, both-host ownership and lock contention, saved hook
+snapshots, stop without original options, port collision rejection and all 64
+member address mappings. It uses disposable state and mocked endpoints.
+`switch_tunnel_test.py` also starts three real encrypted client/server pairs
+concurrently, verifies bidirectional label traffic and distinct numeric
+identities, and checks surviving links after one member stops.
+
 `mk_local_test.py` checks `mk_switch.sh` and `mk_adapter.sh` with real binaries
 and disposable local sockets. Covers generated flow forwarding, build/rule
 failures keeping the old process alive, hook ordering and saved context, socket
@@ -291,3 +305,21 @@ The bounded V1 test double in `switch_reconnect_test` rejects unnamed V2 probes
 before accepting the original registration. Historical IPC experiments explicitly
 select V1. The MP load driver additionally accepts `MODE BATCH` after its original
 arguments for the [V2 comparison](../experiments/switch_mp/mmap_bench.py).
+
+
+### Wildcard routes and ECMP
+
+`switch_ecmp_test` checks the pinned Linux SipHash-2-4 vectors (lengths 0..63,
+unaligned inputs and fixed-size helpers), wildcard validation/precedence,
+symmetric IPv4/IPv6 L3/L4 keys, fragment and opaque fallbacks, IP length bounds,
+distribution, and minimal flow movement as members change.
+
+`switch_ecmp_integration_test.py ST_BINARY MP_BINARY` compares forwarding across
+ST, one-worker MP and multi-worker MP with mixed V1/V2 inline/mmap peers. It
+covers zero/one/many targets, dynamic registration and replacement, source
+wildcards and exact overrides, labels/EXIT, symmetry, member addition/removal,
+and fail-closed empty groups even with default-back enabled. Tests use private
+Unix sockets and child processes without TUNs or host-network changes.
+
+The MP planner/helper tests verify that wildcard strings survive rules-file
+and CLI processing and that dry-run reports port counts as a lower bound.

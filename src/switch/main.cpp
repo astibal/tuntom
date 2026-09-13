@@ -2,6 +2,8 @@
 #include "../runtime_recovery.hpp"
 #include "../switch_admission.hpp"
 #include "../ipc/switch_protocol.hpp"
+#include "../switch_routes.hpp"
+#include "../switch_ecmp.hpp"
 #include "../adaptive_polling.hpp"
 #include "../control_socket.hpp"
 #include "../throughput_stats.hpp"
@@ -36,32 +38,12 @@ using tuntom::SwitchOpcode;
 volatile std::sig_atomic_t stop_requested = 0;
 void request_stop(int) { stop_requested = 1; }
 
-struct RouteKey {
-    std::string port;
-    std::uint64_t label = 0;
-    bool operator==(const RouteKey& other) const {
-        return port == other.port and label == other.label;
-    }
-};
-
-struct RouteKeyHash {
-    std::size_t operator()(const RouteKey& key) const {
-        const auto label_hash = std::hash<std::uint64_t> {}(key.label);
-        const auto port_hash = std::hash<std::string> {}(key.port);
-        return label_hash ^ (port_hash + 0x9e3779b9U + (label_hash << 6) +
-                             (label_hash >> 2));
-    }
-};
-
-struct RouteTarget {
-    std::string port;
-    std::uint64_t label = 0;
-};
-
 struct Connection {
     int fd = -1;
-    RouteKey lookup;
+    std::string port;
     tuntom::AcceptBackoff::Time registration_deadline {};
+    tuntom::SwitchPortRoutes routes;
+    std::uint64_t identity = 0;
 };
 
 struct SwitchStats {
@@ -77,6 +59,7 @@ struct SwitchStats {
     std::uint64_t route_hits = 0;
     std::uint64_t route_misses = 0;
     std::uint64_t target_disconnected = 0;
+    std::uint64_t ecmp_packets = 0;
     std::uint64_t default_back = 0;
     std::uint64_t exit_deliveries = 0;
     std::uint64_t malformed_frames = 0;
@@ -93,6 +76,7 @@ void usage(const char* program) {
         << "      [--control-socket <unix-path>]\n"
         << "      [--max-ports <1..65535>] [--max-pending <1..65535>]\n"
         << "      [--default-back=off|on]\n\n"
+        << "Route ports accept a trailing *; multiple matching outputs use ECMP.\n"
         << "Each client registers a stable port ID within 5 seconds.\n"
         << "Default limits: 256 ports, 16 pending registrations; reduced to fit FD capacity.\n";
 }
@@ -104,32 +88,6 @@ std::size_t parse_capacity(const std::string& text) {
     if (value == 0 or value > 65535)
         throw std::runtime_error("Connection limit must be in range 1..65535");
     return static_cast<std::size_t>(value);
-}
-
-std::uint64_t parse_label(const std::string& text) {
-    if (text.empty() or text[0] == '-')
-        throw std::runtime_error("Invalid label: " + text);
-    std::size_t used = 0;
-    const auto label = std::stoull(text, &used, 0);
-    if (used != text.size()) throw std::runtime_error("Invalid label: " + text);
-    return static_cast<std::uint64_t>(label);
-}
-
-std::pair<std::string, std::string> parse_assignment(
-    const std::string& text, const char* what) {
-    const auto separator = text.find('=');
-    if (separator == std::string::npos or separator == 0 or
-        separator + 1 == text.size())
-        throw std::runtime_error(std::string("Invalid ") + what + ": " + text);
-    return {text.substr(0, separator), text.substr(separator + 1)};
-}
-
-std::pair<std::string, std::uint64_t> parse_endpoint(const std::string& text) {
-    const auto separator = text.rfind(':');
-    if (separator == std::string::npos or separator == 0 or
-        separator + 1 == text.size())
-        throw std::runtime_error("Invalid route endpoint: " + text);
-    return {text.substr(0, separator), parse_label(text.substr(separator + 1))};
 }
 
 int create_listener(const std::string& path) {
@@ -158,7 +116,7 @@ int create_listener(const std::string& path) {
 Connection* find_connection(
     std::vector<Connection>& connections, const std::string& port_id) {
     for (auto& connection : connections) {
-        if (connection.fd >= 0 and connection.lookup.port == port_id) return &connection;
+        if (connection.fd >= 0 and connection.port == port_id) return &connection;
     }
     return nullptr;
 }
@@ -197,7 +155,7 @@ int main(int argc, char** argv) {
     std::string control_path;
     std::vector<Connection> connections;
     try {
-        std::unordered_map<RouteKey, RouteTarget, RouteKeyHash> routes;
+        tuntom::SwitchRoutes routes;
         std::unordered_set<std::string> exit_ports;
         SwitchStats stats;
         tuntom::ThroughputStats throughput({"switch_rx", "switch_tx"});
@@ -219,13 +177,7 @@ int main(int argc, char** argv) {
                 control_path = argv[index];
             } else if (option == "--route") {
                 if (++index >= argc) throw std::runtime_error("--route requires a value");
-                const auto assignment = parse_assignment(argv[index], "route");
-                const auto input = parse_endpoint(assignment.first);
-                const auto output = parse_endpoint(assignment.second);
-                if (not routes.emplace(
-                        RouteKey {input.first, input.second},
-                        RouteTarget {output.first, output.second}).second)
-                    throw std::runtime_error("Duplicate switch route");
+                tuntom::add_switch_route(routes, argv[index]);
             } else if (option == "--max-ports" or option == "--max-pending") {
                 if (++index >= argc) throw std::runtime_error(option + " requires a value");
                 const auto value = parse_capacity(argv[index]);
@@ -283,14 +235,14 @@ int main(int argc, char** argv) {
             std::pair<std::size_t, std::size_t> counts {};
             for (const auto& connection : connections) {
                 if (connection.fd < 0) continue;
-                if (connection.lookup.port.empty()) ++counts.second;
+                if (connection.port.empty()) ++counts.second;
                 else ++counts.first;
             }
             return counts;
         };
         const auto expire_registrations = [&](tuntom::AcceptBackoff::Time now) {
             for (auto& connection : connections) {
-                if (connection.fd >= 0 and connection.lookup.port.empty() and
+                if (connection.fd >= 0 and connection.port.empty() and
                     now >= connection.registration_deadline) {
                     ::close(connection.fd);
                     connection.fd = -1;
@@ -301,7 +253,7 @@ int main(int argc, char** argv) {
 
         const auto try_handle_connection = [&](Connection& connection) {
             // A ready record does not extend the registration's fixed lifetime.
-            if (connection.lookup.port.empty() and std::chrono::steady_clock::now() >=
+            if (connection.port.empty() and std::chrono::steady_clock::now() >=
                 connection.registration_deadline) {
                 ::close(connection.fd);
                 connection.fd = -1;
@@ -324,7 +276,7 @@ int main(int argc, char** argv) {
             }
             const std::size_t size = static_cast<std::size_t>(received);
 
-            if (connection.lookup.port.empty()) {
+            if (connection.port.empty()) {
                 try {
                     std::string registered_id;
                     if (not tuntom::decode_switch_registration(
@@ -343,7 +295,10 @@ int main(int argc, char** argv) {
                     }
                     // All allocating work precedes the replacement. Swapping
                     // std::string with its default allocator cannot throw.
-                    connection.lookup.port.swap(registered_id);
+                    auto resolved = tuntom::routes_for_port(routes, registered_id);
+                    connection.identity = tuntom::ecmp_port_identity(registered_id);
+                    connection.routes.swap(resolved);
+                    connection.port.swap(registered_id);
                     if (old and old != &connection) {
                         ::close(old->fd);
                         old->fd = -1;
@@ -368,13 +323,21 @@ int main(int argc, char** argv) {
             ++stats.frames_rx;
             stats.bytes_rx += size;
 
-            // Reuse the port name: a temporary RouteKey would copy it and
-            // allocate on every packet when the name exceeds string SSO.
-            connection.lookup.label = frame.label(0);
-            const auto route = routes.find(connection.lookup);
-            if (route != routes.end()) {
+            const auto route = connection.routes.find(frame.label(0));
+            if (route != connection.routes.end()) {
                 ++stats.route_hits;
-                auto* target = find_connection(connections, route->second.port);
+                Connection* target = nullptr;
+                if (!tuntom::wildcard_port(route->second.port)) {
+                    target = find_connection(connections, route->second.port);
+                } else {
+                    tuntom::EcmpSelector selector(frame);
+                    for (auto& candidate : connections) {
+                        if (candidate.fd < 0 || candidate.port.empty() ||
+                            !tuntom::route_port_matches(route->second.port, candidate.port)) continue;
+                        if (selector.consider(candidate.identity, candidate.port)) target = &candidate;
+                    }
+                    if (selector.multipath()) ++stats.ecmp_packets;
+                }
                 if (target == nullptr) {
                     ++stats.target_disconnected;
                     return true;
@@ -382,7 +345,7 @@ int main(int argc, char** argv) {
                 // Only the validated header changes; reuse the receive buffer.
                 tuntom::store_be64(buffer.data() + tuntom::switch_base_header_size,
                                   route->second.label);
-                if (exit_ports.count(route->second.port) != 0) {
+                if (exit_ports.count(target->port) != 0) {
                     buffer[1] = static_cast<std::uint8_t>(SwitchOpcode::exit_packet);
                     ++stats.exit_deliveries;
                 }
@@ -445,6 +408,7 @@ int main(int argc, char** argv) {
                     << "frames_tx=" << stats.frames_tx << "\nbytes_tx=" << stats.bytes_tx << "\n"
                     << "route_hits=" << stats.route_hits << "\nroute_misses=" << stats.route_misses << "\n"
                     << "target_disconnected=" << stats.target_disconnected << "\n"
+                    << "ecmp_packets=" << stats.ecmp_packets << "\n"
                     << "default_back=" << stats.default_back << "\n"
                     << "exit_deliveries=" << stats.exit_deliveries << "\n"
                     << "malformed_frames=" << stats.malformed_frames << "\n"
@@ -489,7 +453,7 @@ int main(int argc, char** argv) {
                 int timeout = pending_space ? admission.poll_timeout_ms(now, 1000) : 1000;
                 if (control) timeout = control->poll_timeout_ms(now, timeout);
                 for (const auto& connection : connections) {
-                    if (connection.lookup.port.empty()) timeout = tuntom::deadline_timeout_ms(
+                    if (connection.port.empty()) timeout = tuntom::deadline_timeout_ms(
                         now, connection.registration_deadline, timeout);
                 }
                 // Adaptive polling measures the syscall, not deadline bookkeeping.
@@ -511,7 +475,7 @@ int main(int argc, char** argv) {
                     if (accepted >= 0) {
                         try {
                             connections.push_back({accepted, {}, std::chrono::steady_clock::now() +
-                                tuntom::SwitchAdmission::registration_timeout});
+                                tuntom::SwitchAdmission::registration_timeout, {}, 0});
                         } catch (...) {
                             ::close(accepted);
                             throw;

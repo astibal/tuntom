@@ -103,6 +103,13 @@ Hooks retain `TUNTOM_COMPONENT=switch`, the existing
 `TUNTOM_SWITCH_{PRE,POST}_HOOK` overrides, and `TUNTOM_SWITCH_RULES_FILE` seed
 support. MP rules additionally accept `trunk-port ID`.
 
+Route port IDs support the same [trailing wildcards and ECMP](README_SWITCHING.md#wildcard-ports-and-ecmp)
+as the single-thread switch. The dry-run planner cannot infer how many ports a
+wildcard will match: it counts only literal names and reports
+`configured.port_counts=lower_bound` and `configured.wildcard_patterns` when
+patterns occur. Worker/role projections then describe those known names only.
+Runtime scheduling uses the actual registered ports, including wildcard members.
+
 ## Direct build
 
 ```bash
@@ -233,8 +240,11 @@ closes the unpublished resources and leaves the current plan usable.
 At a bounded operation boundary all workers
 park; main publishes the version, swaps owners, and resumes them. There is no
 packet allocation or shared route-map lock on the forwarding path. Tables are
-compiled per ingress with resolved outputs, unlike the reference switch's
-linear target-name search. Routes themselves currently come from startup CLI;
+compiled per ingress with resolved output groups, unlike the reference switch's
+linear target-name search. Prefix matching occurs at plan preparation; the RX
+path selects a live member without allocation or pattern matching. Every
+connected ECMP source/destination pair has its own ring in the existing matrix.
+Routes themselves currently come from startup CLI;
 live route-edit commands are not implemented. Registration changes refresh
 the resolved targets through the same versioned plan mechanism.
 
