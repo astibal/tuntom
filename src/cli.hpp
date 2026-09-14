@@ -32,6 +32,7 @@ inline void usage(const char* program_name) {
         << "  --switch-ipc <mode>    auto (default), v1, inline (V2 without mmap)\n"
         << "  --switch-ipc-batch <n> Maximum references per record, 1..16 (default 8)\n"
         << "  --switch-label <n>      Label assigned to DATA received from UDP\n"
+        << "  --classifier-file <path> L3/L4 rules assigning stacks to received DATA\n"
         << "  --switch-exit-node      Allow IPC EXIT delivery through a local TUN\n"
         << "\n"
         << "Statistics:\n"
@@ -134,6 +135,10 @@ inline void parse_options(
             options.switch_label = std::stoull(argv[i], &used, 0);
             if (argv[i][used] != '\0') throw std::runtime_error("Invalid --switch-label");
             options.switch_label_set = true;
+        } else if (option == "--classifier-file") {
+            if (++i >= argc) throw std::runtime_error("--classifier-file requires a value");
+            options.classifier_file = argv[i];
+            if (options.classifier_file.empty()) throw std::runtime_error("--classifier-file must not be empty");
         } else if (option == "--switch-port-id") {
             if (++i >= argc) throw std::runtime_error("--switch-port-id requires a value");
             options.switch_port_id = argv[i];
@@ -206,9 +211,9 @@ inline void parse_options(
 
     if (options.switch_socket.empty() and
         (options.switch_label_set or options.switch_exit_node or
-         not options.switch_port_id.empty())) {
+         not options.switch_port_id.empty() or not options.classifier_file.empty())) {
         throw std::runtime_error(
-            "--switch-label and --switch-exit-node require --switch-socket");
+            "--switch-label, --switch-exit-node and --classifier-file require --switch-socket");
     }
     if (not options.switch_socket.empty() and not options.switch_label_set) {
         throw std::runtime_error("--switch-socket requires --switch-label");

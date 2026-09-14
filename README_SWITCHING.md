@@ -197,6 +197,7 @@ as described in the [tuntom quick start](README.md#quick-start).
 | `--all-tools` | Build and atomically install `tuntom-switch`, `tuntom-switch-adapter`, and `tuntomctl` in `/tmp` on both hosts |
 | `--client-switch <socket> <port-id> <label>` | Connect the local/client side to an existing switch listener |
 | `--server-switch <socket> <port-id> <label>` | Connect the remote/server side to an existing switch listener |
+| `--client-classifier-file <path>` / `--server-classifier-file <path>` | Assign ingress stacks from L3/L4 headers using a file already on that host |
 | `--client-switch-exit-node` | Retain the client TUN and permit IPC `EXIT` delivery |
 | `--server-switch-exit-node` | Retain the server TUN and permit IPC `EXIT` delivery |
 | `--no-address` | Skip address assignment and peer address routes on retained TUNs; check processes instead of tunnel pings |
@@ -237,7 +238,8 @@ packet loop. The exit adapter uses the same connection state machine.
 
 `--switch-socket` replaces the TUN data path with a Unix `SOCK_SEQPACKET`
 connection. Authenticated DATA received over UDP is emitted as a `SWITCH` frame
-with the configured ingress label; a `SWITCH` frame received from IPC is sent
+with the configured ingress label, or a stack selected by `--classifier-file`;
+a `SWITCH` frame received from IPC is sent
 as ordinary V5 DATA to the UDP peer. No TUN device is created, so a pure relay
 can run without root after its socket and UDP access are available.
 
@@ -356,9 +358,14 @@ routes, forwarding and any NAT rules remain explicit host configuration.
 
 Routes targeting an `--exit-port` are delivered as `EXIT`. The adapter learns
 the reverse label stack from every valid IPv4/IPv6 packet, using an L4 LRU cache
-with an L3 fallback for fragments and non-port protocols. Return traffic from
-the TUN is sent as `SWITCH`; packets missing both caches are dropped. The
-adapter performs no NAT, TCP state tracking or default-label routing.
+with an L3 fallback, including when a TCP/UDP tuple misses L4. Return traffic
+from the TUN is sent as `SWITCH`. On a miss in both caches, optional
+`--classifier-file` rules assign a stack from IP addresses/CIDR, protocol and
+TCP/UDP ports. Without a matching rule, the packet is dropped. The adapter
+performs no NAT or TCP state tracking, and classification does not learn flows.
+See the [shared ingress classifier](docs/PACKET_CLASSIFIER.md) and
+[example rules](examples/ingress.classifier); tuntom supports the same classifier
+for authenticated UDP DATA entering its switch interface.
 
 On a route miss, `--default-back=on` returns an `EXIT` frame to the ingress
 port. The IPC format and exact fail-closed behavior are specified in

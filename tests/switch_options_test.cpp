@@ -38,6 +38,7 @@ int main() {
         "--switch-port-id", "edge-42",
         "--switch-label", "0x1234",
         "--switch-exit-node",
+        "--classifier-file", "/etc/tuntom/ingress.rules",
         "--control-socket", "/run/tuntom/42c.control",
     };
     std::vector<char*> argv;
@@ -49,6 +50,7 @@ int main() {
     require(options.switch_label == 0x1234 and options.switch_label_set,
             "switch label lost");
     require(options.switch_exit_node, "exit mode lost");
+    require(options.classifier_file == "/etc/tuntom/ingress.rules", "classifier path lost");
     require(options.control_socket == "/run/tuntom/42c.control", "control socket lost");
 
     require(parse_fails({"--switch-socket", "/tmp/x"}), "missing port ID/label accepted");
@@ -56,6 +58,9 @@ int main() {
             "missing port ID accepted");
     require(parse_fails({"--switch-label", "1"}), "label without socket accepted");
     require(parse_fails({"--switch-exit-node"}), "exit without socket accepted");
+    require(parse_fails({"--classifier-file", "/tmp/rules"}), "classifier without switch accepted");
+    require(parse_fails({"--classifier-file"}), "classifier without filename accepted");
+    require(parse_fails({"--classifier-file", ""}), "empty classifier filename accepted");
     require(parse_fails({"--switch-socket", "/tmp/x", "--switch-port-id", "x",
                          "--switch-label", "-1"}),
             "negative label accepted");

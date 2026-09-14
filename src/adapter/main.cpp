@@ -1,6 +1,7 @@
 #include "../common.hpp"
 #include "../runtime_recovery.hpp"
 #include "exit_adapter.hpp"
+#include "../packet_classifier.hpp"
 #include "../adaptive_polling.hpp"
 #include "../ipc/switch_protocol.hpp"
 #include "../switch_client.hpp"
@@ -59,6 +60,7 @@ void usage(const char* program) {
         << "  --switch-ipc <mode>   auto (default), v1, inline (V2 without mmap)\n"
         << "  --switch-ipc-batch <n> Maximum references per record, 1..16 (default 8)\n"
         << "  --mtu <n>             TUN MTU (default 1500)\n"
+        << "  --classifier-file <path> L3/L4 rules for TUN packets missing reverse cache\n"
         << "  --l4-capacity <n>     L4 LRU entries (default 1000000)\n"
         << "  --l3-capacity <n>     L3 LRU entries (default 250000)\n"
         << "  --l4-timeout <s>      L4 idle timeout (default 120)\n"
@@ -83,6 +85,7 @@ int main(int argc, char** argv) {
         std::string socket_path;
         std::string port_id;
         std::string control_path;
+        std::string classifier_file;
         std::size_t mtu = 1500;
         std::size_t l4_capacity = 1000000;
         std::size_t l3_capacity = 250000;
@@ -101,6 +104,10 @@ int main(int argc, char** argv) {
             else if (option == "--switch-socket") socket_path = argv[index];
             else if (option == "--switch-port-id") port_id = argv[index];
             else if (option == "--control-socket") control_path = argv[index];
+            else if (option == "--classifier-file") {
+                classifier_file = argv[index];
+                if (classifier_file.empty()) throw std::runtime_error("--classifier-file must not be empty");
+            }
             else if (option == "--mtu") mtu = parse_size(option, argv[index], 576, 65535);
             else if (option == "--l4-capacity")
                 l4_capacity = parse_size(option, argv[index], 1, 100000000);
@@ -115,6 +122,7 @@ int main(int argc, char** argv) {
         if (socket_path.empty() or port_id.empty())
             throw std::runtime_error("--switch-socket and --switch-port-id are required");
 
+        auto classifier = PacketClassifier::from_file(classifier_file);
         TunDevice tun(interface_name, mtu);
         tun.set_up();
         SwitchClient switch_client(socket_path, port_id, ipc_options);
@@ -193,13 +201,20 @@ int main(int argc, char** argv) {
             stats.tun_rx_bytes += static_cast<std::uint64_t>(size);
             if (not switch_client.connected()) {
                 ++stats.switch_disconnected_drops;
-            } else if (routes.lookup(
-                    packet.data(), static_cast<std::size_t>(size), tx_labels)) {
-                account_switch_output(switch_client.append_frame(
-                    SwitchOpcode::switch_packet, tx_labels.data(), tx_labels.size(), packet.data(),
-                    static_cast<std::size_t>(size)));
             } else {
-                ++stats.cache_miss_drops;
+                ParsedIpFlow flow;
+                if (not parse_ip_flow(packet.data(), static_cast<std::size_t>(size), flow)) {
+                    routes.record_parse_error();
+                    classifier.record_parse_error();
+                    ++stats.cache_miss_drops;
+                    return true;
+                }
+                const auto* labels = routes.lookup(flow, tx_labels) ? &tx_labels : classifier.classify(flow);
+                if (labels) {
+                    account_switch_output(switch_client.append_frame(
+                        SwitchOpcode::switch_packet, labels->data(), labels->size(), packet.data(),
+                        static_cast<std::size_t>(size)));
+                } else ++stats.cache_miss_drops;
             }
             return true;
         };
@@ -290,6 +305,7 @@ int main(int argc, char** argv) {
                     << "switch_reconnect_attempts=" << stats.switch_reconnect_attempts << "\n"
                     << "switch_reconnects=" << stats.switch_reconnects << "\n";
                 switch_client.write_stats(out);
+                classifier.write_stats(out);
                 recovery.write_stats(out);
                 tuntom::logger.write_stats(out);
                 adaptive_polling.write_stats(out);

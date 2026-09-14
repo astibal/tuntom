@@ -4,6 +4,7 @@
 #include "tun_device.hpp"
 #include "udp_endpoint.hpp"
 #include "switch_client.hpp"
+#include "packet_classifier.hpp"
 #include "ipc/switch_protocol.hpp"
 #include "session.hpp"
 #include "ip.hpp"
@@ -46,6 +47,7 @@ public:
         : tunnel_id_(tunnel_id),
           server_mode_(server_mode),
           options_(options),
+          classifier_(PacketClassifier::from_file(options.classifier_file)),
           master_key_(parse_master_key()),
           protocol_v5_(tunnel_id, master_key_, server_mode, options.tun_mtu, options.encrypt_ascon, options.init_window, options.pfs) {
 
@@ -730,8 +732,10 @@ private:
                 ++stats_.switch_drops;
                 return;
             }
+            const auto* labels = classifier_.classify(packet.payload.data(), packet.payload.size());
             account_switch_output(switch_->append_frame(
-                SwitchOpcode::switch_packet, &options_.switch_label, 1,
+                SwitchOpcode::switch_packet, labels ? labels->data() : &options_.switch_label,
+                labels ? labels->size() : 1,
                 packet.payload.data(), packet.payload.size()));
             return;
         }
@@ -1507,6 +1511,7 @@ private:
             << "switch_last_error_ts=" << stats_.switch_last_error_ts << "\n"
             << "switch_last_error_no=" << stats_.switch_last_error_no << "\n";
         if (switch_) switch_->write_stats(output);
+        classifier_.write_stats(output);
         recovery_.write_stats(output);
         logger.write_stats(output);
         adaptive_polling_.write_stats(output);
@@ -1578,6 +1583,7 @@ private:
     std::uint16_t tunnel_id_ = 0;
     bool server_mode_ = false;
     Options options_;
+    PacketClassifier classifier_;
 
     std::unique_ptr<TunDevice> tun_;
     UdpEndpoint udp_;

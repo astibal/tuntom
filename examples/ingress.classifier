@@ -1,0 +1,11 @@
+# Assign an initial stack from inner IP headers before entering the switch.
+# This is a classifier file, separate from the switch ruleset.
+format 1
+
+# First matching rule wins. Labels use the switch format-2 literal syntax.
+classify ip4 src 10.42.0.0/16 proto tcp dport 443 to ["H42", 99, 0x10]
+classify proto udp dport 53 to ["H42", 99, b1000]
+classify ip6 dst 2001:db8::/32 to ["H42", 17]
+
+# Explicit default for all other parseable IP packets, including fragments.
+classify to ["H42", 99]

@@ -28,7 +28,8 @@ from multiple translation units.
 | `adaptive_polling.hpp` | Shared overload detection, batching policy and event-loop metrics |
 | `control/main.cpp` | `tuntomctl` client executable |
 | `switch/main.cpp` | Standalone label-switch executable |
-| `adapter/ip_flow.hpp` | Safe IPv4/IPv6 L3 and TCP/UDP tuple parsing |
+| `ip_flow.hpp` | Shared IPv4/IPv6 L3 and TCP/UDP tuple parsing for reverse routes, ECMP and classification |
+| `packet_classifier.hpp` | Stateless ordered L3/L4 matching and initial label-stack assignment |
 | `adapter/lru_cache.hpp` | Capacity and idle-time bounded LRU cache |
 | `adapter/exit_adapter.hpp` | Reverse L3/L4 label learning and lookup |
 | `adapter/main.cpp` | Standalone TUN exit-adapter executable |

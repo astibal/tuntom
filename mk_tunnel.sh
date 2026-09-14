@@ -26,6 +26,8 @@ Switch ports (the tuntom-switch listener must already be running):
   --server-switch-ipc <auto|v1|inline>
   --client-switch-ipc-batch <1..16>
   --server-switch-ipc-batch <1..16>
+  --client-classifier-file <path>  Classifier file on the local host
+  --server-classifier-file <path>  Classifier file already on the remote host
 EOF
 }
 
@@ -64,6 +66,8 @@ server_switch_label=""
 server_switch_exit_node=0
 client_ipc_args=()
 server_ipc_args=()
+client_classifier_file=""
+server_classifier_file=""
 
 while (( $# > 0 )); do
     case "$1" in
@@ -142,6 +146,11 @@ while (( $# > 0 )); do
             if [[ "$1" == --client-* ]]; then client_ipc_args+=("$ipc_option" "$2")
             else server_ipc_args+=("$ipc_option" "$2"); fi
             shift ;;
+        --client-classifier-file|--server-classifier-file)
+            if (( $# < 2 )) || [[ -z "$2" ]]; then echo "$1 requires a path" >&2; exit 1; fi
+            if [[ "$1" == --client-* ]]; then client_classifier_file="$2"
+            else server_classifier_file="$2"; fi
+            shift ;;
         --client-switch-exit-node)
             client_switch_exit_node=1
             ;;
@@ -176,6 +185,12 @@ fi
 if (( ${#server_ipc_args[@]} )) && [[ -z "$server_switch_socket" ]]; then
     echo "Server IPC options require --server-switch" >&2; exit 1
 fi
+if [[ -n "$client_classifier_file" && -z "$client_switch_socket" ]]; then
+    echo "--client-classifier-file requires --client-switch" >&2; exit 1
+fi
+if [[ -n "$server_classifier_file" && -z "$server_switch_socket" ]]; then
+    echo "--server-classifier-file requires --server-switch" >&2; exit 1
+fi
 client_has_tun=1
 server_has_tun=1
 if [[ -n "$client_switch_socket" ]] && (( ! client_switch_exit_node )); then
@@ -196,6 +211,8 @@ shell_join() {
 
 client_switch_args=("${client_ipc_args[@]}")
 server_switch_args=("${server_ipc_args[@]}")
+if [[ -n "$client_classifier_file" ]]; then client_switch_args+=(--classifier-file "$client_classifier_file"); fi
+if [[ -n "$server_classifier_file" ]]; then server_switch_args+=(--classifier-file "$server_classifier_file"); fi
 if [[ -n "$client_switch_socket" ]]; then
     client_switch_args+=(
         --switch-socket "$client_switch_socket"

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ip_flow.hpp"
+#include "../ip_flow.hpp"
 #include "lru_cache.hpp"
 #include <chrono>
 #include <cstddef>
@@ -45,9 +45,18 @@ public:
 
         ParsedIpFlow flow;
         if (not parse_ip_flow(packet, size, flow)) {
-            ++parse_errors_;
+            record_parse_error();
             return false;
         }
+        return lookup(flow, labels, now);
+    }
+
+    // The caller must supply a successfully parsed flow.
+    bool lookup(
+        const ParsedIpFlow& flow,
+        std::vector<std::uint64_t>& labels,
+        Clock::time_point now = Clock::now()) {
+
         if (flow.has_l4 and l4_.get(flow.l4, labels, now)) {
             ++l4_hits_;
             std::vector<std::uint64_t> ignored;
@@ -62,6 +71,9 @@ public:
         ++l3_misses_;
         return false;
     }
+
+    // Used when parsing is shared with another consumer before lookup.
+    void record_parse_error() { ++parse_errors_; }
 
     std::size_t l3_size() const { return l3_.size(); }
     std::size_t l4_size() const { return l4_.size(); }

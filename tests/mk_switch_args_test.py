@@ -23,7 +23,11 @@ printf '%s\n' \
   "all_tools=$all_tools" \
   "crypto_option=$crypto_option" \
   "client_ipc=${client_ipc_args[*]}" \
-  "server_ipc=${server_ipc_args[*]}"
+  "server_ipc=${server_ipc_args[*]}" \
+  "client_classifier=$client_classifier_file" \
+  "server_classifier=$server_classifier_file" \
+  "client_classifier_arg=$(for ((i=0; i<${#client_switch_args[@]}; i++)); do if [[ ${client_switch_args[i]} == --classifier-file ]]; then printf '%s' "${client_switch_args[i+1]}"; fi; done)" \
+  "server_classifier_arg=$(for ((i=0; i<${#server_switch_args[@]}; i++)); do if [[ ${server_switch_args[i]} == --classifier-file ]]; then printf '%s' "${server_switch_args[i+1]}"; fi; done)"
 '''
 
 
@@ -60,6 +64,7 @@ expected = {
     "all_tools=0",
     "crypto_option=",
     "client_ipc=", "server_ipc=",
+    "client_classifier=", "server_classifier=", "client_classifier_arg=", "server_classifier_arg=",
 }
 if set(output.splitlines()) != expected:
     raise RuntimeError(f"unexpected parsed switch options:\n{output}")
@@ -92,3 +97,9 @@ assert "client_ipc=--switch-ipc v1" in output
 assert "server_ipc=--switch-ipc auto --switch-ipc-batch 16" in output
 run("--client-switch-ipc", "auto", ok=False)
 run("--client-switch", "/tmp/x", "a", "1", "--client-switch-ipc-batch", "17", ok=False)
+output = run("--client-switch", "/tmp/x", "a", "1", "--server-switch", "/tmp/y", "b", "2",
+             "--client-classifier-file", "/tmp/local rules", "--server-classifier-file", "/etc/tuntom/remote.rules")
+assert "client_classifier_arg=/tmp/local rules" in output
+assert "server_classifier_arg=/etc/tuntom/remote.rules" in output
+run("--client-classifier-file", "/tmp/rules", ok=False)
+run("--server-classifier-file", "/tmp/rules", ok=False)

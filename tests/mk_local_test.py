@@ -299,7 +299,10 @@ main "$@"
             # Real adapter starts while the switch is absent. Its TUN is a
             # socket pair, and only `ip link show` is emulated.
             clear_events()
-            run("adapter", *adapter_args, "--mtu", "1400", "--l4-capacity", "10")
+            classifier = directory / "adapter.classifier"
+            classifier.write_text("format 1\nclassify proto tcp dport 443 to [17,99]\n")
+            run("adapter", *adapter_args, "--mtu", "1400", "--l4-capacity", "10",
+                "--classifier-file", str(classifier))
             adapter_pid = pid("adapter", "exit0")
             assert alive(adapter_pid)
             assert [e.split()[1:6] for e in events()] == [

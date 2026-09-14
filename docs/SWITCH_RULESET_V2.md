@@ -177,5 +177,5 @@ top-label lookup keeps its existing fast path.
 
 The adapter caches the complete received stack for replies. UDP V5 still
 transports only the payload; a tuntom receiver assigns its configured single
-ingress label. This change does not add tunnel stack transport, runtime
-ingress-label configuration, IP classification, or adapter QoS actions.
+ingress label or a stack selected by the separate [L3/L4 classifier](PACKET_CLASSIFIER.md).
+Switch rules do not add tunnel stack transport or adapter QoS actions.

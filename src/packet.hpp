@@ -63,6 +63,7 @@ struct Options {
     std::string switch_socket;
     ipc::Options switch_ipc;
     std::string switch_port_id;
+    std::string classifier_file;
     std::uint64_t switch_label = 0;
     bool switch_label_set = false;
     bool switch_exit_node = false;

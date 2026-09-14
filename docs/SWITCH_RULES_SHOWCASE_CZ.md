@@ -156,8 +156,8 @@ Z kořene repozitáře proti odpovídajícímu běžícímu switchi:
 aktivní konfigurace. `rules load` aplikuje celý soubor atomicky.
 
 Stack zatím zůstává lokální IPC metadata. UDP V5 přenáší jen payload a tuntom
-na druhém konci přidává nakonfigurovaný ingress label. Tato změna nepřidává
-výběr stacku podle IP/portů ani dynamickou konfiguraci stacku producentů.
+na druhém konci přidává nakonfigurovaný ingress label nebo stack vybraný
+samostatným [L3/L4 klasifikátorem](PACKET_CLASSIFIER.md).
 Adaptér si labely zapamatuje, ale například QoS podle nich sám nenastavuje.
 
 [Úplná specifikace formátu 2](SWITCH_RULESET_V2.md)

@@ -13,6 +13,14 @@ The C++ tests are also available through CMake/CTest in CLion.
 Builds use a temporary directory that is removed on exit. No root privileges,
 live tunnel, or network access are needed.
 
+- `packet_classifier_test.cpp`: shared IPv4/IPv6 header parsing, exact/CIDR
+  addresses, protocol and port ranges, fragments, literal label stacks, bounds
+  and invalid configuration. Checks packet/parsed-flow entry-point equivalence
+  and error counters, preserving existing reverse-cache semantics.
+- `packet_classifier_integration_test.py`: real encrypted tuntom UDP ingress
+  and adapter TUN classification over IPC v1, inline V2 and mmap; fallback,
+  reverse-cache priority, statelessness, transport reassembly and early startup
+  rejection. Only the adapter TUN is replaced with a socketpair fixture.
 - `switch_ruleset_v2_test.cpp`: full-stack exact/prefix matching, ranges, any-bit
   masks, decimal/hex/binary/padded-string literals, canonical equivalence,
   positional rewrites, bidir inversion/rejections, ordering and omitted selectors.

@@ -5,6 +5,7 @@ group_config_names=(member_count no_address tuntom_snat tuntom_mss_clamp mtu
     transport_mtu stats_format crypto_option stats_option tuntom_prefix16
     client_switch_socket client_switch_port_id client_switch_label client_switch_exit_node
     server_switch_socket server_switch_port_id server_switch_label server_switch_exit_node
+    client_classifier_file server_classifier_file
     client_has_tun server_has_tun switch_enabled mark_override mask_override
     table_override chain_base remote group_owner)
 
@@ -52,6 +53,8 @@ select_member() {
     remote_control_file="${run_dir}/${instance}s.control"
     client_switch_args=("${client_ipc_args[@]}")
     server_switch_args=("${server_ipc_args[@]}")
+    if [[ -n "$client_classifier_file" ]]; then client_switch_args+=(--classifier-file "$client_classifier_file"); fi
+    if [[ -n "$server_classifier_file" ]]; then server_switch_args+=(--classifier-file "$server_classifier_file"); fi
     member_client_port="" member_server_port=""
     if [[ -n "$client_switch_socket" ]]; then
         member_client_port="${client_switch_port_id}${suffix}"

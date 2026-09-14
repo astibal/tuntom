@@ -42,6 +42,9 @@ if(BUILD_TESTING)
     add_executable(switch_ruleset_v2_test tests/switch_ruleset_v2_test.cpp)
     target_compile_options(switch_ruleset_v2_test PRIVATE -Wall -Wextra -Wconversion -pedantic)
     add_test(NAME switch_ruleset_v2_test COMMAND switch_ruleset_v2_test)
+    add_executable(packet_classifier_test tests/packet_classifier_test.cpp)
+    target_compile_options(packet_classifier_test PRIVATE -Wall -Wextra -Wconversion -pedantic)
+    add_test(NAME packet_classifier_test COMMAND packet_classifier_test)
     target_link_options(switch_client_test PRIVATE
         -Wl,--wrap=connect -Wl,--wrap=send -Wl,--wrap=sendmsg -Wl,--wrap=getsockopt)
     target_link_options(udp_batch_test PRIVATE -Wl,--wrap=sendmmsg -Wl,--wrap=sendto)
@@ -110,6 +113,11 @@ if(BUILD_TESTING)
         add_executable(adapter_reconnect_fixture src/adapter/main.cpp tests/adapter_tun_fixture.cpp)
         target_compile_options(adapter_reconnect_fixture PRIVATE -Wall -Wextra -Wconversion -pedantic)
         target_link_options(adapter_reconnect_fixture PRIVATE -Wl,--wrap=open -Wl,--wrap=ioctl)
+        add_test(NAME packet_classifier_integration_test COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/packet_classifier_integration_test.py $<TARGET_FILE:tuntom>
+            $<TARGET_FILE:tuntom-switch> $<TARGET_FILE:tomtom-switch-mp>
+            $<TARGET_FILE:adapter_reconnect_fixture> $<TARGET_FILE:tuntomctl>)
+        set_tests_properties(packet_classifier_integration_test PROPERTIES TIMEOUT 90)
         add_test(NAME switch_v2_path_test COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/switch_v2_path_test.py $<TARGET_FILE:tuntom>
             $<TARGET_FILE:tomtom-switch-mp> $<TARGET_FILE:adapter_reconnect_fixture> $<TARGET_FILE:switch_v2_faults>)

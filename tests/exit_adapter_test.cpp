@@ -59,18 +59,28 @@ int main() {
     require(routes.l3_size() == 1 and routes.l4_size() == 1, "both caches not learned");
     require(routes.lookup(response.data(), response.size(), found, start) and found == labels,
             "reverse L4 lookup failed");
+    ParsedIpFlow response_flow;
+    require(parse_ip_flow(response.data(), response.size(), response_flow), "response parsing failed");
+    require(routes.lookup(response_flow, found, start) and found == labels,
+            "parsed reverse L4 lookup failed");
 
     auto fragment = ipv4(6, 0, 0, 2, 1, true);
     found.clear();
     require(routes.lookup(fragment.data(), fragment.size(), found, start) and found == labels,
             "fragment did not use L3 fallback");
+    ParsedIpFlow fragment_flow;
+    require(parse_ip_flow(fragment.data(), fragment.size(), fragment_flow), "fragment parsing failed");
+    require(routes.lookup(fragment_flow, found, start) and found == labels,
+            "parsed fragment did not use L3 fallback");
 
     auto unknown = ipv4(17, 53, 40000, 9, 8);
     require(not routes.lookup(unknown.data(), unknown.size(), found, start),
             "unknown tuple was not dropped");
-    require(not routes.lookup(response.data(), response.size(), found,
-                              start + std::chrono::seconds(21)),
+    require(not routes.lookup(response_flow, found, start + std::chrono::seconds(21)),
             "expired entries remained usable");
+    require(not routes.lookup(nullptr, 0, found, start), "invalid raw packet accepted");
+    routes.record_parse_error();
+    require(routes.parse_errors() == 2, "raw and shared parsing errors must count once each");
 
     auto request6 = ipv6(5353, 53, 1, 2);
     auto response6 = ipv6(53, 5353, 2, 1);

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "adapter/ip_flow.hpp"
+#include "ip_flow.hpp"
 #include "ipc/switch_protocol.hpp"
 #include "vendor/siphash.hpp"
 #include <string_view>
