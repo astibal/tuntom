@@ -1,10 +1,6 @@
-format 1
-serial 2026091401
+format 2
+serial 2026091403
 
 exit exit0
 
-switch H42*,17 to exit0,99 allow
-switch exit0,99 to H42*,17 allow
-
-label H42*,17 to exit0, [99, ...]
-label exit0,99 to H42*, [17, ...]
+switch H42*, [17, ...] to exit0, [99, ...] allow bidir

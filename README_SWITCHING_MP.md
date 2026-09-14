@@ -110,6 +110,11 @@ wildcard will match: it counts only literal names and reports
 patterns occur. Worker/role projections then describe those known names only.
 Runtime scheduling uses the actual registered ports, including wildcard members.
 
+Both switches support [ruleset format 2](docs/SWITCH_RULESET_V2.md): full-stack
+matching, ranges, bitmasks and rewrites in one `switch` statement. The MP planner
+also counts its forwarding rules. Ruleset versions are independent of IPC
+transport versions; both inline and mmap carry the same label stacks.
+
 ## Direct build
 
 ```bash

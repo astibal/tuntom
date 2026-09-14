@@ -62,7 +62,7 @@ def exercise(binary, workers=None, mixed=False):
     options += ["--default-back=on", "--exit-port", "internet", "--exit-port", "edge-42_2"]
     for rule in ("internet:1001=edge-42*:44", "edge-42*:17=internet:1001",
                  "edge*:18=internet:300", "edge-42*:18=internet:200",
-                 "edge-42_1:18=other:999", "*:19=internet:400"):
+                 "edge-42_1:18=other:999", "other*:19=internet:400"):
         options += ["--route", rule]
     with Switch(binary, *options) as switch:
         owned = []
@@ -157,7 +157,7 @@ def exercise(binary, workers=None, mixed=False):
 
 
 def invalid(binary):
-    for rule in ("a**:1=b:2", "a*b:1=b:2", "a:1=b*c:2", "a:1=b**:2"):
+    for rule in ("*:1=b:2", "a:1=*:2", "a**:1=b:2", "a*b:1=b:2", "a:1=b*c:2", "a:1=b**:2"):
         result = subprocess.run([binary, "--socket", "/unused-ecmp-test", "--route", rule],
                                 capture_output=True, timeout=5)
         assert result.returncode != 0 and b"wildcard" in result.stderr, result.stderr

@@ -285,8 +285,11 @@ class Engine {
         std::size_t tx_worker = 0;
         const auto route = task.routes.find(frame.label(0));
         if (task.rules_enabled) {
-            const auto *rule = task.program.mapping(frame.label(0));
+            const auto *rule = task.program.mapping(frame);
             if (!rule) { Counters::add(stats.route_misses); buffer->release(); return true; }
+            if (rule->type == RuleStatement::Type::policy) {
+                Counters::add(stats.policy_drops); buffer->release(); return true;
+            }
             const auto *mapping = &task.mappings[task.mapping_indices.at(rule)];
             Counters::add(stats.route_hits);
             std::array<std::uint64_t, switch_max_labels> labels{};
@@ -302,7 +305,7 @@ class Engine {
                 const auto &target = *member.link->target;
                 if (target.disconnected.load(std::memory_order_relaxed)) continue;
                 connected = true;
-                if (!task.program.allowed(frame.label(0), target.name, labels[0])) continue;
+                if (!task.program.allowed(rule, frame, target.name, labels.data(), count)) continue;
                 if (selector.consider(target.identity, target.name)) selected = &member;
             }
             if (!selected) {

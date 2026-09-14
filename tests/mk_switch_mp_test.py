@@ -116,7 +116,14 @@ cp -- "$TEST_PLANNER" "${@: -1}"
         command = shlex.split(next(line for line in output.splitlines() if line.startswith("Command:")))
         assert command[command.index("--rules-file") + 1] == str(rules)
         run("--dry-run", "--rules-file", rules, "--route", "a:1=b:2", ok=False)
-        rules.write_text("format 1\nserial 11\nswitch capture\n")
+        rules.write_text("format 2\nserial 11\nexit internet*\ntrunk backbone\n"
+                         "switch client,[42,&16,...] to internet*,[99,*,...] allow bidir\n")
+        fields, output = run("--dry-run", "--auto-pool", "--rules-file", rules)
+        assert fields["configured.wildcard_patterns"] == "1"
+        assert fields["configured.tunnels"] == "1" and fields["configured.trunks"] == "1"
+        command = shlex.split(next(line for line in output.splitlines() if line.startswith("Command:")))
+        assert command[command.index("--rules-file") + 1] == str(rules)
+        rules.write_text("format 1\nserial 12\nswitch capture\n")
         run("--dry-run", "--rules-file", rules, ok=False)
         rules.write_text("unknown nope\n")
         run("--dry-run", "--rules-file", rules, ok=False)

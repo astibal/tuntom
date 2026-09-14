@@ -60,7 +60,7 @@ inline StartupProfile startup_profile(Config config, const Hardware &hardware,
     }
     if (config.ruleset) {
         for (const auto &statement : config.ruleset->statements) {
-            if (statement.type == RuleStatement::Type::mapping) {
+            if (statement.type == RuleStatement::Type::mapping || statement.type == RuleStatement::Type::forward) {
                 add_name(statement.input.port);
                 add_name(statement.output.port);
             } else if (statement.type == RuleStatement::Type::exit || statement.type == RuleStatement::Type::trunk) {

@@ -28,15 +28,21 @@ inline bool route_port_matches(std::string_view pattern, std::string_view port) 
     return port.substr(0, pattern.size()) == pattern;
 }
 
+inline void validate_port_wildcard(std::string_view port) {
+    if (port == "*")
+        throw std::runtime_error("port wildcard '*' requires a non-empty prefix");
+    const auto star = port.find('*');
+    if (star != std::string_view::npos && star != port.size() - 1)
+        throw std::runtime_error("port wildcard must be a single trailing '*'");
+}
+
 inline std::pair<std::string, std::uint64_t> switch_route_endpoint(const std::string &text) {
     const auto colon = text.rfind(':');
     if (colon == std::string::npos || colon == 0 || colon + 1 == text.size())
         throw std::runtime_error("Invalid route endpoint: " + text);
     const auto port = text.substr(0, colon);
     (void)encode_switch_registration(port);
-    const auto star = port.find('*');
-    if (star != std::string::npos && star != port.size() - 1)
-        throw std::runtime_error("Route wildcard must be a single trailing '*': " + port);
+    validate_port_wildcard(port);
     const auto label = text.substr(colon + 1);
     if (label[0] == '-' || label.find_first_of(" \t\r\n") != std::string::npos)
         throw std::runtime_error("Invalid label: " + label);
@@ -56,7 +62,7 @@ inline void add_switch_route(SwitchRoutes &routes, const std::string &text) {
 }
 
 // Resolve ingress patterns at registration / plan preparation, never per packet.
-// Precedence is per label: exact name, then longest matching prefix, then '*'.
+// Precedence is per label: exact name, then longest matching non-empty prefix.
 inline SwitchPortRoutes routes_for_port(const SwitchRoutes &routes, const std::string &port) {
     SwitchPortRoutes resolved;
     const auto exact = routes.find(port);

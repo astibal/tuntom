@@ -136,7 +136,15 @@ label client-1,17 to missing, [4]
         assert "older" in sw.command("load", config(0, "switch allow"), ok=False)
         assert "line 3" in sw.command("load", config(2, "nonsense"), ok=False)
         assert "capture is not supported yet" in sw.command("check", config(2, "switch capture debug"), ok=False)
+        for body in ("exit *", "trunk *", "switch *,17 to out*,99 allow bidir",
+                     "switch client*,17 to *,99 allow bidir", "label *,17 to out*,[99]",
+                     "label client*,17 to *,[99]"):
+            for operation in ("check", "load"):
+                assert "non-empty prefix" in sw.command(operation, config(2, body), ok=False)
+                assert sw.command("show") == original_show
         assert sw.command("show") == original_show
+        a.sendall(packet([17, 99]))
+        assert selected.recv(70000) == expected
 
         update = config(2, "switch client*,* to out-b,44 allow\nlabel client*,* to out-b, [44]")
         if fault_library and "mp" in Path(binary).name:
@@ -196,19 +204,19 @@ label client-1,17 to missing, [4]
         assert b.recv(70000) == packet([18446744073709551615, 0, 4])
 
         # Both first-policy and first-mapping selection terminate, including no live target.
-        sw.command("load", config(4, "switch drop\nswitch allow\nlabel *,* to out*, [keep,...]"))
+        sw.command("load", config(4, "switch drop\nswitch allow\nlabel client*,* to out*, [keep,...]"))
         a.sendall(packet([17]))
         quiet(a, b, c, blocked)
         assert int(sw.stats()["policy_drops"]) >= 1
-        sw.command("load", config(5, "switch allow\nlabel *,* to disconnected, [keep,...]\nlabel client*,* to out-a, [keep,...]"))
+        sw.command("load", config(5, "switch allow\nlabel client*,* to disconnected, [keep,...]\nlabel client-1,* to out-a, [keep,...]"))
         a.sendall(packet([17]))
         quiet(a, b, c, blocked)
         assert int(sw.stats()["target_disconnected"]) >= 1
-        sw.command("load", config(6, "switch allow\nlabel *,* to out-a, [keep,keep,keep]"))
+        sw.command("load", config(6, "switch allow\nlabel client*,* to out-a, [keep,keep,keep]"))
         a.sendall(packet([17]))
         quiet(a, b, c, blocked)
         assert int(sw.stats()["rewrite_drops"]) >= 1
-        sw.command("load", config(7, "label *,* to out-a, [keep,...]"))
+        sw.command("load", config(7, "label client*,* to out-a, [keep,...]"))
         a.sendall(packet([17]))
         quiet(a, b, c, blocked)
 
@@ -226,16 +234,18 @@ label client-1,17 to missing, [4]
             # A ruleset can fit now but exceed the preparation bound as ports
             # arrive. Reject that registration without killing the active plan.
             bounded = config(10, "switch allow\nlabel client*,17 to out-a,[keep,...]\n" +
-                             "\n".join(f"label *,{i + 1000} to missing,[keep,...]" for i in range(4090)))
+                             "\n".join(f"label extra*,{i + 1000} to missing,[keep,...]" for i in range(4090)))
             sw.command("load", bounded)
-            for i in range(11):
+            # 13 matching sources across 18 ports fit; 14 across 19 exceed the bound.
+            for i in range(13):
                 sw.port(f"extra-{i}")
             with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as rejected:
                 rejected.settimeout(5)
                 rejected.connect(str(sw.data))
-                rejected.sendall(b"TTP\x01\x08\x00\x00\x00rejected")
+                name = b"extra-rejected"
+                rejected.sendall(b"TTP\x01" + bytes([len(name), 0, 0, 0]) + name)
                 assert rejected.recv(256) == b""
-            assert sw.stats()["connections_current"] == "16"
+            assert sw.stats()["connections_current"] == "18"
             assert "serial 10\n" in sw.command("show")
             a.sendall(packet([17]))
             assert b.recv(70000) == packet([17])
@@ -249,10 +259,35 @@ label client-1,17 to missing, [4]
         sw.start()
         assert sw.command("show") == exported
         assert sw.command("show").startswith("format 1\nserial 3\n")
+
+        # Expand the reverse directly below the forward policy, ahead of a
+        # subsequent explicit reverse drop. Label mappings remain independent.
+        bidir = config(11, "exit out-a\nswitch client-1,17 to out-a,99 allow bidir [id=pair]\n"
+                          "switch out-a,99 to client-1,17 drop\n"
+                          "label client-1,17 to out-a,[99,...]\nlabel out-a,99 to client-1,[17,...]")
+        sw.command("load", bidir)
+        a, b = sw.port("client-1"), sw.port("out-a")
+        a.sendall(packet([17, 123]))
+        assert b.recv(70000) == packet([99, 123], opcode=2)
+        b.sendall(packet([99, 456]))
+        assert a.recv(70000) == packet([17, 456])
+        shown = sw.command("show")
+        assert "bidir" not in shown
+        assert ("switch client-1,17 to out-a,99 allow [id=pair]\n"
+                "switch out-a,99 to client-1,17 allow [id=pair.reverse]\n"
+                "switch out-a,99 to client-1,17 drop\n") in shown
+        assert "unchanged serial=11" in sw.command("load", shown)
+        assert "unchanged serial=11" in sw.command("load", bidir)
+
+        sw.command("load", config(12, "switch client-1,17 to out-a,99 drop bidir\nswitch allow\n"
+                                 "label client-1,17 to out-a,[99,...]\nlabel out-a,99 to client-1,[17,...]"))
+        a.sendall(packet([17]))
+        b.sendall(packet([99]))
+        quiet(a, b)
     finally:
         sw.stop()
         sw.log.close()
-    print("PASS:", Path(binary).name, "ordered rules, ECMP, stack rewrite, export, reload, framing and restart", flush=True)
+    print("PASS:", Path(binary).name, "ordered rules, bidir, ECMP, stack rewrite, export, reload, framing and restart", flush=True)
 
 
 if __name__ == "__main__":

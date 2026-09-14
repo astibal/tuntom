@@ -1,0 +1,37 @@
+# Spustitelny showcase formatu 2; viz ../docs/SWITCH_RULES_SHOWCASE_CZ.md.
+# Pred nasazenim uprav porty a zvol serial vyssi nez aktivni konfigurace.
+format 2
+serial 2026091403
+
+exit inet*
+exit diag-exit
+trunk backbone*
+
+# Blokovani v obou smerech; vynechane porty zustavaji povolene.
+switch H42-block* drop bidir [id=blocked]
+
+# Vyjimka pred obecnym pravidlem. Vyradit ji i z navratu pres inet*.
+switch inet*, [99, ...] to H42-test drop [id=diagnostics-return]
+switch H42-test, [17, ...] to diag-exit, [199, ...] allow bidir [id=diagnostics]
+
+# Prepis jen prvniho labelu; zbytek zachovat v obou smerech.
+switch H42*, [17, ...] to inet*, [99, ...] allow bidir [id=h42-internet]
+
+# Zamerne zkraceni celeho stacku a jiny navratovy label.
+switch H43*, [17, ...] to inet*, 100 allow [id=h43-out]
+switch inet*, 100 to H43*, 18 allow [id=h43-return]
+
+# Druhy label obsahuje priznak 16. Ostatni bity a labely zustanou zachovane.
+# "FLAG" = 0x464c414700000000; nulove bajty jsou suffix.
+switch flags*, ["FLAG", &0x10, ...] to inet*, ["FLAG", *, ...] allow bidir [id=flags]
+
+# Uzavreny interval 8..15, zapsany binarne a hexadecimalne.
+switch qos*, ["QOS", <b1000, 0xf>, ...] to inet*, ["QOS", *, ...] allow bidir [id=qos]
+
+# Presne dva labely; [42,99,7] uz toto pravidlo nematchuje.
+switch exact*, [42, 99] to exact-out, [42, 99] allow bidir [id=exact-stack]
+
+# Vynechana sablona zachova cely stack. Zde jen lokalni IPC, nikoli UDP stack.
+switch transit* to backbone* allow bidir [id=transit]
+
+switch drop

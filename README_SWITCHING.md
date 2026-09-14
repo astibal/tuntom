@@ -8,7 +8,7 @@ including CPU planning with `--auto-pool --dry-run`. `mk_switch.sh` builds the
 existing single-thread `tuntom-switch`.
 
 Label switching connects tuntom tunnel links through explicit relay and exit
-paths. Forwarding uses the incoming port and label, so a relay can choose the
+paths. Forwarding uses the incoming port and label stack, so a relay can choose the
 next tunnel without creating a TUN or configuring kernel IP routes for each
 link. This keeps the forwarding topology separate from the payload's IP
 addresses: tuntom handles encrypted UDP transport, the switch selects links,
@@ -24,7 +24,7 @@ Labels are local Unix IPC metadata; they do not change the tuntom v5 UDP wire
 format. The switch forwards by this rule:
 
 ```text
-(input port, top label) -> (output port, replacement top label)
+(input port, stack match) -> (output port, rewritten stack)
 ```
 
 [Local setup](#local-switch-and-adapter) · [Hooks](#lifecycle-hooks) ·
@@ -149,17 +149,27 @@ The hook may replace or append to it. Lines contain `route in:label=out:label`,
 `exit-port port`, or `default-back off|on`; blank lines are ignored and `#`
 begins a comment through the end of its line. No shell code is evaluated. These legacy entries follow inline
 CLI rules; duplicate routes fail validation. Hooks may instead write a complete
-format-1 ruleset, which cannot be combined with legacy CLI rules. On success the
+versioned ruleset, which cannot be combined with legacy CLI rules. On success the
 file is saved as the instance's `rules`. Other switch hooks see that saved file.
-Format-1 rules can also be loaded over the control socket without a restart.
+Versioned rules can also be loaded over the control socket without a restart.
 
 ## Versioned rulesets and live reload
 
+For annotated examples, see the [Czech rules showcase](docs/SWITCH_RULES_SHOWCASE_CZ.md)
+and its [complete format-2 configuration](examples/switch-showcase.rules).
+
 Both implementations support the ordered configuration in
-[examples/switch.rules](examples/switch.rules). `format 1` and a manual `serial`
-precede wildcard-capable `exit`/`trunk` declarations, `switch` allow/drop policies,
-and `label` destination/stack mappings. Each list uses first-match file order;
-missing policy or mapping means drop. `#` begins a comment through end of line.
+[examples/switch.rules](examples/switch.rules). In `format 2`, one `switch`
+statement matches the input stack, chooses a destination group and rewrites
+the stack. Elements support exact values, `*`, inclusive ranges and any-bit
+masks; values accept decimal, hex, binary and strings of up to eight bytes.
+See the [format-2 specification](docs/SWITCH_RULESET_V2.md) for `bidir`, ordering,
+and preserved positions. `exit`/`trunk` declarations and manual serials remain.
+
+`format 1` remains compatible: it matches only the top label and keeps separate
+`switch` policies and `label` mappings, each in first-match order. Its original
+semantics are documented in the [format-1 guide](docs/SWITCH_RULESET_V1.md).
+An unquoted `#` begins a comment; format-2 label strings may contain `#`.
 
 ```bash
 ./mk_switch.sh switch --rules-file examples/switch.rules
@@ -275,9 +285,9 @@ tuntom-switch --socket /run/tuntom/switch.sock \
 ### Wildcard ports and ECMP
 
 Both switch implementations accept one trailing `*` in either route port ID.
-It matches zero or more characters after a literal prefix; `*` alone matches
-every registered port. Labels remain exact numbers. Quote CLI rules to prevent
-shell filename expansion:
+It matches zero or more characters after a non-empty literal prefix; `*` alone
+is rejected to prevent accidental forwarding across all ports. Labels remain
+exact numbers. Quote CLI rules to prevent shell filename expansion:
 
 ```bash
 --route 'internet:1001=edge-42*:44' \
@@ -335,7 +345,7 @@ the same physical return path through independently configured switches.
 
 Availability means a locally registered IPC connection. The switch has no
 remote UDP path-health signal; a live tunnel process whose remote link fails
-can remain an ECMP member. Legacy CLI rules are fixed at startup; format-1 rulesets support live reload.
+can remain an ECMP member. Legacy CLI rules are fixed at startup; format-1 and format-2 rulesets support live reload.
 `ecmp_packets` counts received packets selected with more than one available
 member, including packets later dropped by output backpressure.
 

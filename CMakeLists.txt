@@ -39,6 +39,9 @@ if(BUILD_TESTING)
         target_compile_options(${name} PRIVATE -Wall -Wextra -Wconversion -pedantic)
         add_test(NAME ${name} COMMAND ${name})
     endforeach()
+    add_executable(switch_ruleset_v2_test tests/switch_ruleset_v2_test.cpp)
+    target_compile_options(switch_ruleset_v2_test PRIVATE -Wall -Wextra -Wconversion -pedantic)
+    add_test(NAME switch_ruleset_v2_test COMMAND switch_ruleset_v2_test)
     target_link_options(switch_client_test PRIVATE
         -Wl,--wrap=connect -Wl,--wrap=send -Wl,--wrap=sendmsg -Wl,--wrap=getsockopt)
     target_link_options(udp_batch_test PRIVATE -Wl,--wrap=sendmmsg -Wl,--wrap=sendto)
@@ -47,6 +50,10 @@ if(BUILD_TESTING)
     set_tests_properties(logging_test PROPERTIES TIMEOUT 40)
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME switch_ruleset_v2_integration_test COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/switch_ruleset_v2_integration_test.py
+            $<TARGET_FILE:tuntom-switch> $<TARGET_FILE:tomtom-switch-mp> $<TARGET_FILE:tuntomctl>)
+        set_tests_properties(switch_ruleset_v2_integration_test PROPERTIES TIMEOUT 90)
         add_test(NAME switch_ruleset_integration_test COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/switch_ruleset_integration_test.py
             $<TARGET_FILE:tuntom-switch> $<TARGET_FILE:tomtom-switch-mp> $<TARGET_FILE:tuntomctl> $<TARGET_FILE:switch_v2_faults>)

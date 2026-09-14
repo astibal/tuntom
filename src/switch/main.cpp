@@ -78,7 +78,7 @@ void usage(const char* program) {
         << "      [--route <in-port>:<label>=<out-port>:<label> ...]\n"
         << "      [--exit-port <port-id> ...]\n"
         << "      [--control-socket <unix-path>]\n"
-        << "      [--rules-file <format-1-config>]\n"
+        << "      [--rules-file <format-1-or-2-config>]\n"
         << "      [--max-ports <1..65535>] [--max-pending <1..65535>]\n"
         << "      [--default-back=off|on]\n\n"
         << "Route ports accept a trailing *; multiple matching outputs use ECMP.\n"
@@ -344,8 +344,9 @@ int main(int argc, char** argv) {
             stats.bytes_rx += size;
 
             if (ruleset) {
-                const auto *mapping = connection.program.mapping(frame.label(0));
+                const auto *mapping = connection.program.mapping(frame);
                 if (!mapping) { ++stats.route_misses; return true; }
+                if (mapping->type == tuntom::RuleStatement::Type::policy) { ++stats.policy_drops; return true; }
                 ++stats.route_hits;
                 std::array<std::uint64_t, tuntom::switch_max_labels> labels{};
                 std::size_t count = 0;
@@ -360,7 +361,7 @@ int main(int argc, char** argv) {
                     if (candidate.fd < 0 || candidate.port.empty() ||
                         !tuntom::route_port_matches(mapping->output.port, candidate.port)) continue;
                     connected = true;
-                    if (!connection.program.allowed(frame.label(0), candidate.port, labels[0])) continue;
+                    if (!connection.program.allowed(mapping, frame, candidate.port, labels.data(), count)) continue;
                     if (selector.consider(candidate.identity, candidate.port)) target = &candidate;
                 }
                 if (!target) {
@@ -468,7 +469,7 @@ int main(int argc, char** argv) {
                     << "send_errors=" << stats.send_errors << "\n"
                     << "send_backpressure_drops=" << stats.send_backpressure_drops << "\n";
                 out << "policy_drops=" << stats.policy_drops << "\nrewrite_drops=" << stats.rewrite_drops << '\n';
-                if (ruleset) out << "ruleset_format=1\nruleset_serial=" << ruleset->serial << '\n';
+                if (ruleset) out << "ruleset_format=" << ruleset->format << "\nruleset_serial=" << ruleset->serial << '\n';
                 recovery.write_stats(out);
                 admission.write_stats(out, snapshot_at);
                 control->write_stats(out);
@@ -478,7 +479,7 @@ int main(int argc, char** argv) {
                 return out.str();
             }, [&](const std::string &operation, const std::string &body) {
                 if (operation == "show") {
-                    if (!ruleset) throw std::runtime_error("legacy CLI routes are active; load a format-1 ruleset to enable export");
+                    if (!ruleset) throw std::runtime_error("legacy CLI routes are active; load a versioned ruleset to enable export");
                     return ruleset->text();
                 }
                 auto next = tuntom::parse_switch_ruleset(body);

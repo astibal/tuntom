@@ -30,25 +30,26 @@ void siphash_vectors_test() {
 
 void routes_test() {
     SwitchRoutes rules;
-    for (const auto *rule : {"*:1=default:1", "edge*:1=short:2", "edge-42*:1=long:3",
-                              "edge-42_1:1=exact:4", "*:2=common*:5"}) add_switch_route(rules, rule);
+    for (const auto *rule : {"e*:1=default:1", "edge*:1=short:2", "edge-42*:1=long:3",
+                              "edge-42_1:1=exact:4", "e*:2=common*:5"}) add_switch_route(rules, rule);
     for (const auto &entry : std::vector<std::pair<std::string, std::string>>{
-             {"internet", "default"}, {"edge-x", "short"}, {"edge-42", "long"},
+             {"elsewhere", "default"}, {"edge-x", "short"}, {"edge-42", "long"},
              {"edge-420", "long"}, {"edge-42_1", "exact"}}) {
         const auto resolved = routes_for_port(rules, entry.first);
         check(resolved.at(1).port == entry.second && resolved.at(2).port == "common*", "Ingress precedence per label");
     }
-    check(route_port_matches("*", "anything") && route_port_matches("edge-42*", "edge-42"), "Empty wildcard suffix");
+    check(routes_for_port(rules, "internet").empty(), "Unrelated port must not match a prefix");
+    check(route_port_matches("edge-42*", "edge-42"), "Empty wildcard suffix");
     check(!route_port_matches("edge-42*", "edge-4") && !route_port_matches("edge-42", "edge-420"), "Anchored prefix");
     check(route_port_matches("a?[]", "a?[]") && !route_port_matches("a?[]", "abcd"), "Only star is special");
-    for (const auto *rule : {"a**:1=b:2", "a*b:1=b:2", "a:1=b*c:2", "a:1=b**:2",
+    for (const auto *rule : {"*:1=b:2", "a:1=*:2", "a**:1=b:2", "a*b:1=b:2", "a:1=b*c:2", "a:1=b**:2",
                              "a:-1=b:2", "a:1=b:18446744073709551616", "a:1=b:", "a:1=bad port:2"}) {
         bool rejected = false;
         try { add_switch_route(rules, rule); } catch (const std::exception &) { rejected = true; }
         check(rejected, "Malformed route accepted");
     }
     bool rejected = false;
-    try { add_switch_route(rules, "*:0x1=other:7"); } catch (const std::exception &) { rejected = true; }
+    try { add_switch_route(rules, "e*:0x1=other:7"); } catch (const std::exception &) { rejected = true; }
     check(rejected, "Duplicate numeric label accepted");
 }
 

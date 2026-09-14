@@ -41,7 +41,7 @@ struct Config {
 inline void usage(std::ostream &out, const char *program) {
     out << "Usage: " << program << " --socket PATH [options]\n"
         << "  --control-socket PATH            tuntomctl show stats endpoint\n"
-        << "  --rules-file PATH                format-1 ruleset; live rules check/load/show via control\n"
+        << "  --rules-file PATH                format 1 or 2; live rules check/load/show via control\n"
         << "  --route IN:LABEL=OUT:LABEL       trailing * on either port; multiple outputs use ECMP\n"
         << "  --exit-port ID                  adapter group; deliver EXIT opcode\n"
         << "  --trunk-port ID                 aggregate group; preserve SWITCH opcode\n"

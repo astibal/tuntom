@@ -157,7 +157,7 @@ int main(int argc, char **argv) {
                 out << "ipc_version_max=2\nipc_memory_budget=" << config.mmap_budget
                     << "\nipc_mapping_bytes=" << mapping_bytes() << '\n';
                 engine.write_stats(out);
-                if (config.ruleset) out << "ruleset_format=1\nruleset_serial=" << config.ruleset->serial << '\n';
+                if (config.ruleset) out << "ruleset_format=" << config.ruleset->format << "\nruleset_serial=" << config.ruleset->serial << '\n';
                 recovery.write_stats(out);
                 admission.write_stats(out, now);
                 control->write_stats(out);
@@ -166,7 +166,7 @@ int main(int argc, char **argv) {
                 return out.str();
             }, [&](const std::string &operation, const std::string &body) {
                 if (operation == "show") {
-                    if (!config.ruleset) throw std::runtime_error("legacy CLI routes are active; load a format-1 ruleset to enable export");
+                    if (!config.ruleset) throw std::runtime_error("legacy CLI routes are active; load a versioned ruleset to enable export");
                     return config.ruleset->text();
                 }
                 auto next = tuntom::parse_switch_ruleset(body);

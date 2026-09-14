@@ -1,5 +1,8 @@
 # Switch ruleset format 1
 
+For full-stack matches, masks and integrated forwarding/rewriting, use
+[format 2](SWITCH_RULESET_V2.md). Format 1 keeps the behavior documented here.
+
 Both `tuntom-switch` and `tomtom-switch-mp` accept `--rules-file PATH` at startup
 and support `rules check/load/show` on their existing Unix control socket.
 `mk_switch.sh` and `mk_switch_mp.sh` recognize the format header in their
@@ -55,8 +58,10 @@ ports receive `EXIT` frames. Trunk declarations affect MP scheduling and retain
 exit and trunk patterns are an error. Role changes apply to already registered
 ports when a new ruleset is activated.
 
-A port pattern is an exact name, a literal prefix followed by one `*`, or `*`
-alone. It matches case-sensitively. `edge*` includes `edge`, `edge1`, and
+A port pattern is an exact name or a non-empty literal prefix followed by one `*`.
+Bare `*` is rejected in every explicit port selector, including `exit`, `trunk`,
+`switch`, and `label`, to prevent accidental selection of all ports.
+Matching is case-sensitive. `edge*` includes `edge`, `edge1`, and
 `edge-backup`. Interior/repeated stars are invalid. Labels match an exact number
 or `*`; numeric string patterns such as `12*` are not supported. Names are
 1..63 characters and cannot contain whitespace, `#`, `,`, `[` or `]`.
@@ -65,11 +70,16 @@ or `*`; numeric string patterns such as `12*` are not supported. Names are
 
 ```text
 switch [SOURCE[,LABEL]] [to DESTINATION[,LABEL]] allow|drop [id=NAME]
+switch [SOURCE[,LABEL]] [to DESTINATION[,LABEL]] allow|drop bidir [id=NAME]
 ```
 
 In this grammar, the source and destination selectors are optional; the
-`[id=NAME]` suffix is an optional **literal bracketed option block**. Omitted
-selectors match everything. An endpoint without `,LABEL` has label `*`.
+`[id=NAME]` suffix is an optional **literal bracketed option block**. `bidir`
+is a bare keyword after the action and before that option block.
+Omitted selectors still match everything: `switch allow`, `switch H42* drop`,
+and `switch to inet* allow` remain valid. Only an explicit bare port `*` is
+forbidden. Export keeps omitted selectors omitted, so `show` remains reloadable.
+An endpoint without `,LABEL` has label `*`; label wildcards remain valid.
 
 ```text
 switch blocked*,* drop
@@ -89,6 +99,36 @@ excluded **before** ECMP. `allow` alone does not create a destination mapping.
 
 IDs are optional, unique across switch and label statements, and retained in
 exports. They currently identify configuration statements, not separate counters.
+
+### Bidirectional policy shorthand
+
+```text
+switch H42*,17 to exit0,99 allow bidir
+```
+
+The parser expands this into two adjacent policies:
+
+```text
+switch H42*,17 to exit0,99 allow
+switch exit0,99 to H42*,17 allow
+```
+
+The reverse is inserted immediately after the original, before the next source
+statement. It swaps both port and label selectors, preserving wildcard matches
+and the action. Omitted selectors retain their match-all semantics when swapped
+and remain omitted in exports. The same option works with `drop`;
+identical forward/reverse selectors still produce two policies.
+Earlier policies keep their precedence in both directions.
+
+With `bidir [id=path]`, the original retains `path` and the reverse receives
+`path.reverse`. A collision with any explicit or generated ID is a validation
+error. Both expanded policies count toward the 4096-statement limit. `show`
+exports the two ordinary policies without `bidir`; loading that export or the
+equivalent shorthand with the same serial is a no-op.
+
+`bidir` applies only to `switch`. It does not create or reverse `label` mappings;
+configure the label mapping for each direction explicitly. Capture accepts the
+option syntactically but remains unsupported in this phase.
 
 ## Ordered label mappings
 
