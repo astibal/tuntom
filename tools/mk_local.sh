@@ -40,7 +40,7 @@ local_init() {
         post_hook="${TUNTOM_ADAPTER_POST_HOOK:-/etc/tuntom/adapter-post.sh}"
     fi
     stop_requested=0; service_args=(); stage=""; starting=0; probe_pid=""
-    rules_source=""; rules_file=""
+    rules_source=""; rules_file=""; divert_source=""
 }
 
 local_option() {
@@ -438,6 +438,10 @@ local_run() {
         if [[ -n "$rules_source" ]]; then cp -- "$rules_source" "$rules_file"; else : > "$rules_file"; fi
         local_hook pre up
         local_read_rules
+        if [[ -n "$divert_source" ]]; then
+            cp -- "$divert_source" "${stage}/divert"
+            service_args+=(--divert-file "${stage}/divert")
+        fi
         local_prepare_switch
         local_check_switch
     fi
@@ -459,9 +463,14 @@ local_run() {
         for ((arg_index=0; arg_index<${#service_args[@]}; ++arg_index)); do
             if [[ "${service_args[arg_index]}" == --rules-file ]]; then
                 service_args[arg_index+1]="${instance_dir}/rules"
+            elif [[ "${service_args[arg_index]}" == --divert-file ]]; then
+                service_args[arg_index+1]="${instance_dir}/divert"
             fi
         done
         mv -f -- "$rules_file" "${instance_dir}/rules"
+        if [[ -n "$divert_source" ]]; then
+            mv -f -- "${stage}/divert" "${instance_dir}/divert"
+        fi
     fi
     rules_file="${instance_dir}/rules"
     # Metadata stays on the runtime filesystem; replace it atomically there.

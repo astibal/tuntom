@@ -42,6 +42,7 @@ Build and restart a local tomtom-switch-mp instance.
                           daemon startup or changes to managed instances
 
   --rules-file <path>      Seed rules (format 1, format 2 or legacy directives)
+  --divert-file <path>     Divert config; requires versioned rules, initially disabled
   --pre-hook <path>        Default /etc/tuntom/switch-pre.sh
   --post-hook <path>       Default /etc/tuntom/switch-post.sh
   --socket-owner <u:g>     Default tuntom:tuntom; socket mode 0660
@@ -69,7 +70,7 @@ mp_compile_planner() {
 }
 
 mp_plan() {
-    local -a planner_args=(--socket "$switch_socket" "${service_args[@]}")
+    local -a planner_args=(--socket "$switch_socket" --control-socket "$control_socket" "${service_args[@]}")
     (( ! auto_pool )) || planner_args+=(--auto-pool)
     [[ -z "$reserve_cpus" ]] || planner_args+=(--reserve-cpus "$reserve_cpus")
     "${stage}/planner" "${planner_args[@]}" > "${stage}/worker-plan" ||
@@ -101,6 +102,7 @@ mp_dry_run() {
         rules_file="$rules_source"
         local_read_rules
     fi
+    [[ -z "$divert_source" ]] || service_args+=(--divert-file "$divert_source")
     mp_plan
     echo "Dry run: pre/up hooks are not executed; generated rules may change this plan."
     printf 'Command:'
@@ -119,6 +121,7 @@ main() {
         case "$1" in
             --socket) local_value "$@"; switch_socket="$2"; shift ;;
             --rules-file) local_value "$@"; rules_source="$2"; shift ;;
+            --divert-file) local_value "$@"; divert_source="$2"; shift ;;
             --route|--exit-port|--trunk-port)
                 local_value "$@"; service_args+=("$1" "$2"); shift ;;
             --max-ports|--max-pending|--workers|--work-per-thread|--rx-weight|--tx-weight|--adapter-weight|--trunk-weight|--pool-size|--queue-size)

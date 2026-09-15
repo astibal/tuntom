@@ -68,6 +68,11 @@ inline StartupProfile startup_profile(Config config, const Hardware &hardware,
             }
         }
     }
+    if (config.divert_config) {
+        names.insert(config.divert_config->input);
+        names.insert(config.divert_config->output);
+        for (const auto &origin : config.divert_config->origins) names.insert(origin.first);
+    }
     result.wildcard_patterns = patterns.size();
     for (const auto &name : names) {
         const auto kind = config.kind(name);

@@ -66,6 +66,14 @@ socket permissions and lifecycle hooks.
 
 ## Quick start
 
+### Live process dashboard
+
+The optional [Fabric Observer](fabric/README.md) discovers running tuntom
+processes from `/proc` and shows their public startup parameters, local
+connections, health, counter deltas, MP ports/workers, logs and switch rules. It needs no inventory
+or database; run `python3 -B fabric/server.py` and open the printed local URL.
+See its README for the separate privileged collector, SSH forwarding and optional runtime rule edits.
+
 ### Requirements
 
 For the bootstrap workflow, both hosts need:

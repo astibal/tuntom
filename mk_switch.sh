@@ -19,6 +19,7 @@ The name/state/lock are shared with mk_switch_mp.sh; either can replace or stop 
   --max-ports <n>          Registered port limit (default 256, range 1..65535)
   --max-pending <n>        Pending registration limit (default 16, range 1..65535)
   --rules-file <path>      Seed rules for pre/up (see examples/switch.rules)
+  --divert-file <path>     Divert config; requires versioned rules, initially disabled
   --pre-hook <path>        Default /etc/tuntom/switch-pre.sh
   --post-hook <path>       Default /etc/tuntom/switch-post.sh
   --socket-owner <u:g>     Default tuntom:tuntom; socket mode is 0660
@@ -40,6 +41,7 @@ main() {
         case "$1" in
             --socket) local_value "$@"; switch_socket="$2"; shift ;;
             --rules-file) local_value "$@"; rules_source="$2"; shift ;;
+            --divert-file) local_value "$@"; divert_source="$2"; shift ;;
             --route|--exit-port)
                 local_value "$@"; service_args+=("$1" "$2"); shift ;;
             --max-ports|--max-pending)

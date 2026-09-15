@@ -165,6 +165,17 @@ int main(int argc, char **argv) {
                 throughput.write(out);
                 return out.str();
             }, [&](const std::string &operation, const std::string &body) {
+                if (operation.compare(0, 7, "divert.") == 0) {
+                    if (!config.divert_config) throw std::runtime_error("divert is not configured");
+                    if (operation == "divert.enable") {
+                        for (const auto& name : {config.divert_config->input, config.divert_config->output}) {
+                            const auto found = engine.plan().divert_ports.find(name);
+                            if (found == engine.plan().divert_ports.end() || found->second->disconnected.load())
+                                throw std::runtime_error("both divert adapter ports must be connected");
+                        }
+                    }
+                    return config.divert_config->command(operation);
+                }
                 if (operation == "show") {
                     if (!config.ruleset) throw std::runtime_error("legacy CLI routes are active; load a versioned ruleset to enable export");
                     return config.ruleset->text();

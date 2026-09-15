@@ -116,6 +116,7 @@ struct RxTask {
     RulesProgram program;
     std::vector<ResolvedMapping> mappings;
     std::unordered_map<const RuleStatement *, std::size_t> mapping_indices;
+    std::map<std::string, ResolvedRoute> divert_routes;
 };
 struct TxTask {
     Port *port;
@@ -158,6 +159,8 @@ struct Plan {
     std::unordered_map<Port *, std::size_t> tx_owner;
     std::shared_ptr<const SwitchRuleset> ruleset;
     std::vector<Kind> kinds;
+    std::unique_ptr<divert::SwitchPath> divert_path;
+    std::map<std::string, Port*> divert_ports;
 };
 
 #define TUNTOM_MP_COUNTERS(X)                                                                      \
@@ -165,7 +168,8 @@ struct Plan {
     X(bytes_rx) X(frames_tx) X(bytes_tx) X(route_hits) X(route_misses) X(target_disconnected) X(ecmp_packets) \
         X(default_back) X(exit_deliveries) X(malformed_frames) X(rx_errors) X(send_errors)         \
             X(queue_full_drops) X(pool_stalls) X(send_eagain) X(wake_calls) X(worker_poll_errors) \
-        X(recv_calls) X(recv_eagain) X(send_calls) X(wake_reads) X(cpu_samples) X(policy_drops) X(rewrite_drops)
+        X(recv_calls) X(recv_eagain) X(send_calls) X(wake_reads) X(cpu_samples) X(policy_drops) X(rewrite_drops) \
+        X(divert_forwarded) X(divert_invalid_drops) X(divert_overflow_drops)
 
 struct alignas(64) Counters {
 #define MP_FIELD(name) std::atomic<std::uint64_t> name{0};
@@ -284,7 +288,27 @@ class Engine {
         Link *link = nullptr;
         std::size_t tx_worker = 0;
         const auto route = task.routes.find(frame.label(0));
-        if (task.rules_enabled) {
+        divert::Decision decision;
+        if (plan_->divert_path) decision = plan_->divert_path->route(port.name, frame, [&](const std::string& name) {
+            const auto found = plan_->divert_ports.find(name);
+            return found != plan_->divert_ports.end() && !found->second->disconnected.load(std::memory_order_relaxed);
+        });
+        if (decision.result != divert::Result::normal) {
+            using divert::Result;
+            if (decision.result == Result::forward) {
+                const auto found = task.divert_routes.find(*decision.target);
+                if (found != task.divert_routes.end()) {
+                    link = found->second.link; tx_worker = found->second.tx_worker;
+                    rewrite_rules_frame(buffer->data, buffer->size, frame, decision.labels.values, decision.labels.size, decision.exit);
+                    if (decision.exit) Counters::add(stats.exit_deliveries);
+                    if (decision.multipath) Counters::add(stats.ecmp_packets);
+                    Counters::add(stats.divert_forwarded);
+                } else Counters::add(stats.target_disconnected);
+            } else if (decision.result == Result::overflow) Counters::add(stats.divert_overflow_drops);
+            else if (decision.result == Result::malformed) Counters::add(stats.divert_invalid_drops);
+            else if (decision.result == Result::policy) Counters::add(stats.policy_drops);
+            else Counters::add(stats.target_disconnected);
+        } else if (task.rules_enabled) {
             const auto *rule = task.program.mapping(frame);
             if (!rule) { Counters::add(stats.route_misses); buffer->release(); return true; }
             if (rule->type == RuleStatement::Type::policy) {
@@ -573,10 +597,19 @@ class Engine {
         std::vector<Kind> kinds;
         std::unordered_map<std::string, std::shared_ptr<Port>> names;
         for (const auto &port : plan->ports) {
-            kinds.push_back(plan->ruleset ?
+            const bool divert_port = config_.divert_config && (port->name == config_.divert_config->input || port->name == config_.divert_config->output);
+            kinds.push_back(divert_port ? Kind::adapter : plan->ruleset ?
                 (plan->ruleset->role(port->name, RuleStatement::Type::exit) ? Kind::adapter :
                  plan->ruleset->role(port->name, RuleStatement::Type::trunk) ? Kind::trunk : Kind::tunnel) : port->kind);
             names.emplace(port->name, port);
+        }
+        if (config_.divert_config) {
+            std::vector<std::string> port_names;
+            for (const auto& port : plan->ports) {
+                port_names.push_back(port->name);
+                plan->divert_ports.emplace(port->name, port.get());
+            }
+            plan->divert_path = std::make_unique<divert::SwitchPath>(config_.divert_config, plan->ruleset, std::move(port_names));
         }
         plan->assignment = schedule(kinds, workers_.size(), config_.policy);
         plan->kinds = std::move(kinds);
@@ -603,7 +636,7 @@ class Engine {
         std::size_t resolution_work = 0;
         for (std::size_t i = 0; i < plan->ports.size(); ++i) {
             auto &port = plan->ports[i];
-            RxTask rx{port.get(), {}, {}, false, false, {}, {}, {}};
+            RxTask rx{port.get(), {}, {}, false, false, {}, {}, {}, {}};
             rx.rules_enabled = static_cast<bool>(plan->ruleset);
             if (plan->ruleset) {
                 rx.program = RulesProgram(*plan->ruleset, port->name);
@@ -643,6 +676,13 @@ class Engine {
             }
             if (!plan->ruleset && config_.default_back)
                 rx.fallback = {link_for(port, port), plan->tx_owner.at(port.get()), 0, true};
+            if (plan->divert_path) {
+                for (const auto& target : plan->ports) {
+                    if (!plan->divert_path->possible(port->name, target->name)) continue;
+                    rx.divert_routes.emplace(target->name, ResolvedRoute{
+                        link_for(port, target), plan->tx_owner.at(target.get()), 0, false});
+                }
+            }
             plan->workers[plan->assignment.owners[i][0]].rx.push_back(std::move(rx));
         }
         for (std::size_t i = 0; i < plan->ports.size(); ++i) {
@@ -801,6 +841,7 @@ class Engine {
         return n;
     }
     void write_stats(std::ostream &out) const {
+        if (config_.divert_config) out << config_.divert_config->command("divert.show");
         out << "scheduler_version=" << plan_->version << "\nworkers_pool=" << workers_.size()
             << "\nworker_io_backend=epoll\nworker_event_refresh_budget=32\nworker_cpu_sample_ms=100"
             << "\nworkers_active=" << plan_->assignment.active

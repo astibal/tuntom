@@ -123,6 +123,22 @@ cp -- "$TEST_PLANNER" "${@: -1}"
         assert fields["configured.tunnels"] == "1" and fields["configured.trunks"] == "1"
         command = shlex.split(next(line for line in output.splitlines() if line.startswith("Command:")))
         assert command[command.index("--rules-file") + 1] == str(rules)
+        divert = directory / "divert with spaces"
+        divert.write_text("cookie hTX\nports divert-in divert-out\norigin client 123\n"
+                          "origin other 456\nmatch client,[42,...]\n")
+        for automatic in ((), ("--auto-pool",)):
+            fields, output = run("--dry-run", *automatic, "--rules-file", rules,
+                                 "--divert-file", divert, "--pre-hook", hook)
+            assert fields["configured.adapters"] == "2" and fields["configured.tunnels"] == "2"
+            assert fields["configured.trunks"] == "1"
+            command = shlex.split(next(line for line in output.splitlines() if line.startswith("Command:")))
+            assert command[command.index("--divert-file") + 1] == str(divert)
+            assert command[command.index("--control-socket") + 1] == str(directory / "run/demo.control")
+        run("--dry-run", "--divert-file", ok=False)
+        run("--dry-run", "--divert-file", divert, ok=False)
+        run("--dry-run", "--rules-file", rules, "--divert-file", directory / "missing", ok=False)
+        divert.write_text("cookie invalid\nports divert-in divert-out\norigin client 123\nmatch client\n")
+        run("--dry-run", "--rules-file", rules, "--divert-file", divert, ok=False)
         rules.write_text("format 1\nserial 12\nswitch capture\n")
         run("--dry-run", "--rules-file", rules, ok=False)
         rules.write_text("unknown nope\n")

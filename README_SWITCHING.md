@@ -452,3 +452,27 @@ compile directly and do not require CMake.
 The single-thread `tuntom-switch` continues serving V1; automatic clients probe
 without a port name and fall back to V1. `--switch-ipc v1` skips the probe and
 `--switch-ipc inline` explicitly selects V2 without shared payloads.
+
+## Optional local divert
+
+Both switches accept the opt-in `--divert-file` configuration. A separate
+`tuntom-divert-adapter` connects two TUNs and restores flow labels across a local
+Linux router. See [Divert: configuration, limits and manual namespace/VRF commands](docs/DIVERT.md).
+The existing eight-label limit and IPC formats remain unchanged.
+
+Both lifecycle helpers also accept `--divert-file PATH`:
+
+```bash
+./mk_switch.sh switch --rules-file ./switch.rules --divert-file ./divert.conf
+# Or use the MP helper, including its normal planning options:
+./mk_switch_mp.sh switch --auto-pool --rules-file ./switch.rules --divert-file ./divert.conf
+```
+
+Divert requires versioned rules (format 1 or 2), supplied by `--rules-file` or
+the existing `pre/up` hook. The helper stages and validates the divert file
+before replacing the running switch, then saves it as the instance's `divert`
+file. Every start with divert configured leaves it disabled until both divert
+adapter ports are connected and `tuntomctl SOCKET divert enable` is called.
+`tuntomctl SOCKET divert stop` immediately stops new offers to the divert adapter:
+all subsequent unmarked packets use normal rules. It is idempotent, retains DVRT
+return handling, and may interrupt active proxied connections; it does not drain flows.

@@ -6,6 +6,7 @@
 #include "../switch_admission.hpp"
 #include "scheduler.hpp"
 #include "../ipc/switch_v2.hpp"
+#include "../divert/switch.hpp"
 #include <cstdint>
 #include <ostream>
 #include <stdexcept>
@@ -24,6 +25,7 @@ struct Config {
     std::unordered_map<std::string, PortRoutes> routes;
     std::unordered_set<std::string> exits, trunks;
     std::shared_ptr<const SwitchRuleset> ruleset;
+    std::shared_ptr<divert::Config> divert_config;
     SwitchCapacity capacity;
     Policy policy;
     ipc::Options ipc;
@@ -32,6 +34,7 @@ struct Config {
     bool default_back = false, help = false;
 
     Kind kind(const std::string &port) const {
+        if (divert_config && (port == divert_config->input || port == divert_config->output)) return Kind::adapter;
         if (ruleset) return ruleset->role(port, RuleStatement::Type::exit) ? Kind::adapter :
             ruleset->role(port, RuleStatement::Type::trunk) ? Kind::trunk : Kind::tunnel;
         return exits.count(port) ? Kind::adapter : trunks.count(port) ? Kind::trunk : Kind::tunnel;
@@ -42,6 +45,7 @@ inline void usage(std::ostream &out, const char *program) {
     out << "Usage: " << program << " --socket PATH [options]\n"
         << "  --control-socket PATH            tuntomctl show stats endpoint\n"
         << "  --rules-file PATH                format 1 or 2; live rules check/load/show via control\n"
+        << "  --divert-file PATH               opt-in local divert, initially disabled\n"
         << "  --route IN:LABEL=OUT:LABEL       trailing * on either port; multiple outputs use ECMP\n"
         << "  --exit-port ID                  adapter group; deliver EXIT opcode\n"
         << "  --trunk-port ID                 aggregate group; preserve SWITCH opcode\n"
@@ -77,7 +81,7 @@ inline void validate_port(const std::string &port) { (void)encode_switch_registr
 
 inline Config parse_config(int argc, char **argv) {
     Config config;
-    std::string rules_file;
+    std::string rules_file, divert_file;
     for (int i = 1; i < argc; ++i) {
         const std::string option = argv[i];
         if (option == "--help" || option == "-h") {
@@ -105,6 +109,9 @@ inline Config parse_config(int argc, char **argv) {
         } else if (option == "--rules-file") {
             if (!rules_file.empty()) throw std::runtime_error("Duplicate --rules-file");
             rules_file = value;
+        } else if (option == "--divert-file") {
+            if (!divert_file.empty()) throw std::runtime_error("Duplicate --divert-file");
+            divert_file = value;
         } else if (option == "--exit-port" || option == "--trunk-port") {
             validate_port(value);
             auto &ports = option == "--exit-port" ? config.exits : config.trunks;
@@ -162,6 +169,11 @@ inline Config parse_config(int argc, char **argv) {
     }
     if (!config.help && config.socket.empty())
         throw std::runtime_error("--socket is required");
+    if (!divert_file.empty()) {
+        if (rules_file.empty() || config.control.empty())
+            throw std::runtime_error("--divert-file requires --rules-file and --control-socket");
+        config.divert_config = divert::read_config(divert_file);
+    }
     return config;
 }
 

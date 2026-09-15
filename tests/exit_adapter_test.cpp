@@ -97,5 +97,13 @@ int main() {
     require(not lru.lookup(response.data(), response.size(), found, start),
             "LRU capacity did not evict oldest flow");
 
-    std::cout << "PASS: exit adapter IPv4/IPv6 learning, fallback, expiry and LRU\n";
+    ExitAdapterRoutes strict(2, 1, std::chrono::hours(1), std::chrono::hours(1), true);
+    auto same_pair = ipv4(6, 12346, 443, 1, 2);
+    require(strict.learn(request.data(), request.size(), {1}, start), "strict L4 learning");
+    require(strict.learn(same_pair.data(), same_pair.size(), {2}, start), "strict second flow learning");
+    require(strict.l3_size() == 0, "strict mode must not learn IP-pair labels");
+    require(!strict.lookup(response.data(), response.size(), found, start), "evicted flow must not inherit another flow's labels");
+    require(!strict.lookup(fragment.data(), fragment.size(), found, start), "strict mode rejects fragments");
+    require(!strict.learn(fragment.data(), fragment.size(), {3}, start), "strict mode rejects incomplete identities");
+    std::cout << "PASS: exit adapter IPv4/IPv6 learning, fallback, expiry, LRU and strict L4\n";
 }

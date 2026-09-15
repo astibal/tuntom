@@ -17,8 +17,9 @@ public:
         std::size_t l3_capacity,
         std::size_t l4_capacity,
         Clock::duration l3_timeout,
-        Clock::duration l4_timeout)
-        : l3_(l3_capacity, l3_timeout), l4_(l4_capacity, l4_timeout) {}
+        Clock::duration l4_timeout,
+        bool l4_only = false)
+        : l3_(l3_capacity, l3_timeout), l4_(l4_capacity, l4_timeout), l4_only_(l4_only) {}
 
     bool learn(
         const std::uint8_t* packet,
@@ -31,8 +32,12 @@ public:
             ++parse_errors_;
             return false;
         }
+        if (l4_only_ && (!flow.has_l4 || flow.fragmented)) {
+            ++parse_errors_;
+            return false;
+        }
         ++learned_packets_;
-        l3_.put(reverse_key(flow.l3), labels, now);
+        if (!l4_only_) l3_.put(reverse_key(flow.l3), labels, now);
         if (flow.has_l4) l4_.put(reverse_key(flow.l4), labels, now);
         return true;
     }
@@ -57,13 +62,15 @@ public:
         std::vector<std::uint64_t>& labels,
         Clock::time_point now = Clock::now()) {
 
+        if (l4_only_ && flow.fragmented) { ++l4_misses_; return false; }
         if (flow.has_l4 and l4_.get(flow.l4, labels, now)) {
             ++l4_hits_;
             std::vector<std::uint64_t> ignored;
-            l3_.get(flow.l3, ignored, now);
+            if (!l4_only_) l3_.get(flow.l3, ignored, now);
             return true;
         }
         if (flow.has_l4) ++l4_misses_;
+        if (l4_only_) return false;
         if (l3_.get(flow.l3, labels, now)) {
             ++l3_hits_;
             return true;
@@ -91,6 +98,7 @@ public:
 private:
     LruCache<IpPairKey, std::vector<std::uint64_t>, IpPairHash> l3_;
     LruCache<FlowKey, std::vector<std::uint64_t>, FlowHash> l4_;
+    bool l4_only_;
     std::uint64_t learned_packets_ = 0;
     std::uint64_t parse_errors_ = 0;
     std::uint64_t l3_hits_ = 0;

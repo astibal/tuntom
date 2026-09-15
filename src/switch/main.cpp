@@ -5,6 +5,7 @@
 #include "../switch_routes.hpp"
 #include "../switch_ruleset.hpp"
 #include "../switch_ecmp.hpp"
+#include "../divert/switch.hpp"
 #include "../adaptive_polling.hpp"
 #include "../control_socket.hpp"
 #include "../throughput_stats.hpp"
@@ -69,6 +70,7 @@ struct SwitchStats {
     std::uint64_t send_errors = 0;
     std::uint64_t send_backpressure_drops = 0;
     std::uint64_t policy_drops = 0, rewrite_drops = 0;
+    std::uint64_t divert_forwarded = 0, divert_invalid_drops = 0, divert_overflow_drops = 0;
 };
 
 void usage(const char* program) {
@@ -79,6 +81,7 @@ void usage(const char* program) {
         << "      [--exit-port <port-id> ...]\n"
         << "      [--control-socket <unix-path>]\n"
         << "      [--rules-file <format-1-or-2-config>]\n"
+        << "      [--divert-file <config>]  Opt-in local divert, initially disabled\n"
         << "      [--max-ports <1..65535>] [--max-pending <1..65535>]\n"
         << "      [--default-back=off|on]\n\n"
         << "Route ports accept a trailing *; multiple matching outputs use ECMP.\n"
@@ -163,6 +166,9 @@ int main(int argc, char** argv) {
         tuntom::SwitchRoutes routes;
         std::shared_ptr<const tuntom::SwitchRuleset> ruleset;
         std::string rules_file;
+        std::string divert_file;
+        std::shared_ptr<tuntom::divert::Config> divert_config;
+        std::unique_ptr<tuntom::divert::SwitchPath> divert_path;
         std::unordered_set<std::string> exit_ports;
         SwitchStats stats;
         tuntom::ThroughputStats throughput({"switch_rx", "switch_tx"});
@@ -188,6 +194,9 @@ int main(int argc, char** argv) {
             } else if (option == "--rules-file") {
                 if (++index >= argc || !rules_file.empty()) throw std::runtime_error("--rules-file requires one path");
                 rules_file = argv[index];
+            } else if (option == "--divert-file") {
+                if (++index >= argc || !divert_file.empty()) throw std::runtime_error("--divert-file requires one path");
+                divert_file = argv[index];
             } else if (option == "--max-ports" or option == "--max-pending") {
                 if (++index >= argc) throw std::runtime_error(option + " requires a value");
                 const auto value = parse_capacity(argv[index]);
@@ -222,6 +231,20 @@ int main(int argc, char** argv) {
             ruleset = tuntom::parse_switch_ruleset("format 1\nserial 0\n");
         }
 
+        if (!divert_file.empty()) {
+            if (rules_file.empty() || control_path.empty())
+                throw std::runtime_error("--divert-file requires --rules-file and --control-socket");
+            divert_config = tuntom::divert::read_config(divert_file);
+        }
+        const auto make_divert_path = [&](std::shared_ptr<const tuntom::SwitchRuleset> selected, const std::string& added = "") {
+            if (!divert_config) return std::unique_ptr<tuntom::divert::SwitchPath>{};
+            std::vector<std::string> names;
+            for (const auto& c : connections)
+                if (c.fd >= 0 && !c.port.empty() && c.port != added) names.push_back(c.port);
+            if (!added.empty()) names.push_back(added);
+            return std::make_unique<tuntom::divert::SwitchPath>(divert_config, std::move(selected), std::move(names));
+        };
+        divert_path = make_divert_path(ruleset);
         listener = create_listener(socket_path);
         std::unique_ptr<tuntom::ControlSocket> control;
         if (not control_path.empty())
@@ -314,11 +337,13 @@ int main(int argc, char** argv) {
                     // std::string with its default allocator cannot throw.
                     auto resolved = tuntom::routes_for_port(routes, registered_id);
                     auto program = ruleset ? tuntom::RulesProgram(*ruleset, registered_id) : tuntom::RulesProgram();
+                    auto next_divert = make_divert_path(ruleset, registered_id);
                     connection.exit_role = ruleset && ruleset->role(registered_id, tuntom::RuleStatement::Type::exit);
                     connection.identity = tuntom::ecmp_port_identity(registered_id);
                     connection.program = std::move(program);
                     connection.routes.swap(resolved);
                     connection.port.swap(registered_id);
+                    divert_path.swap(next_divert);
                     if (old and old != &connection) {
                         ::close(old->fd);
                         old->fd = -1;
@@ -342,6 +367,28 @@ int main(int argc, char** argv) {
             }
             ++stats.frames_rx;
             stats.bytes_rx += size;
+
+            if (divert_path) {
+                using tuntom::divert::Result;
+                const auto decision = divert_path->route(connection.port, frame, [&](const std::string& name) {
+                    return find_connection(connections, name) != nullptr;
+                });
+                if (decision.result != Result::normal) {
+                    if (decision.result == Result::forward) {
+                        auto output_size = size;
+                        tuntom::rewrite_rules_frame(buffer.data(), output_size, frame,
+                            decision.labels.values, decision.labels.size, decision.exit);
+                        auto* target = find_connection(connections, *decision.target);
+                        if (decision.exit) ++stats.exit_deliveries;
+                        if (decision.multipath) ++stats.ecmp_packets;
+                        if (send_frame(target->fd, buffer.data(), output_size, stats)) ++stats.divert_forwarded;
+                    } else if (decision.result == Result::overflow) ++stats.divert_overflow_drops;
+                    else if (decision.result == Result::malformed) ++stats.divert_invalid_drops;
+                    else if (decision.result == Result::policy) ++stats.policy_drops;
+                    else ++stats.target_disconnected;
+                    return true;
+                }
+            }
 
             if (ruleset) {
                 const auto *mapping = connection.program.mapping(frame);
@@ -470,6 +517,10 @@ int main(int argc, char** argv) {
                     << "send_backpressure_drops=" << stats.send_backpressure_drops << "\n";
                 out << "policy_drops=" << stats.policy_drops << "\nrewrite_drops=" << stats.rewrite_drops << '\n';
                 if (ruleset) out << "ruleset_format=" << ruleset->format << "\nruleset_serial=" << ruleset->serial << '\n';
+                if (divert_config) out << divert_config->command("divert.show")
+                    << "divert_forwarded=" << stats.divert_forwarded
+                    << "\ndivert_invalid_drops=" << stats.divert_invalid_drops
+                    << "\ndivert_overflow_drops=" << stats.divert_overflow_drops << '\n';
                 recovery.write_stats(out);
                 admission.write_stats(out, snapshot_at);
                 control->write_stats(out);
@@ -478,12 +529,20 @@ int main(int argc, char** argv) {
                 throughput.write(out);
                 return out.str();
             }, [&](const std::string &operation, const std::string &body) {
+                if (operation.compare(0, 7, "divert.") == 0) {
+                    if (!divert_config) throw std::runtime_error("divert is not configured");
+                    if (operation == "divert.enable" &&
+                        (!find_connection(connections, divert_config->input) || !find_connection(connections, divert_config->output)))
+                        throw std::runtime_error("both divert adapter ports must be connected");
+                    return divert_config->command(operation);
+                }
                 if (operation == "show") {
                     if (!ruleset) throw std::runtime_error("legacy CLI routes are active; load a versioned ruleset to enable export");
                     return ruleset->text();
                 }
                 auto next = tuntom::parse_switch_ruleset(body);
                 const bool changed = tuntom::ruleset_changed(ruleset, *next);
+                auto next_divert = make_divert_path(next);
                 std::vector<tuntom::RulesProgram> programs;
                 std::vector<bool> exits;
                 programs.reserve(connections.size());
@@ -500,6 +559,7 @@ int main(int argc, char** argv) {
                         connections[i].exit_role = exits[i];
                     }
                     ruleset.swap(next);
+                    divert_path.swap(next_divert);
                     routes.clear(); exit_ports.clear(); default_back = false;
                 }
                 return response;

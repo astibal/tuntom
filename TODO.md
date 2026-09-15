@@ -1,5 +1,33 @@
 # Project TODO
 
+## Adapter relay over tuntom tunnels (deferred 2026-09-15)
+
+Extend remote adapter connectivity with a generic relay, using the existing
+tuntom tunnel transport. The first use case is a remote
+[divert adapter](docs/DIVERT.md); the same mechanism should support exit adapters.
+
+```text
+switch <-> tuntom (relay) === encrypted tunnel === tuntom (relay) <-> adapter
+```
+
+- Represent the remote adapter's ports at the local switch and expose the
+  existing local switch IPC interface to the remote adapter.
+- Carry a channel ID plus the complete switch data frame: opcode, label stack,
+  and payload. Multiplex `divert-in` and `divert-out` over one tunnel.
+- Add an explicit relay mode: ordinary tuntom currently transports the payload
+  and recreates ingress labels at the receiving endpoint. Relay mode must
+  preserve frames without classification or label rewriting. Keep existing
+  command meanings, defaults, and ordinary tunnel behavior unchanged.
+- Reuse encryption, session management, and fragmentation. Integrate relay
+  endpoints into tuntom so separate relay processes are unnecessary.
+- Keep the relay independent of divert admission and per-flow state; those
+  remain in the divert adapter. Channel IDs must not consume label slots;
+  retain the current eight-label limit.
+- Define channel registration, reconnect behavior, bounded queues/backpressure,
+  and frame/MTU limits; verify both directions and transport failure handling.
+
+Status: design captured only; implementation is deferred.
+
 ## Documentation: virtio-net multiqueue tip (requested 2026-09-13)
 
 When expanding deployment/performance guidance in `README_SWITCHING_MP.md`,
@@ -54,26 +82,6 @@ actual batches depend on ready traffic and unchanged per-ingress RR quotas.
 
 The earlier compatible socket/worker phase remains implemented and measured;
 see [its reproduction](experiments/switch_mp/README.md#socket-phase-ab-comparison).
-
-## Statistics write strategy
-
-The text statistics export is approaching 100 fields and currently rewrites an
-atomic temporary file every second for every tuntom process. The file does not
-grow over time, but frequent create/write/rename operations will not scale to a
-large number of tunnels.
-
-Deferred design:
-
-- add `--stats-interval <seconds>`, probably with a 10-second default;
-- keep the complete periodic dump in one file rather than splitting its schema;
-- immediately publish stats on switch connect, disconnect and socket error;
-- retain the immediate `SIGUSR2` snapshot;
-- retain `--no-stats` with no periodic writes;
-- verify whether `SIGUSR1` should restore the configured interval unchanged.
-
-The intended result is current switch diagnostics with roughly one tenth of the
-normal filesystem traffic. Revisit before deploying large tunnel populations or
-adding substantially more metrics.
 
 ## Faster plaintext authentication
 

@@ -314,3 +314,13 @@ connection that cannot fit the memory budget also negotiates inline. The budget 
 See the protocol guide for ownership/token diagrams, resource bounds, fallback,
 backpressure, per-port statistics and a source map. `--switch-ipc` and
 `--switch-ipc-batch` select client behavior in tuntom and the adapter.
+
+The opt-in [local divert adapter](docs/DIVERT.md) also supports this MP datapath,
+including mmap, ordinary rule continuation and ECMP. Its namespace/VRF setup is
+external to the binaries. `mk_switch_mp.sh` accepts `--divert-file PATH`, including
+with `--auto-pool` and `--dry-run`; the plan counts both divert adapter ports.
+Existing defaults are unchanged, and divert activation remains explicit through
+`tuntomctl SOCKET divert enable` after both adapter ports connect.
+`tuntomctl SOCKET divert stop` disables new offers immediately, including for
+existing flows; already marked DVRT packets retain their routing. This is not
+a graceful drain and may interrupt active proxied connections.

@@ -23,8 +23,14 @@ target_compile_options(tuntom-switch-adapter PRIVATE -Wall -Wextra -pedantic)
 add_executable(tuntomctl src/control/main.cpp)
 target_compile_options(tuntomctl PRIVATE -Wall -Wextra -pedantic)
 
+add_executable(tuntom-divert-adapter src/divert/main.cpp)
+target_compile_options(tuntom-divert-adapter PRIVATE -Wall -Wextra -Wconversion -pedantic)
+
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(divert_test tests/divert_test.cpp)
+    target_compile_options(divert_test PRIVATE -Wall -Wextra -Wconversion -pedantic)
+    add_test(NAME divert_test COMMAND divert_test)
     add_executable(switch_mp_plan_fixture tools/switch_mp_plan.cpp)
     target_compile_options(switch_mp_plan_fixture PRIVATE -Wall -Wextra -Wconversion -pedantic)
     add_executable(switch_mp_plan_test tests/switch_mp_plan_test.cpp)
@@ -53,6 +59,10 @@ if(BUILD_TESTING)
     set_tests_properties(logging_test PROPERTIES TIMEOUT 40)
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME divert_integration_test COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/divert_integration_test.py
+            $<TARGET_FILE:tuntom-switch> $<TARGET_FILE:tomtom-switch-mp> $<TARGET_FILE:tuntomctl>)
+        set_tests_properties(divert_integration_test PROPERTIES TIMEOUT 60)
         add_test(NAME switch_ruleset_v2_integration_test COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/switch_ruleset_v2_integration_test.py
             $<TARGET_FILE:tuntom-switch> $<TARGET_FILE:tomtom-switch-mp> $<TARGET_FILE:tuntomctl>)
@@ -74,6 +84,11 @@ if(BUILD_TESTING)
         add_test(NAME mk_switch_mp_test COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/mk_switch_mp_test.py $<TARGET_FILE:switch_mp_plan_fixture>)
         set_tests_properties(mk_switch_mp_test PROPERTIES TIMEOUT 30)
+        add_test(NAME mk_switch_divert_test COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/mk_switch_divert_test.py
+            $<TARGET_FILE:tuntom-switch> $<TARGET_FILE:tomtom-switch-mp>
+            $<TARGET_FILE:tuntomctl> $<TARGET_FILE:switch_mp_plan_fixture>)
+        set_tests_properties(mk_switch_divert_test PROPERTIES TIMEOUT 300)
         add_test(NAME mk_switch_replacement_test COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/mk_switch_replacement_test.py
             $<TARGET_FILE:tuntom-switch> $<TARGET_FILE:tomtom-switch-mp>

@@ -163,13 +163,19 @@ class ControlSocket {
                         while (!command.empty() && (command.back() == '\n' || command.back() == '\r')) command.pop_back();
                         c.header = true;
                         if (command == "show stats") { respond(fd, c, stats()); break; }
-                        if (command.compare(0, 6, "rules ") != 0) { respond(fd, c, "error=unknown_command\n"); break; }
+                        const bool divert = command.compare(0, 7, "divert ") == 0;
+                        if (!divert && command.compare(0, 6, "rules ") != 0) { respond(fd, c, "error=unknown_command\n"); break; }
                         c.framed = true;
-                        const auto space = command.find(' ', 6);
+                        const std::size_t start = divert ? 7 : 6;
+                        const auto space = command.find(' ', start);
                         if (space == std::string::npos) throw std::runtime_error("expected rules OP LENGTH");
-                        c.command = command.substr(6, space - 6);
+                        c.command = command.substr(start, space - start);
                         c.expected = control_length(command.substr(space + 1));
-                        if (c.command != "check" && c.command != "load" && c.command != "show")
+                        if (divert) {
+                            if (c.expected || (c.command != "enable" && c.command != "stop" && c.command != "show"))
+                                throw std::runtime_error("expected divert enable|stop|show 0");
+                            c.command = "divert." + c.command;
+                        } else if (c.command != "check" && c.command != "load" && c.command != "show")
                             throw std::runtime_error("unknown rules operation");
                         if (c.command == "show" && c.expected) throw std::runtime_error("show has no body");
                     } else {

@@ -64,6 +64,7 @@ void usage(const char* program) {
         << "  --l4-capacity <n>     L4 LRU entries (default 1000000)\n"
         << "  --l3-capacity <n>     L3 LRU entries (default 250000)\n"
         << "  --l4-timeout <s>      L4 idle timeout (default 120)\n"
+        << "  --l4-only             Use only L4 cache; disable IP-pair fallback\n"
         << "  --l3-timeout <s>      L3 idle timeout (default 30)\n";
 }
 
@@ -91,12 +92,14 @@ int main(int argc, char** argv) {
         std::size_t l3_capacity = 250000;
         std::size_t l4_timeout = 120;
         std::size_t l3_timeout = 30;
+        bool l4_only = false;
         for (int index = 2; index < argc; ++index) {
             const std::string option = argv[index];
             if (option == "--help" or option == "-h") {
                 usage(argv[0]);
                 return 0;
             }
+            if (option == "--l4-only") { l4_only = true; continue; }
             if (++index >= argc) throw std::runtime_error(option + " requires a value");
             if (option == "--switch-ipc") ipc_options.mode = ipc::parse_mode(argv[index]);
             else if (option == "--switch-ipc-batch")
@@ -129,7 +132,7 @@ int main(int argc, char** argv) {
         ExitAdapterRoutes routes(
             l3_capacity, l4_capacity,
             std::chrono::seconds(l3_timeout),
-            std::chrono::seconds(l4_timeout));
+            std::chrono::seconds(l4_timeout), l4_only);
         AdapterStats stats;
         ThroughputStats throughput({"tun_rx", "tun_tx", "switch_rx", "switch_tx"});
         const auto started_at = std::chrono::steady_clock::now();

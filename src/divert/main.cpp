@@ -1,0 +1,234 @@
+#include "flows.hpp"
+#include "../common.hpp"
+#include "../switch_client.hpp"
+#include "../tun_device.hpp"
+#include "../control_socket.hpp"
+#include "../runtime_recovery.hpp"
+#include <csignal>
+#include <iostream>
+#include <memory>
+#include <sstream>
+#include <sys/prctl.h>
+
+namespace {
+volatile std::sig_atomic_t stopping = 0;
+void stop(int) { stopping = 1; }
+std::size_t number(const std::string& value, std::size_t lo, std::size_t hi) {
+    if (value.empty() || value.find_first_not_of("0123456789") != std::string::npos)
+        throw std::runtime_error("expected an unsigned number");
+    const auto n = std::stoull(value);
+    if (n < lo || n > hi) throw std::runtime_error("numeric argument outside permitted range");
+    return static_cast<std::size_t>(n);
+}
+void usage(const char* program) {
+    std::cerr << "Usage: " << program << " TUN-IN TUN-OUT --switch-socket PATH --cookie ABC [options]\n"
+        << "  --divert-in-port NAME      default divert-in\n"
+        << "  --divert-out-port NAME     default divert-out\n"
+        << "  --control-socket PATH     tuntomctl PATH show stats\n"
+        << "  --switch-ipc auto|v1|inline  default auto\n"
+        << "  --switch-ipc-batch N      1..16, default 8\n"
+        << "  --mtu N                   576..65535, default 1500\n"
+        << "  --flow-capacity N         1..100000000, default 100000\n"
+        << "  --flow-idle-seconds N     1..604800, default 86400\n"
+        << "  --admission-capacity N    entries per learning set, default 100000\n"
+        << "Creates/opens TUNs in the current network namespace; does not configure routes or VRFs.\n";
+}
+struct Stats {
+    std::uint64_t switch_rx = 0, switch_tx = 0, tun_rx = 0, tun_tx = 0, bypass = 0;
+    std::uint64_t invalid = 0, unsupported = 0, capacity = 0, conflict = 0, miss = 0;
+    std::uint64_t disconnected = 0, reconnects = 0, send_errors = 0, backpressure = 0, tun_errors = 0;
+    void write(std::ostream& out) const {
+        out << "switch_rx_packets=" << switch_rx << "\nswitch_tx_packets=" << switch_tx
+            << "\ntun_rx_packets=" << tun_rx << "\ntun_tx_packets=" << tun_tx << "\nbypass_packets=" << bypass
+            << "\ninvalid_drops=" << invalid << "\nunsupported_drops=" << unsupported
+            << "\ncapacity_drops=" << capacity << "\ncontext_conflict_drops=" << conflict
+            << "\ncontext_miss_drops=" << miss << "\ndisconnected_drops=" << disconnected
+            << "\nswitch_reconnects=" << reconnects << "\nsend_error_drops=" << send_errors
+            << "\nbackpressure_drops=" << backpressure << "\ntun_errors=" << tun_errors << '\n';
+    }
+};
+}
+
+int main(int argc, char** argv) {
+    using namespace tuntom;
+    using namespace tuntom::divert;
+    (void)::prctl(PR_SET_NAME, "tuntom-divert", 0UL, 0UL, 0UL);
+    logger.ignore_sigpipe();
+    try {
+        if (argc == 2 && std::string(argv[1]) == "--help") { usage(argv[0]); return 0; }
+        if (argc < 3) { usage(argv[0]); return 1; }
+        const std::string in_name = argv[1], out_name = argv[2];
+        if (in_name.empty() || out_name.empty() || in_name == out_name || in_name.size() >= IFNAMSIZ || out_name.size() >= IFNAMSIZ)
+            throw std::runtime_error("two distinct TUN names of at most 15 bytes are required");
+        std::string socket, cookie, control_path, in_port = "divert-in", out_port = "divert-out";
+        std::size_t mtu = 1500, capacity = 100000, admission_capacity = 100000, idle = 86400;
+        ipc::Options options;
+        for (int i = 3; i < argc; ++i) {
+            const std::string option = argv[i];
+            if (option == "--help" || option == "-h") { usage(argv[0]); return 0; }
+            if (++i >= argc) throw std::runtime_error(option + " requires a value");
+            const std::string value = argv[i];
+            if (option == "--switch-socket") socket = value;
+            else if (option == "--cookie") cookie = value;
+            else if (option == "--control-socket") control_path = value;
+            else if (option == "--divert-in-port") in_port = value;
+            else if (option == "--divert-out-port") out_port = value;
+            else if (option == "--switch-ipc") options.mode = ipc::parse_mode(value);
+            else if (option == "--switch-ipc-batch") options.batch = static_cast<std::uint32_t>(number(value, 1, ipc::max_batch));
+            else if (option == "--mtu") mtu = number(value, 576, 65535);
+            else if (option == "--flow-capacity") capacity = number(value, 1, 100000000);
+            else if (option == "--admission-capacity") admission_capacity = number(value, 1, 100000000);
+            else if (option == "--flow-idle-seconds") idle = number(value, 1, 604800);
+            else throw std::runtime_error("unknown option: " + option);
+        }
+        if (socket.empty() || in_port == out_port) throw std::runtime_error("switch socket and two distinct adapter ports are required");
+        Codec codec(cookie);
+        SwitchClient input(socket, in_port, options), output(socket, out_port, options);
+        std::unique_ptr<ControlSocket> control;
+        if (!control_path.empty()) control = std::make_unique<ControlSocket>(control_path);
+        TunDevice tun_in(in_name, mtu), tun_out(out_name, mtu);
+        tun_in.set_up(); tun_out.set_up();
+        SwitchClient* clients[] = {&input, &output};
+        TunDevice* tuns[] = {&tun_in, &tun_out};
+        Clock::time_point next_connect[2]{}, activated{};
+        bool active = false;
+        Admission admission(admission_capacity);
+        Routes routes(capacity, std::chrono::seconds(idle));
+        Stats stats;
+        RuntimeRecovery recovery;
+        std::array<std::uint8_t, ipc::max_frame> buffer{};
+        std::signal(SIGTERM, stop); std::signal(SIGINT, stop);
+        const auto seconds = [&](Clock::time_point now) {
+            return active ? std::chrono::duration<double>(now - activated).count() : 0.0;
+        };
+        const auto disconnect = [&](unsigned side) {
+            stats.disconnected += clients[side]->discard_staged().drops;
+            clients[side]->disconnect();
+            next_connect[side] = Clock::now() + std::chrono::seconds(1);
+        };
+        const auto account = [&](unsigned side, const SwitchClient::Outcome& result) {
+            stats.switch_tx += result.frames;
+            stats.backpressure += result.backpressure;
+            stats.send_errors += result.drops - result.backpressure;
+            if (result.error) disconnect(side);
+        };
+        const auto send = [&](unsigned side, const Envelope& env, const std::uint8_t* payload, std::size_t size) {
+            Stack labels;
+            if (!codec.attach(env.base, env.body, labels)) { ++stats.invalid; return; }
+            if (!clients[side]->connected()) { ++stats.disconnected; return; }
+            account(side, clients[side]->append_frame(SwitchOpcode::switch_packet,
+                labels.values.data(), labels.size, payload, size));
+        };
+        const auto control_step = [&] {
+            if (!control) return;
+            control->handle([&] {
+                std::ostringstream out;
+                out << "format=txt\nformat_version=1\ncomponent=divert-adapter\n"
+                    << "divert_in_connected=" << input.connected() << "\ndivert_out_connected=" << output.connected()
+                    << "\nadmission_active=" << active << "\nadmission_seconds=" << seconds(Clock::now()) << '\n';
+                stats.write(out); admission.stats(out); routes.stats(out);
+                input.write_stats(out, "divert_in_ipc_"); output.write_stats(out, "divert_out_ipc_");
+                recovery.write_stats(out);
+                return out.str();
+            });
+        };
+        const auto handle = [&](unsigned source) {
+            const unsigned side = source % 2;
+            auto& client = *clients[side];
+            auto& tun = *tuns[side];
+            const bool from_switch = source < 2;
+            if (from_switch && !client.connected()) return false;
+            const auto n = from_switch ? client.receive(buffer.data(), buffer.size()) : tun.read_packet(buffer.data(), buffer.size());
+            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return false;
+            if (n <= 0 || static_cast<std::size_t>(n) > buffer.size()) {
+                if (from_switch) disconnect(side); else ++stats.tun_errors;
+                return true;
+            }
+            const auto now = Clock::now();
+            PacketInfo packet;
+            Envelope env;
+            if (from_switch) {
+                ++stats.switch_rx;
+                SwitchFrameView frame;
+                if (!decode_switch_frame(buffer.data(), static_cast<std::size_t>(n), frame) ||
+                    frame.opcode != SwitchOpcode::exit_packet || !codec.split(labels_of(frame), env) ||
+                    !env.present || env.action() != (side == 0 ? offered : onward)) { ++stats.invalid; return true; }
+                if (!packet_info(frame.payload, frame.payload_size, packet)) { ++stats.unsupported; return true; }
+                if (!input.connected() || !output.connected()) { ++stats.disconnected; return true; }
+                if (side == 0) {
+                    if (!active) { activated = now; active = true; }
+                    const auto decision = admission.classify(packet, seconds(now));
+                    if (decision == AdmissionResult::full) { ++stats.capacity; return true; }
+                    if (decision == AdmissionResult::bypass) {
+                        env.body.values[1] = bypass;
+                        send(side, env, frame.payload, frame.payload_size);
+                        ++stats.bypass; return true;
+                    }
+                }
+                const auto learned = routes.learn(packet.flow, env, side == 0, now);
+                if (learned != Learn::ok) {
+                    if (learned == Learn::full) ++stats.capacity;
+                    else if (learned == Learn::conflict) ++stats.conflict;
+                    else ++stats.miss;
+                    return true;
+                }
+                if (tun.write_packet(frame.payload, frame.payload_size) == static_cast<ssize_t>(frame.payload_size)) ++stats.tun_tx;
+                else ++stats.tun_errors;
+            } else {
+                ++stats.tun_rx;
+                if (!packet_info(buffer.data(), static_cast<std::size_t>(n), packet)) { ++stats.unsupported; return true; }
+                if (!routes.lookup(packet.flow, side == 0, now, env)) { ++stats.miss; return true; }
+                env.body.values[1] = side == 0 ? to_client : onward;
+                send(side, env, buffer.data(), static_cast<std::size_t>(n));
+            }
+            return true;
+        };
+        logger.start();
+        log_info("tuntom-divert-adapter ready; admission starts with the first offered packet");
+        unsigned cursor = 0;
+        while (!stopping) {
+            try {
+                if (recovery.wait_for_retry(control ? control->poll_fd() : -1)) { control_step(); continue; }
+                const auto now = Clock::now();
+                routes.maintain(now); if (active) admission.maintain(seconds(now));
+                for (unsigned side = 0; side < 2; ++side) {
+                    auto& client = *clients[side];
+                    if (!client.connected() && !client.connecting() && now >= next_connect[side]) {
+                        client.start_connect(now);
+                        if (client.connected()) ++stats.reconnects;
+                        else if (!client.connecting()) next_connect[side] = now + std::chrono::seconds(1);
+                    }
+                }
+                pollfd fds[] = {{input.fd(), input.poll_events(), 0}, {output.fd(), output.poll_events(), 0},
+                    {tun_in.fd(), POLLIN, 0}, {tun_out.fd(), POLLIN, 0}, {control ? control->poll_fd() : -1, POLLIN, 0}};
+                int timeout = 1000;
+                for (auto* client : clients) timeout = client->poll_timeout_ms(now, timeout);
+                if (control) timeout = control->poll_timeout_ms(now, timeout);
+                const auto ready = ::poll(fds, 5, timeout);
+                if (ready < 0) { if (errno != EINTR) recovery.poll_failed(errno); continue; }
+                for (unsigned side = 0; side < 2; ++side) {
+                    auto& client = *clients[side];
+                    if (client.connecting()) {
+                        client.advance_connect(Clock::now(), fds[side].revents);
+                        if (client.connected()) ++stats.reconnects;
+                        else if (!client.connecting()) next_connect[side] = Clock::now() + std::chrono::seconds(1);
+                    } else if (fds[side].revents & (POLLHUP | POLLERR | POLLNVAL)) disconnect(side);
+                }
+                if (fds[4].revents & POLLIN) control_step();
+                const auto slice = Clock::now();
+                for (unsigned round = 0; round < 64; ++round) {
+                    bool progress = false;
+                    for (unsigned offset = 0; offset < 4; ++offset) progress |= handle((cursor + offset) % 4);
+                    cursor = (cursor + 1) % 4;
+                    if (!progress || Clock::now() - slice >= std::chrono::milliseconds(1)) break;
+                }
+                for (unsigned side = 0; side < 2; ++side)
+                    if (clients[side]->connected()) account(side, clients[side]->flush());
+            } catch (const std::bad_alloc&) {
+                for (auto* client : clients) stats.send_errors += client->discard_staged().drops;
+                recovery.allocation_failed();
+            }
+        }
+        return 0;
+    } catch (const std::exception& error) { log_fatal(error.what()); return 1; }
+}
