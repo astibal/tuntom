@@ -1,0 +1,17 @@
+- name: Read systemd state and ownership without changing the installation
+  tuntom_node:
+    action: inspect
+    payload: "{{ job.spec }}"
+  register: inspection
+  changed_when: false
+  ignore_errors: true
+  ignore_unreachable: true
+  check_mode: false
+
+- name: Return public inspection to the controller
+  ansible.builtin.copy:
+    content: "{{ (inspection.report if inspection.report is defined else {'reachable': false, 'error': inspection.msg | default('unavailable')}) | to_json }}"
+    dest: "{{ tt_results }}/{{ inventory_hostname }}--{{ job.key }}.json"
+    mode: '0600'
+  delegate_to: localhost
+  become: false

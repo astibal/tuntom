@@ -1,0 +1,17 @@
+- name: Remove operation staging and release owned locks
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Remove this operation's staging, including credentials
+      ansible.builtin.file:
+        path: "{{ item.stage }}"
+        state: absent
+      loop: "{{ tt_jobs }}"
+      loop_control:
+        label: "{{ item.key }}"
+      no_log: true
+      diff: false
+    - name: Release only our host lock
+      tuntom_node:
+        action: unlock
+        payload: "{{ {'operation_id': tt_operation_id} }}"

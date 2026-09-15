@@ -1,0 +1,10 @@
+- name: Inspect every selected endpoint, including unavailable hosts
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Inspect instance
+      ansible.builtin.include_tasks: tasks/inspect.yml
+      loop: "{{ tt_jobs }}"
+      loop_control:
+        loop_var: job
+        label: "{{ job.key }}"

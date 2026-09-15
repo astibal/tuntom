@@ -1,0 +1,41 @@
+- name: Build and stage every selected host before stopping services
+  hosts: all
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Verify deployment prerequisites
+      ansible.builtin.command:
+        argv: [bash, -c, 'set -e; for tool in g++ bash ip iptables flock systemctl tar; do command -v "$tool" >/dev/null; done; test -d /run/systemd/system; test "$(id -u)" = 0']
+      changed_when: false
+    - name: Ensure the shared runtime group exists
+      ansible.builtin.group:
+        name: tuntom
+        system: true
+    - name: Check the existing runtime account without modifying it
+      ansible.builtin.command:
+        argv: [id, -u, tuntom]
+      register: tt_runtime_account
+      changed_when: false
+      failed_when: tt_runtime_account.rc not in [0, 1]
+    - name: Ensure the shared runtime account exists
+      ansible.builtin.user:
+        name: tuntom
+        group: tuntom
+        system: true
+        create_home: false
+        home: /nonexistent
+        shell: /usr/sbin/nologin
+      when: tt_runtime_account.rc != 0
+    - name: Stage deployment
+      ansible.builtin.include_tasks: tasks/stage.yml
+      loop: "{{ tt_jobs }}"
+      loop_control:
+        loop_var: job
+        label: "{{ job.key }}"
+    - name: Recheck every installation after all builds, before any stop
+      tuntom_node:
+        action: recheck
+        payload: "{{ item }}"
+      loop: "{{ tt_jobs }}"
+      loop_control:
+        label: "{{ item.key }}"

@@ -1,0 +1,65 @@
+- name: Recheck ownership under the operation lock
+  tuntom_node:
+    action: recheck
+    payload: "{{ job }}"
+  changed_when: false
+
+- name: Check new resources before disrupting a running setup
+  tuntom_node:
+    action: preflight
+    payload: "{{ job.spec }}"
+  changed_when: false
+
+- name: Claim this operation's staging so interrupted copies remain discoverable
+  tuntom_node:
+    action: stage
+    payload: "{{ job.spec }}"
+
+- name: Create private staging directories
+  ansible.builtin.file:
+    path: "{{ job.stage }}/{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+  loop: [src, bin, assets, secrets]
+
+- name: Transfer the same source snapshot to each build host
+  ansible.builtin.unarchive:
+    src: "{{ tt_source_archive }}"
+    dest: "{{ job.stage }}/src"
+
+- name: Compile host-native binaries before stopping anything
+  ansible.builtin.command:
+    argv: [g++, '-std=c++17', '-pthread', '-O3', '-Wall', '-Wextra', '-pedantic', "{{ job.stage }}/src/{{ item.source }}", -o, "{{ job.stage }}/bin/{{ item.name }}"]
+  loop: "{{ job.builds }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Stage central public configuration
+  ansible.builtin.copy:
+    src: "{{ job.assets_src }}"
+    dest: "{{ job.stage }}/assets/"
+    owner: root
+    group: root
+    mode: '0600'
+    directory_mode: '0700'
+  when: tt_operation != 'update'
+
+- name: Stage tunnel credential separately, without diff or log output
+  ansible.builtin.copy:
+    src: "{{ job.secret_src }}"
+    dest: "{{ job.stage }}/secrets/master.key"
+    owner: root
+    group: root
+    mode: '0600'
+  when: tt_operation != 'update' and job.spec.kind == 'tunnel'
+  no_log: true
+  diff: false
+
+- name: Stage local lifecycle helper
+  ansible.builtin.copy:
+    src: "{{ tt_helpers }}/runtime.py"
+    dest: "{{ job.stage }}/runtime.py"
+    mode: '0600'
+  when: tt_operation != 'update'

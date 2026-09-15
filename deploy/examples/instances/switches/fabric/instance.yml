@@ -1,0 +1,11 @@
+tuntom_instance:
+  schema: 1
+  host: local
+  implementation: mp
+  socket: /run/tuntom/fabric.sock
+  rules_file: files/switch.rules
+  auto_pool: true
+  reserve_cpus: 1
+  options:
+    ipc-mode: auto
+    ipc-batch: 8

@@ -1,0 +1,18 @@
+- name: Import an explicitly requested classifier already on the remote host
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Inspect the source without following symlinks
+      ansible.builtin.stat:
+        path: "{{ tt_fetch_source }}"
+        follow: false
+      register: classifier
+    - ansible.builtin.assert:
+        that:
+          - classifier.stat.isreg | default(false)
+          - not (classifier.stat.islnk | default(false))
+    - name: Snapshot the classifier into the instance's private source directory
+      ansible.builtin.fetch:
+        src: "{{ tt_fetch_source }}"
+        dest: "{{ tt_fetch_destination }}"
+        flat: true

@@ -1,0 +1,19 @@
+- name: Change immediate service state only
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: "{{ {'start': 'started', 'stop': 'stopped', 'restart': 'restarted'}[tt_operation] }}"
+  when: tt_operation in ['start', 'stop', 'restart']
+  loop: "{{ job.selected_units }}"
+
+- name: Verify readiness when starting the whole deployment
+  ansible.builtin.command:
+    argv: [systemctl, is-active, "tuntom-{{ job.key }}-ready.service"]
+  changed_when: false
+  when: tt_operation in ['start', 'restart'] and tt_selected_daemon == ''
+
+- name: Change autostart only
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: "{{ tt_operation == 'enable' }}"
+  when: tt_operation in ['enable', 'disable']
+  loop: "{{ job.selected_units }}"
