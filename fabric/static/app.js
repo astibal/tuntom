@@ -67,6 +67,21 @@ const messages = {
   chartUnavailable:["Tento proces zatím neposkytuje metriky propustnosti.","This process does not yet provide throughput metrics.","Ce processus ne fournit pas encore de métriques de débit."],
   chartHistory:["Až 24 h v paměti stránky · F5 historii smaže. Pauza a skrytá karta přerušují sběr; mezery značí chybějící data.","Up to 24 h in page memory · reloading clears history. Pausing or hiding the tab interrupts collection; gaps mean missing data.","Jusqu’à 24 h en mémoire · recharger efface l’historique. La pause ou un onglet masqué interrompt la collecte ; les lacunes indiquent des données manquantes."],
   chartRange:["Rozsah grafu","Chart range","Période du graphique"],
+  chartExpand:["Zvětšit graf","Expand chart","Agrandir le graphique"],
+  chartClose:["Zavřít graf","Close chart","Fermer le graphique"],
+  chartExplore:["Najeď na graf pro hodnoty · kliknutím zvětšíš","Hover for values · click to expand","Survole pour les valeurs · clique pour agrandir"],
+  chartInspect:["Pohybem odečítáš vzorky · kliknutí připne bod · šipky přecházejí mezi vzorky","Move to inspect samples · click to pin · arrow keys step through samples","Déplace le pointeur pour lire les relevés · clique pour épingler · utilise les flèches pour parcourir"],
+  chartNoSample:["V tomto čase není zaznamenaný vzorek.","No sample was recorded at this time.","Aucun relevé enregistré à cet instant."],
+  chartIssueLegend:["Problém procesu při sběru","Process issue when sampled","Problème du processus lors du relevé"],
+  chartIssueScope:["Značky patří celému procesu; samy neurčují příčinu změny grafu.","Markers refer to the whole process; they do not by themselves explain a change in the chart.","Les marqueurs concernent tout le processus ; ils n’expliquent pas à eux seuls une variation du graphique."],
+  chartIssueCount:["Vzorky s problémem: {count}","Samples with an issue: {count}","Relevés avec un problème : {count}"],
+  chartValuesAt:["Hodnoty vzorku v {time}","Sample values at {time}","Valeurs du relevé à {time}"],
+  chartIssueWindow:["Zachyceno ve vzorku; přírůstky chyb pokrývají předchozí interval.","Recorded at sample time; error deltas cover the preceding interval.","Enregistré au moment du relevé ; les variations d’erreurs couvrent l’intervalle précédent."],
+  chartPinned:["Bod připnutý","Sample pinned","Relevé épinglé"],
+  chartUnpin:["Uvolnit bod","Unpin sample","Désépingler le relevé"],
+  chartPointExpired:["Připnutý vzorek už není v tomto rozsahu.","The pinned sample is no longer in this range.","Le relevé épinglé n’est plus dans cette période."],
+  chartWorker:["CPU · worker {worker}","CPU · worker {worker}","CPU · worker {worker}"],
+  chartWorkerExpand:["Zvětšit graf CPU workeru {worker}","Expand CPU chart for worker {worker}","Agrandir le graphique CPU du worker {worker}"],
   metricInfo:["Informace o metrice {key}","About metric {key}","À propos de la métrique {key}"],
   closeInfo:["Zavřít nápovědu","Close help","Fermer l’aide"],
   localLinks:["Lokální propojení","Local connections","Connexions locales"],
@@ -285,6 +300,30 @@ function chartSeries(samples, key, start, end, gap, width = 576) {
   return result;
 }
 
+// Inspect original observations, not the reduced drawing or interpolated gaps.
+function nearestChartSample(samples, time, tolerance = Infinity) {
+  let left = 0, right = samples.length;
+  while (left < right) {
+    const middle = (left + right) >>> 1;
+    if (samples[middle].time < time) left = middle + 1;
+    else right = middle;
+  }
+  const before = samples[left-1], after = samples[left];
+  const sample = !before ? after : !after ? before :
+    time-before.time <= after.time-time ? before : after;
+  return sample && Math.abs(sample.time-time) <= tolerance ? sample : null;
+}
+function chartIssueBuckets(samples, start, end, width) {
+  const buckets = new Map();
+  for (const sample of samples) {
+    if (!sample.issues?.length || sample.time < start || sample.time > end) continue;
+    const column = Math.floor((sample.time-start) / Math.max(1,end-start) * width / 12);
+    if (!buckets.has(column)) buckets.set(column,[]);
+    buckets.get(column).push(sample);
+  }
+  return [...buckets.values()];
+}
+
 // History is independent of the current health and lives only in this page.
 class WarningHistory {
   constructor(clock = () => performance.now()) {
@@ -317,7 +356,7 @@ class WarningHistory {
 const $ = id => document.getElementById(id);
 const state = {data: null, selected: null, view: "overview", paused: false, busy: false,
   history: new Map(), chartRange: 300000, chartNow: Date.now(), drafts: new Map(), logs: new Map(), reports: new Map(), diagnosticBusy: false,
-  warnings: new WarningHistory(), warningsLayout: "",
+  warnings: new WarningHistory(), warningsLayout: "", chartDialog: null,
   token: "", failure: "", loginError: "", ruleBusy: false};
 const types = {tunnel:"typeTunnel", switch:"typeSwitch", adapter:"typeAdapter", divert:"typeDivert", process:"typeProcess"};
 const typeName = kind => types[kind] ? t(types[kind]) : kind || "—";
@@ -493,7 +532,11 @@ async function refresh(force = false) {
     state.chartNow = Date.now();
     for (const e of data.endpoints) {
       const history = state.history.get(e.id) || new ThroughputHistory();
-      history.add({time: Date.parse(e.sampled_at), rx: rate(e,"rx"), tx: rate(e,"tx")}, state.chartNow);
+      const issues = warningChecks(e);
+      if (e.status === "unavailable" && !outdated(e)) issues.push({key:"telemetry",code:"telemetry_missing"});
+      history.add({time:Date.parse(e.sampled_at), rx:rate(e,"rx"), tx:rate(e,"tx"),
+        ...Object.fromEntries((e.switch_detail?.workers || []).map(w=>[`cpu_${w.index}`,w.cpu_percent])),
+        ...(issues.length ? {issues,interval:e.changes?.interval_seconds} : {})}, state.chartNow);
       state.history.set(e.id, history);
     }
     render();
@@ -504,7 +547,7 @@ async function refresh(force = false) {
     $("login-error").hidden = false;
     notice();
     $("last-update").textContent = t("disconnected");
-    if (state.data) { renderProcesses(); renderHealth(); renderMetrics(); renderSwitch(); renderTopology(); }
+    if (state.data) { renderProcesses(); renderHealth(); renderMetrics(); renderSwitch(); renderTopology(); drawChart(); }
   } finally { state.busy = false; }
 }
 function render() {
@@ -554,24 +597,188 @@ function renderDetail() {
   $("detail").innerHTML = `<dl>${values.map(([key,value])=>`<dt>${esc(key)}</dt><dd>${esc(value)}</dd>`).join("")}</dl>${notes.length ? `<div class="notice">${notes.map(esc).join("<br>")}</div>` : ""}<details ${wasOpen ? "open" : ""}><summary>${esc(t("publicArgs"))}</summary><pre>${esc(Object.entries(e.options).map(([k,v])=>`--${k}${v === true ? "" : " " + v}`).join("\n") || t("noArgs"))}</pre></details>`;
   drawChart();
 }
-function drawChart() {
-  const e = selected(), last = state.chartNow, first = last - state.chartRange;
-  const history = state.history.get(e?.id)?.window(state.chartRange,last) || [];
-  $("rate-rx").textContent = bps(rate(e,"rx")); $("rate-tx").textContent = bps(rate(e,"tx"));
-  const max = history.reduce((max,p)=>Math.max(max,p.rx ?? 0,p.tx ?? 0),1);
-  const x = p => 12 + (p.time-first) / Math.max(1,last-first) * 576;
-  const gap = Math.max(15000,(state.data?.poll_interval_seconds || 5)*3000);
-  const timeLabel = time => new Date(time).toLocaleString(locale(),state.chartRange >= 43200000 ?
-    {day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"} : {hour:"2-digit",minute:"2-digit",second:"2-digit"});
-  const path = key => { let connected = false; return chartSeries(history,key,first,last,gap).map(p => {
-    if (p === null) { connected=false; return ""; }
-    const command = connected ? "L" : "M"; connected=true;
-    return `${command}${x(p).toFixed(1)},${(135-p[key]/max*105).toFixed(1)}`;
-  }).join(" "); };
-  $("chart").innerHTML = [30,65,100,135].map(y=>`<path class="grid" d="M12,${y} H588"/>`).join("") +
-    `<text x="12" y="16">${esc(bps(max))}</text><path class="rx" d="${path("rx")}"/><path class="tx" d="${path("tx")}"/><text x="12" y="159">${history.length ? esc(timeLabel(first)) : "—"}</text><text x="588" y="159" text-anchor="end">${history.length ? esc(timeLabel(last)) : "—"}</text>`;
-  $("chart-note").textContent = (rate(e,"rx") === null ? t("chartUnavailable")+" " : "") + t("chartHistory");
+const chartViews = new WeakMap();
+function chartValue(value, cpu = false) {
+  if (!Number.isFinite(value)) return "—";
+  const exact = value.toLocaleString(locale(),{maximumFractionDigits:3});
+  return cpu ? `${exact} %` : `${bps(value)} (${exact} b/s)`;
 }
+function chartReasons(sample) {
+  return (sample.issues || []).flatMap(check=>checkReasons({changes:{interval_seconds:sample.interval}},check).map(reason=>reason.text));
+}
+function chartIssueText(group) {
+  const first = new Date(group[0].time).toLocaleString(locale());
+  const last = new Date(group.at(-1).time).toLocaleString(locale());
+  const reasons = [...new Set(group.flatMap(chartReasons))];
+  return {time:group.length > 1 ? `${first} → ${last}` : first, reasons};
+}
+function drawTimeChart(svg, endpointId, worker = null, expanded = false) {
+  const previous = chartViews.get(svg);
+  const samples = state.history.get(endpointId)?.window(state.chartRange,state.chartNow) || [];
+  const width = Math.max(320,svg.clientWidth), height = Math.max(200,svg.clientHeight);
+  const model = {endpointId,worker,samples,start:state.chartNow-state.chartRange,end:state.chartNow,
+    width,height,left:76,right:width-18,top:24,bottom:height-66,
+    gap:Math.max(15000,(state.data?.poll_interval_seconds || 5)*3000),
+    keys:worker === null ? ["rx","tx"] : [`cpu_${worker}`],expanded,
+    time:null,pinned:false,issue:false};
+  if (previous && previous.endpointId === endpointId && previous.worker === worker) {
+    for (const key of ["time","pinned","issue"]) model[key] = previous[key];
+  }
+  model.max = samples.reduce((max,p)=>Math.max(max,...model.keys.map(key=>p[key] ?? 0)),worker === null ? 1 : 100);
+  model.x = time => model.left+(time-model.start)/Math.max(1,model.end-model.start)*(model.right-model.left);
+  model.y = value => model.bottom-value/model.max*(model.bottom-model.top);
+  model.groups = chartIssueBuckets(samples,model.start,model.end,model.right-model.left);
+  chartViews.set(svg,model);
+  svg.setAttribute("viewBox",`0 0 ${width} ${height}`);
+  const axes = Array.from({length:4},(_,i)=>{
+    const value = model.max*i/3, y=model.y(value);
+    return `<path class="grid" d="M${model.left},${y} H${model.right}"/><text x="${model.left-9}" y="${y+4}" text-anchor="end">${esc(worker === null ? bps(value) : value.toLocaleString(locale(),{maximumFractionDigits:1})+" %")}</text>`;
+  }).join("");
+  const ticks = width > 700 ? 4 : state.chartRange >= 43200000 ? 1 : 2;
+  const times = Array.from({length:ticks+1},(_,i)=>{
+    const time = model.start+(model.end-model.start)*i/ticks;
+    const text = new Date(time).toLocaleString(locale(),state.chartRange >= 43200000 ?
+      {day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"} : {hour:"2-digit",minute:"2-digit"});
+    return `<text x="${model.x(time)}" y="${height-12}" text-anchor="${i===0 ? "start" : i===ticks ? "end" : "middle"}">${esc(text)}</text>`;
+  }).join("");
+  const paths = model.keys.map((key,index)=>{
+    let connected = false;
+    const d = chartSeries(samples,key,model.start,model.end,model.gap,model.right-model.left).map(p=>{
+      if (!p) { connected=false; return ""; }
+      const command = connected ? "L" : "M"; connected=true;
+      return `${command}${model.x(p.time).toFixed(2)},${model.y(p[key]).toFixed(2)}`;
+    }).join(" ");
+    const latest = samples.at(-1), color=index ? "tx" : "rx";
+    return `<path class="${color}" d="${d}"/>`+(Number.isFinite(latest?.[key]) ? `<circle class="chart-point ${color}" cx="${model.x(latest.time)}" cy="${model.y(latest[key])}" r="2.5"/>` : "");
+  }).join("");
+  // A dedicated incident lane also shows warnings when throughput/CPU is missing.
+  const issues = model.groups.map((group,index)=>{
+    const x = model.x(group[0].time);
+    return `<g data-chart-issue="${index}" class="chart-issue"><title>${esc(t("chartIssueCount",{count:group.length}))} · ${esc(new Date(group[0].time).toLocaleString(locale()))}</title><circle class="chart-issue-hit" cx="${x}" cy="${height-39}" r="11"/><circle cx="${x}" cy="${height-39}" r="${group.length > 1 ? 5 : 4}"/></g>`;
+  }).join("");
+  svg.innerHTML = axes+times+paths+issues+'<g class="chart-cursor" hidden></g>';
+  renderChartReadout(svg);
+}
+function renderChartReadout(svg) {
+  const model = chartViews.get(svg), readout = $(model.expanded ? "chart-detail-readout" : "chart-readout");
+  const cursor = svg.querySelector(".chart-cursor");
+  const sample = model.time === null ? null : nearestChartSample(model.samples,model.time,model.pinned ? 0 : model.gap/2);
+  cursor.setAttribute("hidden","");
+  if (model.expanded) $("chart-unpin").disabled = !model.pinned;
+  if (model.time === null) { readout.textContent=t(model.expanded ? "chartInspect" : "chartExplore"); return; }
+  if (!sample) {
+    readout.textContent=new Date(model.time).toLocaleString(locale())+" · "+t(model.pinned && (model.time < model.start || model.time > model.end) ? "chartPointExpired" : "chartNoSample");
+    return;
+  }
+  const group = model.issue ? model.groups.find(group=>group.some(p=>p.time===sample.time)) : null;
+  const issues = group || (sample.issues?.length ? [sample] : []);
+  const details = issues.length ? chartIssueText(issues) : null;
+  const heading = details?.time || new Date(sample.time).toLocaleString(locale());
+  const values = model.keys.map((key,index)=>`<span class="chart-value ${index ? "tx-value" : "rx-value"}">${model.worker === null ? key.toUpperCase() : "CPU"} <strong>${esc(chartValue(sample[key],model.worker !== null))}</strong></span>`).join("");
+  // Grouped incident ranges list their causes; the value readout is the first sample.
+  const html = `<div class="chart-readout-heading"><time>${esc(heading)}</time>${model.pinned ? `<span class="tag">${esc(t("chartPinned"))}</span>` : ""}</div>${issues.length > 1 ? `<small>${esc(t("chartValuesAt",{time:new Date(sample.time).toLocaleString(locale())}))}</small>` : ""}${values}${details ? `<div class="chart-issue-details"><strong>${esc(t("chartIssueCount",{count:issues.length}))}</strong><ul>${details.reasons.slice(0,10).map(reason=>`<li>${esc(reason)}</li>`).join("")}${details.reasons.length > 10 ? `<li>${esc(t("moreReasons",{count:details.reasons.length-10}))}</li>` : ""}</ul><small>${esc(t("chartIssueWindow"))}</small></div>` : ""}`;
+  if (readout.innerHTML !== html) readout.innerHTML=html;
+  cursor.removeAttribute("hidden");
+  const x = model.x(sample.time);
+  cursor.innerHTML = `<path d="M${x},${model.top} V${model.height-29}"/>`+model.keys.map((key,index)=>Number.isFinite(sample[key]) ? `<circle class="${index ? "tx" : "rx"}" cx="${x}" cy="${model.y(sample[key])}" r="4"/>` : "").join("");
+}
+function inspectChartPointer(svg,event,pin = false) {
+  const model = chartViews.get(svg);
+  if (!model || (model.pinned && !pin)) return;
+  const marker = event.target.closest("[data-chart-issue]");
+  const group = marker ? model.groups[Number(marker.dataset.chartIssue)] : null;
+  const matrix = svg.getScreenCTM();
+  if (!matrix) return;
+  const point = new DOMPoint(event.clientX,event.clientY).matrixTransform(matrix.inverse());
+  const time = model.start+Math.max(0,Math.min(1,(point.x-model.left)/(model.right-model.left)))*(model.end-model.start);
+  const nearest = nearestChartSample(model.samples,time,model.gap/2);
+  model.time = group?.[0].time ?? nearest?.time ?? time;
+  model.issue = !!group; model.pinned=pin;
+  renderChartReadout(svg);
+}
+function openChart(endpointId,worker = null,inspection = null) {
+  const endpoint = state.data?.endpoints.find(e=>e.id===endpointId);
+  if (!endpoint) return;
+  state.chartDialog={endpointId,worker,name:endpoint.name,pid:endpoint.pid};
+  chartViews.delete($("chart-detail"));
+  $("chart-dialog").showModal();
+  renderChartDialog();
+  if (inspection) {
+    Object.assign(chartViews.get($("chart-detail")),inspection);
+    renderChartReadout($("chart-detail"));
+  }
+}
+function renderChartDialog() {
+  if (!$("chart-dialog").open || !state.chartDialog) return;
+  const {endpointId,worker,name,pid}=state.chartDialog;
+  const exists = state.data?.endpoints.some(e=>e.id===endpointId);
+  $("chart-dialog-title").textContent=worker === null ? t("throughput") : t("chartWorker",{worker});
+  $("chart-dialog-context").textContent=`${name} · PID ${pid}`+(exists ? "" : " · "+t("warningProcessGone"));
+  $("chart-detail-range").value=String(state.chartRange);
+  $("chart-detail").setAttribute("aria-label",worker === null ? t("chartLabel") : t("chartWorker",{worker}));
+  $("chart-dialog-legend").innerHTML=(worker === null ? '<span><i class="dot"></i>RX <i class="dot tx"></i>TX</span>' : '<span><i class="dot"></i>CPU</span>')+`<span><i class="dot alert"></i>${esc(t("chartIssueLegend"))}</span>`;
+  $("chart-dialog-note").textContent=t(worker === null ? "fiveSecondAverage" : "workersHint")+" "+t("chartIssueScope")+" "+t("chartHistory");
+  drawTimeChart($("chart-detail"),endpointId,worker,true);
+}
+function drawChart() {
+  const e = selected();
+  $("rate-rx").textContent = bps(rate(e,"rx")); $("rate-tx").textContent = bps(rate(e,"tx"));
+  $("chart-expand").disabled = !e;
+  $("chart-range").value=String(state.chartRange);
+  drawTimeChart($("chart"),e?.id);
+  $("chart-note").textContent = (rate(e,"rx") === null ? t("chartUnavailable")+" " : "")+t("chartHistory");
+  renderChartDialog();
+}
+function changeChartRange(value) {
+  state.chartRange=Number(value);
+  for (const svg of [$("chart"),$("chart-detail")]) {
+    const model=chartViews.get(svg);
+    if (model) { model.time=null; model.pinned=false; model.issue=false; }
+  }
+  drawChart();
+}
+for (const svg of [$("chart"),$("chart-detail")]) {
+  svg.addEventListener("pointermove",event=>inspectChartPointer(svg,event));
+  svg.addEventListener("pointerleave",()=>{
+    const model=chartViews.get(svg);
+    if (model && !model.pinned) { model.time=null; renderChartReadout(svg); }
+  });
+  svg.addEventListener("click",event=>{
+    inspectChartPointer(svg,event,true);
+    const model=chartViews.get(svg);
+    if (svg.id === "chart" && model) { openChart(model.endpointId,null,{time:model.time,pinned:true,issue:model.issue}); model.pinned=false; }
+  });
+  svg.addEventListener("keydown",event=>{
+    const model=chartViews.get(svg);
+    if (!model) return;
+    if (svg.id === "chart" && ["Enter"," "].includes(event.key)) {
+      event.preventDefault(); openChart(model.endpointId); return;
+    }
+    if (!["ArrowLeft","ArrowRight","Home","End","Enter"," "].includes(event.key) || !model.samples.length) return;
+    event.preventDefault();
+    const sample=nearestChartSample(model.samples,model.time ?? model.end);
+    let index=model.samples.indexOf(sample);
+    if (event.key === "Home") index=0;
+    if (event.key === "End") index=model.samples.length-1;
+    if (event.key === "ArrowLeft") index=Math.max(0,index-1);
+    if (event.key === "ArrowRight") index=Math.min(model.samples.length-1,index+1);
+    model.time=model.samples[index].time; model.pinned=true; model.issue=false;
+    renderChartReadout(svg);
+  });
+}
+$("chart-expand").addEventListener("click",()=>openChart(state.selected));
+$("chart-detail-range").addEventListener("change",event=>changeChartRange(event.target.value));
+$("chart-unpin").addEventListener("click",()=>{
+  const model=chartViews.get($("chart-detail"));
+  if (model) { model.time=null; model.pinned=false; model.issue=false; renderChartReadout($("chart-detail")); }
+});
+$("chart-dialog").addEventListener("close",()=>{
+  state.chartDialog=null;
+  // A refreshed worker button may have replaced the original focus target.
+  if (!document.activeElement || document.activeElement === document.body) $("refresh").focus({preventScroll:true});
+});
+let chartResize;
+window.addEventListener("resize",()=>{clearTimeout(chartResize);chartResize=setTimeout(()=>drawChart(),100);});
 function renderTopology() {
   const data = state.data;
   const switches = data.endpoints.filter(e => e.kind === "switch");
@@ -651,7 +858,7 @@ $("processes").addEventListener("click",event=>{
 });
 $("search").addEventListener("input",renderProcesses); $("kind-filter").addEventListener("change",renderProcesses);
 $("metric-search").addEventListener("input",renderMetrics);
-$("chart-range").addEventListener("change",()=>{state.chartRange=Number($("chart-range").value);drawChart();});
+$("chart-range").addEventListener("change",event=>changeChartRange(event.target.value));
 $("rules-read").addEventListener("click",()=>ruleAction("show"));
 $("rules-check").addEventListener("click",()=>ruleAction("check"));
 $("rules-load").addEventListener("click",()=>ruleAction("load"));
@@ -756,7 +963,7 @@ function renderSwitch() {
   $("switch-workers").innerHTML=detail?.workers.length ? detail.workers.map(worker=> {
     const ports=detail.ports.filter(p=>p.rx_owner === String(worker.index) || p.tx_owner === String(worker.index));
     const cpu=worker.cpu_percent;
-    return `<article class="worker-card"><div class="worker-title"><span>WORKER / ${esc(worker.index)} ${metricInfo(`worker_${worker.index}_cpu_ns`)}</span><strong>${cpu === null ? "—" : esc(cpu.toLocaleString(locale(),{maximumFractionDigits:1}))+" %"}</strong></div><meter min="0" max="100" value="${cpu ?? 0}" aria-label="CPU worker ${esc(worker.index)}"></meter><p>${esc(worker.roles === "idle" ? t("workerIdle") : worker.roles)}</p><dl><dt>${esc(t("connectedPorts"))}</dt><dd>${ports.map(port=>esc(port.name)).join(", ") || "—"}</dd><dt>poll calls Δ ${metricInfo(`worker_${worker.index}_poll_calls`)}</dt><dd>${deltaText(sw,`worker_${worker.index}_poll_calls`)}</dd></dl></article>`;
+    return `<article class="worker-card"><div class="worker-title"><span>WORKER / ${esc(worker.index)} ${metricInfo(`worker_${worker.index}_cpu_ns`)}</span><strong>${cpu === null ? "—" : esc(cpu.toLocaleString(locale(),{maximumFractionDigits:1}))+" %"}</strong></div><button class="worker-chart" data-worker-chart="${worker.index}" data-chart-process="${esc(sw.id)}" aria-label="${esc(t("chartWorkerExpand",{worker:worker.index}))}" aria-haspopup="dialog" title="${esc(chartValue(cpu,true))} · ${esc(t("chartExpand"))}"><meter min="0" max="100" value="${cpu ?? 0}" aria-hidden="true"></meter><span>${esc(t("chartExpand"))} ↗</span></button><p>${esc(worker.roles === "idle" ? t("workerIdle") : worker.roles)}</p><dl><dt>${esc(t("connectedPorts"))}</dt><dd>${ports.map(port=>esc(port.name)).join(", ") || "—"}</dd><dt>poll calls Δ ${metricInfo(`worker_${worker.index}_poll_calls`)}</dt><dd>${deltaText(sw,`worker_${worker.index}_poll_calls`)}</dd></dl></article>`;
   }).join("") : `<p class="muted">${esc(t("noWorkerStats"))}</p>`;
 }
 function renderDiagnostics() {
@@ -808,6 +1015,10 @@ $("topology").addEventListener("click",event=> {
   if (rules) openSwitchRules(rules.dataset.nodeRules);
 });
 $("switch-ports").addEventListener("click",event=>{const button=event.target.closest("[data-port-process]");if(button) selectProcess(button.dataset.portProcess,"overview");});
+$("switch-workers").addEventListener("click",event=>{
+  const button=event.target.closest("[data-worker-chart]");
+  if (button) openChart(button.dataset.chartProcess,Number(button.dataset.workerChart));
+});
 $("switch-rules").addEventListener("click",()=>{const sw=relatedSwitch();if(sw)openSwitchRules(sw.id);});
 $("detail-diagnostics").addEventListener("click",()=>showView("diagnostics"));
 $("health-checks").addEventListener("click",event=>{

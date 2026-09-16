@@ -19,8 +19,10 @@ python3 -B fabric/server.py
 ```
 
 Otevři odkaz vypsaný do terminálu. Obsahuje náhodný přístupový token ve fragmentu
-URL; stránka ho přesune do `sessionStorage` a z adresy odstraní. API poslouchá jen
-na `127.0.0.1:8765`. Ukončíš ho přes Ctrl+C. Při příštím spuštění si vše znovu najde.
+URL; stránka ho přesune do `sessionStorage` a z adresy odstraní. API výchozí poslouchá
+na **`0.0.0.0:8765`** (všechna IPv4 rozhraní). Pro přístup z jiného stroje nahraď
+`127.0.0.1` ve vypsaném odkazu skutečnou IPv4 adresou serveru; token ponech.
+Ukončíš ho přes Ctrl+C. Při příštím spuštění si vše znovu najde.
 
 Vpravo nahoře přepneš rozhraní přes **EN / CZ / FR**. Výchozí je čeština;
 volba se ukládá pouze v prohlížeči (`localStorage`). Přepnutí zachová filtry,
@@ -29,6 +31,8 @@ a exportované JSON zůstávají v původním formátu.
 
 ```bash
 python3 -B fabric/server.py --port 8766 --interval 3
+python3 -B fabric/server.py --host 127.0.0.1  # pouze místní přístup
+python3 -B fabric/server.py --host 0.0.0.0    # všechna IPv4 rozhraní (výchozí)
 python3 -B fabric/server.py --allow-write   # navíc ruční načítání pravidel
 ```
 
@@ -40,9 +44,9 @@ ponech stejné kvůli kontrole HTTP Host:
 
 ```bash
 ssh -L 8765:127.0.0.1:8765 user@host
-# Na vzdáleném stroji:
+# Na vzdáleném stroji, pro přístup pouze přes SSH:
 cd /cesta/k/tuntom
-python3 -B fabric/server.py
+python3 -B fabric/server.py --host 127.0.0.1
 ```
 
 Observer potřebuje stejná oprávnění ke čtení `/proc` a připojení ke control
@@ -131,6 +135,19 @@ Collector drží jen aktuální procesy a předchozí vzorek v paměti, bez inve
   nemaže; delší pohled zhušťuje vykreslení se zachováním minim, špiček a mezer.
   Sběr probíhá při obnovování viditelné stránky; pauza/skrytá karta zanechá mezeru,
   F5 historii vymaže. Historie ukončeného procesu se zahodí.
+- Kliknutím na graf RX/TX nebo CPU ukazatel workeru otevřít velký detail.
+  Pod kurzorem ukazuje čas a přesnou hodnotu původního vzorku; kliknutím bod
+  připneš i přes refresh. Šipky procházejí vzorky, Home/End první/poslední,
+  Escape zavírá detail. Rozsah 5m/1h/12h/24h je společný s malým grafem.
+  Také historie CPU se sbírá jen v paměti stránky.
+- Červené body pod křivkou zachovávají problémy konkrétního procesu v okamžiku
+  sběru, včetně původního důvodu a délky intervalu chybových přírůstků.
+  Zůstávají s grafem až 24 h, nezávisle na zavření nebo expiraci balónků.
+  Blízké body se v dlouhém rozsahu seskupí; detail ukáže jejich počet a časový
+  rozsah. Hodnoty skupiny patří prvnímu vzorku, šipkami lze odečíst jednotlivé
+  vzorky. Značka u CPU patří celému procesu switche, nedokazuje chybu workeru.
+  Výpadek čtení metrik má značku i bez hodnot; výpadek API bez vzorku zůstává
+  mezerou. Čas značky je čas pozorování, nikoli přesný okamžik jednotlivé chyby.
 
 Proces zmizí po ukončení a nově spuštěný se objeví automaticky. Identita obsahuje
 boot ID, PID a čas vytvoření procesu. Před ruční operací se proces znovu dohledá;
@@ -149,9 +166,11 @@ parametry z povoleného seznamu; nečte `/proc/PID/environ`, klíče, cookie ani
 konfiguračních souborů. Ukazuje parametry, které proces dostal při startu, a
 aktuální metriky/pravidla dostupná přes control protokol.
 
-HTTP server je určen pro místní pracovní nástroj nebo SSH forward. API vyžaduje
-Bearer token; přístup z jiné webové origin a jiné Host hlavičky odmítá. Statické
-soubory mají pevné cesty a nepotřebují CDN ani internet.
+HTTP server může sloužit i přes LAN; token je stále povinný. Přístup je přes
+HTTP bez TLS, tedy i token přenáší nešifrovaně; pro nedůvěryhodnou síť použij SSH
+forward s `--host 127.0.0.1`. Kontrola Host přijímá localhost a konkrétní cílovou
+IPv4 adresu přijatého spojení, nikoli libovolné DNS jméno. Cizí Origin a cross-site
+požadavky odmítá. Statické soubory mají pevné cesty a nepotřebují CDN ani internet.
 
 ## API v1
 

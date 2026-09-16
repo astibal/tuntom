@@ -76,3 +76,37 @@ input,select,textarea{background:#151b12;border-color:#424c35}button:hover:not(:
 #metric-help-key{font:14px/1.5 var(--mono);overflow-wrap:anywhere}
 .metric-help-heading button{padding:0;width:28px;height:28px;font-size:20px}
 #metric-help-text{margin-top:16px;line-height:1.7;color:var(--text)}
+/* Shared, responsive plotting surface for throughput and worker CPU. */
+#chart.time-chart{width:100%;height:220px;padding:0;cursor:zoom-in}
+.time-chart{display:block;width:100%;touch-action:pan-y;outline-offset:-3px}
+.time-chart:focus-visible{outline:2px solid var(--accent)}
+.time-chart .grid{stroke:var(--line);stroke-width:1;stroke-dasharray:3 5}
+.time-chart .rx{stroke:var(--green);fill:none;stroke-width:2}
+.time-chart .tx{stroke:var(--accent);fill:none;stroke-width:2}
+.time-chart text{fill:var(--muted);font:10px var(--mono)}
+.time-chart path,.time-chart circle{vector-effect:non-scaling-stroke}
+.time-chart circle.rx{fill:var(--green)}
+.time-chart circle.tx{fill:var(--accent)}
+.time-chart .chart-issue{fill:var(--red);stroke:var(--bg);stroke-width:1.5;cursor:pointer}
+.time-chart .chart-issue-hit{fill:transparent;stroke:none}
+.time-chart .chart-cursor{pointer-events:none}
+.time-chart .chart-cursor path{stroke:var(--text);stroke-width:1;stroke-dasharray:4 4;opacity:.7}
+.chart-mini-legend{display:flex;align-items:center;gap:4px;margin:0 23px;font:10px var(--mono);color:var(--muted)}
+.chart-readout{min-height:74px;margin:12px 23px;padding:12px 14px;background:#131b12;border:1px solid var(--line);border-radius:6px;font:11px/1.65 var(--mono);color:var(--muted);overflow-wrap:anywhere}
+.chart-readout-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:7px;color:var(--text)}
+.chart-value{display:block}.chart-value strong{font-weight:500}.rx-value{color:var(--green)}.tx-value{color:var(--accent)}
+.chart-issue-details{color:var(--red);border-top:1px solid #63483a;margin-top:10px;padding-top:8px}
+.chart-issue-details ul{margin:6px 0;padding-left:20px;max-height:150px;overflow:auto}.chart-issue-details small{font-size:10px}
+#chart-dialog{width:min(1440px,calc(100vw - 32px));max-width:none;max-height:calc(100dvh - 32px);padding:0;border:1px solid #697a50;border-radius:10px;background:var(--panel);color:var(--text);box-shadow:0 24px 90px #000a;overflow:auto}
+#chart-dialog::backdrop{background:#080c08d9}
+.chart-dialog-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:20px 24px;background:linear-gradient(110deg,#3a4629bb,#242e1c80);border-bottom:1px solid var(--line)}
+.chart-dialog-heading h2{font-size:23px}.chart-dialog-heading .eyebrow{margin-bottom:6px}.chart-dialog-heading button{font:24px/1 var(--mono);width:36px;height:36px;padding:0}
+.chart-toolbar{display:flex;align-items:center;justify-content:space-between;gap:15px;flex-wrap:wrap;padding:15px 24px 0}
+.chart-dialog-legend{display:flex;flex-wrap:wrap;gap:20px;font:11px var(--mono);color:var(--muted)}
+#chart-detail-range{padding:6px 10px;font:12px var(--mono)}
+.chart-instructions{margin:12px 24px;font-size:11px}
+#chart-detail{height:clamp(260px,48vh,600px);cursor:crosshair}
+#chart-detail-readout{min-height:88px;font-size:12px}
+.worker-card .worker-chart{display:block;width:100%;padding:0;border:0;text-align:left;cursor:zoom-in}
+.worker-chart meter{pointer-events:none}.worker-chart span{display:block;color:var(--muted);font:10px var(--mono);text-align:right}
+@media(max-width:600px){#chart-dialog{width:calc(100vw - 12px);max-height:calc(100dvh - 12px)}.chart-dialog-heading,.chart-toolbar{padding-left:14px;padding-right:14px}.chart-controls{gap:9px}.chart-readout{margin-left:14px;margin-right:14px}.chart-dialog-heading h2{font-size:18px}#chart-detail{height:280px}}

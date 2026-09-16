@@ -161,8 +161,8 @@ class APITests(unittest.TestCase):
         self.worker.join()
         self.fabric.close()
 
-    def request(self, method, path, data=None, *, headers=None, auth=True):
-        connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=10)
+    def request(self, method, path, data=None, *, headers=None, auth=True, address="127.0.0.1", port=None):
+        connection = http.client.HTTPConnection(address, port or self.server.server_port, timeout=10)
         outgoing = {"Authorization": "Bearer " + TOKEN} if auth else {}
         if data is not None:
             outgoing["Content-Type"] = "application/json"
@@ -183,6 +183,26 @@ class APITests(unittest.TestCase):
         self.assertEqual(self.request("GET", "/../server.py")[0], 404)
         for path in ("/", "/app.js", "/style.css", "/favicon.svg"):
             self.assertEqual(self.request("GET", path, auth=False)[0], 200)
+
+    def test_wildcard_bind_accepts_destination_ip_and_keeps_request_guards(self):
+        server = Server(("0.0.0.0", 0), self.fabric, TOKEN)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            # A second loopback address exercises wildcard binding without
+            # depending on the machine's LAN configuration.
+            destination = {"address":"127.0.0.2", "port":server.server_port}
+            origin = f"http://127.0.0.2:{server.server_port}"
+            self.assertEqual(self.request("GET", "/", auth=False, **destination)[0], 200)
+            self.assertEqual(self.request("GET", "/api/v1/snapshot", auth=False, **destination)[0], 401)
+            self.assertEqual(self.request("GET", "/api/v1/snapshot", headers={"Origin":origin}, **destination)[0], 200)
+            for headers in ({"Host":"evil.example"}, {"Host":f"127.0.0.3:{server.server_port}"},
+                            {"Origin":"http://evil.example"}, {"Sec-Fetch-Site":"cross-site"}):
+                self.assertEqual(self.request("GET", "/api/v1/snapshot", headers=headers, **destination)[0], 403)
+        finally:
+            server.shutdown()
+            server.server_close()
+            worker.join()
 
     def test_real_switch_lifecycle_and_rules(self):
         binaries = [REPO / "cmake-build-debug" / name for name in ("tuntom-switch", "tomtom-switch-mp")]

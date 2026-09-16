@@ -8,6 +8,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 import difflib
 import hashlib
+import ipaddress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import logging
@@ -289,9 +290,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def guard(self):
         port = self.server.server_port
-        hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+        # The accepted connection knows its concrete local destination even
+        # when the listener is bound to 0.0.0.0. Do not trust arbitrary Host names.
+        addresses = {"127.0.0.1", "localhost", self.connection.getsockname()[0]}
+        hosts = {f"{address}:{port}" for address in addresses}
         if port == 80:
-            hosts |= {"127.0.0.1", "localhost"}
+            hosts |= addresses
         if self.headers.get("Host") not in hosts:
             raise APIError(403, "invalid Host header")
         origin = self.headers.get("Origin")
@@ -373,6 +377,8 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--host", type=ipaddress.IPv4Address, default=ipaddress.IPv4Address("0.0.0.0"),
+                        help="IPv4 listen address (default: 0.0.0.0; use 127.0.0.1 for local access only)")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--interval", type=float, default=5, help="minimum poll interval in seconds")
     parser.add_argument("--allow-write", action="store_true", help="enable runtime rule loads")
@@ -393,10 +399,14 @@ def main():
         else:
             fabric = Fabric(allow_write=args.allow_write, interval=args.interval)
         write_enabled = fabric.snapshot()["allow_write"]
-        server = Server(("127.0.0.1", args.port), fabric, token)
+        server = Server((str(args.host), args.port), fabric, token)
     except (ValueError, TypeError, OSError, APIError) as error:
         parser.exit(1, f"Fabric: {error}\n")
-    print(f"Tuntom Fabric: http://127.0.0.1:{server.server_port}/#token={token}", flush=True)
+    link_host = "127.0.0.1" if args.host.is_unspecified else str(args.host)
+    print(f"Tuntom Fabric: http://{link_host}:{server.server_port}/#token={token}", flush=True)
+    print(f"Listening: {args.host}:{server.server_port}", flush=True)
+    if args.host.is_unspecified:
+        print("Remote access: replace 127.0.0.1 in the link with this machine's IPv4 address.", flush=True)
     print(f"Collector: {args.collector or 'local /proc'}; rule writes {'enabled' if write_enabled else 'disabled'}", flush=True)
     fabric.start()
     try:
