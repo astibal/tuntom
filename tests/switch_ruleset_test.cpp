@@ -148,7 +148,7 @@ int main() {
     require(!missing->statements[0].stack.apply(make_frame(), output, count), "missing keep position drops");
     for (const auto &text : {"switch capture", "switch a,* capture debug [id=test]", "switch to b,* capture"})
         fails([&] { parse(text); }, "capture is not supported yet");
-    for (const auto &text : {"format 3\nserial 1\n", "serial 1\n", "format 1\n", "format 1\nserial -1\n", "format 1\nserial 18446744073709551616\n"})
+    for (const auto &text : {"format 4\nserial 1\n", "serial 1\n", "format 1\n", "format 1\nserial -1\n", "format 1\nserial 18446744073709551616\n"})
         fails([&] { parse_switch_ruleset(text); }, "");
     for (const auto &text : {"label a,12* to b, [keep]", "label a,* to b, []", "label a,* to b, [1,2,3,4,5,6,7,8,9]",
                             "label a,* to b, [keep,...,1]", "switch a** drop", "switch a,1 to b,1 allow extra",

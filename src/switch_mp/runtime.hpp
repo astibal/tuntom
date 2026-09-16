@@ -160,6 +160,8 @@ struct Plan {
     std::shared_ptr<const SwitchRuleset> ruleset;
     std::vector<Kind> kinds;
     std::unique_ptr<divert::SwitchPath> divert_path;
+    std::unique_ptr<via::SwitchPath> via_path;
+    bool via_guard = false;
     std::map<std::string, Port*> divert_ports;
 };
 
@@ -193,6 +195,7 @@ class Engine {
         Clock::time_point next_cpu_sample{};
     };
     const Config &config_;
+    std::unique_ptr<via::State> via_state_;
     std::vector<std::unique_ptr<Worker>> workers_;
     std::unique_ptr<Plan> plan_;
     Wake control_wake_;
@@ -288,11 +291,19 @@ class Engine {
         Link *link = nullptr;
         std::size_t tx_worker = 0;
         const auto route = task.routes.find(frame.label(0));
+        if (plan_->via_guard && !plan_->via_path) {
+            via::Envelope retired;
+            if (via::reserved(port.name) || !via::Codec::split(divert::labels_of(frame), retired) || retired.present) {
+                Counters::add(stats.divert_invalid_drops); buffer->release(); return true;
+            }
+        }
         divert::Decision decision;
-        if (plan_->divert_path) decision = plan_->divert_path->route(port.name, frame, [&](const std::string& name) {
+        const auto live = [&](const std::string& name) {
             const auto found = plan_->divert_ports.find(name);
             return found != plan_->divert_ports.end() && !found->second->disconnected.load(std::memory_order_relaxed);
-        });
+        };
+        if (plan_->via_path) decision = plan_->via_path->route(port.name, frame, live);
+        else if (plan_->divert_path) decision = plan_->divert_path->route(port.name, frame, live);
         if (decision.result != divert::Result::normal) {
             using divert::Result;
             if (decision.result == Result::forward) {
@@ -593,23 +604,38 @@ class Engine {
         plan->version = plan_ ? plan_->version + 1 : 1;
         plan->ports = std::move(ports);
         plan->ruleset = std::move(ruleset);
+        plan->via_guard = via::enabled(plan->ruleset) || (plan_ && plan_->via_guard);
         plan->workers.resize(workers_.size());
         std::vector<Kind> kinds;
         std::unordered_map<std::string, std::shared_ptr<Port>> names;
         for (const auto &port : plan->ports) {
-            const bool divert_port = config_.divert_config && (port->name == config_.divert_config->input || port->name == config_.divert_config->output);
+            const bool divert_port = (via::enabled(plan->ruleset) && via::reserved(port->name)) ||
+                (config_.divert_config && (port->name == config_.divert_config->input || port->name == config_.divert_config->output));
             kinds.push_back(divert_port ? Kind::adapter : plan->ruleset ?
                 (plan->ruleset->role(port->name, RuleStatement::Type::exit) ? Kind::adapter :
                  plan->ruleset->role(port->name, RuleStatement::Type::trunk) ? Kind::trunk : Kind::tunnel) : port->kind);
             names.emplace(port->name, port);
         }
-        if (config_.divert_config) {
+        if (config_.divert_config && config_.divert_config->via && !via::enabled(plan->ruleset))
+            throw RulesPlanError("VIA divert requires rules format 3");
+        if (config_.divert_config || via::enabled(plan->ruleset)) {
             std::vector<std::string> port_names;
             for (const auto& port : plan->ports) {
                 port_names.push_back(port->name);
                 plan->divert_ports.emplace(port->name, port.get());
             }
-            plan->divert_path = std::make_unique<divert::SwitchPath>(config_.divert_config, plan->ruleset, std::move(port_names));
+            if (via::enabled(plan->ruleset)) {
+                if (!plan_ || !via::enabled(plan_->ruleset)) {
+                    for (const auto& port : plan->ports) {
+                        if (!via::accepted(*plan->ruleset, port->name)) throw RulesPlanError("existing port conflicts with VIA registration: " + port->name);
+                        for (const auto& other : plan->ports)
+                            if (port != other && !via::compatible(*plan->ruleset, port->name, port->fd.get(), other->name, other->fd.get()))
+                                throw RulesPlanError("existing ports conflict with VIA instance ownership");
+                    }
+                }
+                if (!via_state_) via_state_ = std::make_unique<via::State>();
+                plan->via_path = std::make_unique<via::SwitchPath>(*via_state_, plan->ruleset, config_.divert_config, std::move(port_names));
+            } else plan->divert_path = std::make_unique<divert::SwitchPath>(config_.divert_config, plan->ruleset, std::move(port_names));
         }
         plan->assignment = schedule(kinds, workers_.size(), config_.policy);
         plan->kinds = std::move(kinds);
@@ -676,9 +702,12 @@ class Engine {
             }
             if (!plan->ruleset && config_.default_back)
                 rx.fallback = {link_for(port, port), plan->tx_owner.at(port.get()), 0, true};
-            if (plan->divert_path) {
+            if (plan->divert_path || plan->via_path) {
                 for (const auto& target : plan->ports) {
-                    if (!plan->divert_path->possible(port->name, target->name)) continue;
+                    if (plan->via_path && ++resolution_work > 1024 * 1024)
+                        throw RulesPlanError("ruleset resolution exceeds 1048576 mapping/port pairs");
+                    if (!(plan->via_path ? plan->via_path->possible(port->name, target->name) :
+                        plan->divert_path->possible(port->name, target->name))) continue;
                     rx.divert_routes.emplace(target->name, ResolvedRoute{
                         link_for(port, target), plan->tx_owner.at(target.get()), 0, false});
                 }
@@ -841,6 +870,7 @@ class Engine {
         return n;
     }
     void write_stats(std::ostream &out) const {
+        if (plan_->via_path) out << "via_enabled=1\n";
         if (config_.divert_config) out << config_.divert_config->command("divert.show");
         out << "scheduler_version=" << plan_->version << "\nworkers_pool=" << workers_.size()
             << "\nworker_io_backend=epoll\nworker_event_refresh_budget=32\nworker_cpu_sample_ms=100"

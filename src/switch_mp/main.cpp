@@ -167,7 +167,7 @@ int main(int argc, char **argv) {
             }, [&](const std::string &operation, const std::string &body) {
                 if (operation.compare(0, 7, "divert.") == 0) {
                     if (!config.divert_config) throw std::runtime_error("divert is not configured");
-                    if (operation == "divert.enable") {
+                    if (operation == "divert.enable" && !config.divert_config->via) {
                         for (const auto& name : {config.divert_config->input, config.divert_config->output}) {
                             const auto found = engine.plan().divert_ports.find(name);
                             if (found == engine.plan().divert_ports.end() || found->second->disconnected.load())
@@ -259,20 +259,27 @@ int main(int argc, char **argv) {
                         auto &handshake = entry.handshake;
                         if (!handshake.activation_ready()) handshake.step(entry.socket(), config.ipc, epoch);
                         if (handshake.failed()) { ++stats.invalid; entry.discard(); continue; }
+                        const auto via_allowed = [&] {
+                            if (!tuntom::via::enabled(config.ruleset)) return true;
+                            if (!tuntom::via::accepted(*config.ruleset, handshake.id)) return false;
+                            for (const auto& port : engine.plan().ports)
+                                if (!port->disconnected.load() && !tuntom::via::compatible(*config.ruleset, handshake.id, entry.socket(), port->name, port->fd.get())) return false;
+                            return true;
+                        };
                         const auto admission_allowed = [&] {
                             const auto &ports = engine.plan().ports;
                             return ports.size() < capacity.ports || std::any_of(ports.begin(), ports.end(),
                                 [&](const auto &port) { return port->name == handshake.id; });
                         };
                         if (handshake.identified()) {
-                            if (!admission_allowed()) { ++stats.rejected; entry.discard(); continue; }
+                            if (!via_allowed() || !admission_allowed()) { ++stats.rejected; entry.discard(); continue; }
                             const auto used = mapping_bytes();
                             handshake.prepare(config.mmap_budget - std::min(used, config.mmap_budget));
                         }
                         if (!handshake.activation_ready()) continue;
                         // Recheck capacity: another pending registration may have
                         // activated while this peer was mapping its pools.
-                        if (!admission_allowed()) { ++stats.rejected; entry.discard(); continue; }
+                        if (!via_allowed() || !admission_allowed()) { ++stats.rejected; entry.discard(); continue; }
                         if (!entry.candidate) {
                             entry.candidate = std::make_shared<Port>(std::move(entry.fd), handshake.id, ++generation,
                                 config.kind(handshake.id), config.pool_size, std::move(handshake.transport));

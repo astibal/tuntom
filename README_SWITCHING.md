@@ -476,3 +476,10 @@ adapter ports are connected and `tuntomctl SOCKET divert enable` is called.
 `tuntomctl SOCKET divert stop` immediately stops new offers to the divert adapter:
 all subsequent unmarked packets use normal rules. It is idempotent, retains DVRT
 return handling, and may interrupt active proxied connections; it does not drain flows.
+
+## VIA service chains (format 3)
+
+Permanent and ad hoc service chains share the VIA label envelope, rendezvous flow
+hashing, ordered failover, and unavailable pass/drop policies. The switch keeps no
+per-flow VIA state. See [VIA configuration, label diagrams and lab commands](docs/VIA.md).
+Existing formats 1/2, legacy DVRT, CLI defaults, and the eight-label limit are unchanged.

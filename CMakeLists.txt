@@ -28,6 +28,9 @@ target_compile_options(tuntom-divert-adapter PRIVATE -Wall -Wextra -Wconversion 
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(via_test tests/via_test.cpp)
+    target_compile_options(via_test PRIVATE -Wall -Wextra -Wconversion -pedantic)
+    add_test(NAME via_test COMMAND via_test)
     add_executable(divert_test tests/divert_test.cpp)
     target_compile_options(divert_test PRIVATE -Wall -Wextra -Wconversion -pedantic)
     add_test(NAME divert_test COMMAND divert_test)
@@ -59,6 +62,10 @@ if(BUILD_TESTING)
     set_tests_properties(logging_test PROPERTIES TIMEOUT 40)
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME via_integration_test COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/via_integration_test.py
+            $<TARGET_FILE:tuntom-switch> $<TARGET_FILE:tomtom-switch-mp> $<TARGET_FILE:tuntomctl>)
+        set_tests_properties(via_integration_test PROPERTIES TIMEOUT 90)
         add_test(NAME divert_integration_test COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/divert_integration_test.py
             $<TARGET_FILE:tuntom-switch> $<TARGET_FILE:tomtom-switch-mp> $<TARGET_FILE:tuntomctl>)

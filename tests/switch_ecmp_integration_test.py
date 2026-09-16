@@ -68,7 +68,11 @@ def exercise(binary, workers=None, mixed=False):
         owned = []
 
         def connect(name, caps=None):
+            previous = switch.stats()["registrations_ok"]
             endpoint = Endpoint(switch, name, caps)
+            # ACTIVE lets the new peer enqueue frames, while publication of the
+            # new topology for other ingress workers completes at the barrier.
+            until(lambda: switch.stats()["registrations_ok"] > previous)
             owned.append(endpoint)
             return endpoint
 

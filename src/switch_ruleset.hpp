@@ -7,6 +7,8 @@
 #include <limits>
 #include <memory>
 #include <sstream>
+#include <map>
+#include <set>
 
 namespace tuntom {
 
@@ -122,10 +124,11 @@ struct RuleStatement {
     RuleStack stack;
     bool allow = false;
     std::string id, target;
+    std::vector<std::string> via;
     std::size_t line = 0;
 
     std::string text(unsigned format = 1) const {
-        if (format == 2 && type != Type::exit && type != Type::trunk) {
+        if (format >= 2 && type != Type::exit && type != Type::trunk) {
             std::string out = "switch";
             const auto source = input.text_v2();
             if (!source.empty()) out += " " + source;
@@ -135,6 +138,11 @@ struct RuleStatement {
                 if (!stack.identity()) destination += (destination.empty() ? "" : ", ") + stack.text(true);
             } else destination = output.text_v2();
             if (!destination.empty()) out += " to " + destination;
+            if (!via.empty()) {
+                out += " via [";
+                for (const auto& name : via) { if (out.back() != '[') out += ", "; out += name; }
+                out += "]";
+            }
             out += type == Type::forward ? " allow" : type == Type::capture ? " capture" : " drop";
             if (!target.empty()) out += " " + target;
             if (!id.empty()) out += " [id=" + id + "]";
@@ -164,12 +172,33 @@ struct RuleStatement {
     }
 };
 
+struct ViaService {
+    std::string name, client, server;
+    bool failover = false, pass = false;
+    std::vector<std::string> instances;
+    std::string text() const {
+        std::string out = "service " + name + " {\n    client-side " + client +
+            "\n    server-side " + server + "\n    stickiness " + (failover ? "failover" : "hash") +
+            "\n    unavailable " + (pass ? "pass" : "drop") + "\n";
+        if (!instances.empty()) {
+            out += "    instances [";
+            for (const auto& id : instances) { if (out.back() != '[') out += ", "; out += "\"" + id + "\""; }
+            out += "]\n";
+        }
+        return out + "}\n";
+    }
+};
+
 struct SwitchRuleset {
     unsigned format = 1;
     std::uint64_t serial = 0;
     std::vector<RuleStatement> statements;
+    std::map<std::string, std::uint64_t> origins;
+    std::map<std::string, ViaService> services;
     std::string text() const {
         std::string out = "format " + std::to_string(format) + "\nserial " + std::to_string(serial) + "\n";
+        for (const auto& port : origins) out += "port " + port.first + " id " + std::to_string(port.second) + "\n";
+        for (const auto& service : services) out += service.second.text();
         for (const auto &s : statements) out += s.text(format) + "\n";
         return out;
     }
@@ -243,6 +272,22 @@ class RulesLine {
     }
     bool eat(const std::string &s) { if (peek() != s) return false; ++pos_; return true; }
     void need(const std::string &s) { if (!eat(s)) throw std::runtime_error("expected '" + s + "'"); }
+    std::vector<std::string> names(bool quoted = false) {
+        std::vector<std::string> out;
+        need("[");
+        do {
+            auto name = take();
+            if (quoted && name.size() >= 2 && name.front() == '"' && name.back() == '"')
+                name = name.substr(1, name.size() - 2);
+            if (name.empty() || name.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.#") != std::string::npos)
+                throw std::runtime_error("invalid VIA name");
+            if (std::find(out.begin(), out.end(), name) != out.end()) throw std::runtime_error("duplicate VIA name");
+            out.push_back(name);
+            if (out.size() > ruleset_max_statements) throw std::runtime_error("too many VIA names");
+        } while (eat(","));
+        need("]");
+        return out;
+    }
     RuleEndpoint endpoint() {
         RuleEndpoint e; e.port = take(); rules_port(e.port);
         if (eat(",")) {
@@ -357,16 +402,43 @@ inline std::shared_ptr<const SwitchRuleset> parse_switch_ruleset(const std::stri
     std::istringstream input(text);
     std::string line;
     std::size_t number = 0;
+    ViaService service;
+    bool in_service = false;
+    std::set<std::string> service_fields;
     while (std::getline(input, line)) {
         ++number;
         try {
-            RulesLine p(line, rules->format == 2);
+            RulesLine p(line, rules->format >= 2);
             if (p.done()) continue;
             const auto command = p.take();
-            if (command == "format") {
+            if (in_service) {
+                if (command == "}") {
+                    if (service.client.empty() || service.server.empty() ||
+                        (service.failover && service.instances.empty()))
+                        throw std::runtime_error("service requires two sides; failover requires ordered instances");
+                    if (!rules->services.emplace(service.name, service).second) throw std::runtime_error("duplicate service");
+                    in_service = false;
+                } else {
+                    if (!service_fields.insert(command).second) throw std::runtime_error("duplicate service field");
+                    if (command == "client-side" || command == "server-side") {
+                        auto value = p.take(); rules_port(value);
+                        if (value.find("~via:") != std::string::npos) throw std::runtime_error("reserved VIA suffix");
+                        (command == "client-side" ? service.client : service.server) = value;
+                    } else if (command == "stickiness") {
+                        auto value = p.take();
+                        if (value != "hash" && value != "failover") throw std::runtime_error("expected hash or failover");
+                        service.failover = value == "failover";
+                    } else if (command == "unavailable") {
+                        auto value = p.take();
+                        if (value != "drop" && value != "pass") throw std::runtime_error("expected drop or pass");
+                        service.pass = value == "pass";
+                    } else if (command == "instances") service.instances = p.names(true);
+                    else throw std::runtime_error("unknown service field");
+                }
+            } else if (command == "format") {
                 if (format || serial || !rules->statements.empty()) throw std::runtime_error("format must appear once, first");
                 const auto version = rules_number(p.take());
-                if (version != 1 && version != 2) throw std::runtime_error("unsupported ruleset format");
+                if (version != 1 && version != 2 && version != 3) throw std::runtime_error("unsupported ruleset format");
                 rules->format = static_cast<unsigned>(version);
                 format = true;
             } else if (command == "serial") {
@@ -376,11 +448,26 @@ inline std::shared_ptr<const SwitchRuleset> parse_switch_ruleset(const std::stri
                 if (!serial) throw std::runtime_error("format and serial headers are required first");
                 RuleStatement s; s.line = number;
                 bool bidir = false;
-                if (command == "exit" || command == "trunk") {
+                if (rules->format == 3 && command == "service") {
+                    service = {}; service.name = p.take();
+                    if (service.name.empty() || service.name.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.") != std::string::npos)
+                        throw std::runtime_error("invalid service name");
+                    p.need("{");
+                    if (!p.done()) throw std::runtime_error("service fields must be on separate lines");
+                    service_fields.clear(); in_service = true; continue;
+                } else if (rules->format == 3 && command == "port") {
+                    auto name = p.take(); rules_port(name); p.need("id");
+                    auto id = rules_number(p.take());
+                    if (!id || wildcard_port(name) || name.find("~via:") != std::string::npos || !p.done())
+                        throw std::runtime_error("expected port NAME id NONZERO_ID");
+                    for (const auto& entry : rules->origins) if (entry.second == id) throw std::runtime_error("duplicate origin ID");
+                    if (!rules->origins.emplace(name, id).second) throw std::runtime_error("duplicate origin port");
+                    continue;
+                } else if (command == "exit" || command == "trunk") {
                     s.type = command == "exit" ? RuleStatement::Type::exit : RuleStatement::Type::trunk;
                     s.output.port = p.take(); rules_port(s.output.port);
                 } else if (command == "label") {
-                    if (rules->format == 2) throw std::runtime_error("format 2 uses switch for forwarding and rewriting; label is only supported in format 1");
+                    if (rules->format >= 2) throw std::runtime_error("format 2 uses switch for forwarding and rewriting; label is only supported in format 1");
                     s.type = RuleStatement::Type::mapping; s.input = p.endpoint(); p.need("to");
                     s.output.port = p.take(); rules_port(s.output.port); p.need(","); s.stack = p.stack();
                     p.options(s);
@@ -388,12 +475,13 @@ inline std::shared_ptr<const SwitchRuleset> parse_switch_ruleset(const std::stri
                     if (command == "switch") {
                         if ((p.peek() != "to" || p.peek(1) == ",") && ((p.peek() != "allow" && p.peek() != "drop" && p.peek() != "capture") ||
                             p.peek(1) == "," || p.peek(1) == "to"))
-                            s.input = rules->format == 2 ? p.endpoint_v2() : p.endpoint();
-                        if (p.eat("to")) s.output = rules->format == 2 ? p.endpoint_v2() : p.endpoint();
+                            s.input = rules->format >= 2 ? p.endpoint_v2() : p.endpoint();
+                        if (p.eat("to")) s.output = rules->format >= 2 ? p.endpoint_v2() : p.endpoint();
+                        if (rules->format == 3 && p.eat("via")) s.via = p.names();
                         const auto action = p.take();
                         if (action == "allow") {
                             s.allow = true;
-                            if (rules->format == 2) {
+                            if (rules->format >= 2) {
                                 s.type = RuleStatement::Type::forward;
                                 s.stack = output_stack(s.output.match);
                             }
@@ -420,6 +508,9 @@ inline std::shared_ptr<const SwitchRuleset> parse_switch_ruleset(const std::stri
                     auto reverse = s;
                     if (s.type == RuleStatement::Type::forward) reverse = reverse_forward_rule(s);
                     else std::swap(reverse.input, reverse.output);
+                    // VIA carries its own reverse traversal. The ordinary reverse
+                    // rule remains useful for traffic which bypasses the chain.
+                    reverse.via.clear();
                     if (!reverse.id.empty()) reverse.id += ".reverse";
                     append(std::move(s));
                     append(std::move(reverse));
@@ -430,8 +521,13 @@ inline std::shared_ptr<const SwitchRuleset> parse_switch_ruleset(const std::stri
             throw std::runtime_error("line " + std::to_string(number) + ": " + e.what());
         }
     }
+    if (in_service) throw std::runtime_error("unterminated service block");
     if (!format || !serial) throw std::runtime_error("format and serial headers are required");
     for (const auto &s : rules->statements) {
+        if (!s.via.empty() && s.type != RuleStatement::Type::forward)
+            throw std::runtime_error("via requires an allow forwarding rule");
+        for (const auto& name : s.via)
+            if (!rules->services.count(name)) throw std::runtime_error("unknown VIA service: " + name);
         if (s.type == RuleStatement::Type::capture)
             throw std::runtime_error("line " + std::to_string(s.line) + ": capture is not supported yet");
         if (s.type == RuleStatement::Type::exit)
@@ -471,7 +567,7 @@ struct RulesProgram {
     RulesProgram(const SwitchRuleset &rules, const std::string &port) : format(rules.format) {
         for (const auto &s : rules.statements) {
             if (!route_port_matches(s.input.port, port)) continue;
-            if (format == 2) {
+            if (format >= 2) {
                 if (s.type == RuleStatement::Type::forward) mappings.push_back(&s);
                 if (s.type == RuleStatement::Type::forward || s.type == RuleStatement::Type::policy)
                     policies.push_back(&s);

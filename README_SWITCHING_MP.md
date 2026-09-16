@@ -324,3 +324,10 @@ Existing defaults are unchanged, and divert activation remains explicit through
 `tuntomctl SOCKET divert stop` disables new offers immediately, including for
 existing flows; already marked DVRT packets retain their routing. This is not
 a graceful drain and may interrupt active proxied connections.
+
+## VIA service chains (format 3)
+
+Permanent and ad hoc service chains share the VIA label envelope, rendezvous flow
+hashing, ordered failover, and unavailable pass/drop policies. The switch keeps no
+per-flow VIA state. See [VIA configuration, label diagrams and lab commands](docs/VIA.md).
+Existing formats 1/2, legacy DVRT, CLI defaults, and the eight-label limit are unchanged.

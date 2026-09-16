@@ -11,6 +11,8 @@ namespace tuntom::divert {
 
 struct Config {
     std::string cookie, input, output;
+    bool via = false;
+    std::vector<RuleStatement> via_matches;
     std::map<std::string, std::uint64_t> origins;
     std::map<std::uint64_t, std::string> names;
     std::shared_ptr<const SwitchRuleset> matches;
@@ -31,6 +33,20 @@ inline std::shared_ptr<Config> read_config(const std::string& path) {
         std::istringstream fields(line);
         std::string op, extra;
         if (!(fields >> op) || op[0] == '#') continue;
+        if (op == "format") {
+            std::string value;
+            if (config->via || matches || !config->cookie.empty() || !(fields >> value) || value != "3" || (fields >> extra))
+                throw std::runtime_error("expected format 3 before VIA divert matches");
+            config->via = true; continue;
+        }
+        if (config->via) {
+            RulesLine p(line, true); p.need("match");
+            RuleStatement match; match.input = p.endpoint_v2(); p.need("via"); match.via = p.names();
+            if (!p.done()) throw std::runtime_error("unexpected VIA divert field");
+            config->via_matches.push_back(std::move(match));
+            if (config->via_matches.size() > ruleset_max_statements) throw std::runtime_error("too many divert matches");
+            continue;
+        }
         if (op == "cookie") {
             if (!config->cookie.empty() || !(fields >> config->cookie)) throw std::runtime_error("expected one divert cookie");
         } else if (op == "ports") {
@@ -55,6 +71,10 @@ inline std::shared_ptr<Config> read_config(const std::string& path) {
             continue;
         } else throw std::runtime_error("unknown divert directive: " + op);
         if (fields >> extra) throw std::runtime_error("unexpected divert configuration field: " + extra);
+    }
+    if (config->via) {
+        if (config->via_matches.empty()) throw std::runtime_error("VIA divert requires a match");
+        return config;
     }
     (void)Codec(config->cookie);
     (void)encode_switch_registration(config->input);

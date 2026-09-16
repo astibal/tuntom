@@ -69,6 +69,13 @@ def inside(args):
         rules, config = lab.runtime / "switch.rules", lab.runtime / "divert.conf"
         rules.write_text("format 2\nserial 1\nexit exit\nswitch edge,[17,42] to exit,[99,42] allow bidir\n")
         config.write_text(f"cookie {cookie}\nports divert-in divert-out\norigin edge 123\nmatch edge,[17,42]\n")
+        adapter_options = ["--cookie", cookie]
+        if args.via:
+            rules.write_text("format 3\nserial 1\nport edge id 123\nservice router {\n"
+                " client-side divert-in\n server-side divert-out\n stickiness hash\n unavailable drop\n}\n"
+                "exit exit\nswitch edge,[17,42] to exit,[99,42] allow bidir\n")
+            config.write_text("format 3\nmatch edge,[17,42] via [router]\n")
+            adapter_options = ["--via-instance", "router#0", "--admission", "warmup"]
         (output / "switch.rules").write_text(rules.read_text())
         (output / "divert.conf").write_text(config.read_text())
         classifier = lab.runtime / "ingress.classifier"
@@ -80,7 +87,7 @@ def inside(args):
                             "--rules-file", rules, "--divert-file", config, *extra])
         wait_for(path.exists, lab.processes)
         lab.start("divert-adapter", [build / "tuntom-divert-adapter", "di0", "do0", "--switch-socket", path,
-                  "--cookie", cookie, "--mtu", args.mtu, "--control-socket", lab.runtime / "divert.control"], ns="router")
+                  *adapter_options, "--mtu", args.mtu, "--control-socket", lab.runtime / "divert.control"], ns="router")
         lab.start("exit-adapter", [build / "tuntom-switch-adapter", "ex0", "--switch-socket", path,
                   "--switch-port-id", "exit", "--mtu", args.mtu, "--l4-only", "--l4-timeout", "86400",
                   "--control-socket", lab.runtime / "exit.control"], ns="exit")
@@ -145,7 +152,7 @@ def inside(args):
         require({tuple(p) for p in accepted} == {(CLIENT, p) for p in (40000,40001,40002)}, "source identity changed")
         if args.mtu > 1500:
             require(int(snapshots["client"]["fragments_tx"]) > 0, "no jumbo transport fragments")
-        report = dict(status="PASS", switch=args.switch, mtu=args.mtu, vrf=args.vrf, tcp=json.loads(driver.stdout), server_peers=accepted, stats=snapshots)
+        report = dict(status="PASS", via=args.via, switch=args.switch, mtu=args.mtu, vrf=args.vrf, tcp=json.loads(driver.stdout), server_peers=accepted, stats=snapshots)
         (output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
         print(json.dumps(dict(status="PASS", switch=args.switch, mtu=args.mtu, output=str(output))))
     except Exception as error:
@@ -161,6 +168,7 @@ def main():
     parser.add_argument("--output")
     parser.add_argument("--switch", choices=("st", "mp"), default="mp")
     parser.add_argument("--mtu", type=int, choices=(1500,9000), default=1500)
+    parser.add_argument("--via", action="store_true", help="exercise VIA service mode with adapter warmup")
     parser.add_argument("--vrf", action="store_true", help="put the router TUNs in VRF table 4123 inside the isolated namespace")
     parser.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--client", help=argparse.SUPPRESS)
@@ -175,7 +183,7 @@ def main():
         return inside(args)
     subprocess.run(["unshare", "--user", "--map-root-user", "--net", sys.executable, __file__, "--inside",
                     "--build", str(Path(args.build).resolve()), "--output", str(Path(args.output).resolve()),
-                    "--switch", args.switch, "--mtu", str(args.mtu), *(["--vrf"] if args.vrf else [])], check=True)
+                    "--switch", args.switch, "--mtu", str(args.mtu), *(["--vrf"] if args.vrf else []), *(["--via"] if args.via else [])], check=True)
 
 
 if __name__ == "__main__":

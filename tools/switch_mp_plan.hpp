@@ -68,10 +68,23 @@ inline StartupProfile startup_profile(Config config, const Hardware &hardware,
             }
         }
     }
-    if (config.divert_config) {
+    if (config.divert_config && !config.divert_config->via) {
         names.insert(config.divert_config->input);
         names.insert(config.divert_config->output);
         for (const auto &origin : config.divert_config->origins) names.insert(origin.first);
+    }
+    if (via::enabled(config.ruleset)) {
+        for (const auto& origin : config.ruleset->origins) names.insert(origin.first);
+        for (const auto& item : config.ruleset->services) {
+            const auto& service = item.second;
+            for (const auto& side : {service.client, service.server})
+                if (wildcard_port(side)) patterns.insert(side);
+            // IDs with exact attachment names can be estimated before registration.
+            for (const auto& id : service.instances) {
+                if (!wildcard_port(service.client)) names.insert(via::port_name(service.client, id, false));
+                if (!wildcard_port(service.server)) names.insert(via::port_name(service.server, id, true));
+            }
+        }
     }
     result.wildcard_patterns = patterns.size();
     for (const auto &name : names) {

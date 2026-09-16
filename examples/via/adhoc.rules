@@ -1,0 +1,22 @@
+# Service definitions are shared by the separate ad hoc match file.
+format 3
+serial 1
+port edge id 123
+
+service smithproxy {
+    client-side proxy-in*
+    server-side proxy-out*
+    stickiness hash
+    unavailable drop
+}
+
+service capture {
+    client-side capture-in*
+    server-side capture-out*
+    stickiness failover
+    instances ["capture#0", "capture#1"]
+    unavailable pass
+}
+
+exit internet
+switch edge,[17,42] to internet,[99,42] allow bidir

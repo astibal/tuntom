@@ -174,3 +174,10 @@ and are excluded from Git.
 - `tuntom_userns.cpp`: rootless launcher wrapping production tuntom.
 - `run.py`: namespace setup/cleanup, real TCP transfers, and trace validation.
 - `check.py`, `unit.cpp`: protocol and timing checks.
+
+## VIA service mode
+
+`run_integrated.py --via` exercises the production format-3 service path, automatic
+cookies and paired instance registration. It retains the existing warmup scenario
+by passing `--admission warmup`. Combine it with `--switch st` or `--switch mp`,
+`--vrf`, and `--mtu 9000`. See [VIA commands](../../docs/VIA.md#validation).

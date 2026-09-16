@@ -36,6 +36,7 @@ struct Envelope {
     bool present = false;
     std::uint64_t origin() const { return body.values[0]; }
     Action action() const { return static_cast<Action>(body.values[1]); }
+    bool same_context(const Envelope& other) const { return origin() == other.origin() && original() == other.original(); }
     Stack original() const {
         Stack result;
         for (std::size_t i = 2; i < body.size; ++i) result.push(body.values[i]);

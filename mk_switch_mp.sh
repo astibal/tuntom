@@ -41,7 +41,7 @@ Build and restart a local tomtom-switch-mp instance.
   --dry-run               Print CPU/worker plan and arguments; no sudo, hooks,
                           daemon startup or changes to managed instances
 
-  --rules-file <path>      Seed rules (format 1, format 2 or legacy directives)
+  --rules-file <path>      Seed rules (format 1, 2, 3 or legacy directives)
   --divert-file <path>     Divert config; requires versioned rules, initially disabled
   --pre-hook <path>        Default /etc/tuntom/switch-pre.sh
   --post-hook <path>       Default /etc/tuntom/switch-post.sh

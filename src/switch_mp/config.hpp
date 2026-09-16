@@ -7,6 +7,7 @@
 #include "scheduler.hpp"
 #include "../ipc/switch_v2.hpp"
 #include "../divert/switch.hpp"
+#include "../via/switch.hpp"
 #include <cstdint>
 #include <ostream>
 #include <stdexcept>
@@ -34,6 +35,7 @@ struct Config {
     bool default_back = false, help = false;
 
     Kind kind(const std::string &port) const {
+        if (via::enabled(ruleset) && via::reserved(port)) return Kind::adapter;
         if (divert_config && (port == divert_config->input || port == divert_config->output)) return Kind::adapter;
         if (ruleset) return ruleset->role(port, RuleStatement::Type::exit) ? Kind::adapter :
             ruleset->role(port, RuleStatement::Type::trunk) ? Kind::trunk : Kind::tunnel;
@@ -44,7 +46,7 @@ struct Config {
 inline void usage(std::ostream &out, const char *program) {
     out << "Usage: " << program << " --socket PATH [options]\n"
         << "  --control-socket PATH            tuntomctl show stats endpoint\n"
-        << "  --rules-file PATH                format 1 or 2; live rules check/load/show via control\n"
+        << "  --rules-file PATH                format 1, 2 or 3; live rules check/load/show via control\n"
         << "  --divert-file PATH               opt-in local divert, initially disabled\n"
         << "  --route IN:LABEL=OUT:LABEL       trailing * on either port; multiple outputs use ECMP\n"
         << "  --exit-port ID                  adapter group; deliver EXIT opcode\n"
@@ -174,6 +176,8 @@ inline Config parse_config(int argc, char **argv) {
             throw std::runtime_error("--divert-file requires --rules-file and --control-socket");
         config.divert_config = divert::read_config(divert_file);
     }
+    if (config.divert_config && config.divert_config->via && !via::enabled(config.ruleset))
+        throw std::runtime_error("VIA divert requires rules format 3");
     return config;
 }
 

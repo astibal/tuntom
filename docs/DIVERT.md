@@ -1,5 +1,8 @@
 # Local divert adapter
 
+This document describes the compatible legacy DVRT mode. For permanent service
+chains and the new ad hoc VIA mode, see [VIA services](VIA.md).
+
 The first integrated version inserts a Linux router into the packet path. A single
 `tuntom-divert-adapter` process handles two switch ports and two TUN interfaces:
 

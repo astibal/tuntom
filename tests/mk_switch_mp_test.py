@@ -139,6 +139,13 @@ cp -- "$TEST_PLANNER" "${@: -1}"
         run("--dry-run", "--rules-file", rules, "--divert-file", directory / "missing", ok=False)
         divert.write_text("cookie invalid\nports divert-in divert-out\norigin client 123\nmatch client\n")
         run("--dry-run", "--rules-file", rules, "--divert-file", divert, ok=False)
+        rules.write_text('format 3\nserial 12\nport client id 123\nservice proxy {\n'
+                         ' client-side proxy-in\n server-side proxy-out\n stickiness failover\n'
+                         ' instances ["proxy#0", "proxy#1"]\n unavailable drop\n}\n'
+                         'exit internet\nswitch client,[17,42] to internet,[99,42] via [proxy] allow bidir\n')
+        divert.write_text('format 3\nmatch client,[17,42] via [proxy]\n')
+        fields, output = run("--dry-run", "--auto-pool", "--rules-file", rules, "--divert-file", divert)
+        assert fields["configured.adapters"] == "5" and fields["configured.tunnels"] == "1"
         rules.write_text("format 1\nserial 12\nswitch capture\n")
         run("--dry-run", "--rules-file", rules, ok=False)
         rules.write_text("unknown nope\n")

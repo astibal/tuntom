@@ -1,4 +1,6 @@
 #include "flows.hpp"
+#include "../via/adapter.hpp"
+#include "../via/registration.hpp"
 #include "../common.hpp"
 #include "../switch_client.hpp"
 #include "../tun_device.hpp"
@@ -21,7 +23,9 @@ std::size_t number(const std::string& value, std::size_t lo, std::size_t hi) {
     return static_cast<std::size_t>(n);
 }
 void usage(const char* program) {
-    std::cerr << "Usage: " << program << " TUN-IN TUN-OUT --switch-socket PATH --cookie ABC [options]\n"
+    std::cerr << "Usage: " << program << " TUN-IN TUN-OUT --switch-socket PATH (--cookie ABC | --via-instance ID) [options]\n"
+        << "  --via-instance ID         opt-in VIA; replaces --cookie, ID shared by both sides\n"
+        << "  --admission immediate|warmup  default immediate for VIA, warmup for legacy\n"
         << "  --divert-in-port NAME      default divert-in\n"
         << "  --divert-out-port NAME     default divert-out\n"
         << "  --control-socket PATH     tuntomctl PATH show stats\n"
@@ -61,6 +65,7 @@ int main(int argc, char** argv) {
         if (in_name.empty() || out_name.empty() || in_name == out_name || in_name.size() >= IFNAMSIZ || out_name.size() >= IFNAMSIZ)
             throw std::runtime_error("two distinct TUN names of at most 15 bytes are required");
         std::string socket, cookie, control_path, in_port = "divert-in", out_port = "divert-out";
+        std::string instance, admission_mode;
         std::size_t mtu = 1500, capacity = 100000, admission_capacity = 100000, idle = 86400;
         ipc::Options options;
         for (int i = 3; i < argc; ++i) {
@@ -70,6 +75,8 @@ int main(int argc, char** argv) {
             const std::string value = argv[i];
             if (option == "--switch-socket") socket = value;
             else if (option == "--cookie") cookie = value;
+            else if (option == "--via-instance") instance = value;
+            else if (option == "--admission") admission_mode = value;
             else if (option == "--control-socket") control_path = value;
             else if (option == "--divert-in-port") in_port = value;
             else if (option == "--divert-out-port") out_port = value;
@@ -82,7 +89,14 @@ int main(int argc, char** argv) {
             else throw std::runtime_error("unknown option: " + option);
         }
         if (socket.empty() || in_port == out_port) throw std::runtime_error("switch socket and two distinct adapter ports are required");
-        Codec codec(cookie);
+        const bool via_mode = !instance.empty();
+        if (admission_mode.empty()) admission_mode = via_mode ? "immediate" : "warmup";
+        if (admission_mode != "immediate" && admission_mode != "warmup") throw std::runtime_error("expected immediate or warmup admission");
+        if (via_mode) {
+            in_port = via::port_name(in_port, instance, false);
+            out_port = via::port_name(out_port, instance, true);
+        }
+        via::AdapterCodec codec(via_mode, cookie);
         SwitchClient input(socket, in_port, options), output(socket, out_port, options);
         std::unique_ptr<ControlSocket> control;
         if (!control_path.empty()) control = std::make_unique<ControlSocket>(control_path);
@@ -93,7 +107,7 @@ int main(int argc, char** argv) {
         Clock::time_point next_connect[2]{}, activated{};
         bool active = false;
         Admission admission(admission_capacity);
-        Routes routes(capacity, std::chrono::seconds(idle));
+        BasicRoutes<via::AdapterContext> routes(capacity, std::chrono::seconds(idle), via_mode);
         Stats stats;
         RuntimeRecovery recovery;
         std::array<std::uint8_t, ipc::max_frame> buffer{};
@@ -112,9 +126,9 @@ int main(int argc, char** argv) {
             stats.send_errors += result.drops - result.backpressure;
             if (result.error) disconnect(side);
         };
-        const auto send = [&](unsigned side, const Envelope& env, const std::uint8_t* payload, std::size_t size) {
+        const auto send = [&](unsigned side, const via::AdapterContext& env, const std::uint8_t* payload, std::size_t size) {
             Stack labels;
-            if (!codec.attach(env.base, env.body, labels)) { ++stats.invalid; return; }
+            if (!codec.attach(env, labels)) { ++stats.invalid; return; }
             if (!clients[side]->connected()) { ++stats.disconnected; return; }
             account(side, clients[side]->append_frame(SwitchOpcode::switch_packet,
                 labels.values.data(), labels.size, payload, size));
@@ -125,6 +139,7 @@ int main(int argc, char** argv) {
                 std::ostringstream out;
                 out << "format=txt\nformat_version=1\ncomponent=divert-adapter\n"
                     << "divert_in_connected=" << input.connected() << "\ndivert_out_connected=" << output.connected()
+                    << "\nvia_instance=" << instance << "\nadmission_mode=" << admission_mode
                     << "\nadmission_active=" << active << "\nadmission_seconds=" << seconds(Clock::now()) << '\n';
                 stats.write(out); admission.stats(out); routes.stats(out);
                 input.write_stats(out, "divert_in_ipc_"); output.write_stats(out, "divert_out_ipc_");
@@ -146,21 +161,20 @@ int main(int argc, char** argv) {
             }
             const auto now = Clock::now();
             PacketInfo packet;
-            Envelope env;
+            via::AdapterContext env;
             if (from_switch) {
                 ++stats.switch_rx;
                 SwitchFrameView frame;
                 if (!decode_switch_frame(buffer.data(), static_cast<std::size_t>(n), frame) ||
-                    frame.opcode != SwitchOpcode::exit_packet || !codec.split(labels_of(frame), env) ||
-                    !env.present || env.action() != (side == 0 ? offered : onward)) { ++stats.invalid; return true; }
+                    frame.opcode != SwitchOpcode::exit_packet || !codec.receive(labels_of(frame), side, env)) { ++stats.invalid; return true; }
                 if (!packet_info(frame.payload, frame.payload_size, packet)) { ++stats.unsupported; return true; }
                 if (!input.connected() || !output.connected()) { ++stats.disconnected; return true; }
                 if (side == 0) {
                     if (!active) { activated = now; active = true; }
-                    const auto decision = admission.classify(packet, seconds(now));
+                    const auto decision = admission_mode == "immediate" ? AdmissionResult::proxy : admission.classify(packet, seconds(now));
                     if (decision == AdmissionResult::full) { ++stats.capacity; return true; }
                     if (decision == AdmissionResult::bypass) {
-                        env.body.values[1] = bypass;
+                        codec.bypass(env);
                         send(side, env, frame.payload, frame.payload_size);
                         ++stats.bypass; return true;
                     }
@@ -178,7 +192,7 @@ int main(int argc, char** argv) {
                 ++stats.tun_rx;
                 if (!packet_info(buffer.data(), static_cast<std::size_t>(n), packet)) { ++stats.unsupported; return true; }
                 if (!routes.lookup(packet.flow, side == 0, now, env)) { ++stats.miss; return true; }
-                env.body.values[1] = side == 0 ? to_client : onward;
+                codec.onward(env, side);
                 send(side, env, buffer.data(), static_cast<std::size_t>(n));
             }
             return true;

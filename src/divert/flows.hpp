@@ -97,10 +97,10 @@ public:
 };
 
 enum class Learn { ok, full, conflict, missing };
-class Routes {
+template<class Context> class BasicRoutes {
     struct Entry {
         FlowKey forward;
-        Envelope client, server;
+        Context client, server;
         Clock::time_point touched;
         std::list<FlowKey>::iterator position;
     };
@@ -109,15 +109,17 @@ class Routes {
     std::size_t capacity_;
     Clock::duration idle_;
     std::uint64_t expired_ = 0;
+    bool learn_reverse_;
     void touch(Entry& entry, Clock::time_point now) {
         entry.touched = now;
         recent_.splice(recent_.end(), recent_, entry.position);
     }
-    static bool same_context(const Envelope& a, const Envelope& b) {
-        return a.origin() == b.origin() && a.original() == b.original();
+    static bool same_context(const Context& a, const Context& b) {
+        return a.same_context(b);
     }
 public:
-    Routes(std::size_t capacity, Clock::duration idle) : capacity_(capacity), idle_(idle) {}
+    BasicRoutes(std::size_t capacity, Clock::duration idle, bool learn_reverse = false)
+        : capacity_(capacity), idle_(idle), learn_reverse_(learn_reverse) {}
     void maintain(Clock::time_point now) {
         // Bounded maintenance; capacity pressure never evicts a live entry.
         for (unsigned i = 0; i < 64 && !recent_.empty(); ++i) {
@@ -126,7 +128,7 @@ public:
             entries_.erase(found); recent_.pop_front(); ++expired_;
         }
     }
-    Learn learn(const FlowKey& flow, const Envelope& env, bool from_client, Clock::time_point now) {
+    Learn learn(const FlowKey& flow, const Context& env, bool from_client, Clock::time_point now) {
         const auto key = canonical(flow);
         auto found = entries_.find(key);
         if (found != entries_.end() && now - found->second.touched >= idle_) {
@@ -134,11 +136,11 @@ public:
             found = entries_.end();
         }
         if (found == entries_.end()) {
-            if (!from_client) return Learn::missing;
+            if (!from_client && !learn_reverse_) return Learn::missing;
             if (entries_.size() >= capacity_) return Learn::full;
             recent_.push_back(key);
             try {
-                entries_.emplace(key, Entry{flow, env, env, now, std::prev(recent_.end())});
+                entries_.emplace(key, Entry{from_client ? flow : reverse_key(flow), env, env, now, std::prev(recent_.end())});
             } catch (...) { recent_.pop_back(); throw; }
             return Learn::ok;
         }
@@ -149,7 +151,7 @@ public:
         touch(entry, now);
         return Learn::ok;
     }
-    bool lookup(const FlowKey& flow, bool to_client_side, Clock::time_point now, Envelope& env) {
+    bool lookup(const FlowKey& flow, bool to_client_side, Clock::time_point now, Context& env) {
         const auto found = entries_.find(canonical(flow));
         if (found == entries_.end()) return false;
         auto& entry = found->second;
@@ -163,4 +165,5 @@ public:
         out << "flow_entries=" << entries_.size() << "\nflow_expirations=" << expired_ << '\n';
     }
 };
+using Routes = BasicRoutes<Envelope>;
 } // namespace tuntom::divert
