@@ -396,3 +396,16 @@ Integrační scénář vede přes HTTP → samostatný Unix collector → skute�
 Další testy ověřují delty a resety, zdraví, výměnu portů, odmítnutí cizího UID,
 limity IPC a logů i zachování obsahu pipe. Testy potřebují povolené místní Unix/HTTP sockety;
 nevyžadují root ani TUN.
+
+### Rozšířená data Syspiperu
+
+Collector dotazuje také `/apt`: počty dostupných aktualizací (`total`, `security`,
+`held`, `security_held`) a stáří lokálních APT indexů. Jde pouze o čtení;
+nespouští se aktualizace indexů ani instalace balíčků. Staré indexy mohou znamenat
+neaktuální počty. Endpoint má delší timeout kvůli APT helperu (12 s na odpověď).
+Nepodporovaný APT či chybějící indexy se zobrazí stavem/důvodem, nikoli nulou.
+
+V „Další metriky“ jsou i distribuce, kernel, počty CPU a adresy/stav rozhraní
+z již dotazovaných `/system` a `/interfaces`. Adresy z tohoto výpisu se nikdy
+nepoužijí jako nové pollingové cíle. Tabulka zachovává limit 128 položek a
+upozornění při zkrácení; APT souhrny mají přednost před detaily rozhraní.

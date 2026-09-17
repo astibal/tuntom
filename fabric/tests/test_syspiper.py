@@ -64,6 +64,31 @@ class DiscoveryTests(unittest.TestCase):
 
 
 class PollTests(unittest.TestCase):
+    def test_apt_and_extended_metadata(self):
+        def part(data): return {'status':'ok','data':data}
+        raw={'apt':{'status':'ok','updates':part({'total':7,'security':2,'held':1,
+             'security_held':0,'indexes':{'oldest_age_seconds':86400}})},
+             'system':{'identity':part({'kernel':'test-kernel'}),'distro':part({'id':'debian'})},
+             'interfaces':{'links':part({'eth0':{'is_up':True,'duplex':'full'}}),
+                           'addresses':part({'eth0':[{'family':'ipv4','address':'192.0.2.1'}]})}}
+        details=dict(clean_snapshot(raw)['details'])
+        self.assertEqual(details['apt.updates.security'],'2')
+        self.assertEqual(details['apt.updates.security_held'],'0')
+        self.assertEqual(details['apt.indexes.oldest_age_seconds'],'86400')
+        self.assertEqual(details['system.kernel'],'test-kernel')
+        self.assertEqual(details['eth0.is_up'],'true')
+        self.assertEqual(details['eth0.address.0.address'],'192.0.2.1')
+        missing=clean_snapshot({'apt':{'updates':{'status':'unsupported','data':None,'reason':'python3_apt_missing'}}})
+        self.assertNotIn('apt.updates.total',dict(missing['details']))
+        self.assertEqual(dict(missing['details'])['apt.updates.reason'],'python3_apt_missing')
+        calls=[]
+        def read(ip,port,path,key):
+            calls.append(path)
+            return raw.get(path,{'status':'ok'})
+        poller=Syspiper(key='test',fetch_fn=read)
+        poller.sample('127.0.0.1')
+        self.assertEqual(calls.count('apt'),1)
+
     def test_old_server_optional_unsupported_and_network_reset(self):
         counters={'sent':1000,'recv':2000}
         calls=[]
@@ -132,7 +157,7 @@ class PollTests(unittest.TestCase):
             'interfaces':{'counters':{'status':'ok','data':{'tun0':{'bytes_sent':18446744073709551615}}}}})
         self.assertIsNone(data['cpu']);self.assertIsNone(data['ram'])
         self.assertEqual(data['net_sent'],'18446744073709551615')
-        self.assertEqual(data['details'][0][1],'18446744073709551615')
+        self.assertEqual(dict(data['details'])['tun0.bytes_sent'],'18446744073709551615')
         self.assertNotIn('secret',json.dumps(data))
 
 

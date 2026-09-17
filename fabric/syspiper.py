@@ -13,7 +13,7 @@ import time
 
 MAX_NODES = 64
 MAX_BODY = 1024 * 1024
-PATHS = ('cpu', 'ram', 'disk', 'net', 'system', 'interfaces', 'filesystems', 'pressure')
+PATHS = ('cpu', 'ram', 'disk', 'net', 'system', 'interfaces', 'filesystems', 'pressure', 'apt')
 
 
 def ip_literal(value):
@@ -92,8 +92,9 @@ class ReadError(Exception):
 
 def fetch(ip, port, path, key):
     # Literal IP, fixed path, no proxy environment, no redirects, no remote scripts.
-    conn = http.client.HTTPConnection(ip, port, timeout=2)
-    deadline = time.monotonic() + 4
+    request_timeout = 12 if path == 'apt' else 2
+    conn = http.client.HTTPConnection(ip, port, timeout=request_timeout)
+    deadline = time.monotonic() + (15 if path == 'apt' else 4)
     try:
         conn.request('GET', '/' + path, headers={'X-API-Key': key, 'Accept': 'application/json', 'Accept-Encoding': 'identity'})
         response = conn.getresponse()
@@ -110,7 +111,7 @@ def fetch(ip, port, path, key):
                 raise ReadError('timeout')
             # read1 returns available bytes; deadline also bounds trickle responses.
             if conn.sock:
-                conn.sock.settimeout(min(2, remaining))
+                conn.sock.settimeout(min(request_timeout, remaining))
             chunk = response.read1(min(65536, MAX_BODY + 1 - len(raw)))
             if not chunk:
                 break
@@ -164,6 +165,40 @@ def clean_snapshot(results):
     values['load'] = {k: number(load.get(k)) for k in ('avg1', 'avg5', 'avg15')}
     # PSI and interface counters are flattened into a bounded, numeric table.
     details = []
+    def text_fields(prefix, data, fields):
+        if isinstance(data, dict):
+            for field in fields:
+                value = data.get(field)
+                if isinstance(value, str):
+                    details.append([prefix + '.' + field, value[:255]])
+    # Fixed schemas only; remote metadata never introduces polling targets.
+    for path in ('system', 'interfaces', 'filesystems', 'pressure', 'apt'):
+        for name in {'system': ('identity','distro','boot','cpu','load'),
+                     'interfaces': ('addresses','links','counters'),
+                     'filesystems': ('filesystems',), 'pressure': ('cpu','memory','io'),
+                     'apt': ('distro','updates')}[path]:
+            part = results.get(path, {}).get(name)
+            if isinstance(part, dict):
+                text_fields(path + '.' + name, part, ('status', 'reason'))
+    text_fields('system', identity, ('os','kernel','architecture'))
+    text_fields('distro', section(system, 'distro') or section(results.get('apt', {}), 'distro'),
+                ('id','id_like','name','pretty_name','version_id','version_codename'))
+    cpu = section(system, 'cpu') or {}
+    if isinstance(cpu, dict):
+        for field in ('logical','physical'):
+            if number(cpu.get(field)) is not None:
+                details.append(['cpu.' + field, str(cpu[field])])
+    updates = section(results.get('apt', {}), 'updates') or {}
+    if isinstance(updates, dict):
+        for field in ('total','security','held','security_held'):
+            value = updates.get(field)
+            if type(value) is int and 0 <= value < 2**64:
+                details.append(['apt.updates.' + field, str(value)])
+        indexes = updates.get('indexes', {})
+        if isinstance(indexes, dict):
+            for field in ('oldest_mtime','newest_mtime','oldest_age_seconds'):
+                if number(indexes.get(field)) is not None:
+                    details.append(['apt.indexes.' + field, str(indexes[field])])
     for resource in ('cpu', 'memory', 'io'):
         pressure = section(results.get('pressure', {}), resource) or {}
         if not isinstance(pressure, dict):
@@ -188,6 +223,19 @@ def clean_snapshot(results):
                 for field in ('mtu', 'speed_mbps'):
                     if number(link.get(field)) is not None:
                         details.append([f'{name[:100]}.{field}', str(link[field])])
+    if isinstance(links, dict):
+        for name, link in list(links.items())[:128]:
+            if isinstance(link, dict):
+                if type(link.get('is_up')) is bool:
+                    details.append([f'{name[:100]}.is_up', str(link['is_up']).lower()])
+                text_fields(name[:100], link, ('duplex',))
+    addresses = section(interfaces, 'addresses') or {}
+    if isinstance(addresses, dict):
+        for name, items in list(addresses.items())[:128]:
+            if isinstance(items, list):
+                for index, address in enumerate(items[:32]):
+                    text_fields(f'{name[:100]}.address.{index}', address,
+                                ('family','address','netmask','broadcast','ptp'))
     filesystems = section(results.get('filesystems', {}), 'filesystems') or []
     if isinstance(filesystems, list):
         for fs in filesystems[:128]:

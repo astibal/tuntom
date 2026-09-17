@@ -122,3 +122,5 @@ input,select,textarea{background:#151b12;border-color:#424c35}button:hover:not(:
 .rtt-value{white-space:nowrap;font-variant-numeric:tabular-nums;text-align:right}
 
 .syspiper-filter{display:grid;gap:6px;margin:12px 0;font-size:11px;color:var(--muted)}.syspiper-filter input{width:100%;min-width:0}.syspiper-card .table-scroll{overflow:auto;overflow-anchor:none}.syspiper-card thead th{position:sticky;top:0;background:var(--bg);z-index:1}.syspiper-card .system-value{font-variant-numeric:tabular-nums}
+
+.peer-system{display:grid;gap:3px;margin-top:9px;padding-left:8px;border-left:2px solid var(--line);font:10px/1.5 var(--mono);white-space:normal;max-width:340px}.peer-system>span{color:var(--muted)}.peer-system strong{font-weight:500;color:var(--text)}.peer-system.security{border-color:var(--red)}.peer-system.security .peer-updates{color:var(--red)}.peer-system.updates .peer-updates{color:var(--accent)}.peer-system.current .peer-updates{color:var(--green)}

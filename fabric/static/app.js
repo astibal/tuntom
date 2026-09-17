@@ -158,6 +158,11 @@ const messages = {
   syspiper_invalid_response:["Neplatná odpověď","Invalid response","Réponse invalide"],
   syspiper_response_too_large:["Příliš velká odpověď","Response too large","Réponse trop volumineuse"],
   syspiper_probe_failed:["Sběr systémových metrik selhal nebo je neúplný","System collection failed or is incomplete","Collecte système échouée ou incomplète"],
+  peerSystem:["Systém protistrany","Peer system","Système du pair"],
+  distroUnknown:["Distribuce nezjištěna","Distribution unknown","Distribution inconnue"],
+  aptUnknown:["Aktualizace: nezjištěno","Updates: unknown","Mises à jour : inconnues"],
+  aptSummary:["Aktualizace: {total} · bezpečnostní: {security}","Updates: {total} · security: {security}","Mises à jour : {total} · sécurité : {security}"],
+  aptIndexAge:["Stáří APT indexů: {age}","APT index age: {age}","Âge des index APT : {age}"],
   systemFilter:["Filtrovat názvy a hodnoty","Filter names and values","Filtrer les noms et valeurs"],
   syspiperDetails:["Další metriky a dostupnost endpointů","Additional metrics and endpoint availability","Autres métriques et disponibilité des endpoints"],
   syspiperTruncated:["Zobrazený seznam metrik je omezen na 128 položek.","Metric list is limited to 128 entries.","La liste est limitée à 128 métriques."],
@@ -655,6 +660,25 @@ function lastRTT(e) {
   const value=Number(raw);
   return Number.isFinite(value) && value >= 0 ? value.toLocaleString(locale(),{minimumFractionDigits:3,maximumFractionDigits:3})+" ms" : "—";
 }
+function peerSystemSummary(e) {
+  if(e.kind !== "tunnel") return "";
+  const info=state.data?.syspiper;
+  const nodes=(info?.nodes || []).filter(node=>node.sources.includes("peer_access") && node.processes.includes(e.id));
+  return nodes.map(node=>{
+    const data=Object.fromEntries(node.values?.details || []);
+    const age=node.sampled_at ? Math.max(0,(Date.now()-Date.parse(node.sampled_at))/1000) : Infinity;
+    const stale=!!state.failure || !Number.isFinite(age) || age > (info.interval_seconds || 30)*3 || node.status === "unavailable";
+    const known=!stale && data["apt.updates.status"] === "ok" &&
+      /^\d+$/.test(data["apt.updates.total"] || "") && /^\d+$/.test(data["apt.updates.security"] || "");
+    const total=data["apt.updates.total"], security=data["apt.updates.security"];
+    const level=known ? BigInt(security)>0n ? "security" : BigInt(total)>0n ? "updates" : "current" : "unknown";
+    const distro=data["distro.pretty_name"] || [data["distro.name"],data["distro.version_id"]].filter(Boolean).join(" ") || t("distroUnknown");
+    const indexAge=Number(data["apt.indexes.oldest_age_seconds"]);
+    const hint=[t("peerSystem")+" · "+node.ip,node.sampled_at ? new Date(node.sampled_at).toLocaleString(locale()) : "",
+      Number.isFinite(indexAge) ? t("aptIndexAge",{age:duration(indexAge)}) : ""].filter(Boolean).join(" · ");
+    return `<div class="peer-system ${level}" title="${esc(hint)}"><span>${esc(t("peerSystem"))} · ${esc(node.ip)}</span><strong>${esc(distro)}${stale ? " · "+esc(t("stale")) : ""}</strong><span class="peer-updates">${esc(known ? t("aptSummary",{total,security}) : t("aptUnknown"))}</span>${Number.isFinite(indexAge) ? `<span>${esc(t("aptIndexAge",{age:duration(indexAge)}))}</span>` : ""}</div>`;
+  }).join("");
+}
 function renderProcesses() {
   if (!state.data) return;
   const query = $("search").value.toLowerCase(), kind = $("kind-filter").value;
@@ -665,7 +689,7 @@ function renderProcesses() {
     const [color, text] = status(e);
     const reasons=attentionReasons(e);
     const indicator=reasons.length ? `<button class="status attention-status" data-attention="${esc(e.id)}" title="${esc(reasons.map(reason=>reason.text).join("\n"))}"><span class="attention-title"><span class="attention-mark" aria-hidden="true">!</span>${esc(text)} ↗</span><span class="status-reasons">${reasons.slice(0,2).map(reason=>esc(reason.text)).join("<br>")}${reasons.length > 2 ? `<br>${esc(t("moreReasons",{count:reasons.length-2}))}` : ""}</span></button>` : `<span class="status"><i class="dot ${color}"></i>${esc(text)}</span>`;
-    return `<tr data-process-row="${esc(e.id)}" class="${e.id === state.selected ? "selected" : ""}"><td><button class="process-name" data-id="${esc(e.id)}" aria-pressed="${e.id === state.selected}">${esc(e.name)}<small>PID ${e.pid}${e.interface && e.interface !== "-" ? " · " + esc(e.interface) : ""}</small></button></td><td><span class="kind">${esc(typeName(e.kind))}</span></td><td>${indicator}</td><td>${bps(rate(e,"rx"))}<small>↑ ${bps(rate(e,"tx"))}</small></td><td class="rtt-value" title="${esc(metricHelp("rtt_last_ms"))}">${esc(lastRTT(e))}</td><td>${duration(e.uptime_seconds)}</td></tr>`;
+    return `<tr data-process-row="${esc(e.id)}" class="${e.id === state.selected ? "selected" : ""}"><td><button class="process-name" data-id="${esc(e.id)}" aria-pressed="${e.id === state.selected}">${esc(e.name)}<small>PID ${e.pid}${e.interface && e.interface !== "-" ? " · " + esc(e.interface) : ""}</small></button>${peerSystemSummary(e)}</td><td><span class="kind">${esc(typeName(e.kind))}</span></td><td>${indicator}</td><td>${bps(rate(e,"rx"))}<small>↑ ${bps(rate(e,"tx"))}</small></td><td class="rtt-value" title="${esc(metricHelp("rtt_last_ms"))}">${esc(lastRTT(e))}</td><td>${duration(e.uptime_seconds)}</td></tr>`;
   }).join("");
   $("empty").hidden = rows.length > 0;
   $("empty").querySelector("h3").textContent = t(state.data.endpoints.length ? "noMatches" : "noProcesses");
