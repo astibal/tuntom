@@ -167,6 +167,14 @@ int main(int argc, char** argv) {
                 }
                 recovery.write_stats(out);
                 return out.str();
+            }, [](const std::string&, const std::string&) -> std::string {
+                throw std::runtime_error("rules commands are supported only by switches");
+            }, [&] {
+                const auto now = Clock::now();
+                FlowDump dump;
+                routes.dump_flows(dump, now);
+                admission.dump_flows(dump, seconds(now));
+                return dump.finish();
             });
         };
         const auto handle = [&](std::size_t source) {

@@ -314,7 +314,9 @@ int main(int argc, char** argv) {
                 adaptive_polling.write_stats(out);
                 throughput.write(out);
                 return out.str();
-            });
+            }, [](const std::string&, const std::string&) -> std::string {
+                throw std::runtime_error("rules commands are supported only by switches");
+            }, [&] { return routes.dump_flows(); });
         };
 
         tuntom::logger.start();

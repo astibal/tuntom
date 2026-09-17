@@ -7,6 +7,9 @@
 namespace tuntom::via {
 struct AdapterContext {
     std::variant<divert::Envelope, Envelope> value;
+    void write_flow(std::ostream& out, const char* prefix) const {
+        std::visit([&](const auto& env) { env.write_flow(out, prefix); }, value);
+    }
     bool same_context(const AdapterContext& other) const {
         if (value.index() != other.value.index()) return false;
         if (const auto* env = std::get_if<Envelope>(&value)) return env->same_context(std::get<Envelope>(other.value));

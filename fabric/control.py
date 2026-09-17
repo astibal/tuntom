@@ -10,6 +10,7 @@ import sys
 import time
 
 MAX_BODY = 1024 * 1024
+MAX_FLOWS = 256 * 1024 * 1024
 CHUNK = 16384
 
 
@@ -18,14 +19,14 @@ class ControlError(Exception):
 
 
 def query(path, operation, body="", timeout=4, expected_pid=None, expected_start_ticks=None):
-    if operation not in ("stats", "show", "check", "load"):
+    if operation not in ("stats", "flows", "show", "check", "load"):
         raise ValueError("unknown control operation")
     if not isinstance(body, str):
         raise ValueError("rules must be text")
     payload = body.encode("utf-8")
     if len(payload) > MAX_BODY:
         raise ValueError("rules exceed 1 MiB")
-    if operation in ("stats", "show") and payload:
+    if operation in ("stats", "flows", "show") and payload:
         raise ValueError("unexpected control body")
     deadline = time.monotonic() + timeout
     with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as connection:
@@ -57,7 +58,7 @@ def query(path, operation, body="", timeout=4, expected_pid=None, expected_start
                 stat = Path(f"/proc/{peer_pid}/stat").read_text()
                 if int(stat[stat.rindex(")") + 2:].split()[19]) != expected_start_ticks:
                     raise OSError("control process has restarted; refresh discovery")
-        command = "show stats" if operation == "stats" else f"rules {operation} {len(payload)}"
+        command = f"show {operation}" if operation in ("stats", "flows") else f"rules {operation} {len(payload)}"
         send(command.encode())
         for offset in range(0, len(payload), CHUNK):
             send(payload[offset:offset + CHUNK])
@@ -67,8 +68,8 @@ def query(path, operation, body="", timeout=4, expected_pid=None, expected_start
                 raise ControlError(response.strip())
             return response
         header = receive(256)
-        match = re.fullmatch(rb"(OK|ERROR) ([0-9]{1,7})\n?", header)
-        if not match or int(match[2]) > MAX_BODY:
+        match = re.fullmatch(rb"(OK|ERROR) ([0-9]{1,9})\n?", header)
+        if not match or int(match[2]) > (MAX_FLOWS if operation == "flows" else MAX_BODY):
             raise OSError("invalid framed control response")
         length = int(match[2])
         result = bytearray()

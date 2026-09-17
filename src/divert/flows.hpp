@@ -90,6 +90,17 @@ public:
             return remember(existing_udp_, key) ? AdmissionResult::bypass : AdmissionResult::full;
         return existing_udp_.count(key) ? AdmissionResult::bypass : AdmissionResult::proxy;
     }
+    void dump_flows(FlowDump& dump, double seconds) const {
+        const auto visit = [&](const Set& set, const char* table) {
+            for (const auto& key : set)
+                dump.add(table, key, [](auto& out) { out << " labels=unknown"; });
+        };
+        if (seconds < 86400) visit(existing_tcp_, "existing_tcp");
+        if (seconds < 3600) {
+            visit(diverted_tcp_, "diverted_tcp");
+            visit(existing_udp_, "existing_udp");
+        }
+    }
     void stats(std::ostream& out) const {
         out << "existing_tcp=" << existing_tcp_.size() << "\ndiverted_tcp=" << diverted_tcp_.size()
             << "\nexisting_udp=" << existing_udp_.size() << '\n';
@@ -164,6 +175,18 @@ public:
         if (path) *path = entry.path;
         touch(entry, now);
         return true;
+    }
+    void dump_flows(FlowDump& dump, Clock::time_point now) const {
+        for (const auto& item : entries_) {
+            const auto& entry = item.second;
+            if (now - entry.touched >= idle_) continue;
+            dump.add("routes", entry.forward, [&](auto& out) {
+                FlowDump::idle(out, now - entry.touched);
+                out << " path=" << entry.path;
+                entry.client.write_flow(out, "client");
+                entry.server.write_flow(out, "server");
+            });
+        }
     }
     void stats(std::ostream& out) const {
         out << "flow_entries=" << entries_.size() << "\nflow_expirations=" << expired_ << '\n';

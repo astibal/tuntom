@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../ipc/switch_protocol.hpp"
+#include "../flow_dump.hpp"
 
 namespace tuntom::divert {
 
@@ -34,6 +35,12 @@ enum Action : std::uint64_t { offered = 0, onward = 1, to_client = 2, bypass = 3
 struct Envelope {
     Stack base, body;
     bool present = false;
+    void write_flow(std::ostream& out, const char* prefix) const {
+        out << ' ' << prefix << "_labels=";
+        FlowDump::labels(out, base.values.data(), base.size);
+        out << ' ' << prefix << "_divert_body=";
+        FlowDump::labels(out, body.values.data(), body.size);
+    }
     std::uint64_t origin() const { return body.values[0]; }
     Action action() const { return static_cast<Action>(body.values[1]); }
     bool same_context(const Envelope& other) const { return origin() == other.origin() && original() == other.original(); }

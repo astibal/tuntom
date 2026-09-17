@@ -14,6 +14,18 @@ struct Envelope {
     std::uint16_t step = 0;
     Action action = offer;
     bool reverse = false, present = false;
+    void write_flow(std::ostream& out, const char* prefix) const {
+        out << ' ' << prefix << "_labels=";
+        FlowDump::labels(out, base.values.data(), base.size);
+        out << ' ' << prefix << "_saved_labels=";
+        FlowDump::labels(out, saved.values.data(), saved.size);
+        out << ' ' << prefix << "_cookie=" << cookie
+            << ' ' << prefix << "_chain=" << chain
+            << ' ' << prefix << "_step=" << step
+            << ' ' << prefix << "_origin=" << origin_id
+            << ' ' << prefix << "_action=" << unsigned(action)
+            << ' ' << prefix << "_reverse=" << reverse;
+    }
     std::uint64_t origin() const { return origin_id; }
     Stack original() const { return saved; }
     bool same_context(const Envelope& other) const {

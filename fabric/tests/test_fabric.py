@@ -112,6 +112,8 @@ class ControlTests(unittest.TestCase):
                         request = client.recv(CHUNK)
                         if not request:
                             return
+                        expected = f"show {operation}" if operation in ("stats", "flows") else f"rules {operation} {len(body.encode())}"
+                        self.assertEqual(request.decode(), expected)
                         remaining = len(body.encode())
                         while remaining:
                             data = client.recv(CHUNK)
@@ -146,6 +148,19 @@ class ControlTests(unittest.TestCase):
             self.exchange("show", [b"OK 1048577\n"])
         with self.assertRaises(OSError):
             self.exchange("show", [b"OK 0\n"], expected_pid=os.getpid() + 100000)
+
+    def test_flow_dump_large_response_and_rejections(self):
+        result = "a" * (1024 * 1024 + 20)
+        records = [f"OK {len(result)}\n".encode()]
+        records += [result[i:i + CHUNK].encode() for i in range(0, len(result), CHUNK)]
+        self.assertEqual(self.exchange("flows", records), result)
+        with self.assertRaises(ControlError):
+            self.exchange("flows", [b"ERROR 3\n", b"bad"])
+        for records in ([b"OK 268435457\n"], [b"OK 5\n", b"abc"], [b"OK 2\n", b"abc"]):
+            with self.assertRaises(OSError):
+                self.exchange("flows", records)
+        with self.assertRaises(ValueError):
+            query("/unused", "flows", "unexpected")
 
 
 class APITests(unittest.TestCase):

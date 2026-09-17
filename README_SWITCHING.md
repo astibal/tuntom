@@ -417,8 +417,10 @@ tuntomctl /run/tuntom/exit0.control show stats
 For direct invocation, pass `--control-socket <path>` to `tuntom-switch` or
 `tuntom-switch-adapter`. The bootstrap scripts configure this automatically
 and print the command using their private `tuntomctl` binary. Sockets use mode
-`0660`; filesystem permissions control access. Only `show stats` is supported;
-flow rules are configured at startup.
+`0660`; filesystem permissions control access. All components also accept
+`tuntomctl <control-socket> show flows` to inspect retained flows and label stacks.
+See [flow snapshot fields and semantics](README.md#flow-and-label-snapshots).
+Switches support the `rules show|check|load` commands described above.
 
 Switch admission fields are documented in
 [switch admission statistics](docs/DETAILS.md#switch-admission-and-fd-capacity).

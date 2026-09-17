@@ -33,6 +33,7 @@ int main(int argc, char **argv) {
         std::string path = "/run/tuntom/switch.control";
         if (argc > 1 && std::string(argv[1]) != "rules") { path = argv[1]; ++first; }
         const bool stats = argc == first + 2 && std::string(argv[first]) == "show" && std::string(argv[first + 1]) == "stats";
+        const bool flows = argc == first + 2 && std::string(argv[first]) == "show" && std::string(argv[first + 1]) == "flows";
         std::string operation, body;
         const bool divert = argc == first + 2 && first == 2 && std::string(argv[first]) == "divert";
         if (divert && (std::string(argv[first + 1]) == "enable" || std::string(argv[first + 1]) == "stop" ||
@@ -51,8 +52,8 @@ int main(int argc, char **argv) {
                 } else body = tuntom::read_rules_file(argv[first + 2]);
             } else if (operation != "show" || argc != first + 2) operation.clear();
         }
-        if (!stats && operation.empty()) {
-            std::cerr << "Usage: " << argv[0] << " <control-socket> show stats\n"
+        if (!stats && !flows && operation.empty()) {
+            std::cerr << "Usage: " << argv[0] << " <control-socket> show stats|flows\n"
                       << "       " << argv[0] << " [control-socket] rules show\n"
                       << "       " << argv[0] << " [control-socket] rules check|load FILE|-\n";
             std::cerr << "       " << argv[0] << " <control-socket> divert enable|stop|show\n";
@@ -69,7 +70,7 @@ int main(int argc, char **argv) {
         std::memcpy(address.sun_path, path.c_str(), path.size() + 1);
         if (::connect(socket.fd, reinterpret_cast<sockaddr *>(&address), sizeof(address)) < 0)
             throw std::runtime_error("connect(" + path + ") failed: " + std::strerror(errno));
-        const std::string command = stats ? "show stats" : std::string(divert ? "divert " : "rules ") + operation + " " + std::to_string(body.size());
+        const std::string command = stats ? "show stats" : flows ? "show flows" : std::string(divert ? "divert " : "rules ") + operation + " " + std::to_string(body.size());
         send_record(socket.fd, command.data(), command.size());
         for (std::size_t offset = 0; offset < body.size(); offset += tuntom::control_chunk_size)
             send_record(socket.fd, body.data() + offset, std::min(tuntom::control_chunk_size, body.size() - offset));
@@ -82,9 +83,9 @@ int main(int argc, char **argv) {
             if (!header.empty() && header.back() == '\n') header.pop_back();
             const auto space = header.find(' ');
             if (space == std::string::npos || (header.substr(0, space) != "OK" && header.substr(0, space) != "ERROR"))
-                throw std::runtime_error("server does not support framed rules responses");
+                throw std::runtime_error("server does not support framed control responses");
             const bool success = header.substr(0, space) == "OK";
-            const auto length = tuntom::control_length(header.substr(space + 1));
+            const auto length = tuntom::control_length(header.substr(space + 1), flows ? tuntom::control_max_flows : tuntom::control_max_body);
             std::string response;
             while (response.size() < length) {
                 auto chunk = receive(socket.fd, tuntom::control_chunk_size);

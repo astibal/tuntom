@@ -2,6 +2,7 @@
 
 #include "accept_backoff.hpp"
 #include "control_protocol.hpp"
+#include "flow_dump.hpp"
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -130,6 +131,10 @@ class ControlSocket {
         });
     }
     template<class StatsProvider, class RulesProvider> void handle(StatsProvider stats, RulesProvider rules) {
+        handle(stats, rules, [] { return FlowDump("none").finish(); });
+    }
+    template<class StatsProvider, class RulesProvider, class FlowsProvider>
+    void handle(StatsProvider stats, RulesProvider rules, FlowsProvider flows) {
         maintain();
         std::array<epoll_event, max_clients + 1> events{};
         const int count = ::epoll_wait(poller_, events.data(), static_cast<int>(events.size()), 0);
@@ -163,6 +168,11 @@ class ControlSocket {
                         while (!command.empty() && (command.back() == '\n' || command.back() == '\r')) command.pop_back();
                         c.header = true;
                         if (command == "show stats") { respond(fd, c, stats()); break; }
+                        if (command == "show flows") {
+                            c.framed = true;
+                            respond(fd, c, flows());
+                            break;
+                        }
                         const bool divert = command.compare(0, 7, "divert ") == 0;
                         if (!divert && command.compare(0, 6, "rules ") != 0) { respond(fd, c, "error=unknown_command\n"); break; }
                         c.framed = true;

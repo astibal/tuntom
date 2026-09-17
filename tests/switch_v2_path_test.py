@@ -14,6 +14,8 @@ from switch_mp_integration_test import Switch, until
 from switch_v2_integration_test import Peer, frame
 from switch_tunnel_test import terminate
 from switch_reconnect_test import snapshot
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from fabric.control import query
 
 
 def packet(seq, length=1500):
@@ -98,6 +100,15 @@ def run(tuntom, binary, adapter, faults, decline):
             assert len(bulk) >= 32
             for expected in bulk:
                 assert app.receive() == frame([13], expected)
+            for role, path in controls.items():
+                dump = query(str(path), "flows")
+                assert "view=flows\n" in dump
+                if role == "adapter":
+                    assert "table=l3 ip_version=4 src=10.0.0.2 dst=10.0.0.1" in dump
+                    assert "labels=[0x0000000000000053]" in dump
+                    assert "flow_count=1\n" in dump
+                else:
+                    assert "tracking=none\n" in dump and "flow_count=0\n" in dump
             transport_stats = {}
             for role, path in controls.items():
                 stats = snapshot(str(path))

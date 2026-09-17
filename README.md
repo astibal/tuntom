@@ -377,8 +377,49 @@ tuntomctl /run/tuntom/42s.control show stats
 For direct invocation, pass `--control-socket <path>` to `tuntom`.
 `mk_tunnel.sh` configures `<id>c.control` and `<id>s.control` automatically on
 the respective hosts. Sockets use mode `0660`; filesystem permissions control
-access. Only `show stats` is supported. Existing stats signals remain
-available for compatibility.
+access. Both `show stats` and `show flows` are supported. Existing stats signals
+remain available for compatibility.
+
+### Flow and label snapshots
+
+Every component with a control socket accepts:
+
+```bash
+tuntomctl /run/tuntom/exit0.control show flows
+```
+
+The reply contains a text header, one `flow` row per retained entry, and a
+`flow_count` footer. IPv4/IPv6 addresses and TCP/UDP ports identify the direction;
+labels are ordered, lossless 64-bit hexadecimal values. `idle_ms` is elapsed time
+since the last cache refresh. Expired routes are omitted without changing LRU
+order, timestamps, or counters.
+
+- Exit adapters dump both `l3` address-pair and `l4` transport caches. Keys describe
+  the return direction, with the stack used for forwarding the reply.
+- Divert/VIA adapters dump forward keys, both `client_*` and `server_*` retained
+  label contexts, saved labels, VIA metadata and, for local routes, the path index.
+  These are the stored contexts before the codec changes direction/action for
+  output. Admission learning sets are separate rows with `labels=unknown` because
+  those sets do not retain labels; they are warmup history, not proof of a live
+  connection. A tuple may occur in several tables, so `flow_count` counts rows.
+- Switches (including MP) and tunnels have no per-IP-flow table and return
+  `tracking=none` and `flow_count=0`. This does not mean there is no traffic.
+  Classifier and forwarding rules remain separate from observed flow state.
+
+Example exit-adapter row:
+
+```text
+flow table=l4 ip_version=4 src=10.0.0.2 dst=10.0.0.1 protocol=6 src_port=443 dst_port=12345 idle_ms=120 labels=[0x0000000000000011,0x000000000000002a]
+```
+
+The wire request is `show flows` (optional trailing newline), with no body. The
+response uses `OK LENGTH\n` or `ERROR LENGTH\n` followed by SOCK_SEQPACKET chunks
+of at most 16 KiB, like rules responses. Flow replies allow up to 256 MiB; larger
+snapshots fail explicitly rather than silently truncating. Rules retain their
+1 MiB limit. Snapshot generation runs on demand in the component's control loop,
+so very large tables can temporarily delay packet processing. No extra tracking
+is added to the packet path. Python callers can use
+`fabric.control.query(socket_path, "flows")`.
 
 ### Networking and hooks
 

@@ -51,6 +51,13 @@ public:
         return true;
     }
 
+    // Does not refresh LRU order, timestamps, or hit/expiry counters.
+    template<class Visitor> void visit_live(Clock::time_point now, Visitor visitor) const {
+        for (const auto& entry : order_)
+            if (now - entry.last_seen <= idle_timeout_)
+                visitor(entry.key, entry.value, entry.last_seen);
+    }
+
     std::size_t size() const { return entries_.size(); }
     std::uint64_t evictions() const { return evictions_; }
     std::uint64_t expirations() const { return expirations_; }

@@ -173,6 +173,11 @@ def run(binary, ctl, tunnel, adapter, root):
         time.sleep(3.3)
         edge.sendall(packet([17, 42], tcp(sport=31000)))
         assert not select.select([tun_in, tun_out, exit_port], [], [], .2)[0], 'all-down service did not drop'
+        dumped = subprocess.run([ctl, str(root / 'adapter.ctl'), 'show', 'flows'],
+                                capture_output=True, text=True, timeout=10, check=True).stdout
+        assert 'tracking=retained\n' in dumped
+        assert dumped.count('table=routes ') == len(assignments)
+        assert 'client_saved_labels=[0x0000000000000011,0x000000000000002a]' in dumped
         result = stats('adapter')
         for key in ('context_miss_drops', 'context_conflict_drops', 'invalid_drops', 'capacity_drops', 'tun_errors'):
             assert result[key] == '0', (key, result[key])

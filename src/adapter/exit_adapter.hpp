@@ -2,6 +2,7 @@
 
 #include "../ip_flow.hpp"
 #include "lru_cache.hpp"
+#include "../flow_dump.hpp"
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -77,6 +78,21 @@ public:
         }
         ++l3_misses_;
         return false;
+    }
+
+    std::string dump_flows(Clock::time_point now = Clock::now()) const {
+        FlowDump dump;
+        const auto visit = [&](const char* table, const auto& cache) {
+            cache.visit_live(now, [&](const auto& key, const auto& labels, auto touched) {
+                dump.add(table, key, [&](auto& out) {
+                    FlowDump::idle(out, now - touched);
+                    out << " labels=";
+                    FlowDump::labels(out, labels.data(), labels.size());
+                });
+            });
+        };
+        visit("l3", l3_); visit("l4", l4_);
+        return dump.finish();
     }
 
     // Used when parsing is shared with another consumer before lookup.
