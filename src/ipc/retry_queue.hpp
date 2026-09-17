@@ -15,7 +15,7 @@ class RetryQueue {
 public:
     using Clock = std::chrono::steady_clock;
     using Time = Clock::time_point;
-    static constexpr std::size_t capacity = 64, byte_limit = 256 * 1024, record_limit = 128 * 1024;
+    static constexpr std::size_t capacity = 128, byte_limit = 256 * 1024, record_limit = 128 * 1024;
     static constexpr auto max_age = std::chrono::milliseconds(100);
     struct Outcome {
         std::uint64_t frames = 0, bytes = 0, drops = 0, backpressure = 0;

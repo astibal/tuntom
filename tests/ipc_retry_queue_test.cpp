@@ -24,7 +24,7 @@ int main() {
         check(q.enqueue(data.data(),100,nullptr,0,now).backpressure==1);
         unsigned expected=0;
         r=q.flush(now,[&](const uint8_t* p,size_t n)->ssize_t { check(p[0]==expected++); return static_cast<ssize_t>(n); });
-        check(r.frames==64 && q.empty());
+        check(r.frames==Q::capacity && q.empty());
     }
     std::vector<uint8_t> big(Q::record_limit,1);
     check(!q.enqueue(big.data(),big.size(),nullptr,0,now).drops);

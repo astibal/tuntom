@@ -3,14 +3,14 @@
 Production IPC producers retain records on local `EAGAIN`, `EWOULDBLOCK` and
 `EINTR`. Each output has its own FIFO ring:
 
-- 64 records, at most 256 KiB of live queued bytes;
+- 128 records, at most 256 KiB of live queued bytes;
 - 100 ms maximum age, measured with the monotonic clock;
 - a 1 ms retry gate after a temporary send failure;
-- at most 64 submissions per flush;
+- at most 128 submissions per flush;
 - `POLLOUT` interest only while a queued record is eligible for retry.
 
 Queue admission copies the complete canonical record. Slots reuse vector storage;
-retained allocation can exceed live bytes but is bounded by 64 slots of at most
+retained allocation can exceed live bytes but is bounded by 128 slots of at most
 128 KiB each. Ordinary successful sends keep their existing fast path. New records
 cannot bypass an existing queue. Capacity and expiry drops are counted; this is
 short-term buffering, not reliable delivery or protection against sustained overload.
