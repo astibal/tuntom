@@ -184,6 +184,108 @@ This change does not alter MTU, UDP socket buffers or congestion handling.
 `divert_out_connected` fields describe the first configured pair in this mode.
 Use each relay's own `relay_acknowledged` statistic for tunnel registration health.
 
+## Multiple adapter processes with shared flow state
+
+Add `--shared-flows PATH` to run **one divert adapter process per relay tunnel**.
+Each process has one IPC pair and opens a queue on the same two Linux multiqueue
+TUNs. Flow contexts and warmup decisions live in one local shared-memory file.
+The switch rules and V5 tunnels use the multipath configuration above.
+
+```text
+Core switch                   Service host
+  proxy-link0 <== tunnel ==> relay0.sock -- adapter 0 -- queue 0 --+
+  proxy-link1 <== tunnel ==> relay1.sock -- adapter 1 -- queue 1 --+-- di0/do0
+  proxy-link2 <== tunnel ==> relay2.sock -- adapter 2 -- queue 2 --+     |
+  proxy-link3 <== tunnel ==> relay3.sock -- adapter 3 -- queue 3 --+  proxy/router
+                                             |
+                                      shared flow table
+```
+
+After starting the four hub and remote tunnel processes above, start these
+adapters **instead of the single four-path adapter**:
+
+```sh
+# Run in the network namespace that owns the proxy/router and its TUNs.
+# /run/tuntom must exist and be writable by the adapter user.
+for path in 0 1 2 3; do
+    tuntom-divert-adapter di0 do0 \
+        --via-instance 'smithproxy#0' \
+        --divert-in-port proxy-in --divert-out-port proxy-out \
+        --relay-path "$path=/run/tuntom/relay$path.sock" \
+        --shared-flows /run/tuntom/smithproxy.flows \
+        --admission immediate \
+        --control-socket "/run/tuntom/divert$path.control" &
+done
+```
+
+Use `ip netns exec NAME` before each adapter command if the TUNs belong in an
+existing namespace. The Unix relay socket and shared file must be accessible
+there. Configure addresses, routes and any VRF yourself; the adapter only opens
+the named TUNs, sets their MTU and brings them up. To migrate from the original
+single-queue mode, stop its adapter first. The TUNs must be recreated in
+multiqueue mode; reapply their addresses, routes and VRF membership afterwards.
+
+### Shared state and return paths
+
+- This option requires VIA and exactly **one** `--relay-path` per process.
+  Up to 16 workers may join. Each has a unique path ID and control socket.
+- Workers share the same file, base instance ID, TUN names, port prefixes,
+  network namespace, MTU, admission mode, capacities and idle timeout. Conflicting
+  configurations or duplicate live worker IDs are rejected. Use the same binary
+  build for the whole group; the mapped layout is a local ABI, not a wire format.
+- Both directional VIA envelopes are committed **before** a packet is written
+  to TUN. A proxy-generated SYN+ACK can immediately be read by another worker.
+  That worker retrieves the context and returns through **its own relay pair**.
+  No process-local FD or transport-path index is stored in shared memory.
+- Switch flow hashing controls incoming path selection. Linux controls which
+  TUN queue receives output; these selections need not match. VIA return
+  validation already accepts any live pair of the service, so this mode needs
+  no switch flow cache or protocol change.
+- `--admission warmup` shares one activation clock and the TCP/UDP learning sets
+  across workers. Restarting one worker does not restart warmup. This shares
+  adapter routing state only; smithproxy session state remains in smithproxy.
+
+### Bounds, restart and health
+
+The file is created with mode `0600`. Use a local filesystem, preferably tmpfs
+under `/run`, with enough free space. The entire fixed pool is allocated at group
+startup and stays reserved until the group is stopped/recreated; warmup pools
+are skipped with `--admission immediate`. On the tested 64-bit build, default
+capacities with warmup reserve about **63 MiB per group**, shared by all workers.
+`shared_flow_bytes` reports the exact size. Capacity is split between up to 64
+hash shards, so a busy shard may reach its quota before the whole pool is full.
+Live entries are never evicted to admit another flow; capacity exhaustion drops.
+
+Each lookup/update locks only its shard. Process-shared robust mutexes and an
+undo record allow the next worker to recover a shard if a process dies during
+an update. `shared_lock_recoveries` counts these recoveries. There is no socket
+replication window and no lock covering the entire packet path.
+
+Restarting one worker preserves contexts while any other worker remains alive.
+After all workers exit, the next opener resets the group and warmup, even if the
+file remains. Change group settings only after stopping all its workers. Never
+unlink or replace the file while any worker is alive: that would split the group
+into separate tables. The file is not durable state for machine restarts.
+
+A worker detaches its TUN queues while its local IPC pair is disconnected;
+closing the process also removes its queues. This does **not** detect a remote
+tunnel failure that leaves both local IPC sockets connected. Such a worker can
+still receive TUN output and lose packets until transport recovers. Monitor
+each remote relay's `relay_acknowledged` state; lossless failover is not promised.
+
+```sh
+for path in 0 1 2 3; do
+    tuntomctl "/run/tuntom/divert$path.control" show stats
+done
+```
+
+`flow_entries`, `flow_expirations`, the admission counts and shared-memory
+counters describe the **whole group**; do not sum them across workers. Packet,
+drop and IPC counters are local to each process. `tun_queues_active=1` means
+both local queues are attached, not that the remote tunnel is healthy.
+This mode distributes adapter work across CPUs; throughput still requires
+measurement on the intended proxy host.
+
 ## Registration, loss and resource bounds
 
 - Each adapter owns two local IPC connections per path. The remote listener supports
@@ -290,6 +392,12 @@ forward-first and reverse-first migration after a tunnel loss, stable mapping
 after hub and remote listener restarts, adapter socket-pair reconnects, and
 all-paths-down drops.
 
+`shared_flows_test` checks shared directional contexts, admission boundaries,
+capacity, concurrent processes, group lifetime and recovery after process death
+during an update. `relay_shared_test` runs two adapter processes against both
+switch implementations, immediately returns packets through the other worker,
+and checks retained contexts after a worker is killed and restarted.
+
 For actual TCP routing through an isolated Linux router, including adapter warmup:
 
 ```sh
@@ -303,3 +411,11 @@ configure the host network. This validates routing, not a real smithproxy setup.
 Add `--relay-paths 4` to exercise four independent tunnels with one shared TUN
 pair and verify traffic on every path. The lab also checks warmup bypass, TCP
 payload integrity, preserved source addresses/ports and router TTL changes.
+Add `--shared-flows` to run one adapter process per tunnel with real multiqueue
+TUNs and one shared warmup/flow table:
+
+```sh
+python3 -B experiments/divert_lab/run_integrated.py \
+  --build /tmp/tuntom-via-build --relay-paths 4 --shared-flows \
+  --switch mp --vrf --mtu 9000 --output /tmp/my-shared-relay-lab
+```

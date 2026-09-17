@@ -38,7 +38,7 @@ extern "C" int __wrap_ioctl(int fd, unsigned long request, ...) {
     va_start(args, request);
     void* value = va_arg(args, void*);
     va_end(args);
-    if (request == TUNSETIFF or request == SIOCSIFMTU or
+    if (request == TUNSETIFF or request == TUNSETQUEUE or request == SIOCSIFMTU or
         request == SIOCGIFFLAGS or request == SIOCSIFFLAGS) return 0;
     return __real_ioctl(fd, request, value);
 }

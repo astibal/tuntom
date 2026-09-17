@@ -1,7 +1,6 @@
 #include "../src/adapter/exit_adapter.hpp"
 #include "../src/control_socket.hpp"
-#include "../src/divert/flows.hpp"
-#include "../src/via/adapter.hpp"
+#include "../src/divert/shared_flows.hpp"
 #include <iostream>
 
 using namespace tuntom;
@@ -70,7 +69,19 @@ static void divert_routes() {
     FlowDump legacy_dump; legacy.dump_flows(legacy_dump, now);
     contains(legacy_dump.finish(), "client_divert_body=[0x0000000000000001,0x0000000000000000,0x000000000000007b]");
 
-
+    char path[] = "/tmp/flow-dump-shared-XXXXXX"; int fd = ::mkstemp(path); require(fd >= 0, "mkstemp"); ::close(fd);
+    try {
+        SharedFlows a(path, "dump", "a", 64, seconds(10), 64, true);
+        SharedFlows b(path, "dump", "b", 64, seconds(10), 64, true);
+        a.learn(flow, context(17), true, now); b.learn(reverse_key(flow), context(42), false, now);
+        a.classify(packet, now);
+        FlowDump shared; b.dump_flows(shared, now + seconds(2)); auto text = shared.finish();
+        contains(text, "table=shared_routes"); contains(text, "server_labels=[0x000000000000002a]");
+        contains(text, "table=existing_tcp"); contains(text, "flow_count=2\n");
+        FlowDump old; b.dump_flows(old, now + seconds(86400)); contains(old.finish(), "flow_count=0\n");
+        require(!a.lookup(flow, false, now + seconds(10), found), "shared dump must not refresh routes");
+    } catch (...) { ::unlink(path); throw; }
+    ::unlink(path);
 }
 static void protocol() {
     const auto path = "/tmp/flow-dump-control-" + std::to_string(::getpid());
@@ -113,5 +124,5 @@ static void protocol() {
 }
 int main() {
     caches(); divert_routes(); protocol();
-    std::cout << "PASS: flow snapshots, labels, expiry and framed control transport\n";
+    std::cout << "PASS: flow snapshots, labels, expiry, shared routes and framed control transport\n";
 }

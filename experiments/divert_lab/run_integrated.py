@@ -70,9 +70,9 @@ def inside(args):
         rules.write_text("format 2\nserial 1\nexit exit\nswitch edge,[17,42] to exit,[99,42] allow bidir\n")
         config.write_text(f"cookie {cookie}\nports divert-in divert-out\norigin edge 123\nmatch edge,[17,42]\n")
         adapter_options = ["--cookie", cookie]
-        multipath = args.relay_paths > 1
+        multipath = args.relay_paths > 1 or args.shared_flows
         pattern = "*" if multipath else ""
-        new_ports = list(range(40001, 40003 + (16 if multipath else 0)))
+        new_ports = list(range(40001, 40003 + (16 if args.relay_paths > 1 else 0)))
         if args.via:
             rules.write_text("format 3\nserial 1\nport edge id 123\nservice router {\n"
                 f" client-side divert-in{pattern}\n server-side divert-out{pattern}\n" +
@@ -111,8 +111,12 @@ def inside(args):
                     "--relay-listen", adapter_socket, "--control-socket", lab.runtime / f"relay{suffix}.control", "--no-stats"], ns="router", env=relay_env)
                 wait_for(adapter_socket.exists, lab.processes)
                 adapter_connection += ["--relay-path", f"{i}={adapter_socket}"] if multipath else ["--switch-socket", adapter_socket]
-        lab.start("divert-adapter", [build / "tuntom-divert-adapter", "di0", "do0", *adapter_connection,
-                  *adapter_options, "--mtu", args.mtu, "--control-socket", lab.runtime / "divert.control"], ns="router")
+        divert_names = [f"divert{i}" for i in range(args.relay_paths)] if args.shared_flows else ["divert"]
+        for i, name in enumerate(divert_names):
+            connection = ["--relay-path", f"{i}={lab.runtime / f'relay{i}.sock'}",
+                          "--shared-flows", lab.runtime / "shared.flows"] if args.shared_flows else adapter_connection
+            lab.start(name + "-adapter", [build / "tuntom-divert-adapter", "di0", "do0", *connection,
+                      *adapter_options, "--mtu", args.mtu, "--control-socket", lab.runtime / f"{name}.control"], ns="router")
         lab.start("exit-adapter", [build / "tuntom-switch-adapter", "ex0", "--switch-socket", path,
                   "--switch-port-id", "exit", "--mtu", args.mtu, "--l4-only", "--l4-timeout", "86400",
                   "--control-socket", lab.runtime / "exit.control"], ns="exit")
@@ -147,6 +151,8 @@ def inside(args):
         wait_for(lambda: stats("switch").get("connections_current") == (str(2 + args.relay_paths) if args.relay else "4"), lab.processes)
         if args.relay:
             wait_for(lambda: all(stats(name).get("relay_acknowledged") == "1" and stats(name).get("relay_channels") == "2" for name in relay_names), lab.processes)
+        if args.shared_flows:
+            wait_for(lambda: all(stats(name).get("tun_queues_active") == "1" for name in divert_names), lab.processes)
         captures = [lab.start(name, [sys.executable, __file__, "--capture", name], ns="router") for name in ("di0", "do0")]
         wait_for(lambda: all(records(output / f"{name}.log") for name in ("di0", "do0")), lab.processes)
         lab.start("tcp-server", [sys.executable, HERE / "run.py", "--server"], ns="server")
@@ -167,28 +173,30 @@ def inside(args):
                 a = [p for p in before if p["sport"] == sport and p["dport"] == dport and p["flags"] & 18 == flags]
                 b = [p for p in after if p["sport"] == sport and p["dport"] == dport and p["flags"] & 18 == flags]
                 require(any(x["seq"] == y["seq"] and x["ttl"] == y["ttl"] + 1 for x in a for y in b), "missing router TTL decrement")
-        snapshots = {which: stats(which) for which in ("client", "server", "switch", "divert", "exit")}
-        for which in ("switch", "divert"):
+        snapshots = {which: stats(which) for which in ("client", "server", "switch", *divert_names, "exit")}
+        for which in ("switch", *divert_names):
             for key, value in snapshots[which].items():
                 if key.endswith("_drops") or key in ("tun_errors", "send_errors"):
                     require(value == "0", f"unexpected {which} {key}={value}")
-        require(int(snapshots["divert"]["bypass_packets"]) > 0, "no existing TCP bypass")
-        require(int(snapshots["divert"]["flow_entries"]) == len(new_ports), "wrong diverted flow count")
+        require(sum(int(snapshots[name]["bypass_packets"]) for name in divert_names) > 0, "no existing TCP bypass")
+        require(all(int(snapshots[name]["flow_entries"]) == len(new_ports) for name in divert_names), "wrong diverted flow count")
         if multipath:
-            require(snapshots["divert"]["connected_pairs"] == str(args.relay_paths), "missing relay pair")
+            require(all(snapshots[name]["connected_pairs"] == str(1 if args.shared_flows else args.relay_paths)
+                        for name in divert_names), "missing relay pair")
             for i in range(args.relay_paths):
+                snapshot = snapshots[f"divert{i}" if args.shared_flows else "divert"]
                 for side in ("in", "out"):
                     prefix = f"relay_path_{i}_{side}_ipc_"
-                    require(snapshots["divert"][prefix + "version"] == "2", "relay did not negotiate IPC v2")
-                    require(int(snapshots["divert"][prefix + "rx_inline_frames"]) > 0, "unused relay path")
-                    require(int(snapshots["divert"][prefix + "tx_inline_frames"]) > 0, "unused return path")
+                    require(snapshot[prefix + "version"] == "2", "relay did not negotiate IPC v2")
+                    require(int(snapshot[prefix + "rx_inline_frames"]) > 0, "unused relay path")
+                    require(int(snapshot[prefix + "tx_inline_frames"]) > 0, "unused return path")
         elif args.switch == "mp" or args.relay:
             require(snapshots["divert"]["divert_in_ipc_version"] == "2", "adapter did not negotiate IPC v2")
         accepted = [r["peer"] for r in records(output / "tcp-server.log") if r["event"] == "accepted"]
         require({tuple(p) for p in accepted} == {(CLIENT, p) for p in [40000, *new_ports]}, "source identity changed")
         if args.mtu > 1500:
             require(int(snapshots["client"]["fragments_tx"]) > 0, "no jumbo transport fragments")
-        report = dict(status="PASS", relay=args.relay, relay_paths=args.relay_paths if args.relay else 0,
+        report = dict(status="PASS", relay=args.relay, relay_paths=args.relay_paths if args.relay else 0, shared_flows=args.shared_flows,
                       via=args.via, switch=args.switch, mtu=args.mtu, vrf=args.vrf, tcp=json.loads(driver.stdout), server_peers=accepted, stats=snapshots)
         (output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
         print(json.dumps(dict(status="PASS", switch=args.switch, mtu=args.mtu, output=str(output))))
@@ -207,13 +215,14 @@ def main():
     parser.add_argument("--mtu", type=int, choices=(1500,9000), default=1500)
     parser.add_argument("--relay", action="store_true", help="put the VIA adapter behind a tuntom tunnel in the router namespace")
     parser.add_argument("--relay-paths", type=int, choices=range(1, 17), default=1, help="independent relay tunnels; values above 1 imply --relay")
+    parser.add_argument("--shared-flows", action="store_true", help="one adapter process per relay tunnel, shared flow state and multiqueue TUNs")
     parser.add_argument("--via", action="store_true", help="exercise VIA service mode with adapter warmup")
     parser.add_argument("--vrf", action="store_true", help="put the router TUNs in VRF table 4123 inside the isolated namespace")
     parser.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--client", help=argparse.SUPPRESS)
     parser.add_argument("--capture", help=argparse.SUPPRESS)
     args = parser.parse_args()
-    if args.relay_paths > 1: args.relay = True
+    if args.relay_paths > 1 or args.shared_flows: args.relay = True
     if args.relay: args.via = True
     if args.capture:
         return capture(args.capture)
@@ -226,7 +235,8 @@ def main():
     subprocess.run(["unshare", "--user", "--map-root-user", "--net", sys.executable, __file__, "--inside",
                     "--build", str(Path(args.build).resolve()), "--output", str(Path(args.output).resolve()),
                     "--switch", args.switch, "--mtu", str(args.mtu), "--relay-paths", str(args.relay_paths),
-                    *(["--vrf"] if args.vrf else []), *(["--via"] if args.via else []), *(["--relay"] if args.relay else [])], check=True)
+                    *(["--vrf"] if args.vrf else []), *(["--via"] if args.via else []), *(["--relay"] if args.relay else []),
+                    *(["--shared-flows"] if args.shared_flows else [])], check=True)
 
 
 if __name__ == "__main__":

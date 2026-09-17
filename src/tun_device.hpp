@@ -19,8 +19,8 @@ class TunDevice {
 public:
     TunDevice(
         const std::string& interface_name,
-        std::size_t mtu)
-        : interface_name_(interface_name) {
+        std::size_t mtu, bool multiqueue = false)
+        : interface_name_(interface_name), multiqueue_(multiqueue) {
 
         fd_ = ::open("/dev/net/tun", O_RDWR | O_CLOEXEC | O_NONBLOCK);
         if (fd_ < 0) {
@@ -31,6 +31,7 @@ public:
 
         ifreq request {};
         request.ifr_flags = IFF_TUN | IFF_NO_PI;
+        if (multiqueue_) request.ifr_flags |= IFF_MULTI_QUEUE;
         std::strncpy(
             request.ifr_name,
             interface_name.c_str(),
@@ -63,6 +64,14 @@ public:
 
     ssize_t write_packet(const std::uint8_t* buffer, std::size_t size) {
         return ::write(fd_, buffer, size);
+    }
+
+    void set_queue(bool active) {
+        if (!multiqueue_) throw std::runtime_error("TUN queue control requires multiqueue mode");
+        ifreq request{};
+        request.ifr_flags = static_cast<short>(active ? IFF_ATTACH_QUEUE : IFF_DETACH_QUEUE);
+        if (::ioctl(fd_, TUNSETQUEUE, &request) < 0)
+            throw std::runtime_error("TUNSETQUEUE failed: " + std::string(std::strerror(errno)));
     }
 
     void set_up() {
@@ -116,6 +125,7 @@ private:
 
     int fd_ = -1;
     std::string interface_name_;
+    bool multiqueue_ = false;
 };
 
 } // namespace tuntom

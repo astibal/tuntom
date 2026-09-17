@@ -1,5 +1,6 @@
 #include "flows.hpp"
 #include "paths.hpp"
+#include "shared_flows.hpp"
 #include "../via/adapter.hpp"
 #include "../via/registration.hpp"
 #include "../common.hpp"
@@ -28,6 +29,8 @@ void usage(const char* program) {
         << "  --via-instance ID         opt-in VIA; replaces --cookie, ID shared by both sides\n"
         << "  --relay-path ID=SOCKET    VIA only; up to 16 independent IPC pairs sharing the TUNs\n"
         << "                           registers NAME.ID~via:c|s:INSTANCE#path-ID\n"
+        << "  --shared-flows PATH      shared VIA flow/admission table; exactly one --relay-path\n"
+        << "                           one process per path, common multiqueue TUN pair\n"
         << "  --admission immediate|warmup  default immediate for VIA, warmup for legacy\n"
         << "  --divert-in-port NAME      default divert-in\n"
         << "  --divert-out-port NAME     default divert-out\n"
@@ -68,7 +71,7 @@ int main(int argc, char** argv) {
         if (in_name.empty() || out_name.empty() || in_name == out_name || in_name.size() >= IFNAMSIZ || out_name.size() >= IFNAMSIZ)
             throw std::runtime_error("two distinct TUN names of at most 15 bytes are required");
         std::string socket, cookie, control_path, in_port = "divert-in", out_port = "divert-out";
-        std::string instance, admission_mode;
+        std::string instance, admission_mode, shared_path;
         std::vector<std::string> relay_paths;
         std::size_t mtu = 1500, capacity = 100000, admission_capacity = 100000, idle = 86400;
         ipc::Options options;
@@ -79,6 +82,10 @@ int main(int argc, char** argv) {
             const std::string value = argv[i];
             if (option == "--switch-socket") socket = value;
             else if (option == "--relay-path") relay_paths.push_back(value);
+            else if (option == "--shared-flows") {
+                if (value.empty()) throw std::runtime_error("--shared-flows requires a nonempty path");
+                shared_path = value;
+            }
             else if (option == "--cookie") cookie = value;
             else if (option == "--via-instance") instance = value;
             else if (option == "--admission") admission_mode = value;
@@ -98,6 +105,14 @@ int main(int argc, char** argv) {
         if (admission_mode.empty()) admission_mode = via_mode ? "immediate" : "warmup";
         if (admission_mode != "immediate" && admission_mode != "warmup") throw std::runtime_error("expected immediate or warmup admission");
         via::AdapterCodec codec(via_mode, cookie);
+        std::unique_ptr<SharedFlows> shared;
+        if (!shared_path.empty()) {
+            if (!via_mode || relay_paths.size() != 1)
+                throw std::runtime_error("--shared-flows requires VIA and exactly one --relay-path");
+            shared = std::make_unique<SharedFlows>(shared_path,
+                SharedFlows::group({instance, in_name, out_name, in_port, out_port, std::to_string(mtu)}),
+                paths[0].id, capacity, std::chrono::seconds(idle), admission_capacity, admission_mode == "warmup");
+        }
         std::vector<std::unique_ptr<SwitchClient>> clients;
         for (const auto& path : paths) {
             clients.push_back(std::make_unique<SwitchClient>(path.socket, path.input, options));
@@ -105,7 +120,8 @@ int main(int argc, char** argv) {
         }
         std::unique_ptr<ControlSocket> control;
         if (!control_path.empty()) control = std::make_unique<ControlSocket>(control_path);
-        TunDevice tun_in(in_name, mtu), tun_out(out_name, mtu);
+        TunDevice tun_in(in_name, mtu, bool(shared)), tun_out(out_name, mtu, bool(shared));
+        if (shared) { tun_in.set_queue(false); tun_out.set_queue(false); }
         tun_in.set_up(); tun_out.set_up();
         TunDevice* tuns[] = {&tun_in, &tun_out};
         std::vector<Clock::time_point> next_connect(clients.size());
@@ -115,6 +131,7 @@ int main(int argc, char** argv) {
         const auto sources = paths.size() * 4;
         Clock::time_point activated{};
         bool active = false;
+        bool queues_active = !shared;
         Admission admission(admission_capacity);
         BasicRoutes<via::AdapterContext> routes(capacity, std::chrono::seconds(idle), via_mode);
         Stats stats;
@@ -122,12 +139,21 @@ int main(int argc, char** argv) {
         std::array<std::uint8_t, ipc::max_frame> buffer{};
         std::signal(SIGTERM, stop); std::signal(SIGINT, stop);
         const auto seconds = [&](Clock::time_point now) {
+            if (shared) return shared->seconds(now);
             return active ? std::chrono::duration<double>(now - activated).count() : 0.0;
+        };
+        const auto update_queues = [&] {
+            if (!shared) return;
+            const bool ready = clients[0]->connected() && clients[1]->connected();
+            if (ready != queues_active) {
+                tun_in.set_queue(ready); tun_out.set_queue(ready); queues_active = ready;
+            }
         };
         const auto disconnect = [&](std::size_t index) {
             stats.disconnected += clients[index]->discard_staged().drops;
             clients[index]->disconnect();
             next_connect[index] = Clock::now() + std::chrono::seconds(1);
+            update_queues();
         };
         const auto account = [&](std::size_t index, const SwitchClient::Outcome& result) {
             stats.switch_tx += result.frames;
@@ -154,8 +180,11 @@ int main(int argc, char** argv) {
                     << "divert_in_connected=" << clients[0]->connected() << "\ndivert_out_connected=" << clients[1]->connected()
                     << "\nrelay_paths=" << relay_paths.size() << "\nconnected_pairs=" << connected
                     << "\nvia_instance=" << instance << "\nadmission_mode=" << admission_mode
-                    << "\nadmission_active=" << active << "\nadmission_seconds=" << seconds(Clock::now()) << '\n';
-                stats.write(out); admission.stats(out); routes.stats(out);
+                    << "\nadmission_active=" << (shared ? shared->active() : active) << "\nadmission_seconds=" << seconds(Clock::now()) << '\n';
+                stats.write(out);
+                out << "tun_queues_active=" << queues_active << '\n';
+                if (shared) shared->stats(out);
+                else { out << "shared_flows=0\n"; admission.stats(out); routes.stats(out); }
                 if (relay_paths.empty()) {
                     clients[0]->write_stats(out, "divert_in_ipc_"); clients[1]->write_stats(out, "divert_out_ipc_");
                 } else for (std::size_t path = 0; path < paths.size(); ++path) {
@@ -171,9 +200,12 @@ int main(int argc, char** argv) {
                 throw std::runtime_error("rules commands are supported only by switches");
             }, [&] {
                 const auto now = Clock::now();
-                FlowDump dump;
-                routes.dump_flows(dump, now);
-                admission.dump_flows(dump, seconds(now));
+                FlowDump dump(shared ? "shared_shards" : "retained");
+                if (shared) shared->dump_flows(dump, now);
+                else {
+                    routes.dump_flows(dump, now);
+                    admission.dump_flows(dump, seconds(now));
+                }
                 return dump.finish();
             });
         };
@@ -183,6 +215,7 @@ int main(int argc, char** argv) {
             const auto index = path * 2 + side;
             auto& tun = *tuns[side];
             const bool from_switch = source % 4 < 2;
+            if (!from_switch && !queues_active) return false;
             if (from_switch && !clients[index]->connected()) return false;
             const auto n = from_switch ? clients[index]->receive(buffer.data(), buffer.size()) : tun.read_packet(buffer.data(), buffer.size());
             if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return false;
@@ -202,7 +235,8 @@ int main(int argc, char** argv) {
                 if (!clients[path * 2]->connected() || !clients[path * 2 + 1]->connected()) { ++stats.disconnected; return true; }
                 if (side == 0) {
                     if (!active) { activated = now; active = true; }
-                    const auto decision = admission_mode == "immediate" ? AdmissionResult::proxy : admission.classify(packet, seconds(now));
+                    const auto decision = shared ? shared->classify(packet, now) :
+                        admission_mode == "immediate" ? AdmissionResult::proxy : admission.classify(packet, seconds(now));
                     if (decision == AdmissionResult::full) { ++stats.capacity; return true; }
                     if (decision == AdmissionResult::bypass) {
                         codec.bypass(env);
@@ -210,7 +244,8 @@ int main(int argc, char** argv) {
                         ++stats.bypass; return true;
                     }
                 }
-                const auto learned = routes.learn(packet.flow, env, side == 0, now, path);
+                // Shared learn publishes and unlocks before the packet can cause a TUN reply.
+                const auto learned = shared ? shared->learn(packet.flow, env, side == 0, now) : routes.learn(packet.flow, env, side == 0, now, path);
                 if (learned != Learn::ok) {
                     if (learned == Learn::full) ++stats.capacity;
                     else if (learned == Learn::conflict) ++stats.conflict;
@@ -222,7 +257,9 @@ int main(int argc, char** argv) {
             } else {
                 ++stats.tun_rx;
                 if (!packet_info(buffer.data(), static_cast<std::size_t>(n), packet)) { ++stats.unsupported; return true; }
-                if (!routes.lookup(packet.flow, side == 0, now, env, &path)) { ++stats.miss; return true; }
+                const bool found = shared ? shared->lookup(packet.flow, side == 0, now, env) : routes.lookup(packet.flow, side == 0, now, env, &path);
+                if (!found) { ++stats.miss; return true; }
+                // A shared worker returns through its own pair, irrespective of the ingress worker.
                 codec.onward(env, side);
                 send(path, side, env, buffer.data(), static_cast<std::size_t>(n));
             }
@@ -235,7 +272,8 @@ int main(int argc, char** argv) {
             try {
                 if (recovery.wait_for_retry(control ? control->poll_fd() : -1)) { control_step(); continue; }
                 const auto now = Clock::now();
-                routes.maintain(now); if (active) admission.maintain(seconds(now));
+                if (shared) shared->maintain(now);
+                else { routes.maintain(now); if (active) admission.maintain(seconds(now)); }
                 for (std::size_t index = 0; index < clients.size(); ++index) {
                     auto& client = *clients[index];
                     if (!client.connected() && !client.connecting() && now >= next_connect[index]) {
@@ -245,8 +283,9 @@ int main(int argc, char** argv) {
                     }
                     fds[index] = {client.fd(), client.poll_events(), 0};
                 }
-                fds[clients.size()] = {tun_in.fd(), POLLIN, 0};
-                fds[clients.size() + 1] = {tun_out.fd(), POLLIN, 0};
+                update_queues();
+                fds[clients.size()] = {queues_active ? tun_in.fd() : -1, POLLIN, 0};
+                fds[clients.size() + 1] = {queues_active ? tun_out.fd() : -1, POLLIN, 0};
                 fds.back() = {control ? control->poll_fd() : -1, POLLIN, 0};
                 int timeout = 1000;
                 for (const auto& client : clients) timeout = client->poll_timeout_ms(now, timeout);
@@ -261,6 +300,7 @@ int main(int argc, char** argv) {
                         else if (!client.connecting()) next_connect[index] = Clock::now() + std::chrono::seconds(1);
                     } else if (fds[index].revents & (POLLHUP | POLLERR | POLLNVAL)) disconnect(index);
                 }
+                update_queues();
                 if (fds.back().revents & POLLIN) control_step();
                 const auto slice = Clock::now();
                 for (unsigned round = 0; round < 64; ++round) {

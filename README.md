@@ -402,6 +402,9 @@ order, timestamps, or counters.
   output. Admission learning sets are separate rows with `labels=unknown` because
   those sets do not retain labels; they are warmup history, not proof of a live
   connection. A tuple may occur in several tables, so `flow_count` counts rows.
+- Shared divert tables use `tracking=shared_shards`: each shard is copied under its
+  process-shared mutex, then formatted after unlocking. Workers can update other
+  shards during the dump; this is not a globally atomic network snapshot.
 - Switches (including MP) and tunnels have no per-IP-flow table and return
   `tracking=none` and `flow_count=0`. This does not mean there is no traffic.
   Classifier and forwarding rules remain separate from observed flow state.

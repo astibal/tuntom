@@ -34,6 +34,10 @@ if(BUILD_TESTING)
     add_executable(divert_test tests/divert_test.cpp)
     target_compile_options(divert_test PRIVATE -Wall -Wextra -Wconversion -pedantic)
     add_test(NAME divert_test COMMAND divert_test)
+    add_executable(shared_flows_test tests/shared_flows_test.cpp)
+    target_compile_options(shared_flows_test PRIVATE -Wall -Wextra -Wconversion -pedantic)
+    add_test(NAME shared_flows_test COMMAND shared_flows_test)
+    set_tests_properties(shared_flows_test PROPERTIES TIMEOUT 30)
     add_executable(switch_mp_plan_fixture tools/switch_mp_plan.cpp)
     target_compile_options(switch_mp_plan_fixture PRIVATE -Wall -Wextra -Wconversion -pedantic)
     add_executable(switch_mp_plan_test tests/switch_mp_plan_test.cpp)
@@ -75,6 +79,11 @@ if(BUILD_TESTING)
             $<TARGET_FILE:tuntom-switch> $<TARGET_FILE:tomtom-switch-mp>
             $<TARGET_FILE:tuntomctl> $<TARGET_FILE:tuntom> $<TARGET_FILE:divert_relay_fixture>)
         set_tests_properties(relay_multipath_test PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE)
+        add_test(NAME relay_shared_test COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/relay_shared_test.py
+            $<TARGET_FILE:tuntom-switch> $<TARGET_FILE:tomtom-switch-mp>
+            $<TARGET_FILE:tuntomctl> $<TARGET_FILE:tuntom> $<TARGET_FILE:divert_relay_fixture>)
+        set_tests_properties(relay_shared_test PROPERTIES TIMEOUT 90 RUN_SERIAL TRUE)
         add_test(NAME via_integration_test COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/via_integration_test.py
             $<TARGET_FILE:tuntom-switch> $<TARGET_FILE:tomtom-switch-mp> $<TARGET_FILE:tuntomctl>)
