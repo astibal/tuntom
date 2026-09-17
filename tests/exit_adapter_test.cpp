@@ -105,5 +105,50 @@ int main() {
     require(!strict.lookup(response.data(), response.size(), found, start), "evicted flow must not inherit another flow's labels");
     require(!strict.lookup(fragment.data(), fragment.size(), found, start), "strict mode rejects fragments");
     require(!strict.learn(fragment.data(), fragment.size(), {3}, start), "strict mode rejects incomplete identities");
+    // Every prefix length, both IP families; no L3 fallback can hide a bad key.
+    for (unsigned bits = 0; bits <= 16; ++bits) {
+        for (bool v6 : {false, true}) {
+            ExitAdapterRoutes pooled(1, 8, std::chrono::seconds(10),
+                                     std::chrono::seconds(20), true, bits);
+            const auto packet = [&](std::uint16_t client_port, bool reverse,
+                                    std::uint16_t server_port = 443) {
+                const auto sport = reverse ? server_port : client_port;
+                const auto dport = reverse ? client_port : server_port;
+                return v6 ? ipv6(sport, dport, reverse ? 2 : 1, reverse ? 1 : 2)
+                          : ipv4(6, sport, dport, reverse ? 2 : 1, reverse ? 1 : 2);
+            };
+            const auto learn = [&](std::uint16_t port, std::uint64_t label) {
+                auto p = packet(port, false);
+                require(pooled.learn(p.data(), p.size(), {label}, start), "pool learn");
+            };
+            const auto lookup = [&](std::uint16_t port, Clock::time_point at,
+                                    std::uint16_t server = 443) {
+                auto p = packet(port, true, server);
+                return pooled.lookup(p.data(), p.size(), found, at);
+            };
+            const auto last = static_cast<std::uint16_t>((1U << (16 - bits)) - 1);
+            learn(0, 1);
+            learn(last, 2);
+            require(pooled.l4_size() == 1, "same prefix must share one entry");
+            require(lookup(0, start) && found == std::vector<std::uint64_t>{2},
+                    "latest stack must apply to entire pool");
+            require(lookup(last, start), "pool upper boundary missing");
+            require(!lookup(last, start, 444), "server port must remain exact");
+            if (bits) {
+                const auto next = static_cast<std::uint16_t>(last + 1);
+                require(!lookup(next, start), "adjacent pool must miss");
+                learn(next, 3);
+                require(pooled.l4_size() == 2, "adjacent pool must remain separate");
+            }
+            require(lookup(last, start + std::chrono::seconds(15)), "pool refresh");
+            require(lookup(0, start + std::chrono::seconds(30)), "pool shares timeout");
+            require(!lookup(last, start + std::chrono::seconds(51)), "pool must expire");
+        }
+    }
+    bool invalid_bits = false;
+    try {
+        ExitAdapterRoutes invalid(1, 1, std::chrono::seconds(1), std::chrono::seconds(1), false, 17);
+    } catch (const std::invalid_argument&) { invalid_bits = true; }
+    require(invalid_bits, "invalid prefix length accepted");
     std::cout << "PASS: exit adapter IPv4/IPv6 learning, fallback, expiry, LRU and strict L4\n";
 }

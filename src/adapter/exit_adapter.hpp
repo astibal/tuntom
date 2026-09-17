@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <vector>
+#include <stdexcept>
 
 namespace tuntom {
 
@@ -19,8 +20,14 @@ public:
         std::size_t l4_capacity,
         Clock::duration l3_timeout,
         Clock::duration l4_timeout,
-        bool l4_only = false)
-        : l3_(l3_capacity, l3_timeout), l4_(l4_capacity, l4_timeout), l4_only_(l4_only) {}
+        bool l4_only = false,
+        unsigned l4_sport_key_bits = 16)
+        : l3_(l3_capacity, l3_timeout), l4_(l4_capacity, l4_timeout), l4_only_(l4_only) {
+        if (l4_sport_key_bits > 16)
+            throw std::invalid_argument("l4_sport_key_bits must be 0..16");
+        l4_client_port_mask_ = static_cast<std::uint16_t>(
+            0xffffU << (16 - l4_sport_key_bits));
+    }
 
     bool learn(
         const std::uint8_t* packet,
@@ -39,7 +46,7 @@ public:
         }
         ++learned_packets_;
         if (!l4_only_) l3_.put(reverse_key(flow.l3), labels, now);
-        if (flow.has_l4) l4_.put(reverse_key(flow.l4), labels, now);
+        if (flow.has_l4) l4_.put(l4_cache_key(reverse_key(flow.l4)), labels, now);
         return true;
     }
 
@@ -64,7 +71,7 @@ public:
         Clock::time_point now = Clock::now()) {
 
         if (l4_only_ && flow.fragmented) { ++l4_misses_; return false; }
-        if (flow.has_l4 and l4_.get(flow.l4, labels, now)) {
+        if (flow.has_l4 and l4_.get(l4_cache_key(flow.l4), labels, now)) {
             ++l4_hits_;
             std::vector<std::uint64_t> ignored;
             if (!l4_only_) l3_.get(flow.l3, ignored, now);
@@ -112,6 +119,13 @@ public:
     std::uint64_t l4_expirations() const { return l4_.expirations(); }
 
 private:
+    FlowKey l4_cache_key(FlowKey key) const {
+        // Cache keys face TUN -> switch: the original source port is the destination.
+        key.destination_port &= l4_client_port_mask_;
+        return key;
+    }
+
+    std::uint16_t l4_client_port_mask_ = 0xffff;
     LruCache<IpPairKey, std::vector<std::uint64_t>, IpPairHash> l3_;
     LruCache<FlowKey, std::vector<std::uint64_t>, FlowHash> l4_;
     bool l4_only_;

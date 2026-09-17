@@ -64,6 +64,8 @@ void usage(const char* program) {
         << "  --l4-capacity <n>     L4 LRU entries (default 1000000)\n"
         << "  --l3-capacity <n>     L3 LRU entries (default 250000)\n"
         << "  --l4-timeout <s>      L4 idle timeout (default 120)\n"
+        << "  --l4-sport-key-bits <n> Keep high 0..16 source-port bits (default 16)\n"
+        << "                         Source port in switch -> TUN direction\n"
         << "  --l4-only             Use only L4 cache; disable IP-pair fallback\n"
         << "  --l3-timeout <s>      L3 idle timeout (default 30)\n";
 }
@@ -92,6 +94,7 @@ int main(int argc, char** argv) {
         std::size_t l3_capacity = 250000;
         std::size_t l4_timeout = 120;
         std::size_t l3_timeout = 30;
+        unsigned l4_sport_key_bits = 16;
         bool l4_only = false;
         for (int index = 2; index < argc; ++index) {
             const std::string option = argv[index];
@@ -112,6 +115,8 @@ int main(int argc, char** argv) {
                 if (classifier_file.empty()) throw std::runtime_error("--classifier-file must not be empty");
             }
             else if (option == "--mtu") mtu = parse_size(option, argv[index], 576, 65535);
+            else if (option == "--l4-sport-key-bits")
+                l4_sport_key_bits = static_cast<unsigned>(parse_size(option, argv[index], 0, 16));
             else if (option == "--l4-capacity")
                 l4_capacity = parse_size(option, argv[index], 1, 100000000);
             else if (option == "--l3-capacity")
@@ -132,7 +137,7 @@ int main(int argc, char** argv) {
         ExitAdapterRoutes routes(
             l3_capacity, l4_capacity,
             std::chrono::seconds(l3_timeout),
-            std::chrono::seconds(l4_timeout), l4_only);
+            std::chrono::seconds(l4_timeout), l4_only, l4_sport_key_bits);
         AdapterStats stats;
         ThroughputStats throughput({"tun_rx", "tun_tx", "switch_rx", "switch_tx"});
         const auto started_at = std::chrono::steady_clock::now();

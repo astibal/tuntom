@@ -367,6 +367,18 @@ See the [shared ingress classifier](docs/PACKET_CLASSIFIER.md) and
 [example rules](examples/ingress.classifier); tuntom supports the same classifier
 for authenticated UDP DATA entering its switch interface.
 
+`--l4-sport-key-bits N` keeps the high N bits of the source port in the
+switch-to-TUN direction when forming the L4 cache key (0..16, default 16).
+The default preserves exact tuples. With 8 bits, groups of 256 client ports
+share one entry; with 0 bits, the client port is ignored. IP addresses,
+protocol and server port remain exact. Each pool shares its label stack,
+LRU position and idle timeout; the last learned stack applies to the whole
+pool, including ports not individually observed. Return lookups mask the
+corresponding destination port. L3 fallback is unchanged, and this option
+also works with `--l4-only`. Flow dumps show the masked return-key port
+(the start of the pool). Pooling can reduce cache size and allocation churn;
+CPU savings depend on the workload.
+
 On a route miss, `--default-back=on` returns an `EXIT` frame to the ingress
 port. The IPC format and exact fail-closed behavior are specified in
 [switch protocol v1](docs/SWITCH_PROTOCOL_V1.md).
