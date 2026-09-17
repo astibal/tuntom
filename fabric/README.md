@@ -195,6 +195,35 @@ stejné 24h SQLite cache, včetně mezer a příčin chyb sběru. F5 je obnoví 
 procesová historie. IP+port identifikuje sledovaný cíl; historie neslouží jako
 identita fyzického stroje, pokud na stejné IP později poběží jiný host.
 
+## Flows a labely (control snapshot)
+
+Podpora `show flows` z commitu `95ef9d7`: v navigaci otevři **Flows a labely**,
+vyber proces a stiskni **Načíst flows**. Funguje také přes oddělený collector,
+bez `--allow-write`. Po aktualizaci restartuj collector i web a obnov stránku;
+daemon musí obsahovat podporu tohoto příkazu.
+
+- Souhrn tabulek a labelů, filtry IP/portů/labelů/kontextu, TCP/UDP/L3,
+  řazení podle idle, stránkování po 50 řádcích a export JSON.
+- Labely mají přesné 64bitové hodnoty, přepínač DEC/HEX a zachované pořadí
+  v zásobníku. Kliknutí na label v souhrnu nastaví filtr.
+- L3/L4 cache exit adaptéru ukazuje **návratový směr**. `routes` ukazuje
+  dopředný klíč a uchované client/server kontexty DIVERT/VIA včetně path,
+  chain, step, origin, cookie, action a reverse. Přesná data jsou rozbalovací.
+- Admission tabulky jsou historie učení, nikoli seznam prokazatelně živých
+  spojení. `labels=unknown` se liší od prázdného zásobníku.
+  `tracking=none` u tunelu/switche neznamená nulový provoz.
+- Počet flows je počet řádků; stejná tuple může být ve více tabulkách.
+  Souhrn labelů počítá řádky s daným labelem, nikoli opakování v zásobníku.
+  Metadata DIVERT body se nepočítají jako labely.
+
+Snapshoty se načítají **pouze ručně**, neukládají se do historie telemetrie.
+Velký dump může dočasně zdržet daemon při zpracování paketů. Fabric přijme
+nejvýše 8 MiB odpovědi a povolí jeden souběžný dump. Do UI vrací nejvýše
+2 000 řádků / 2 MiB dat řádků, souhrny však počítá z celé přijaté odpovědi.
+Souhrn ukazuje nejvýše 128 labelů. Zkrácení je viditelně označené;
+filtry i JSON export pracují s vrácenou podmnožinou. Pro větší dump použij
+`tuntomctl show flows`.
+
 ## Co už umí
 
 - Najít tunely `tuntom`, `tuntom_42c`, `tuntom_42_1s`, oba switche, adaptéry,
@@ -300,6 +329,7 @@ aby se neztratila přesnost uint64.
 | POST | `/api/v1/endpoints/{id}/rules/check` | Validace a diff vůči právě aktivním pravidlům |
 | POST | `/api/v1/endpoints/{id}/rules/load` | Validace a runtime load; vyžaduje `--allow-write` |
 | GET | `/api/v1/endpoints/{id}/logs` | Omezený výpis logů, zdroj, čas a případné chyby |
+| GET | `/api/v1/endpoints/{id}/flows` | Ruční read-only snapshot flows a labelů, souhrny a příznaky zkrácení |
 | GET | `/api/v1/endpoints/{id}/diagnostics` | Sestavený diagnostický report vybraného procesu |
 
 Snapshot navíc obsahuje `collector`, u každého procesu `health`, `changes`

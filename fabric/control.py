@@ -18,7 +18,11 @@ class ControlError(Exception):
     """A well-formed rejection returned by the daemon."""
 
 
-def query(path, operation, body="", timeout=4, expected_pid=None, expected_start_ticks=None):
+class ResponseTooLarge(OSError):
+    """The announced reply exceeds the caller's bounded receive budget."""
+
+
+def query(path, operation, body="", timeout=4, expected_pid=None, expected_start_ticks=None, max_response_bytes=None):
     if operation not in ("stats", "flows", "show", "check", "load"):
         raise ValueError("unknown control operation")
     if not isinstance(body, str):
@@ -72,6 +76,8 @@ def query(path, operation, body="", timeout=4, expected_pid=None, expected_start
         if not match or int(match[2]) > (MAX_FLOWS if operation == "flows" else MAX_BODY):
             raise OSError("invalid framed control response")
         length = int(match[2])
+        if max_response_bytes is not None and length > max_response_bytes:
+            raise ResponseTooLarge("control response exceeds configured receive limit")
         result = bytearray()
         while len(result) < length:
             result.extend(receive(min(CHUNK, length - len(result))))

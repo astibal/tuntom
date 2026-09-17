@@ -22,7 +22,8 @@ import threading
 import time
 from urllib.parse import unquote, urlsplit, parse_qs
 
-from control import ControlError, MAX_BODY, query
+from control import ControlError, ResponseTooLarge, MAX_BODY, query
+from flows import parse_flows, MAX_FLOW_REPLY
 from errors import APIError
 from discovery import discover, stat_fields
 from logs import read_logs
@@ -79,6 +80,7 @@ class Fabric:
         self.endpoints = {}
         self.discovery_info = {"source": "procfs", "status": "pending"}
         self.action_lock = threading.Lock()
+        self.flow_lock = threading.Lock()
         self.mutex = threading.Lock()
         self.stop = threading.Event()
         self.wake = threading.Event()
@@ -112,7 +114,8 @@ class Fabric:
         namespace = os.readlink("/proc/self/ns/mnt")
         if endpoint.mount_namespace and endpoint.mount_namespace != namespace:
             raise OSError("control socket is in a different mount namespace")
-        return query(endpoint.control, operation, body, timeout=3,
+        return query(endpoint.control, operation, body, timeout=8 if operation == "flows" else 3,
+                     max_response_bytes=MAX_FLOW_REPLY if operation == "flows" else None,
                      expected_pid=endpoint.pid, expected_start_ticks=endpoint.start_ticks)
 
     def _sample(self, endpoint):
@@ -208,6 +211,23 @@ class Fabric:
             return {**read_logs(self.endpoint(key)), "sampled_at": now()}
         except (OSError, ValueError) as error:
             raise APIError(502, str(error)) from error
+
+    def flows(self, key):
+        # Read-only and on demand. Serialize large dumps without queuing callers.
+        if not self.flow_lock.acquire(blocking=False):
+            raise APIError(429, "another flow snapshot is in progress; retry shortly")
+        try:
+            endpoint = self.endpoint(key)
+            result = parse_flows(self.control_query(endpoint, "flows"), endpoint.pid)
+            return {**result, "endpoint_id": key, "sampled_at": now()}
+        except ResponseTooLarge as error:
+            raise APIError(413, "flow snapshot exceeds Fabric's 8 MiB limit; use tuntomctl show flows") from error
+        except ControlError as error:
+            raise APIError(422, str(error)) from error
+        except (OSError, ValueError) as error:
+            raise APIError(502, "flow snapshot unavailable or invalid; daemon must support show flows: " + str(error)) from error
+        finally:
+            self.flow_lock.release()
 
     def diagnostics(self, key):
         endpoint = self.endpoint(key)
@@ -382,7 +402,7 @@ class Handler(BaseHTTPRequestHandler):
                 if set(params) - {"after", "until"} or any(len(v) != 1 or not re.fullmatch(r"[0-9]{1,16}", v[0]) for v in params.values()):
                     raise APIError(400, "invalid history query")
                 return self.respond(200, self.server.fabric.history(unquote(match[1]), {k:int(v[0]) for k,v in params.items()}))
-            match = re.fullmatch(r"/api/v1/endpoints/([^/]+)/(logs|diagnostics)", path)
+            match = re.fullmatch(r"/api/v1/endpoints/([^/]+)/(logs|diagnostics|flows)", path)
             if match and self.command == "GET":
                 action = getattr(self.server.fabric, match[2])
                 return self.respond(200, action(unquote(match[1])))

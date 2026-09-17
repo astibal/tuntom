@@ -67,9 +67,9 @@ class CollectorHandler(socketserver.BaseRequestHandler):
             elif operation == "refresh":
                 fabric.wake.set()
                 result = {"result": "discovery scheduled"}
-            elif operation in {"show", "check", "load", "logs", "diagnostics"} and isinstance(key, str):
+            elif operation in {"show", "check", "load", "logs", "diagnostics", "flows"} and isinstance(key, str):
                 # The caller supplies a discovered identity, never a path or command.
-                if operation in {"logs", "diagnostics"}:
+                if operation in {"logs", "diagnostics", "flows"}:
                     result = getattr(fabric, operation)(key)
                 else:
                     result = fabric.rules(key, operation, request.get("body"))
@@ -169,6 +169,9 @@ class RemoteFabric:
 
     def logs(self, key):
         return self.call("logs", key)
+
+    def flows(self, key):
+        return self.call("flows", key)
 
     def diagnostics(self, key):
         return self.call("diagnostics", key)

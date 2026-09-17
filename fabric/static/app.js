@@ -102,6 +102,33 @@ const messages = {
   ruleset:["Sada pravidel","Ruleset","Jeu de règles"],
   checkRules:["Ověřit a zobrazit diff","Validate and show diff","Valider et afficher le diff"],
   loadRules:["Načíst do switche","Load into switch","Charger dans le switch"],
+  flowsTitle:["Flows a labely","Flows and labels","Flows et labels"],
+  flowsHint:["Snímek uchovaných flow kontextů na vyžádání. Bez automatického pollingu.","On-demand snapshot of retained flow contexts. No automatic polling.","Instantané des contextes conservés, à la demande. Sans interrogation automatique."],
+  flowsRead:["↻ Načíst flows","↻ Read flows","↻ Lire les flows"],
+  flowsNotRead:["Načti snímek vybraného procesu. Velké tabulky mohou na chvíli zdržet zpracování paketů.","Read a snapshot of the selected process. Large tables can briefly delay packet processing.","Lis un instantané du processus sélectionné. Les grandes tables peuvent retarder brièvement les paquets."],
+  flowsNone:["Tento proces nesleduje per-IP flows (tracking=none). Neznamená to nulový provoz.","This process does not track per-IP flows (tracking=none). This does not mean zero traffic.","Ce processus ne suit pas les flows IP (tracking=none). Cela ne signifie pas une absence de trafic."],
+  flowsSemantics:["L3/L4: návratový směr exit adaptéru. Routes: dopředný klíč a uložené client/server kontexty před změnou směru. Admission tabulky jsou historie učení, nikoli důkaz živého spojení; jejich labely nejsou známé.","L3/L4: exit-adapter return direction. Routes: forward key and stored client/server contexts before direction changes. Admission tables are learning history, not proof of live connections; their labels are unknown.","L3/L4 : sens retour de l’adaptateur exit. Routes : clé aller et contextes client/server conservés avant changement de sens. Les tables d’admission sont un historique d’apprentissage, pas des connexions confirmées ; leurs labels sont inconnus."],
+  flowsCount:["ŘÁDKY SNÍMKU","SNAPSHOT ROWS","LIGNES DE L’INSTANTANÉ"],
+  flowsRetained:["CACHE / ROUTES","CACHE / ROUTES","CACHE / ROUTES"],
+  flowsAdmission:["ADMISSION / UČENÍ","ADMISSION / LEARNING","ADMISSION / APPRENTISSAGE"],
+  flowsDistinct:["UNIKÁTNÍ LABELY","DISTINCT LABELS","LABELS DISTINCTS"],
+  flowsLimit:["Zobrazuje se {shown} z {total} řádků. Filtry procházejí pouze zobrazenou část; kompletní dump získáš přes tuntomctl show flows.","Showing {shown} of {total} rows. Filters cover only the returned subset; use tuntomctl show flows for the complete dump.","{shown} lignes affichées sur {total}. Les filtres portent sur cette partie ; utilise tuntomctl show flows pour le dump complet."],
+  flowsLabelsHint:["Labely napříč snímkem · počet řádků, ve kterých se label vyskytuje. Kliknutím filtruješ. Pořadí v zásobníku se zachovává.","Labels across the snapshot · count of rows containing each label. Click to filter. Stack order is preserved.","Labels de l’instantané · nombre de lignes contenant chaque label. Clique pour filtrer. L’ordre de pile est conservé."],
+  flowsLabelsLimit:["Přehled labelů je omezen na 128 nejčastějších.","Label summary is limited to the 128 most frequent labels.","Le résumé affiche les 128 labels les plus fréquents."],
+  flowSearch:["IP, port, label nebo kontext","IP, port, label or context","IP, port, label ou contexte"],
+  flowTable:["Tabulka","Table","Table"], flowAll:["Vše","All","Tout"],
+  flowProtocol:["Protokol","Protocol","Protocole"], flowOther:["Ostatní","Other","Autres"],
+  flowOrder:["Řazení","Order","Tri"], flowOriginal:["Pořadí snímku","Snapshot order","Ordre de l’instantané"],
+  flowRecent:["Nejkratší idle","Shortest idle","Idle le plus court"], flowSource:["Zdroj","Source","Source"],
+  flowLabels:["Labely","Labels","Labels"], flowTuple:["Směr / tuple","Direction / tuple","Sens / tuple"],
+  flowIdle:["Idle ve snímku","Idle at snapshot","Idle à l’instantané"], flowContext:["Kontext","Context","Contexte"],
+  flowPrevious:["← Předchozí","← Previous","← Précédent"], flowNext:["Další →","Next →","Suivant →"],
+  flowPage:["{from}–{to} / {count} filtrovaných řádků","{from}–{to} / {count} filtered rows","{from}–{to} / {count} lignes filtrées"],
+  flowUnknownLabels:["Labely nejsou uchované","Labels not retained","Labels non conservés"],
+  flowEmptyStack:["Prázdný zásobník","Empty stack","Pile vide"],
+  flowNoRows:["Žádné odpovídající řádky.","No matching rows.","Aucune ligne correspondante."],
+  flowExact:["Přesná data řádku","Exact row data","Données exactes de la ligne"],
+  flowRefreshFailed:["Obnova selhala; ponechávám předchozí snímek.","Refresh failed; keeping the previous snapshot.","Actualisation échouée ; instantané précédent conservé."],
   syspiperTitle:["Uzly / Syspiper","Nodes / Syspiper","Nœuds / Syspiper"],
   syspiperHint:["Systémové metriky známých IP Tuntom sítě. Sběr zajišťuje backend.","System metrics for known Tuntom IPs. Collected by the backend.","Métriques système des IP Tuntom connues. Collectées par le backend."],
   syspiperDisabled:["Syspiper není zapnutý. Nastav klíč v backendu (na collectoru při odděleném sběru).","Syspiper is disabled. Configure its key in the backend (on the separate collector when used).","Syspiper est désactivé. Configure sa clé sur le backend (collecteur séparé si utilisé)."],
@@ -397,6 +424,7 @@ class WarningHistory {
 
 const $ = id => document.getElementById(id);
 const state = {data: null, selected: null, view: "overview", paused: false, busy: false,
+  flows: new Map(), flowBusy: false, flowPage: 0,
   history: new Map(), historyLoads: new Map(), chartRange: 300000, chartNow: Date.now(), drafts: new Map(), logs: new Map(), reports: new Map(), diagnosticBusy: false,
   warnings: new WarningHistory(), warningsLayout: "", chartDialog: null,
   token: "", failure: "", loginError: "", ruleBusy: false};
@@ -570,7 +598,7 @@ async function refresh(force = false) {
     if (!data.endpoints.some(e => e.id === state.selected)) state.selected = data.endpoints[0]?.id || null;
     const present = new Set([...data.endpoints.map(e => e.id),...(data.syspiper?.nodes || []).map(n=>n.id)]);
     for (const id of state.history.keys()) if (!present.has(id)) state.history.delete(id);
-    for (const map of [state.logs,state.reports,state.historyLoads]) for (const id of map.keys()) if (!present.has(id)) map.delete(id);
+    for (const map of [state.logs,state.reports,state.historyLoads,state.flows]) for (const id of map.keys()) if (!present.has(id)) map.delete(id);
     state.chartNow = Date.parse(data.generated_at) || Date.now();
     for (const e of data.endpoints) {
       const history = state.history.get(e.id) || new ThroughputHistory();
@@ -614,7 +642,7 @@ function render() {
   const ports = endpoints.filter(e => e.kind === "switch" && /^\d+$/.test(e.metrics.connections_current || ""));
   $("count-ports").textContent = ports.length ? ports.reduce((n,e) => n + BigInt(e.metrics.connections_current), 0n).toString() : "—";
   notice(); renderProcesses(); renderDetail(); renderTopology(); renderMetrics(); renderRules();
-  renderHealth(); renderSwitch(); renderDiagnostics(); renderWarnings(); renderSyspiper();
+  renderHealth(); renderSwitch(); renderDiagnostics(); renderWarnings(); renderSyspiper(); renderFlows();
 }
 function renderProcesses() {
   if (!state.data) return;
@@ -962,12 +990,13 @@ async function ruleAction(operation) {
 function showView(view) {
   state.view=view;
   document.querySelectorAll("[data-view]").forEach(b=>b.classList.toggle("active",b.dataset.view === state.view));
-  for (const name of ["overview","metrics","rules","switch","diagnostics","syspiper"]) $("view-"+name).hidden = view !== name;
+  for (const name of ["overview","metrics","rules","switch","diagnostics","syspiper","flows"]) $("view-"+name).hidden = view !== name;
   $("view-"+view).scrollIntoView({block:"start"});
   if (view === "overview") drawChart();
   if (view === "diagnostics" && selected() && !state.logs.has(state.selected)) readLogs();
 }
 function selectProcess(id, view) {
+  if (state.selected!==id) state.flowPage=0;
   state.selected=id; render(); loadHistory(id);
   if (view) showView(view);
   else if (state.view === "diagnostics" && !state.logs.has(id)) readLogs();
@@ -1089,6 +1118,78 @@ function renderSwitch() {
     return `<article class="worker-card"><div class="worker-title"><span>WORKER / ${esc(worker.index)} ${metricInfo(`worker_${worker.index}_cpu_ns`)}</span><strong>${cpu === null ? "—" : esc(cpu.toLocaleString(locale(),{maximumFractionDigits:1}))+" %"}</strong></div><button class="worker-chart" data-worker-chart="${worker.index}" data-chart-process="${esc(sw.id)}" aria-label="${esc(t("chartWorkerExpand",{worker:worker.index}))}" aria-haspopup="dialog" title="${esc(chartValue(cpu,true))} · ${esc(t("chartExpand"))}"><meter min="0" max="100" value="${cpu ?? 0}" aria-hidden="true"></meter><span>${esc(t("chartExpand"))} ↗</span></button><p>${esc(worker.roles === "idle" ? t("workerIdle") : worker.roles)}</p><dl><dt>${esc(t("connectedPorts"))}</dt><dd>${ports.map(port=>esc(port.name)).join(", ") || "—"}</dd><dt>poll calls Δ ${metricInfo(`worker_${worker.index}_poll_calls`)}</dt><dd>${deltaText(sw,`worker_${worker.index}_poll_calls`)}</dd></dl></article>`;
   }).join("") : `<p class="muted">${esc(t("noWorkerStats"))}</p>`;
 }
+// Keep label integers as strings/BigInt throughout filtering and presentation.
+function flowLabel(value, format) { return format === "hex" ? value : BigInt(value).toString(); }
+function flowMatches(row, query) {
+  const values=Object.values(row).flatMap(value=>Array.isArray(value) ? value.flatMap(label=>[label,BigInt(label).toString()]) : [value ?? "unknown"]);
+  return query.toLowerCase().split(/\s+/).filter(Boolean).every(part=>values.join(" ").toLowerCase().includes(part));
+}
+function flowStack(values) {
+  if (values === null) return `<span class="muted">${esc(t("flowUnknownLabels"))}</span>`;
+  if (!values.length) return `<span class="muted">${esc(t("flowEmptyStack"))}</span>`;
+  const format=$("flow-label-format").value;
+  return values.slice(0,8).map((label,index)=>`<span class="flow-label" title="${esc(label+" · "+BigInt(label).toString())}"><small>${index+1}</small>${esc(flowLabel(label,format))}</span>`).join('<span class="flow-arrow">→</span>')+(values.length>8 ? `<span>+${values.length-8}</span>` : "");
+}
+function flowContext(row) {
+  return ["client","server"].map(side=>{
+    const fields=["chain","step","origin","cookie","action","reverse"].filter(key=>row[side+"_"+key]!==undefined);
+    const body=row[side+"_divert_body"];
+    if (!fields.length && !body) return "";
+    return `<div class="flow-context"><strong>${side} · ${body ? "DIVERT" : "VIA"}</strong>${fields.map(key=>`<span>${key} <code>${esc(key==="action" ? (({0:"offer",1:"onward",2:"bypass",3:"complete"}[row[side+"_"+key]] || "?")+" ("+row[side+"_"+key]+")") : row[side+"_"+key])}</code></span>`).join("")}${body ? `<span>body <code>${esc(body.join(", ") || "[]")}</code></span>` : ""}</div>`;
+  }).join("");
+}
+async function readFlows() {
+  const e=selected(); if (!e?.control || state.flowBusy) return;
+  state.flowBusy=true; renderFlows();
+  const previous=state.flows.get(e.id);
+  try {
+    const data=await api(`/api/v1/endpoints/${encodeURIComponent(e.id)}/flows`);
+    if (state.data?.endpoints.some(p=>p.id===e.id)) state.flows.set(e.id,{data});
+    state.flowPage=0;
+  } catch(error) {
+    state.flows.set(e.id,{data:previous?.data,error:error.message});
+  } finally { state.flowBusy=false; renderFlows(); }
+}
+function renderFlows() {
+  const e=selected(), entry=state.flows.get(e?.id), data=entry?.data;
+  $("flows-title").textContent=e ? `${t("flowsTitle")} · ${e.name}` : t("flowsTitle");
+  $("flows-read").disabled=!e?.control || state.flowBusy;
+  $("flows-export").disabled=!data;
+  $("flows-status").textContent=[state.flowBusy ? t("working") : "",entry?.error ? diagnostic(entry.error) : "",entry?.error && data ? t("flowRefreshFailed") : "",
+    data ? new Date(data.sampled_at).toLocaleString(locale())+" · PID "+e.pid : t("flowsNotRead"),
+    data?.truncated ? t("flowsLimit",{shown:data.returned_count,total:data.flow_count}) : ""].filter(Boolean).join(" ");
+  $("flows-context").textContent=t(data?.tracking === "none" ? "flowsNone" : "flowsSemantics");
+  $("flows-summary").innerHTML=data ? [["flowsCount",data.flow_count],["flowsRetained",data.flow_count-data.admission_count],["flowsAdmission",data.admission_count],["flowsDistinct",data.label_count]].map(([key,n])=>`<article><span>${esc(t(key))}</span><strong>${n.toLocaleString(locale())}</strong></article>`).join("") : "";
+  const format=$("flow-label-format").value;
+  $("flows-labels").innerHTML=data?.labels.length ? `<p>${esc(t("flowsLabelsHint"))}</p><div>${data.labels.map(label=>`<button class="flow-label" data-flow-label="${esc(label.value)}" title="${esc(label.value+" · "+BigInt(label.value).toString())}">${esc(flowLabel(label.value,format))}<small>×${label.rows}</small></button>`).join("")}</div>${data.labels_truncated ? `<p>${esc(t("flowsLabelsLimit"))}</p>` : ""}` : "";
+  const table=$("flow-table").value;
+  const options=`<option value="">${esc(t("flowAll"))}</option>`+Object.keys(data?.table_counts || {}).map(key=>`<option value="${esc(key)}">${esc(key)} (${data.table_counts[key]})</option>`).join("");
+  if ($("flow-table").innerHTML!==options) { $("flow-table").innerHTML=options; $("flow-table").value=Object.hasOwn(data?.table_counts || {},table) ? table : ""; }
+  const proto=$("flow-protocol").value, query=$("flow-search").value;
+  const rows=(data?.rows || []).filter(row=>(!$("flow-table").value || row.table===$("flow-table").value) &&
+    (!proto || (proto==="l3" ? row.protocol===undefined : proto==="other" ? row.protocol!==undefined && !["6","17"].includes(row.protocol) : row.protocol===proto)) && flowMatches(row,query));
+  if ($("flow-order").value==="idle") rows.sort((a,b)=>a.idle_ms===undefined ? (b.idle_ms===undefined ? 0 : 1) : b.idle_ms===undefined ? -1 : BigInt(a.idle_ms)<BigInt(b.idle_ms) ? -1 : BigInt(a.idle_ms)>BigInt(b.idle_ms) ? 1 : 0);
+  if ($("flow-order").value==="source") rows.sort((a,b)=>a.src.localeCompare(b.src));
+  state.flowPage=Math.min(state.flowPage,Math.max(0,Math.ceil(rows.length/50)-1));
+  const start=state.flowPage*50, page=rows.slice(start,start+50);
+  const open=new Set([...$("flows-rows").querySelectorAll('details[open]')].map(el=>el.dataset.flowRow));
+  const address=(ip,port)=>port===undefined ? ip : (ip.includes(":") ? `[${ip}]` : ip)+":"+port;
+  $("flows-rows").innerHTML=page.map(row=>{
+    const stackKeys=["labels","client_labels","server_labels","client_saved_labels","server_saved_labels"];
+    const rowKey=JSON.stringify(row);
+    const protocol=row.protocol===undefined ? "L3" : ({6:"TCP",17:"UDP",1:"ICMP",58:"ICMPv6"}[row.protocol] || "IP "+row.protocol);
+    return `<tr><td><span class="tag">${esc(row.table)}</span><small class="cell-note">IPv${row.ip_version} · ${esc(protocol)}</small></td><td class="flow-tuple"><code>${esc(address(row.src,row.src_port))}</code><span class="flow-arrow">↓</span><code>${esc(address(row.dst,row.dst_port))}</code></td><td class="flow-idle">${row.idle_ms===undefined ? "—" : esc(BigInt(row.idle_ms).toLocaleString(locale()))+" ms"}</td><td>${stackKeys.filter(key=>Object.hasOwn(row,key)).map(key=>`<div class="flow-stack"><small>${esc(key)}</small><div>${flowStack(row[key])}</div></div>`).join("") || "—"}</td><td>${row.path!==undefined ? `<span class="tag">path ${esc(row.path)}</span>` : ""}${flowContext(row)}<details data-flow-row="${esc(rowKey)}" ${open.has(rowKey) ? "open" : ""}><summary>${esc(t("flowExact"))}</summary><pre>${esc(JSON.stringify(row,null,2))}</pre></details></td></tr>`;
+  }).join("") || `<tr><td colspan="5">${esc(t("flowNoRows"))}</td></tr>`;
+  $("flows-page").textContent=t("flowPage",{from:rows.length ? start+1 : 0,to:Math.min(start+50,rows.length),count:rows.length});
+  $("flows-prev").disabled=state.flowPage===0;
+  $("flows-next").disabled=start+50>=rows.length;
+}
+$("flows-read").addEventListener("click",readFlows);
+$("flows-export").addEventListener("click",()=>{const data=state.flows.get(state.selected)?.data;if(data)download(JSON.stringify(data,null,2),`tuntom-flows-${selected().pid}.json`);});
+for (const id of ["flow-search","flow-table","flow-protocol","flow-order","flow-label-format"]) $(id).addEventListener(id==="flow-search" ? "input" : "change",()=>{state.flowPage=0;renderFlows();});
+$("flows-prev").addEventListener("click",()=>{state.flowPage--;renderFlows();});
+$("flows-next").addEventListener("click",()=>{state.flowPage++;renderFlows();});
+$("flows-labels").addEventListener("click",event=>{const button=event.target.closest("[data-flow-label]");if(button){$("flow-search").value=button.dataset.flowLabel;state.flowPage=0;renderFlows();}});
 function renderDiagnostics() {
   const e=selected(), logs=state.logs.get(e?.id), report=state.reports.get(e?.id);
   $("diagnostic-title").textContent=e ? `${e.name} · PID ${e.pid}` : t("diagnostics");
