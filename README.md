@@ -521,3 +521,5 @@ deployment.
 | [docs/PROTOCOL_V5.md](docs/PROTOCOL_V5.md) | Wire format, handshake, and cryptographic constructions |
 | [CMakeLists.txt](CMakeLists.txt) | Local build and CTest targets |
 | [LICENSE.md](LICENSE.md) | BSD 3-Clause license |
+
+UDP buffer options and bounded local EAGAIN retries: [UDP transport](docs/UDP_TRANSPORT.md).

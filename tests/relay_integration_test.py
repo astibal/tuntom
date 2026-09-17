@@ -37,7 +37,7 @@ def connect(path, name):
     return peer
 
 
-def run(binary, ctl, tunnel, root):
+def run(binary, ctl, tunnel, root, expect_queue=False):
     sw = Harness(binary, ctl, root, RULES)
     processes, logs, peers = [], [], []
     try:
@@ -61,7 +61,9 @@ def run(binary, ctl, tunnel, root):
                 args += ['--relay-connect', str(sw.data), '--relay-port-id', 'proxy-link']
             else:
                 args += ['127.0.0.1', '--relay-listen', str(remote)]
-            args += ['--no-stats']
+            control = root / ('hub.ctl' if server else 'remote.ctl')
+            control.unlink(missing_ok=True)  # Previous test process has exited.
+            args += ['--no-stats', '--control-socket', str(control)]
             process = subprocess.Popen(args, stdout=log, stderr=log,
                 env={**os.environ, 'TUNTOM_SECRET': '0123456789abcdef0123456789abcdef'})
             processes.append(process)
@@ -102,6 +104,14 @@ def run(binary, ctl, tunnel, root):
         large_labels = offer(huge)
         server.sendall(packet(action(large_labels),huge))
         assert decode(exit_port.recv(70000))[1] == huge
+        if expect_queue:
+            for name in ('hub', 'remote'):
+                output = subprocess.check_output([ctl, str(root / (name + '.ctl')), 'show', 'stats'], text=True)
+                stats = dict(line.split('=', 1) for line in output.splitlines())
+                assert int(stats['udp_tx_queue_eagain']) >= 1, (name, stats)
+                assert int(stats['udp_tx_queue_sent']) >= 1, (name, stats)
+                for key in ('udp_tx_queue_capacity_drops', 'udp_tx_queue_expired', 'udp_tx_queue_error_drops'):
+                    assert stats[key] == '0', (name, key, stats[key])
         # A duplicate local attachment cannot impersonate the relay service.
         duplicate = connect(sw.data,'proxy-in0~via:c:smithproxy#0')
         peers.append(duplicate)
@@ -129,8 +139,9 @@ def run(binary, ctl, tunnel, root):
 
 
 if __name__ == '__main__':
-    st, mp, ctl, tunnel = sys.argv[1:]
+    st, mp, ctl, tunnel = sys.argv[1:5]
+    expect_queue = sys.argv[5:] == ['--expect-queue']
     for binary in (st,mp):
         with tempfile.TemporaryDirectory(prefix='tuntom-relay-') as root:
-            run(binary,ctl,tunnel,Path(root))
+            run(binary,ctl,tunnel,Path(root),expect_queue)
         print('PASS remote IPC relay:',Path(binary).name)

@@ -23,6 +23,17 @@ bool parse_fails(std::vector<std::string> arguments) {
 }
 
 int main() {
+    require(Options{}.udp_send_buffer == 2097152 && Options{}.udp_receive_buffer == 2097152,
+            "effective default UDP buffers");
+    for (const auto* option : {"--udp-send-buffer", "--udp-receive-buffer"}) {
+        require(parse_fails({option}), "missing UDP buffer size");
+        require(parse_fails({option, "-1"}), "negative UDP buffer size");
+        require(parse_fails({option, "67108865"}), "oversize UDP buffer");
+        require(parse_fails({option, "2MB"}), "invalid UDP buffer suffix");
+        require(!parse_fails({option, "0"}), "OS default UDP buffer");
+        require(!parse_fails({option, "2097152"}), "2 MiB UDP buffer");
+    }
+
     require(parse_tunnel_id("42") == 42, "base tunnel ID changed");
     require(parse_tunnel_id("42_1") == 298, "member key is incorrect");
     require(parse_tunnel_id("255_63") == 16383, "maximum member key is incorrect");
@@ -34,6 +45,7 @@ int main() {
         require(rejected, "invalid tunnel/member ID accepted");
     }
     std::vector<std::string> arguments {
+        "--udp-send-buffer", "1048576", "--udp-receive-buffer", "0",
         "--switch-socket", "/run/tuntom/a.sock",
         "--switch-port-id", "edge-42",
         "--switch-label", "0x1234",
@@ -45,6 +57,7 @@ int main() {
     for (auto& argument : arguments) argv.push_back(argument.data());
     Options options;
     parse_options(static_cast<int>(argv.size()), argv.data(), 0, options);
+    require(options.udp_send_buffer == 1048576 && options.udp_receive_buffer == 0, "UDP buffer CLI values");
     require(options.switch_socket == "/run/tuntom/a.sock", "socket path lost");
     require(options.switch_port_id == "edge-42", "port ID lost");
     require(options.switch_label == 0x1234 and options.switch_label_set,

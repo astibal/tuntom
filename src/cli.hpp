@@ -23,6 +23,8 @@ inline void usage(const char* program_name) {
         << "  --mtu <n>             TUN/inner MTU (default 1500)\n"
         << "  --transport-mtu <n>   Transport MTU / initial PMTUD target "
            "(default 1400)\n"
+        << "  --udp-send-buffer <n> Effective SO_SNDBUF bytes (default 2097152; 0 = OS default)\n"
+        << "  --udp-receive-buffer <n> Effective SO_RCVBUF bytes (default 2097152; 0 = OS default)\n"
         << "  --pmtud               Enable automatic PMTUD (default)\n"
         << "  --no-pmtud            Disable PMTUD and keep --transport-mtu fixed\n"
         << "  --no-ttl-compensate   Do not compensate the extra "
@@ -154,6 +156,11 @@ inline void parse_options(
                 throw std::runtime_error("--switch-port-id must not be empty");
         } else if (option == "--switch-exit-node") {
             options.switch_exit_node = true;
+        } else if (option == "--udp-send-buffer" || option == "--udp-receive-buffer") {
+            if (++i >= argc) throw std::runtime_error(option + " requires a value");
+            const auto bytes = parse_size_option(option, argv[i], 0, 64 * 1024 * 1024);
+            if (option == "--udp-send-buffer") options.udp_send_buffer = bytes;
+            else options.udp_receive_buffer = bytes;
         } else if (option == "--mtu") {
             if (++i >= argc) {
                 throw std::runtime_error("--mtu requires a value");

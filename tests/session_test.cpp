@@ -54,8 +54,12 @@ void test_handshake_reordering_retransmission() {
     init = retry_init;
     auto response = receive(server, init).reply;
     require(receive(server, init).reply == response, "INIT duplicate changed RESPONSE");
+    auto generation = client.transmit_generation();
     auto confirm = receive(client, response).reply;
+    require(client.transmit_generation() != generation, "new TX keys must change queue generation");
+    generation = client.transmit_generation();
     require(receive(client, response).reply == confirm, "RESPONSE duplicate changed CONFIRM");
+    require(client.transmit_generation() == generation, "duplicate handshake must preserve queue generation");
     auto early = data(client);
     require(not receive(server, early).data, "DATA accepted before CONFIRM");
     auto activation = receive(server, confirm);
@@ -136,7 +140,9 @@ void test_restart_and_timeouts() {
     const auto lost_confirm = receive(ack_client, ack_response).reply;
     require(ack_client.tick(start + std::chrono::seconds(4)) == lost_confirm,
             "CONFIRM retry stopped before five seconds");
+    const auto candidate_generation = ack_client.transmit_generation();
     const auto new_attempt = ack_client.tick(start + std::chrono::seconds(5));
+    require(ack_client.transmit_generation() != candidate_generation, "candidate rollback must invalidate queued ciphertext");
     require(not new_attempt.empty() and new_attempt != lost_confirm and new_attempt != ack_init,
             "CONFIRM deadline did not restart at five seconds");
 }

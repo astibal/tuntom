@@ -3,6 +3,7 @@
 #include "privileges.hpp"
 #include "tun_device.hpp"
 #include "udp_endpoint.hpp"
+#include "udp_tx_queue.hpp"
 #include "switch_client.hpp"
 #include "packet_classifier.hpp"
 #include "ipc/switch_protocol.hpp"
@@ -62,6 +63,8 @@ public:
         } else {
             udp_.open_client(remote_host, port);
         }
+
+        udp_.configure_buffers(options_.udp_send_buffer, options_.udp_receive_buffer);
 
         if (!options_.relay_mode() && (options_.switch_socket.empty() or options_.switch_exit_node)) {
             tun_ = std::make_unique<TunDevice>(interface_name, options_.tun_mtu);
@@ -156,21 +159,28 @@ public:
                     if (control_) handle_control_request();
                     continue;
                 }
+                sync_udp_tx_session();
+                udp_tx_queue_.expire(UdpTxQueue::Clock::now());
                 update_stats_control();
                 descriptors.resize(4);
                 descriptors[0].fd = tun_ ? tun_->fd() : -1;
-                descriptors[0].events = POLLIN;
+                descriptors[0].events = udp_tx_queue_.empty() ? POLLIN : 0;
                 descriptors[1].fd = udp_.fd();
-                descriptors[1].events = POLLIN;
+                descriptors[1].events = static_cast<short>(POLLIN |
+                    (udp_tx_queue_.writable_interest(UdpTxQueue::Clock::now()) ? POLLOUT : 0));
                 descriptors[2].fd = switch_ ? switch_->fd() : -1;
                 descriptors[2].events = switch_ ? switch_->poll_events() : POLLIN;
+                if (!udp_tx_queue_.empty() && switch_ && switch_->connected())
+                    descriptors[2].events = static_cast<short>(descriptors[2].events & ~POLLIN);
                 descriptors[3].fd = control_ ? control_->poll_fd() : -1;
                 descriptors[3].events = POLLIN;
 
                 const auto timeout_at = AdaptivePolling::Clock::now();
-                int timeout = switch_ ? switch_->poll_timeout_ms(timeout_at, 1000) : 1000;
+                int timeout = switch_ && (udp_tx_queue_.empty() || !switch_->connected())
+                    ? switch_->poll_timeout_ms(timeout_at, 1000) : 1000;
                 if (control_) timeout = control_->poll_timeout_ms(timeout_at, timeout);
                 if (relay_) { relay_->descriptors(descriptors); timeout = std::min(timeout, 100); }
+                timeout = udp_tx_queue_.poll_timeout(timeout_at, timeout);
                 const auto poll_started = AdaptivePolling::Clock::now();
                 const int rc = ::poll(descriptors.data(), descriptors.size(), timeout);
                 const auto poll_finished = AdaptivePolling::Clock::now();
@@ -186,6 +196,7 @@ public:
                 if (control_ and (descriptors[3].revents & POLLIN)) {
                     handle_control_request();
                 }
+                if (descriptors[1].revents & POLLOUT) flush_udp_tx();
                 if (relay_) relay_->step([&](const std::uint8_t* p, std::size_t n) { send_data(p,n,PacketType::ipc); });
 
                 const bool initially_ready[3] {
@@ -201,9 +212,9 @@ public:
                     for (unsigned offset = 0; offset < 3; ++offset) {
                         const unsigned source = (next_data_source_ + offset) % 3;
                         if (round == 0 and not initially_ready[source]) continue;
-                        if (source == 0) progress |= try_handle_tun_packet();
+                        if (source == 0 && udp_tx_queue_.empty()) progress |= try_handle_tun_packet();
                         else if (source == 1) progress |= try_handle_udp_packet();
-                        else progress |= try_handle_switch_packet();
+                        else if (source == 2 && udp_tx_queue_.empty()) progress |= try_handle_switch_packet();
                     }
                     next_data_source_ = (next_data_source_ + 1) % 3;
                     if (not progress) break;
@@ -238,7 +249,9 @@ public:
                     {stats_.udp_tx_packets, stats_.udp_tx_bytes},
                     {stats_.switch_rx_packets, stats_.switch_rx_bytes},
                     {stats_.switch_tx_packets, stats_.switch_tx_bytes}});
-                send_handshake(protocol_v5_.tick(now));
+                const auto handshake = protocol_v5_.tick(now);
+                sync_udp_tx_session();
+                send_handshake(handshake);
 
                 if (
                     not server_mode_ and
@@ -296,6 +309,29 @@ protected:
     }
 
 private:
+    void sync_udp_tx_session() {
+        const auto generation = protocol_v5_.transmit_generation();
+        if (generation != udp_tx_generation_ || !protocol_v5_.ready()) udp_tx_queue_.discard();
+        udp_tx_generation_ = generation;
+    }
+
+    void flush_udp_tx() {
+        sync_udp_tx_session();
+        const auto sent = udp_tx_queue_.flush(UdpTxQueue::Clock::now(),
+            [&](const std::uint8_t* p, std::size_t n) { return udp_.send(p, n); });
+        stats_.udp_tx_packets += sent.packets;
+        stats_.udp_tx_bytes += sent.bytes;
+        stats_.fragments_tx += sent.packets;
+        if (sent.error) {
+            ++stats_.udp_send_errors;
+            if (sent.error == EMSGSIZE && options_.pmtud_auto) {
+                // Queued wire datagrams cannot be resized/re-encrypted safely.
+                udp_tx_queue_.discard();
+                restart_pmtud("queued data exceeded path MTU");
+            }
+        }
+    }
+
     // Called at most once per second, including when automatic stats are off.
     void report_reassembly_drops() {
         const auto& m = protocol_v5_.reassembly_metrics();
@@ -364,11 +400,11 @@ private:
     }
 
     bool data_backlog_ready() const {
-        if (switch_ && switch_->receive_pending()) return true;
+        if (udp_tx_queue_.empty() && switch_ && switch_->receive_pending()) return true;
         pollfd descriptors[3] {
-            {tun_ ? tun_->fd() : -1, POLLIN, 0},
+            {tun_ && udp_tx_queue_.empty() ? tun_->fd() : -1, POLLIN, 0},
             {udp_.fd(), POLLIN, 0},
-            {switch_ and switch_->connected() ? switch_->fd() : -1, POLLIN, 0},
+            {switch_ && switch_->connected() && udp_tx_queue_.empty() ? switch_->fd() : -1, POLLIN, 0},
         };
         const int ready = ::poll(descriptors, 3, 0);
         if (ready <= 0) return false;
@@ -460,6 +496,7 @@ private:
         const std::uint8_t* data,
         std::size_t size, PacketType type = PacketType::data) {
 
+        sync_udp_tx_session();
         if (not protocol_v5_.ready()) return;
         Packet& logical_packet = tx_logical_packet_;
         logical_packet.type = type;
@@ -489,6 +526,16 @@ private:
         const auto size_limit = logical_packet.payload.size() <= maximum + (type == PacketType::ipc ? 16 : 12)
             ? maximum + (type == PacketType::ipc ? 16 : 12) : maximum;
         const FragmentPlan plan = make_fragment_plan(logical_packet.payload.size(), size_limit, relay_ ? max_ipc_fragments_per_packet : max_fragments_per_packet);
+
+        udp_tx_queue_.expire(UdpTxQueue::Clock::now());
+        // Relay inputs also contain registration/control traffic and keep being
+        // serviced. Reject excess data before consuming sequence numbers, so a
+        // full queue cannot age its own retained packets out of the replay window.
+        if (!udp_tx_queue_.empty() &&
+            !udp_tx_queue_.fits(plan.count, logical_packet.payload.size() + plan.count * 64)) {
+            udp_tx_queue_.reject(plan.count);
+            return;
+        }
 
         const std::uint64_t message_id =
             message_id_generator_.next();
@@ -523,10 +570,24 @@ private:
             offset += fragment_size;
         }
 
+        const auto queued_at = UdpTxQueue::Clock::now();
+        udp_tx_queue_.expire(queued_at);
+        if (!udp_tx_queue_.empty()) {
+            // New data must not overtake a delayed prefix (replay window).
+            udp_tx_queue_.append(tx_encoded_fragments_.data(), plan.count, queued_at);
+            return;
+        }
         auto sent = udp_.send_batch(tx_encoded_fragments_.data(), std::min(plan.count,max_fragments_per_packet));
         while (!sent.error && sent.packets < plan.count) {
             const auto batch = udp_.send_batch(tx_encoded_fragments_.data()+sent.packets, std::min(plan.count-sent.packets,max_fragments_per_packet));
             sent.packets += batch.packets; sent.bytes += batch.bytes; sent.error = batch.error;
+        }
+        if (sent.error == EAGAIN || sent.error == EWOULDBLOCK || sent.error == EINTR) {
+            if (sent.error != EINTR) udp_tx_queue_.blocked(queued_at);
+            udp_tx_queue_.append(tx_encoded_fragments_.data() + sent.packets,
+                                 plan.count - sent.packets, queued_at);
+            // Queuing is not an OS send failure; queue drop counters cover overflow.
+            sent.error = 0;
         }
         if (tx_sample_active_ and sent.packets == plan.count)
             tx_processing_.finish(tx_sample_start_);
@@ -600,12 +661,15 @@ private:
                     init_warning_next_ = now + std::chrono::seconds(30);
                 } else ++init_warning_suppressed_;
             }
+            sync_udp_tx_session();
             // Replies to unconfirmed INIT go directly to its source, without
             // changing the active return path. Clients retain their configured peer.
             send_handshake(result.reply, server_mode_ ? &source : nullptr, source_length);
             session_update_peer = result.update_peer;
             session_activated_now = result.activated;
-            if (session_activated_now and session_update_peer) udp_.set_peer(source, source_length);
+            if (session_activated_now and session_update_peer) {
+                if (udp_.set_peer(source, source_length)) udp_tx_queue_.discard();
+            }
             if (session_activated_now) { relay_exchange_ = packet.message_id; session_activated(); }
             if (not result.data) {
                 if (result.replay_drop) ++stats_.drops_replay;
@@ -622,6 +686,7 @@ private:
             const bool peer_changed =
                 udp_.set_peer(source, source_length);
 
+            if (peer_changed) udp_tx_queue_.discard();
             if (
                 options_.pmtud_auto and
                 peer_changed) {
@@ -1490,6 +1555,10 @@ private:
             << "tun_rx_bytes=" << stats_.tun_rx_bytes << "\n"
             << "tun_tx_packets=" << stats_.tun_tx_packets << "\n"
             << "tun_tx_bytes=" << stats_.tun_tx_bytes << "\n"
+            << "udp_send_buffer_requested=" << options_.udp_send_buffer << "\n"
+            << "udp_receive_buffer_requested=" << options_.udp_receive_buffer << "\n"
+            << "udp_send_buffer_actual=" << udp_.send_buffer() << "\n"
+            << "udp_receive_buffer_actual=" << udp_.receive_buffer() << "\n"
             << "udp_rx_packets=" << stats_.udp_rx_packets << "\n"
             << "udp_rx_bytes=" << stats_.udp_rx_bytes << "\n"
             << "udp_tx_packets=" << stats_.udp_tx_packets << "\n"
@@ -1525,6 +1594,7 @@ private:
             << "switch_socket_other_errors=" << stats_.switch_socket_other_errors << "\n"
             << "switch_last_error_ts=" << stats_.switch_last_error_ts << "\n"
             << "switch_last_error_no=" << stats_.switch_last_error_no << "\n";
+        udp_tx_queue_.stats(output);
         if (switch_) switch_->write_stats(output);
         if (relay_) relay_->write_stats(output);
         classifier_.write_stats(output);
@@ -1614,6 +1684,8 @@ private:
 
     const ascon::key_type master_key_;
     SessionProtocol protocol_v5_;
+    UdpTxQueue udp_tx_queue_;
+    std::uint64_t udp_tx_generation_ = 0;
     SessionProtocol::Time init_warning_next_ {};
     std::uint64_t init_warning_suppressed_ = 0;
 

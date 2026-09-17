@@ -138,6 +138,28 @@ public:
         }
     }
 
+    // Effective Linux accounting limits, matching getsockopt/ss values.
+    // Linux doubles SO_*BUF requests; the caller supplies the effective size.
+    void configure_buffers(std::size_t send_bytes, std::size_t receive_bytes) {
+        const auto set = [&](int option, std::size_t bytes) {
+            if (bytes == 0) return; // Keep the OS default.
+            if (bytes > 64 * 1024 * 1024) throw std::runtime_error("UDP buffer exceeds 64 MiB");
+            const int request = static_cast<int>((bytes + 1) / 2);
+            if (::setsockopt(fd_, SOL_SOCKET, option, &request, sizeof(request)) < 0)
+                throw std::runtime_error("setsockopt UDP buffer: " + std::string(std::strerror(errno)));
+        };
+        set(SO_SNDBUF, send_bytes);
+        set(SO_RCVBUF, receive_bytes);
+        socklen_t length = sizeof(send_buffer_);
+        if (::getsockopt(fd_, SOL_SOCKET, SO_SNDBUF, &send_buffer_, &length) < 0)
+            throw std::runtime_error("getsockopt SO_SNDBUF failed");
+        length = sizeof(receive_buffer_);
+        if (::getsockopt(fd_, SOL_SOCKET, SO_RCVBUF, &receive_buffer_, &length) < 0)
+            throw std::runtime_error("getsockopt SO_RCVBUF failed");
+    }
+    int send_buffer() const { return send_buffer_; }
+    int receive_buffer() const { return receive_buffer_; }
+
     int fd() const {
         return fd_;
     }
@@ -258,6 +280,7 @@ public:
     }
 
 private:
+    int send_buffer_ = 0, receive_buffer_ = 0;
     bool peer_matches(
         const sockaddr_storage& peer,
         socklen_t peer_length) const {

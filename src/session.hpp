@@ -119,6 +119,9 @@ public:
             std::chrono::system_clock::now().time_since_epoch()).count();
     }
 
+    // Invalidates queued ciphertext when TX keys change, including rollback.
+    std::uint64_t transmit_generation() const { return transmit_generation_; }
+
     // Bound encrypted-suite key use independently of the 48-bit wire counter.
     // At UDP packet sizes this stays below 2^48 bytes per directional key.
     bool ready() const {
@@ -184,7 +187,7 @@ public:
             if (now - flight_started_ >= pending_lifetime) {
                 ++counters_.handshake_timeouts;
                 // An unconfirmed candidate must not remain usable forever.
-                if (waiting_ack_) active_ = std::move(previous_);
+                if (waiting_ack_) { active_ = std::move(previous_); ++transmit_generation_; }
                 waiting_ack_ = false;
                 flight_.clear();
                 client_init_.clear();
@@ -374,6 +377,7 @@ public:
             previous_ = std::move(active_);
             previous_until_ = now + old_lifetime;
             active_ = std::move(candidate);
+            ++transmit_generation_;
             waiting_ack_ = true;
             flight_ = std::move(flight);
             flight_started_ = last_retry_ = now;
@@ -401,6 +405,7 @@ public:
                 previous_ = std::move(active_);
                 previous_until_ = now + old_lifetime;
                 active_ = std::move(pending_);
+                ++transmit_generation_;
                 completed(now);
                 result.activated = result.update_peer = true;
             }
@@ -546,6 +551,7 @@ private:
     bool pfs_;
     Secret<32> client_secret_;
     ProtocolV5 handshake_;
+    std::uint64_t transmit_generation_ = 0;
     std::unique_ptr<Session> active_, previous_, pending_;
     Time previous_until_ {}, pending_until_ {}, last_received_ {};
     Time response_resend_after_ {};

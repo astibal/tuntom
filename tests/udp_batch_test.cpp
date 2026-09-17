@@ -107,6 +107,22 @@ int main() {
         exercise(1, {}, 0, EMSGSIZE, {});
         single_error = 0;
 
+        tuntom::UdpEndpoint configured;
+        configured.open_client("127.0.0.1", 9);
+        configured.configure_buffers(2 * 1024 * 1024, 2 * 1024 * 1024);
+        int actual = 0; socklen_t length = sizeof(actual);
+        require(::getsockopt(configured.fd(), SOL_SOCKET, SO_SNDBUF, &actual, &length) == 0 &&
+                actual == configured.send_buffer() && actual > 0 && actual <= 2097152,
+                "effective send buffer reflects kernel clamp/doubling");
+        length = sizeof(actual);
+        require(::getsockopt(configured.fd(), SOL_SOCKET, SO_RCVBUF, &actual, &length) == 0 &&
+                actual == configured.receive_buffer() && actual > 0 && actual <= 2097152,
+                "effective receive buffer reflects kernel clamp/doubling");
+        const int original_send = configured.send_buffer(), original_receive = configured.receive_buffer();
+        configured.configure_buffers(0, 0);
+        require(configured.send_buffer() == original_send && configured.receive_buffer() == original_receive,
+                "zero buffer settings leave socket defaults unchanged");
+
         tuntom::UdpEndpoint unopened;
         require(unopened.send_batch(nullptr, 0).error == 0, "empty batch");
         require(unopened.send_batch(nullptr, 65).error == EINVAL, "bounded batch");
