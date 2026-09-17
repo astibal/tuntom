@@ -46,10 +46,14 @@ def digest(text):
 def parse_stats(text):
     # Keep uint64 counters/labels as strings; JavaScript numbers lose precision.
     values = {}
-    for line in text.splitlines():
+    for number, line in enumerate(text.splitlines(), 1):
         key, separator, value = line.partition("=")
-        if not separator or not re.fullmatch(r"[a-zA-Z0-9_]+", key) or key in values:
-            raise OSError("invalid stats response")
+        # MP relay retry metrics include port names (e.g. proxy-in.path@node).
+        # Accept printable ASCII keys, excluding the key/value delimiter.
+        if not separator or not re.fullmatch(r"[\x21-\x3c\x3e-\x7e]+", key):
+            raise OSError(f"invalid stats response: malformed key/value at line {number}, key={key[:96]!r}")
+        if key in values:
+            raise OSError(f"invalid stats response: duplicate key at line {number}, key={key[:96]!r}")
         values[key] = value
     if values.get("format") != "txt" or values.get("format_version") != "1":
         raise OSError("unsupported stats format")

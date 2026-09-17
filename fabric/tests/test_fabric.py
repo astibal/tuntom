@@ -86,6 +86,17 @@ class DiscoveryTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 parse_stats(invalid)
 
+    def test_named_port_stats_keys(self):
+        key = "port_proxy-in.path@node_relay_ack_retry_packets"
+        stats = parse_stats(f"format=txt\nformat_version=1\n{key}=18446744073709551615\nport_0_name=proxy-in.path@node\nport_0_ipc_rx_packets=42\n")
+        self.assertEqual(stats[key], "18446744073709551615")
+        self.assertEqual(stats["port_0_ipc_rx_packets"], "42")
+        with self.assertRaisesRegex(OSError, "duplicate key at line 4"):
+            parse_stats(f"format=txt\nformat_version=1\n{key}=1\n{key}=2\n")
+        for key in ("bad key", "bad\tkey", "bad\x00key"):
+            with self.assertRaisesRegex(OSError, "malformed key/value at line 3"):
+                parse_stats(f"format=txt\nformat_version=1\n{key}=1\n")
+
     def test_topology_unknown_and_conflicting_namespaces(self):
         switch = {"id":"sw", "kind":"switch", "switch_socket":"/tmp/data", "mount_namespace":"mnt-a"}
         tunnel = {"id":"tn", "kind":"tunnel", "switch_socket":"/tmp/data", "mount_namespace":"", "port_id":"port"}
