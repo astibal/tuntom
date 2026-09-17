@@ -19,7 +19,8 @@ struct FragmentPlan {
 
 inline FragmentPlan make_fragment_plan(
     std::size_t packet_size,
-    std::size_t maximum_fragment_payload) {
+    std::size_t maximum_fragment_payload,
+    std::size_t limit = max_fragments_per_packet) {
 
     if (packet_size == 0 or maximum_fragment_payload == 0) {
         throw std::runtime_error("Invalid fragmentation parameters");
@@ -29,7 +30,7 @@ inline FragmentPlan make_fragment_plan(
         (packet_size + maximum_fragment_payload - 1) /
         maximum_fragment_payload;
 
-    if (count > max_fragments_per_packet) {
+    if (count > limit) {
         throw std::runtime_error(
             "Packet requires too many transport fragments");
     }

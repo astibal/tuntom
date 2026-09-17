@@ -65,5 +65,12 @@ int main() {
                          "--switch-label", "-1"}),
             "negative label accepted");
 
+    require(!parse_fails({"--relay-connect", "/tmp/switch", "--relay-port-id", "proxy-link"}), "valid hub relay rejected");
+    require(!parse_fails({"--relay-listen", "/tmp/adapters"}), "valid remote relay rejected");
+    require(parse_fails({"--relay-connect", "/tmp/switch"}), "relay without port ID accepted");
+    require(parse_fails({"--relay-port-id", "proxy-link"}), "relay ID without connect accepted");
+    require(parse_fails({"--relay-listen", "/tmp/a", "--relay-connect", "/tmp/b", "--relay-port-id", "p"}), "both relay roles accepted");
+    require(parse_fails({"--relay-listen", "/tmp/a", "--classifier-file", "/tmp/r"}), "mixed relay/classifier accepted");
+    require(parse_fails({"--relay-listen", ""}), "empty relay socket accepted");
     std::cout << "PASS: switch CLI dependencies and label parsing\n";
 }

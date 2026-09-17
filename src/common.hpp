@@ -27,6 +27,8 @@ inline constexpr std::size_t min_transport_mtu = 500;
 inline constexpr std::size_t pmtud_upper_mtu = 1500;
 inline constexpr int pmtud_probe_timeout_seconds = 2;
 inline constexpr std::size_t max_ip_packet_size = 65535;
+// Largest canonical switch frame (8 labels) plus the relay envelope.
+inline constexpr std::size_t max_ipc_packet_size = max_ip_packet_size + 72 + 32;
 
 inline constexpr int keepalive_seconds = 20;
 inline constexpr int rtt_probe_interval_seconds = 15;
@@ -36,6 +38,7 @@ inline constexpr std::size_t max_reassembly_entries = 512;
 inline constexpr std::size_t max_reassembly_bytes = 16 * 1024 * 1024;
 inline constexpr std::size_t max_reassembly_discarded = 32768;
 inline constexpr std::size_t max_fragments_per_packet = 64;
+inline constexpr std::size_t max_ipc_fragments_per_packet = 256;
 
 inline constexpr const char* runtime_user = "tuntom";
 inline constexpr const char* runtime_group = "tuntom";

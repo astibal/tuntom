@@ -53,7 +53,7 @@ template <class T> class Spsc {
 };
 
 constexpr std::size_t wire_capacity =
-    switch_base_header_size + switch_max_labels * switch_label_size + 65535;
+    switch_base_header_size + switch_max_labels * switch_label_size + 65535 + 32;
 
 struct alignas(64) Buffer {
     std::atomic<bool> used{false}; // FREE/USED is deliberately the first member.

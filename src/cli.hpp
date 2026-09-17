@@ -27,6 +27,9 @@ inline void usage(const char* program_name) {
         << "  --no-pmtud            Disable PMTUD and keep --transport-mtu fixed\n"
         << "  --no-ttl-compensate   Do not compensate the extra "
            "tuntom routing hop\n"
+        << "  --relay-connect <path>  Multiplex IPC to a local switch (no TUN)\n"
+        << "  --relay-port-id <name>  Identity of the relay connection at the switch\n"
+        << "  --relay-listen <path>   Listen for local adapter IPC clients (no TUN)\n"
         << "  --switch-socket <path>  Exchange labeled packets with tuntom-switch\n"
         << "  --switch-port-id <name> Stable identity of this switch connection\n"
         << "  --switch-ipc <mode>    auto (default), v1, inline (V2 without mmap)\n"
@@ -117,6 +120,11 @@ inline void parse_options(
             options.ttl_compensate = false;
         } else if (option == "--ttl-compensate") {
             options.ttl_compensate = true;
+        } else if (option == "--relay-connect" || option == "--relay-listen" || option == "--relay-port-id") {
+            if (++i >= argc || !argv[i][0]) throw std::runtime_error(option + " requires a value");
+            auto& value = option == "--relay-connect" ? options.relay_connect : option == "--relay-listen" ? options.relay_listen : options.relay_port_id;
+            if (!value.empty()) throw std::runtime_error("duplicate " + option);
+            value = argv[i];
         } else if (option == "--switch-socket") {
             if (++i >= argc) throw std::runtime_error("--switch-socket requires a value");
             options.switch_socket = argv[i];
@@ -209,6 +217,14 @@ inline void parse_options(
         }
     }
 
+    if (options.relay_mode()) {
+        if ((!options.relay_connect.empty() && !options.relay_listen.empty()) ||
+            (options.relay_connect.empty() != options.relay_port_id.empty()) ||
+            !options.switch_socket.empty() || !options.switch_port_id.empty() || options.switch_label_set ||
+            options.switch_exit_node || !options.classifier_file.empty())
+            throw std::runtime_error("relay requires connect + port ID or listen, exclusively of switch/classifier mode");
+        if (!options.relay_port_id.empty()) (void)encode_switch_registration(options.relay_port_id);
+    } else if (!options.relay_port_id.empty()) throw std::runtime_error("--relay-port-id requires --relay-connect");
     if (options.switch_socket.empty() and
         (options.switch_label_set or options.switch_exit_node or
          not options.switch_port_id.empty() or not options.classifier_file.empty())) {

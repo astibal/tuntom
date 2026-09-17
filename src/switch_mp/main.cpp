@@ -223,6 +223,7 @@ int main(int argc, char **argv) {
                     engine.replace(std::move(ports));
                 }
                 engine.drain_events();
+                engine.relay_maintenance();
                 descriptors.clear();
                 descriptors.push_back(
                     {pending.size() < capacity.pending && admission.ready(now) ? listener.fd() : -1,

@@ -7,6 +7,7 @@
 #include "../switch_ecmp.hpp"
 #include "../divert/switch.hpp"
 #include "../via/switch.hpp"
+#include "../relay/registry.hpp"
 #include "../adaptive_polling.hpp"
 #include "../control_socket.hpp"
 #include "../throughput_stats.hpp"
@@ -49,6 +50,7 @@ struct Connection {
     std::uint64_t identity = 0;
     tuntom::RulesProgram program;
     bool exit_role = false;
+    tuntom::relay::Registry relay;
 };
 
 struct SwitchStats {
@@ -264,10 +266,16 @@ int main(int argc, char** argv) {
             }
             if (!via_state) via_state = std::make_unique<tuntom::via::State>();
             std::vector<std::string> names;
-            for (const auto& c : connections)
-                if (c.fd >= 0 && !c.port.empty() && c.port != added) names.push_back(c.port);
+            std::map<std::string,std::string> bindings;
+            for (const auto& c : connections) if (c.fd >= 0 && !c.port.empty() && c.port != added) {
+                names.push_back(c.port);
+                if (c.relay.live()) for (const auto& item : c.relay.directory.channels) {
+                    if (!tuntom::via::accepted(*selected,item.second.name,c.port)) continue;
+                    names.push_back(item.second.name); bindings.emplace(item.second.name,c.port);
+                }
+            }
             if (!added.empty()) names.push_back(added);
-            return std::make_unique<tuntom::via::SwitchPath>(*via_state, std::move(selected), divert_config, std::move(names));
+            return std::make_unique<tuntom::via::SwitchPath>(*via_state, std::move(selected), divert_config, std::move(names), bindings);
         };
         divert_path = make_divert_path(ruleset);
         via_path = make_via_path(ruleset);
@@ -288,7 +296,7 @@ int main(int argc, char** argv) {
         std::vector<std::uint8_t> buffer(
             tuntom::switch_base_header_size +
             tuntom::switch_max_labels * tuntom::switch_label_size +
-            std::numeric_limits<std::uint16_t>::max());
+            std::numeric_limits<std::uint16_t>::max() + tuntom::relay::header_size);
         tuntom::AdaptivePolling adaptive_polling;
         std::size_t next_connection = 0;
         std::vector<pollfd> descriptors;
@@ -341,7 +349,7 @@ int main(int argc, char** argv) {
                 connection.fd = -1;
                 return true;
             }
-            const std::size_t size = static_cast<std::size_t>(received);
+            std::size_t size = static_cast<std::size_t>(received);
 
             if (connection.port.empty()) {
                 try {
@@ -396,9 +404,39 @@ int main(int argc, char** argv) {
                 }
             }
 
+            const std::string* ingress = &connection.port;
+            if (tuntom::relay::marked(buffer.data(),size)) {
+                tuntom::relay::View record;
+                if (!ruleset || !tuntom::relay::decode(buffer.data(),size,record) ||
+                    !tuntom::relay::configured(*ruleset,connection.port)) { ++stats.malformed_frames; return true; }
+                if (record.type == tuntom::relay::Type::snapshot) {
+                    std::vector<std::string> occupied;
+                    for (const auto& c : connections) if (&c != &connection && c.fd >= 0) {
+                        occupied.push_back(c.port);
+                        if (c.relay.live()) for (const auto& item : c.relay.directory.channels) occupied.push_back(item.second.name);
+                    }
+                    auto candidate = connection.relay; bool changed = false;
+                    if (!tuntom::relay::update(candidate,*ruleset,connection.port,record,occupied,changed)) {
+                        ++stats.registrations_invalid; return true;
+                    }
+                    auto previous = std::move(connection.relay); connection.relay = std::move(candidate);
+                    try { if (changed) via_path = make_via_path(ruleset); }
+                    catch (...) { connection.relay = std::move(previous); throw; }
+                    const auto ack = tuntom::relay::encode(tuntom::relay::Type::acknowledged,record.channel,record.epoch);
+                    (void)send_frame(connection.fd,ack.data(),ack.size(),stats); return true;
+                }
+                const auto channel = connection.relay.directory.channels.find(record.channel);
+                if (record.type != tuntom::relay::Type::data || !connection.relay.live() ||
+                    connection.relay.directory.epoch != record.epoch || channel == connection.relay.directory.channels.end() ||
+                    !tuntom::via::accepted(*ruleset,channel->second.name,connection.port)) { ++stats.divert_invalid_drops; return true; }
+                ingress = &channel->second.name;
+                size = record.size; std::memmove(buffer.data(),record.payload,size);
+            } else if (ruleset && tuntom::relay::configured(*ruleset,connection.port)) {
+                ++stats.divert_invalid_drops; return true;
+            }
             SwitchFrameView frame;
             if (not tuntom::decode_switch_frame(buffer.data(), size, frame) or
-                frame.opcode != SwitchOpcode::switch_packet) {
+                frame.opcode != SwitchOpcode::switch_packet || frame.payload_size > tuntom::max_ip_packet_size) {
                 ++stats.malformed_frames;
                 return true;
             }
@@ -414,14 +452,25 @@ int main(int argc, char** argv) {
             }
             if (divert_path || via_path) {
                 using tuntom::divert::Result;
-                const auto live = [&](const std::string& name) { return find_connection(connections, name) != nullptr; };
-                const auto decision = via_path ? via_path->route(connection.port, frame, live) : divert_path->route(connection.port, frame, live);
+                const auto locate = [&](const std::string& name, std::uint32_t& channel) -> Connection* {
+                    if (auto* c = find_connection(connections,name)) return c;
+                    for (auto& c : connections) if (c.fd >= 0 && c.relay.live())
+                        for (const auto& item : c.relay.directory.channels) if (item.second.name == name) { channel = item.first; return &c; }
+                    return nullptr;
+                };
+                const auto live = [&](const std::string& name) { std::uint32_t channel = 0; return locate(name,channel) != nullptr; };
+                const auto decision = via_path ? via_path->route(*ingress, frame, live) : divert_path->route(connection.port, frame, live);
                 if (decision.result != Result::normal) {
                     if (decision.result == Result::forward) {
                         auto output_size = size;
                         tuntom::rewrite_rules_frame(buffer.data(), output_size, frame,
                             decision.labels.values, decision.labels.size, decision.exit);
-                        auto* target = find_connection(connections, *decision.target);
+                        std::uint32_t channel = 0;
+                        auto* target = locate(*decision.target,channel);
+                        if (!target) { ++stats.target_disconnected; return true; }
+                        if (channel && !tuntom::relay::wrap(buffer.data(),output_size,buffer.size(),channel,target->relay.directory.epoch)) {
+                            ++stats.rewrite_drops; return true;
+                        }
                         if (decision.exit) ++stats.exit_deliveries;
                         if (decision.multipath) ++stats.ecmp_packets;
                         if (send_frame(target->fd, buffer.data(), output_size, stats)) ++stats.divert_forwarded;
@@ -433,6 +482,7 @@ int main(int argc, char** argv) {
                 }
             }
 
+            if (ingress != &connection.port) { ++stats.divert_invalid_drops; return true; }
             if (ruleset) {
                 const auto *mapping = connection.program.mapping(frame);
                 if (!mapping) { ++stats.route_misses; return true; }
@@ -664,7 +714,7 @@ int main(int argc, char** argv) {
                     if (accepted >= 0) {
                         try {
                             connections.push_back({accepted, {}, std::chrono::steady_clock::now() +
-                                tuntom::SwitchAdmission::registration_timeout, {}, 0, {}, false});
+                                tuntom::SwitchAdmission::registration_timeout, {}, 0, {}, false, {}});
                         } catch (...) {
                             ::close(accepted);
                             throw;

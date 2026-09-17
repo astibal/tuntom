@@ -168,7 +168,7 @@ public:
 
         Entry& entry = iterator->second;
         if (entry.original_length != fragment.original_length or
-            entry.ranges.size() >= max_fragments_per_packet) {
+            entry.ranges.size() >= (fragment.type == PacketType::ipc ? max_ipc_fragments_per_packet : max_fragments_per_packet)) {
             ++metrics_.invalid_fragments;
             remember_discarded(fragment.message_id, now);
             erase(iterator);

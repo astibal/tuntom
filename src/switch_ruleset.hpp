@@ -173,13 +173,14 @@ struct RuleStatement {
 };
 
 struct ViaService {
-    std::string name, client, server;
+    std::string name, client, server, relay;
     bool failover = false, pass = false;
     std::vector<std::string> instances;
     std::string text() const {
         std::string out = "service " + name + " {\n    client-side " + client +
             "\n    server-side " + server + "\n    stickiness " + (failover ? "failover" : "hash") +
             "\n    unavailable " + (pass ? "pass" : "drop") + "\n";
+        if (!relay.empty()) out += "    relay " + relay + "\n";
         if (!instances.empty()) {
             out += "    instances [";
             for (const auto& id : instances) { if (out.back() != '[') out += ", "; out += "\"" + id + "\""; }
@@ -424,6 +425,10 @@ inline std::shared_ptr<const SwitchRuleset> parse_switch_ruleset(const std::stri
                         auto value = p.take(); rules_port(value);
                         if (value.find("~via:") != std::string::npos) throw std::runtime_error("reserved VIA suffix");
                         (command == "client-side" ? service.client : service.server) = value;
+                    } else if (command == "relay") {
+                        service.relay = p.take(); rules_port(service.relay);
+                        if (service.relay == "*" || wildcard_port(service.relay) || service.relay.find("~via:") != std::string::npos)
+                            throw std::runtime_error("relay requires an exact physical port ID");
                     } else if (command == "stickiness") {
                         auto value = p.take();
                         if (value != "hash" && value != "failover") throw std::runtime_error("expected hash or failover");

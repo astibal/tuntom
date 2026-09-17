@@ -72,7 +72,9 @@ def inside(args):
         adapter_options = ["--cookie", cookie]
         if args.via:
             rules.write_text("format 3\nserial 1\nport edge id 123\nservice router {\n"
-                " client-side divert-in\n server-side divert-out\n stickiness hash\n unavailable drop\n}\n"
+                " client-side divert-in\n server-side divert-out\n" +
+                (" relay proxy-link\n" if args.relay else "") +
+                " stickiness hash\n unavailable drop\n}\n"
                 "exit exit\nswitch edge,[17,42] to exit,[99,42] allow bidir\n")
             config.write_text("format 3\nmatch edge,[17,42] via [router]\n")
             adapter_options = ["--via-instance", "router#0", "--admission", "warmup"]
@@ -86,7 +88,21 @@ def inside(args):
         lab.start("switch", [switch, "--socket", path, "--control-socket", lab.runtime / "switch.control",
                             "--rules-file", rules, "--divert-file", config, *extra])
         wait_for(path.exists, lab.processes)
-        lab.start("divert-adapter", [build / "tuntom-divert-adapter", "di0", "do0", "--switch-socket", path,
+        adapter_socket = path
+        if args.relay:
+            lab.ip("link", "add", "relay0", "type", "veth", "peer", "name", "relay1")
+            lab.ip("link", "set", "relay1", "netns", str(lab.holders["router"].pid))
+            for name, address, ns in (("relay0", "192.0.2.5/30", None), ("relay1", "192.0.2.6/30", "router")):
+                lab.ip("addr", "add", address, "dev", name, ns=ns)
+                lab.ip("link", "set", name, "up", ns=ns)
+            adapter_socket = lab.runtime / "relay.sock"
+            relay_env = os.environ | {"TUNTOM_SECRET": secrets.token_hex(16)}
+            lab.start("relay-hub", [build / "tuntom-userns", "server", "232", "-",
+                "--relay-connect", path, "--relay-port-id", "proxy-link", "--no-stats"], env=relay_env)
+            lab.start("relay-remote", [build / "tuntom-userns", "client", "232", "-", "192.0.2.5",
+                "--relay-listen", adapter_socket, "--control-socket", lab.runtime / "relay.control", "--no-stats"], ns="router", env=relay_env)
+            wait_for(adapter_socket.exists, lab.processes)
+        lab.start("divert-adapter", [build / "tuntom-divert-adapter", "di0", "do0", "--switch-socket", adapter_socket,
                   *adapter_options, "--mtu", args.mtu, "--control-socket", lab.runtime / "divert.control"], ns="router")
         lab.start("exit-adapter", [build / "tuntom-switch-adapter", "ex0", "--switch-socket", path,
                   "--switch-port-id", "exit", "--mtu", args.mtu, "--l4-only", "--l4-timeout", "86400",
@@ -119,7 +135,9 @@ def inside(args):
             return dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
         wait_for(lambda: (lab.runtime / "client.control").exists() and (lab.runtime / "server.control").exists(), lab.processes)
         wait_for(lambda: all(stats(which).get("session_confirmed") == "1" for which in ("client", "server")), lab.processes)
-        wait_for(lambda: stats("switch").get("connections_current") == "4", lab.processes)
+        wait_for(lambda: stats("switch").get("connections_current") == ("3" if args.relay else "4"), lab.processes)
+        if args.relay:
+            wait_for(lambda: stats("relay").get("relay_acknowledged") == "1" and stats("relay").get("relay_channels") == "2", lab.processes)
         captures = [lab.start(name, [sys.executable, __file__, "--capture", name], ns="router") for name in ("di0", "do0")]
         wait_for(lambda: all(records(output / f"{name}.log") for name in ("di0", "do0")), lab.processes)
         lab.start("tcp-server", [sys.executable, HERE / "run.py", "--server"], ns="server")
@@ -146,13 +164,13 @@ def inside(args):
                     require(value == "0", f"unexpected {which} {key}={value}")
         require(int(snapshots["divert"]["bypass_packets"]) > 0, "no existing TCP bypass")
         require(int(snapshots["divert"]["flow_entries"]) == 2, "wrong diverted flow count")
-        if args.switch == "mp":
+        if args.switch == "mp" or args.relay:
             require(snapshots["divert"]["divert_in_ipc_version"] == "2", "adapter did not negotiate IPC v2")
         accepted = [r["peer"] for r in records(output / "tcp-server.log") if r["event"] == "accepted"]
         require({tuple(p) for p in accepted} == {(CLIENT, p) for p in (40000,40001,40002)}, "source identity changed")
         if args.mtu > 1500:
             require(int(snapshots["client"]["fragments_tx"]) > 0, "no jumbo transport fragments")
-        report = dict(status="PASS", via=args.via, switch=args.switch, mtu=args.mtu, vrf=args.vrf, tcp=json.loads(driver.stdout), server_peers=accepted, stats=snapshots)
+        report = dict(status="PASS", relay=args.relay, via=args.via, switch=args.switch, mtu=args.mtu, vrf=args.vrf, tcp=json.loads(driver.stdout), server_peers=accepted, stats=snapshots)
         (output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
         print(json.dumps(dict(status="PASS", switch=args.switch, mtu=args.mtu, output=str(output))))
     except Exception as error:
@@ -168,12 +186,14 @@ def main():
     parser.add_argument("--output")
     parser.add_argument("--switch", choices=("st", "mp"), default="mp")
     parser.add_argument("--mtu", type=int, choices=(1500,9000), default=1500)
+    parser.add_argument("--relay", action="store_true", help="put the VIA adapter behind a tuntom tunnel in the router namespace")
     parser.add_argument("--via", action="store_true", help="exercise VIA service mode with adapter warmup")
     parser.add_argument("--vrf", action="store_true", help="put the router TUNs in VRF table 4123 inside the isolated namespace")
     parser.add_argument("--inside", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--client", help=argparse.SUPPRESS)
     parser.add_argument("--capture", help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.relay: args.via = True
     if args.capture:
         return capture(args.capture)
     if args.client:
@@ -183,7 +203,7 @@ def main():
         return inside(args)
     subprocess.run(["unshare", "--user", "--map-root-user", "--net", sys.executable, __file__, "--inside",
                     "--build", str(Path(args.build).resolve()), "--output", str(Path(args.output).resolve()),
-                    "--switch", args.switch, "--mtu", str(args.mtu), *(["--vrf"] if args.vrf else []), *(["--via"] if args.via else [])], check=True)
+                    "--switch", args.switch, "--mtu", str(args.mtu), *(["--vrf"] if args.vrf else []), *(["--via"] if args.via else []), *(["--relay"] if args.relay else [])], check=True)
 
 
 if __name__ == "__main__":

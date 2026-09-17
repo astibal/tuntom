@@ -1,6 +1,6 @@
 # VIA services and ad hoc divert
 
-VIA inserts an ordered list of local services between an ingress port and an exit
+VIA inserts an ordered list of local or remote services between an ingress port and an exit
 adapter. Both switch implementations use the same routing core. The switch keeps
 configuration and registered-port tables, **no per-flow table**. Flow context and
 optional admission learning remain in the divert adapter.
@@ -12,7 +12,8 @@ optional admission learning remain in the divert adapter.
   mmap ABI, and the eight-label limit keep their existing meanings.
 - The legacy adapter still requires `--cookie ABC` and defaults to warmup.
   VIA cookies are automatic and VIA adapters default to immediate admission.
-- No remote relay, `strict`, PINs, single-sided/bidir attachment, or RETURN action.
+- Remote adapters can use [IPC relay tunnels](RELAY.md); no remote switch is needed.
+- No `strict`, PINs, single-sided/bidir attachment, or RETURN action.
 - The adapter creates/opens and raises its two TUNs in its current namespace.
   It does not create namespaces, VRFs, addresses, or routes.
 

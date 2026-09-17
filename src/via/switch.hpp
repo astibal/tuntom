@@ -38,14 +38,14 @@ struct State {
     }
 };
 inline bool enabled(const std::shared_ptr<const SwitchRuleset>& rules) { return rules && rules->format == 3; }
-inline bool accepted(const SwitchRuleset& rules, const std::string& name) {
+inline bool accepted(const SwitchRuleset& rules, const std::string& name, const std::string& relay = "") {
     if (!reserved(name)) return true;
     Registration r;
     if (!registration(name, r)) return false;
     unsigned matches = 0;
     for (const auto& item : rules.services) {
         const auto& service = item.second;
-        if (route_port_matches(r.server ? service.server : service.client, r.attachment) &&
+        if (service.relay == relay && route_port_matches(r.server ? service.server : service.client, r.attachment) &&
             (service.instances.empty() || std::find(service.instances.begin(), service.instances.end(), r.instance) != service.instances.end())) ++matches;
     }
     return matches == 1;
@@ -90,7 +90,7 @@ class SwitchPath {
 
 public:
     SwitchPath(State& state, std::shared_ptr<const SwitchRuleset> rules,
-               std::shared_ptr<const divert::Config> adhoc, std::vector<std::string> ports)
+               std::shared_ptr<const divert::Config> adhoc, std::vector<std::string> ports, const std::map<std::string, std::string>& relays = {})
         : rules_(std::move(rules)), adhoc_(std::move(adhoc)), cookie_(state.cookie), ports_(std::move(ports)) {
         if (!enabled(rules_)) throw std::runtime_error("VIA requires rules format 3");
         if (adhoc_ && !adhoc_->via) throw std::runtime_error("format 3 requires a format-3 divert file");
@@ -101,6 +101,8 @@ public:
             std::map<std::string, Instance> pairs;
             for (const auto& port : ports_) {
                 Registration r;
+                const auto binding = relays.find(port);
+                if (config.relay != (binding == relays.end() ? "" : binding->second)) continue;
                 if (!registration(port, r) || !route_port_matches(r.server ? config.server : config.client, r.attachment)) continue;
                 if (!config.instances.empty() && std::find(config.instances.begin(), config.instances.end(), r.instance) == config.instances.end()) continue;
                 auto& pair = pairs[r.instance]; pair.id = r.instance; pair.hash = ecmp_port_identity(r.instance);

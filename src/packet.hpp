@@ -23,6 +23,7 @@ enum class PacketType : std::uint8_t {
     response = 9,
     confirm = 10,
     confirm_ack = 11,
+    ipc = 12,
 };
 
 enum class Direction {
@@ -60,6 +61,9 @@ struct Options {
     std::string stats_file;
     std::string control_socket;
     StatsFormat stats_format = StatsFormat::txt;
+    std::string relay_connect, relay_listen, relay_port_id;
+    bool relay_mode() const { return !relay_connect.empty() || !relay_listen.empty(); }
+    std::size_t logical_limit() const { return relay_mode() ? max_ipc_packet_size : tun_mtu; }
     std::string switch_socket;
     ipc::Options switch_ipc;
     std::string switch_port_id;

@@ -3,6 +3,7 @@
 #include "config.hpp"
 #include "../switch_ecmp.hpp"
 #include "queues.hpp"
+#include "../relay/registry.hpp"
 #include "../ipc/switch_transport.hpp"
 #include <atomic>
 #include <chrono>
@@ -63,6 +64,13 @@ struct Port {
     const Kind kind;
     const std::uint64_t identity;
     std::atomic<bool> disconnected{false};
+    relay::Registry relay_registry; // Controller-owned; workers read the immutable Plan copy.
+    std::atomic<std::int64_t> relay_expires{0};
+    Spsc<Buffer> relay_control{16};
+    bool relay_live() const {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count() < relay_expires.load(std::memory_order_relaxed);
+    }
+    ~Port() { while (auto* buffer = relay_control.pop()) buffer->release(); }
     alignas(64) Pool pool; // RX-owned state must not share TX's writable cache line.
     Clock::time_point rx_retry{};
     std::unique_ptr<ipc::Transport> transport;
@@ -99,6 +107,8 @@ struct ResolvedRoute {
     std::size_t tx_worker = 0; // Resolved once per immutable plan, including fallback.
     std::uint64_t label = 0;
     bool exit = false;
+    std::uint32_t channel = 0;
+    std::uint64_t epoch = 0;
 };
 struct ResolvedGroup {
     std::vector<ResolvedRoute> members;
@@ -163,6 +173,8 @@ struct Plan {
     std::unique_ptr<via::SwitchPath> via_path;
     bool via_guard = false;
     std::map<std::string, Port*> divert_ports;
+    std::map<Port*,relay::Directory> relay_directories;
+    std::map<std::string,std::pair<std::uint32_t,std::uint64_t>> relay_targets;
 };
 
 #define TUNTOM_MP_COUNTERS(X)                                                                      \
@@ -279,9 +291,28 @@ class Engine {
             return true;
         }
         buffer->size = static_cast<std::size_t>(received);
+        const std::string* ingress = &port.name;
+        if (relay::marked(buffer->data,buffer->size)) {
+            relay::View record;
+            if (!plan_->ruleset || !relay::configured(*plan_->ruleset,port.name) || !relay::decode(buffer->data,buffer->size,record)) {
+                Counters::add(stats.malformed_frames); buffer->release(); return true;
+            }
+            if (record.type == relay::Type::snapshot) {
+                if (!port.relay_control.push(buffer)) buffer->release();
+                else control_wake_.poke();
+                return true;
+            }
+            const auto directory = plan_->relay_directories.find(&port);
+            if (record.type != relay::Type::data || !port.relay_live() || directory == plan_->relay_directories.end() ||
+                record.epoch != directory->second.epoch) { buffer->release(); return true; }
+            const auto channel = directory->second.channels.find(record.channel);
+            if (channel == directory->second.channels.end()) { buffer->release(); return true; }
+            ingress = &channel->second.name;
+            buffer->size = record.size; std::memmove(buffer->data,record.payload,record.size);
+        } else if (plan_->ruleset && relay::configured(*plan_->ruleset,port.name)) { buffer->release(); return true; }
         SwitchFrameView frame;
         if (!decode_switch_frame(buffer->data, buffer->size, frame) ||
-            frame.opcode != SwitchOpcode::switch_packet) {
+            frame.opcode != SwitchOpcode::switch_packet || frame.payload_size > max_ip_packet_size) {
             Counters::add(stats.malformed_frames);
             buffer->release();
             return true;
@@ -300,9 +331,10 @@ class Engine {
         divert::Decision decision;
         const auto live = [&](const std::string& name) {
             const auto found = plan_->divert_ports.find(name);
-            return found != plan_->divert_ports.end() && !found->second->disconnected.load(std::memory_order_relaxed);
+            return found != plan_->divert_ports.end() && !found->second->disconnected.load(std::memory_order_relaxed) &&
+                (!plan_->relay_targets.count(name) || found->second->relay_live());
         };
-        if (plan_->via_path) decision = plan_->via_path->route(port.name, frame, live);
+        if (plan_->via_path) decision = plan_->via_path->route(*ingress, frame, live);
         else if (plan_->divert_path) decision = plan_->divert_path->route(port.name, frame, live);
         if (decision.result != divert::Result::normal) {
             using divert::Result;
@@ -311,6 +343,9 @@ class Engine {
                 if (found != task.divert_routes.end()) {
                     link = found->second.link; tx_worker = found->second.tx_worker;
                     rewrite_rules_frame(buffer->data, buffer->size, frame, decision.labels.values, decision.labels.size, decision.exit);
+                    if (found->second.channel && !relay::wrap(buffer->data,buffer->size,wire_capacity,found->second.channel,found->second.epoch)) {
+                        Counters::add(stats.rewrite_drops); buffer->release(); return true;
+                    }
                     if (decision.exit) Counters::add(stats.exit_deliveries);
                     if (decision.multipath) Counters::add(stats.ecmp_packets);
                     Counters::add(stats.divert_forwarded);
@@ -319,6 +354,8 @@ class Engine {
             else if (decision.result == Result::malformed) Counters::add(stats.divert_invalid_drops);
             else if (decision.result == Result::policy) Counters::add(stats.policy_drops);
             else Counters::add(stats.target_disconnected);
+        } else if (ingress != &port.name) {
+            Counters::add(stats.divert_invalid_drops); buffer->release(); return true;
         } else if (task.rules_enabled) {
             const auto *rule = task.program.mapping(frame);
             if (!rule) { Counters::add(stats.route_misses); buffer->release(); return true; }
@@ -620,9 +657,23 @@ class Engine {
             throw RulesPlanError("VIA divert requires rules format 3");
         if (config_.divert_config || via::enabled(plan->ruleset)) {
             std::vector<std::string> port_names;
+            std::map<std::string,std::string> bindings;
             for (const auto& port : plan->ports) {
                 port_names.push_back(port->name);
                 plan->divert_ports.emplace(port->name, port.get());
+                if (plan->ruleset && port->relay_registry.live()) {
+                    auto directory = port->relay_registry.directory;
+                    for (auto it = directory.channels.begin(); it != directory.channels.end();) {
+                        if (!via::accepted(*plan->ruleset,it->second.name,port->name)) it = directory.channels.erase(it);
+                        else {
+                            const auto& name = it->second.name;
+                            port_names.push_back(name); bindings.emplace(name,port->name);
+                            plan->divert_ports.emplace(name,port.get()); names.emplace(name,port);
+                            plan->relay_targets.emplace(name,std::make_pair(it->first,directory.epoch)); ++it;
+                        }
+                    }
+                    plan->relay_directories.emplace(port.get(),std::move(directory));
+                }
             }
             if (via::enabled(plan->ruleset)) {
                 if (!plan_ || !via::enabled(plan_->ruleset)) {
@@ -634,7 +685,7 @@ class Engine {
                     }
                 }
                 if (!via_state_) via_state_ = std::make_unique<via::State>();
-                plan->via_path = std::make_unique<via::SwitchPath>(*via_state_, plan->ruleset, config_.divert_config, std::move(port_names));
+                plan->via_path = std::make_unique<via::SwitchPath>(*via_state_, plan->ruleset, config_.divert_config, std::move(port_names), bindings);
             } else plan->divert_path = std::make_unique<divert::SwitchPath>(config_.divert_config, plan->ruleset, std::move(port_names));
         }
         plan->assignment = schedule(kinds, workers_.size(), config_.policy);
@@ -703,13 +754,22 @@ class Engine {
             if (!plan->ruleset && config_.default_back)
                 rx.fallback = {link_for(port, port), plan->tx_owner.at(port.get()), 0, true};
             if (plan->divert_path || plan->via_path) {
-                for (const auto& target : plan->ports) {
-                    if (plan->via_path && ++resolution_work > 1024 * 1024)
-                        throw RulesPlanError("ruleset resolution exceeds 1048576 mapping/port pairs");
-                    if (!(plan->via_path ? plan->via_path->possible(port->name, target->name) :
-                        plan->divert_path->possible(port->name, target->name))) continue;
-                    rx.divert_routes.emplace(target->name, ResolvedRoute{
-                        link_for(port, target), plan->tx_owner.at(target.get()), 0, false});
+                std::vector<std::string> sources{port->name};
+                const auto directory = plan->relay_directories.find(port.get());
+                if (directory != plan->relay_directories.end()) for (const auto& item : directory->second.channels) sources.push_back(item.second.name);
+                for (const auto& named : names) {
+                    const auto& target = named.second;
+                    bool possible = false;
+                    for (const auto& source : sources) {
+                        if (++resolution_work > 1024 * 1024) throw RulesPlanError("ruleset resolution exceeds 1048576 mapping/port pairs");
+                        if (plan->via_path ? plan->via_path->possible(source,named.first) : plan->divert_path->possible(source,named.first)) { possible = true; break; }
+                    }
+                    if (!possible) continue;
+                    const auto binding = plan->relay_targets.find(named.first);
+                    rx.divert_routes.emplace(named.first, ResolvedRoute{
+                        link_for(port, target), plan->tx_owner.at(target.get()), 0, false,
+                        binding == plan->relay_targets.end() ? 0 : binding->second.first,
+                        binding == plan->relay_targets.end() ? 0 : binding->second.second});
                 }
             }
             plan->workers[plan->assignment.owners[i][0]].rx.push_back(std::move(rx));
@@ -815,6 +875,31 @@ class Engine {
     }
     int event_fd() const { return control_wake_.fd(); }
     void drain_events() { control_wake_.drain(); }
+    void relay_maintenance() {
+        const auto ports = plan_->ports;
+        for (const auto& port : ports) for (unsigned i=0;i<16;++i) {
+            auto* buffer = port->relay_control.pop(); if (!buffer) break;
+            struct Release { Buffer* p; ~Release() { p->release(); } } release{buffer};
+            relay::View record;
+            if (!config_.ruleset || !relay::decode(buffer->data,buffer->size,record)) continue;
+            std::vector<std::string> occupied;
+            for (const auto& other : ports) if (other != port) {
+                occupied.push_back(other->name);
+                if (other->relay_registry.live()) for (const auto& c : other->relay_registry.directory.channels) occupied.push_back(c.second.name);
+            }
+            auto candidate = port->relay_registry; bool changed = false;
+            if (!relay::update(candidate,*config_.ruleset,port->name,record,occupied,changed)) continue;
+            auto previous = std::move(port->relay_registry); port->relay_registry = std::move(candidate);
+            try { if (changed) replace(ports); }
+            catch (...) { port->relay_registry = std::move(previous); throw; }
+            port->relay_expires.store(std::chrono::duration_cast<std::chrono::milliseconds>(port->relay_registry.expires.time_since_epoch()).count(),std::memory_order_relaxed);
+            const auto ack = relay::encode(relay::Type::acknowledged,record.channel,record.epoch);
+            // Legacy SEQPACKET records are atomic. No direction-owned Transport
+            // state is touched by this bounded control-plane send.
+            (void)::send(port->fd.get(),ack.data(),ack.size(),MSG_DONTWAIT|MSG_NOSIGNAL);
+        }
+    }
+
     const Plan &plan() const { return *plan_; } // Main only, except direction-owned fields.
 
     void replace(std::vector<std::shared_ptr<Port>> ports) {

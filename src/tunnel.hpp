@@ -7,6 +7,7 @@
 #include "packet_classifier.hpp"
 #include "ipc/switch_protocol.hpp"
 #include "session.hpp"
+#include "relay/endpoint.hpp"
 #include "ip.hpp"
 #include "fragmentation.hpp"
 #include "processing_stats.hpp"
@@ -49,7 +50,7 @@ public:
           options_(options),
           classifier_(PacketClassifier::from_file(options.classifier_file)),
           master_key_(parse_master_key()),
-          protocol_v5_(tunnel_id, master_key_, server_mode, options.tun_mtu, options.encrypt_ascon, options.init_window, options.pfs) {
+          protocol_v5_(tunnel_id, master_key_, server_mode, options.logical_limit(), options.encrypt_ascon, options.init_window, options.pfs) {
 
         options_.encrypt_ascon = options_.encrypt_ascon or options_.pfs;
 
@@ -62,7 +63,7 @@ public:
             udp_.open_client(remote_host, port);
         }
 
-        if (options_.switch_socket.empty() or options_.switch_exit_node) {
+        if (!options_.relay_mode() && (options_.switch_socket.empty() or options_.switch_exit_node)) {
             tun_ = std::make_unique<TunDevice>(interface_name, options_.tun_mtu);
         }
         if (not options_.switch_socket.empty()) {
@@ -80,8 +81,9 @@ public:
         validate_fragment_capacity();
         reserve_hot_path_buffers();
 
-        if (options_.switch_socket.empty()) drop_privileges();
+        if (options_.switch_socket.empty() && !options_.relay_mode()) drop_privileges();
         else harden_unprivileged_process();
+        if (options_.relay_mode()) relay_ = std::make_unique<relay::Endpoint>(options_.relay_connect, options_.relay_listen, options_.relay_port_id);
 
         // The initial check must use the final runtime identity. Connecting as
         // root would hide permissions that make all later reconnects fail.
@@ -146,6 +148,8 @@ public:
             recovery_.allocation_failed();
         }
 
+        std::vector<pollfd> descriptors;
+        descriptors.reserve(relay_ ? relay::max_channels + 5 : 4);
         while (true) {
             try {
                 if (recovery_.wait_for_retry(control_ ? control_->poll_fd() : -1)) {
@@ -153,7 +157,7 @@ public:
                     continue;
                 }
                 update_stats_control();
-                pollfd descriptors[4] {};
+                descriptors.resize(4);
                 descriptors[0].fd = tun_ ? tun_->fd() : -1;
                 descriptors[0].events = POLLIN;
                 descriptors[1].fd = udp_.fd();
@@ -166,8 +170,9 @@ public:
                 const auto timeout_at = AdaptivePolling::Clock::now();
                 int timeout = switch_ ? switch_->poll_timeout_ms(timeout_at, 1000) : 1000;
                 if (control_) timeout = control_->poll_timeout_ms(timeout_at, timeout);
+                if (relay_) { relay_->descriptors(descriptors); timeout = std::min(timeout, 100); }
                 const auto poll_started = AdaptivePolling::Clock::now();
-                const int rc = ::poll(descriptors, 4, timeout);
+                const int rc = ::poll(descriptors.data(), descriptors.size(), timeout);
                 const auto poll_finished = AdaptivePolling::Clock::now();
 
                 if (rc < 0) {
@@ -181,6 +186,7 @@ public:
                 if (control_ and (descriptors[3].revents & POLLIN)) {
                     handle_control_request();
                 }
+                if (relay_) relay_->step([&](const std::uint8_t* p, std::size_t n) { send_data(p,n,PacketType::ipc); });
 
                 const bool initially_ready[3] {
                     (descriptors[0].revents & POLLIN) != 0,
@@ -385,6 +391,7 @@ private:
 
     void session_activated() {
         log_info("V5 session confirmed");
+        if (relay_) relay_->session();
         rtt_probes_.clear();
         send_rtt_probe();
         next_rtt_probe_ = std::chrono::steady_clock::now() +
@@ -397,34 +404,34 @@ private:
         const std::size_t maximum_payload =
             maximum_fragment_payload();
 
-        tun_rx_buffer_.resize(options_.tun_mtu);
+        tun_rx_buffer_.resize(options_.logical_limit());
         udp_rx_buffer_.resize(buffer_size);
         switch_rx_buffer_.resize(
             switch_base_header_size +
             switch_max_labels * switch_label_size +
-            options_.tun_mtu);
+            options_.logical_limit());
 
-        tx_logical_packet_.payload.reserve(options_.tun_mtu);
+        tx_logical_packet_.payload.reserve(options_.logical_limit());
         tx_fragment_packet_.payload.reserve(maximum_payload);
-        rx_packet_.payload.reserve(options_.tun_mtu);
-        rx_logical_packet_.payload.reserve(options_.tun_mtu);
+        rx_packet_.payload.reserve(options_.logical_limit());
+        rx_logical_packet_.payload.reserve(options_.logical_limit());
 
         tx_encoded_buffer_.reserve(
             protocol_fragment_v5_size + maximum_payload);
         const std::size_t fragments =
-            (options_.tun_mtu + maximum_payload - 1) / maximum_payload;
+            (options_.logical_limit() + maximum_payload - 1) / maximum_payload;
         for (std::size_t i = 0; i < fragments; ++i)
             tx_encoded_fragments_[i].reserve(protocol_fragment_v5_size + maximum_payload);
         tx_mac_buffer_.reserve(32 + maximum_payload);
-        rx_mac_buffer_.reserve(32 + options_.tun_mtu);
-        reassembled_packet_.reserve(options_.tun_mtu);
+        rx_mac_buffer_.reserve(32 + options_.logical_limit());
+        reassembled_packet_.reserve(options_.logical_limit());
     }
 
     std::size_t maximum_fragment_payload() const {
         const std::size_t overhead =
             udp_.outer_ip_header_size() +
             udp_header_size +
-            protocol_fragment_v5_size;
+            protocol_fragment_v5_size + (options_.relay_mode() ? 4 : 0);
 
         if (active_transport_mtu_ <= overhead) {
             throw std::runtime_error(
@@ -439,23 +446,23 @@ private:
             maximum_fragment_payload();
 
         const std::size_t fragment_count =
-            (options_.tun_mtu + maximum_payload - 1) /
+            (options_.logical_limit() + maximum_payload - 1) /
             maximum_payload;
 
-        if (fragment_count > max_fragments_per_packet) {
+        if (fragment_count > (options_.relay_mode() ? max_ipc_fragments_per_packet : max_fragments_per_packet)) {
             throw std::runtime_error(
                 "Configured MTU/transport-MTU combination may require "
-                "more than 64 fragments");
+                "more than the allowed number of fragments");
         }
     }
 
     void send_data(
         const std::uint8_t* data,
-        std::size_t size) {
+        std::size_t size, PacketType type = PacketType::data) {
 
         if (not protocol_v5_.ready()) return;
         Packet& logical_packet = tx_logical_packet_;
-        logical_packet.type = PacketType::data;
+        logical_packet.type = type;
         logical_packet.tunnel_id = tunnel_id_;
         logical_packet.protocol_version = protocol_version_v5;
         logical_packet.sequence = 0;
@@ -465,12 +472,12 @@ private:
             static_cast<std::uint32_t>(size);
         logical_packet.payload.assign(data, data + size);
 
-        if (not process(logical_packet, Direction::tun_to_udp)) {
+        if (type == PacketType::data && not process(logical_packet, Direction::tun_to_udp)) {
             ++stats_.drops_process;
             return;
         }
 
-        if (logical_packet.payload.size() > options_.tun_mtu) {
+        if (logical_packet.payload.size() > options_.logical_limit()) {
             ++stats_.drops_mtu;
             log_info("DROP processed packet larger than configured MTU");
             return;
@@ -478,8 +485,10 @@ private:
 
         ++stats_.data_tx_packets;
 
-        const FragmentPlan plan = make_v5_fragment_plan(
-            logical_packet.payload.size(), maximum_fragment_payload());
+        const auto maximum = maximum_fragment_payload();
+        const auto size_limit = logical_packet.payload.size() <= maximum + (type == PacketType::ipc ? 16 : 12)
+            ? maximum + (type == PacketType::ipc ? 16 : 12) : maximum;
+        const FragmentPlan plan = make_fragment_plan(logical_packet.payload.size(), size_limit, relay_ ? max_ipc_fragments_per_packet : max_fragments_per_packet);
 
         const std::uint64_t message_id =
             message_id_generator_.next();
@@ -492,7 +501,7 @@ private:
                 (index < plan.larger_fragments ? 1 : 0);
 
             Packet& fragment = tx_fragment_packet_;
-            fragment.type = PacketType::data;
+            fragment.type = type;
             fragment.tunnel_id = tunnel_id_;
             fragment.protocol_version = protocol_version_v5;
             fragment.message_id = message_id;
@@ -514,7 +523,11 @@ private:
             offset += fragment_size;
         }
 
-        const auto sent = udp_.send_batch(tx_encoded_fragments_.data(), plan.count);
+        auto sent = udp_.send_batch(tx_encoded_fragments_.data(), std::min(plan.count,max_fragments_per_packet));
+        while (!sent.error && sent.packets < plan.count) {
+            const auto batch = udp_.send_batch(tx_encoded_fragments_.data()+sent.packets, std::min(plan.count-sent.packets,max_fragments_per_packet));
+            sent.packets += batch.packets; sent.bytes += batch.bytes; sent.error = batch.error;
+        }
         if (tx_sample_active_ and sent.packets == plan.count)
             tx_processing_.finish(tx_sample_start_);
         stats_.udp_tx_packets += sent.packets;
@@ -593,7 +606,7 @@ private:
             session_update_peer = result.update_peer;
             session_activated_now = result.activated;
             if (session_activated_now and session_update_peer) udp_.set_peer(source, source_length);
-            if (session_activated_now) session_activated();
+            if (session_activated_now) { relay_exchange_ = packet.message_id; session_activated(); }
             if (not result.data) {
                 if (result.replay_drop) ++stats_.drops_replay;
                 else if (not result.control) ++stats_.drops_protocol;
@@ -669,7 +682,8 @@ private:
             return;
         }
 
-        if (packet.type != PacketType::data) {
+        if (packet.type != (relay_ ? PacketType::ipc : PacketType::data) ||
+            (relay_ && receive_session->exchange != relay_exchange_)) {
             return;
         }
 
@@ -697,7 +711,7 @@ private:
         }
 
         Packet& logical_packet = rx_logical_packet_;
-        logical_packet.type = PacketType::data;
+        logical_packet.type = packet.type;
         logical_packet.tunnel_id = tunnel_id_;
         logical_packet.protocol_version = protocol_version_v5;
         logical_packet.sequence = packet.sequence;
@@ -708,7 +722,8 @@ private:
                 reassembled_packet_.size());
 
         logical_packet.payload.swap(reassembled_packet_);
-        deliver_received_data(logical_packet);
+        if (relay_) relay_->receive(logical_packet.payload.data(), logical_packet.payload.size());
+        else deliver_received_data(logical_packet);
 
         // Recycle the storage used by the completed logical packet.
         logical_packet.payload.swap(reassembled_packet_);
@@ -1511,6 +1526,7 @@ private:
             << "switch_last_error_ts=" << stats_.switch_last_error_ts << "\n"
             << "switch_last_error_no=" << stats_.switch_last_error_no << "\n";
         if (switch_) switch_->write_stats(output);
+        if (relay_) relay_->write_stats(output);
         classifier_.write_stats(output);
         recovery_.write_stats(output);
         logger.write_stats(output);
@@ -1583,6 +1599,8 @@ private:
     std::uint16_t tunnel_id_ = 0;
     bool server_mode_ = false;
     Options options_;
+    std::unique_ptr<relay::Endpoint> relay_;
+    std::uint64_t relay_exchange_ = 0;
     PacketClassifier classifier_;
 
     std::unique_ptr<TunDevice> tun_;
@@ -1614,7 +1632,7 @@ private:
     Packet rx_logical_packet_;
 
     std::vector<std::uint8_t> tx_encoded_buffer_;
-    std::array<std::vector<std::uint8_t>, max_fragments_per_packet> tx_encoded_fragments_;
+    std::array<std::vector<std::uint8_t>, max_ipc_fragments_per_packet> tx_encoded_fragments_;
     std::vector<std::uint8_t> tx_mac_buffer_;
     std::vector<std::uint8_t> rx_mac_buffer_;
     std::vector<std::uint8_t> reassembled_packet_;
