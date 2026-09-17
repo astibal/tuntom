@@ -409,3 +409,20 @@ V „Další metriky“ jsou i distribuce, kernel, počty CPU a adresy/stav rozh
 z již dotazovaných `/system` a `/interfaces`. Adresy z tohoto výpisu se nikdy
 nepoužijí jako nové pollingové cíle. Tabulka zachovává limit 128 položek a
 upozornění při zkrácení; APT souhrny mají přednost před detaily rozhraní.
+
+Souhrn OS a dostupných aktualizací se zobrazuje pouze v „Uzly / Syspiper“,
+z aktualizací zůstává u procesů tunelů v Live pouze počet bezpečnostních aktualizací.
+Stáří APT indexů UI nezobrazuje ani v detailních
+metrikách: neudává čas poslední instalace aktualizací.
+
+Live sdružuje tunely podle ID: `231s`, `231_1s`, `231_2s` atd.
+Skupinu propojuje jemná boční čára. Klientské/serverové konce a různé hosty
+či síťové namespaces zůstávají oddělené. CPU hostu, steal a bezpečnostní aktualizace jsou pouze
+u první viditelné instance; filtrování souhrn přesune na zbývající první cestu.
+Cesty se řadí podle číselného indexu; INFO peer-access přiřazuje metriky
+hostu, ale není podmínkou seskupení.
+Steal se počítá z rozdílu surových `/system.cpu_times.data` mezi dvěma odběry
+Syspiperu (user až steal, bez opětovného započítání guest). Vyžaduje Syspiper
+s tímto polem. První vzorek, restart hostu, pokles čítače, dlouhá mezera nebo
+chybějící údaj znamenají „—“, nikoli nulu. Zastaralá data se označí a procenta
+se skryjí. CPU a steal popisují celý host, nikoli jednu tunelovou instanci.

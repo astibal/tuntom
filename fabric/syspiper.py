@@ -156,6 +156,9 @@ def clean_snapshot(results):
         value = results.get('net', {}).get(field)
         values['net_' + field] = str(value) if type(value) is int and 0 <= value < 2**64 else None
     system = results.get('system', {})
+    times = section(system, 'cpu_times')
+    fields = ('user', 'nice', 'system', 'idle', 'iowait', 'irq', 'softirq', 'steal')
+    values['cpu_times'] = {k: number(times.get(k)) for k in fields} if isinstance(times, dict) else {}
     identity = section(system, 'identity') or {}
     values['hostname'] = identity.get('hostname', '')[:255] if isinstance(identity.get('hostname'), str) else ''
     boot = section(system, 'boot') or {}
@@ -252,6 +255,21 @@ def clean_snapshot(results):
     return values
 
 
+def steal_percent(old, current):
+    """Kernel CPU time deltas, excluding guest fields already included in user/nice."""
+    before, after = old.get('cpu_times', {}), current.get('cpu_times', {})
+    if old.get('boot_time') is None or old.get('boot_time') != current.get('boot_time'):
+        return None
+    fields = ('user', 'nice', 'system', 'idle', 'iowait', 'irq', 'softirq', 'steal')
+    if any(number(snapshot.get(k)) is None for snapshot in (before, after) for k in fields):
+        return None
+    deltas = {k: after[k]-before[k] for k in fields}
+    total = sum(deltas.values())
+    if total <= 0 or any(v < 0 for v in deltas.values()):
+        return None
+    return 100*deltas['steal']/total
+
+
 class Syspiper:
     def __init__(self, *, key='', nodes=(), port=8181, interval=30, history=None, fetch_fn=fetch):
         self.key, self.explicit, self.port, self.interval = key, nodes, port, interval
@@ -332,6 +350,9 @@ class Syspiper:
         tick = time.monotonic()
         previous = self.baselines.pop(ip, None)
         rx = tx = None
+        values['steal'] = None
+        if previous and 0 < tick-previous[0] <= self.interval*3:
+            values['steal'] = steal_percent(previous[1], values)
         if values.get('net_sent') is not None and values.get('net_recv') is not None:
             if previous:
                 old_tick, old = previous
@@ -341,7 +362,7 @@ class Syspiper:
                     sent = int(values['net_sent'])-int(old['net_sent'])
                     if recv >= 0 and sent >= 0:
                         rx, tx = recv*8/elapsed, sent*8/elapsed
-            self.baselines[ip] = (tick, values)
+        self.baselines[ip] = (tick, values)
         point = {'time': int(sampled*1000), 'rx': rx, 'tx': tx,
                  **{k: values.get(k) for k in ('cpu', 'ram', 'disk')}}
         if errors and any(v != 'unsupported' for v in errors.values()):

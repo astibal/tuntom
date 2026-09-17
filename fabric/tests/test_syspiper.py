@@ -12,10 +12,31 @@ from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from syspiper import candidates, clean_snapshot, fetch, ReadError, Syspiper, ip_literal
+from syspiper import steal_percent, candidates, clean_snapshot, fetch, ReadError, Syspiper, ip_literal
 from history import History
 from test_observer import endpoint
 from server import Fabric
+
+
+class StealTests(unittest.TestCase):
+    def test_deltas_and_invalid_baselines(self):
+        fields = ('user', 'nice', 'system', 'idle', 'iowait', 'irq', 'softirq', 'steal')
+        old = {'boot_time': 123, 'cpu_times': dict.fromkeys(fields, 10)}
+        new = {'boot_time': 123, 'cpu_times': {**old['cpu_times'], 'user': 50, 'idle': 60, 'steal': 20,
+                                             'guest': 999, 'guest_nice': 999}}
+        self.assertEqual(steal_percent(old, new), 10)
+        self.assertIsNone(steal_percent({}, new))
+        self.assertIsNone(steal_percent(old, old))
+        self.assertIsNone(steal_percent(new, old))
+        self.assertIsNone(steal_percent(old, {**new, 'boot_time': 456}))
+        self.assertIsNone(steal_percent(old, {**new, 'cpu_times': {'steal': 5}}))
+
+    def test_snapshot_retains_only_valid_cpu_times(self):
+        result = clean_snapshot({'system': {'cpu_times': {'status': 'ok', 'data': {
+            'user': 42, 'steal': 3, 'idle': float('nan'), 'guest': 100}}}})
+        self.assertEqual(result['cpu_times']['steal'], 3)
+        self.assertIsNone(result['cpu_times']['idle'])
+        self.assertNotIn('guest', result['cpu_times'])
 
 
 class DiscoveryTests(unittest.TestCase):

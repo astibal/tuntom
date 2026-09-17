@@ -124,3 +124,9 @@ input,select,textarea{background:#151b12;border-color:#424c35}button:hover:not(:
 .syspiper-filter{display:grid;gap:6px;margin:12px 0;font-size:11px;color:var(--muted)}.syspiper-filter input{width:100%;min-width:0}.syspiper-card .table-scroll{overflow:auto;overflow-anchor:none}.syspiper-card thead th{position:sticky;top:0;background:var(--bg);z-index:1}.syspiper-card .system-value{font-variant-numeric:tabular-nums}
 
 .peer-system{display:grid;gap:3px;margin-top:9px;padding-left:8px;border-left:2px solid var(--line);font:10px/1.5 var(--mono);white-space:normal;max-width:340px}.peer-system>span{color:var(--muted)}.peer-system strong{font-weight:500;color:var(--text)}.peer-system.security{border-color:var(--red)}.peer-system.security .peer-updates{color:var(--red)}.peer-system.updates .peer-updates{color:var(--accent)}.peer-system.current .peer-updates{color:var(--green)}
+
+/* A quiet bracket joins visible paths; row selection keeps its own styling. */
+.process-table tr.peer-group td:first-child{position:relative;padding-left:30px}
+.process-table tr.peer-group td:first-child:before{content:"";position:absolute;left:12px;top:0;bottom:0;width:6px;border-left:2px solid var(--line);pointer-events:none}
+.process-table tr.peer-group-first td:first-child:before{top:12px;border-top:2px solid var(--line);border-top-left-radius:4px}
+.process-table tr.peer-group-last td:first-child:before{bottom:12px;border-bottom:2px solid var(--line);border-bottom-left-radius:4px}

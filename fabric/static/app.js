@@ -158,11 +158,12 @@ const messages = {
   syspiper_invalid_response:["Neplatná odpověď","Invalid response","Réponse invalide"],
   syspiper_response_too_large:["Příliš velká odpověď","Response too large","Réponse trop volumineuse"],
   syspiper_probe_failed:["Sběr systémových metrik selhal nebo je neúplný","System collection failed or is incomplete","Collecte système échouée ou incomplète"],
-  peerSystem:["Systém protistrany","Peer system","Système du pair"],
+  nodeSystem:["Operační systém","Operating system","Système d’exploitation"],
   distroUnknown:["Distribuce nezjištěna","Distribution unknown","Distribution inconnue"],
   aptUnknown:["Aktualizace: nezjištěno","Updates: unknown","Mises à jour : inconnues"],
+  securityUpdates:["Bezpečnostní aktualizace: {count}","Security updates: {count}","Mises à jour de sécurité : {count}"],
+  securityUpdatesUnknown:["Bezpečnostní aktualizace: nezjištěno","Security updates: unknown","Mises à jour de sécurité : inconnues"],
   aptSummary:["Aktualizace: {total} · bezpečnostní: {security}","Updates: {total} · security: {security}","Mises à jour : {total} · sécurité : {security}"],
-  aptIndexAge:["Stáří APT indexů: {age}","APT index age: {age}","Âge des index APT : {age}"],
   systemFilter:["Filtrovat názvy a hodnoty","Filter names and values","Filtrer les noms et valeurs"],
   syspiperDetails:["Další metriky a dostupnost endpointů","Additional metrics and endpoint availability","Autres métriques et disponibilité des endpoints"],
   syspiperTruncated:["Zobrazený seznam metrik je omezen na 128 položek.","Metric list is limited to 128 entries.","La liste est limitée à 128 métriques."],
@@ -660,23 +661,49 @@ function lastRTT(e) {
   const value=Number(raw);
   return Number.isFinite(value) && value >= 0 ? value.toLocaleString(locale(),{minimumFractionDigits:3,maximumFractionDigits:3})+" ms" : "—";
 }
-function peerSystemSummary(e) {
+function nodeSystemSummary(node) {
+  const info=state.data?.syspiper;
+  const data=Object.fromEntries(node.values?.details || []);
+  const age=node.sampled_at ? Math.max(0,(Date.now()-Date.parse(node.sampled_at))/1000) : Infinity;
+  const stale=!!state.failure || !Number.isFinite(age) || age > (info.interval_seconds || 30)*3 || node.status === "unavailable";
+  const known=!stale && data["apt.updates.status"] === "ok" &&
+    /^\d+$/.test(data["apt.updates.total"] || "") && /^\d+$/.test(data["apt.updates.security"] || "");
+  const total=data["apt.updates.total"], security=data["apt.updates.security"];
+  const level=known ? BigInt(security)>0n ? "security" : BigInt(total)>0n ? "updates" : "current" : "unknown";
+  const distro=data["distro.pretty_name"] || [data["distro.name"],data["distro.version_id"]].filter(Boolean).join(" ") || t("distroUnknown");
+  return `<div class="peer-system ${level}"><span>${esc(t("nodeSystem"))}</span><strong>${esc(distro)}${stale ? " · "+esc(t("stale")) : ""}</strong><span class="peer-updates">${esc(known ? t("aptSummary",{total,security}) : t("aptUnknown"))}</span></div>`;
+}
+
+// INFO maps host metrics; tunnel ID and c/s suffix identify multipath groups.
+function peerNodes(e, nodes) {
+  return e.kind === "tunnel" ? nodes.filter(node=>node.sources.includes("peer_access") && node.processes.includes(e.id)) : [];
+}
+function groupPeerRows(rows, nodes) {
+  const groups=new Map();
+  for(const e of rows) {
+    const match=e.kind === "tunnel" && /^(\d+)(?:_(\d+))?([cs])$/.exec(e.name);
+    const key=match ? JSON.stringify([e.host,e.net_namespace,match[1],match[3]]) : e;
+    if(!groups.has(key)) groups.set(key,[]);
+    groups.get(key).push({e,member:match ? Number(match[2] || 0) : 0});
+  }
+  return [...groups.values()].flatMap(group=>{
+    group.sort((a,b)=>a.member-b.member);
+    const peers=[...new Set(group.flatMap(({e})=>peerNodes(e,nodes)))];
+    return group.map(({e},index)=>({e,peers,first:index===0,last:index===group.length-1,count:group.length}));
+  });
+}
+function peerSecuritySummary(e, nodes) {
   if(e.kind !== "tunnel") return "";
   const info=state.data?.syspiper;
-  const nodes=(info?.nodes || []).filter(node=>node.sources.includes("peer_access") && node.processes.includes(e.id));
   return nodes.map(node=>{
     const data=Object.fromEntries(node.values?.details || []);
     const age=node.sampled_at ? Math.max(0,(Date.now()-Date.parse(node.sampled_at))/1000) : Infinity;
-    const stale=!!state.failure || !Number.isFinite(age) || age > (info.interval_seconds || 30)*3 || node.status === "unavailable";
-    const known=!stale && data["apt.updates.status"] === "ok" &&
-      /^\d+$/.test(data["apt.updates.total"] || "") && /^\d+$/.test(data["apt.updates.security"] || "");
-    const total=data["apt.updates.total"], security=data["apt.updates.security"];
-    const level=known ? BigInt(security)>0n ? "security" : BigInt(total)>0n ? "updates" : "current" : "unknown";
-    const distro=data["distro.pretty_name"] || [data["distro.name"],data["distro.version_id"]].filter(Boolean).join(" ") || t("distroUnknown");
-    const indexAge=Number(data["apt.indexes.oldest_age_seconds"]);
-    const hint=[t("peerSystem")+" · "+node.ip,node.sampled_at ? new Date(node.sampled_at).toLocaleString(locale()) : "",
-      Number.isFinite(indexAge) ? t("aptIndexAge",{age:duration(indexAge)}) : ""].filter(Boolean).join(" · ");
-    return `<div class="peer-system ${level}" title="${esc(hint)}"><span>${esc(t("peerSystem"))} · ${esc(node.ip)}</span><strong>${esc(distro)}${stale ? " · "+esc(t("stale")) : ""}</strong><span class="peer-updates">${esc(known ? t("aptSummary",{total,security}) : t("aptUnknown"))}</span>${Number.isFinite(indexAge) ? `<span>${esc(t("aptIndexAge",{age:duration(indexAge)}))}</span>` : ""}</div>`;
+    const count=data["apt.updates.security"];
+    const fresh=!state.failure && Number.isFinite(age) && age <= (info.interval_seconds || 30)*3 && node.status !== "unavailable";
+    const known=fresh && data["apt.updates.status"] === "ok" && /^\d+$/.test(count || "");
+    const percent=value=>fresh && Number.isFinite(value) ? value.toLocaleString(locale(),{maximumFractionDigits:1})+" %" : "—";
+    const level=known ? BigInt(count)>0n ? "security" : "current" : "unknown";
+    return `<div class="peer-system ${level}" title="${esc(node.ip)}"><span>${esc(node.values?.hostname || node.ip)} · CPU ${esc(percent(node.values?.cpu))} · steal ${esc(percent(node.values?.steal))}${fresh ? "" : " · "+esc(t("stale"))}</span><span class="peer-updates">${esc(known ? t("securityUpdates",{count}) : t("securityUpdatesUnknown"))}</span></div>`;
   }).join("");
 }
 function renderProcesses() {
@@ -685,11 +712,11 @@ function renderProcesses() {
   const rows = state.data.endpoints.filter(e => (!kind || e.kind === kind) &&
     [e.name,e.pid,e.interface,e.executable,e.port_id].join(" ").toLowerCase().includes(query));
   $("process-total").textContent = rows.length;
-  $("processes").innerHTML = rows.map(e => {
+  $("processes").innerHTML = groupPeerRows(rows,state.data.syspiper?.nodes || []).map(({e,peers,first,last,count}) => {
     const [color, text] = status(e);
     const reasons=attentionReasons(e);
     const indicator=reasons.length ? `<button class="status attention-status" data-attention="${esc(e.id)}" title="${esc(reasons.map(reason=>reason.text).join("\n"))}"><span class="attention-title"><span class="attention-mark" aria-hidden="true">!</span>${esc(text)} ↗</span><span class="status-reasons">${reasons.slice(0,2).map(reason=>esc(reason.text)).join("<br>")}${reasons.length > 2 ? `<br>${esc(t("moreReasons",{count:reasons.length-2}))}` : ""}</span></button>` : `<span class="status"><i class="dot ${color}"></i>${esc(text)}</span>`;
-    return `<tr data-process-row="${esc(e.id)}" class="${e.id === state.selected ? "selected" : ""}"><td><button class="process-name" data-id="${esc(e.id)}" aria-pressed="${e.id === state.selected}">${esc(e.name)}<small>PID ${e.pid}${e.interface && e.interface !== "-" ? " · " + esc(e.interface) : ""}</small></button>${peerSystemSummary(e)}</td><td><span class="kind">${esc(typeName(e.kind))}</span></td><td>${indicator}</td><td>${bps(rate(e,"rx"))}<small>↑ ${bps(rate(e,"tx"))}</small></td><td class="rtt-value" title="${esc(metricHelp("rtt_last_ms"))}">${esc(lastRTT(e))}</td><td>${duration(e.uptime_seconds)}</td></tr>`;
+    return `<tr data-process-row="${esc(e.id)}" class="${e.id === state.selected ? "selected" : ""} ${count>1 ? "peer-group"+(first ? " peer-group-first" : "")+(last ? " peer-group-last" : "") : ""}"><td><button class="process-name" data-id="${esc(e.id)}" aria-pressed="${e.id === state.selected}">${esc(e.name)}<small>PID ${e.pid}${e.interface && e.interface !== "-" ? " · " + esc(e.interface) : ""}</small></button>${first ? peerSecuritySummary(e,peers) : ""}</td><td><span class="kind">${esc(typeName(e.kind))}</span></td><td>${indicator}</td><td>${bps(rate(e,"rx"))}<small>↑ ${bps(rate(e,"tx"))}</small></td><td class="rtt-value" title="${esc(metricHelp("rtt_last_ms"))}">${esc(lastRTT(e))}</td><td>${duration(e.uptime_seconds)}</td></tr>`;
   }).join("");
   $("empty").hidden = rows.length > 0;
   $("empty").querySelector("h3").textContent = t(state.data.endpoints.length ? "noMatches" : "noProcesses");
@@ -954,6 +981,7 @@ function updateSystemRows(card,values) {
     ...Object.entries(values.load || {}).map(([key,value])=>["load."+key,value]),...(values.details || [])]);
   let index=0;
   for(const [key,value] of entries) {
+    if(key.startsWith("apt.indexes.")) continue;
     let row=previous.get(key);
     if(!row) { row=document.createElement("tr"); row.dataset.key=key; row.append(document.createElement("td"),document.createElement("td")); row.children[0].textContent=key; row.children[1].className="system-value"; }
     const text=String(value ?? "—"); if(row.children[1].textContent!==text) row.children[1].textContent=text;
@@ -980,7 +1008,7 @@ function renderSyspiper() {
     const stateText=t(stale ? "stale" : "syspiper_"+node.status);
     const problem=Object.entries(node.errors || {}).find(([,code])=>code!=="unsupported");
     const processes=(node.processes || []).map(id=>state.data.endpoints.find(e=>e.id===id)).filter(Boolean);
-    const html=`<article class="syspiper-card"><div class="panel-heading"><div><h3>${esc(node.ip)} <small>${esc(values.hostname || "")}</small></h3><p>${esc(node.sources.map(source=>t("syspiper_"+source)).join(" · "))}</p></div><div><span class="status"><i class="dot ${stale || node.status === "unavailable" ? "alert" : node.status === "ok" ? "" : "dim"}"></i>${esc(stateText)}</span>${problem ? `<p class="syspiper-error">/${esc(problem[0])}: ${esc(t("syspiper_"+problem[1]))}</p>` : ""}</div></div><div class="syspiper-values">${["cpu","ram","disk","net"].map(metric=>`<button data-system-chart="${esc(node.id)}" data-system-metric="${metric}" aria-haspopup="dialog" aria-label="${esc(node.ip+" · "+t("syspiper_"+metric)+" · "+t("chartExpand"))}"><span>${esc(t("syspiper_"+metric))}</span><strong>${esc(metric === "net" ? bps(chart.rx)+" / "+bps(chart.tx) : percent(values[metric]))}</strong><small>${esc(t("chartExpand"))} ↗</small></button>`).join("")}</div><div class="syspiper-meta"><span>${node.sampled_at ? esc(new Date(node.sampled_at).toLocaleString(locale()))+` · ${age} s` : "—"} · ${info.interval_seconds} s</span>${processes.map(e=>`<button class="quiet-button" data-system-process="${esc(e.id)}">${esc(e.name)} · PID ${e.pid} ↗</button>`).join("")}</div><details data-node-details="${esc(node.id)}" ><summary>${esc(t("syspiperDetails"))}</summary><ul>${Object.entries(node.errors || {}).map(([path,error])=>`<li>/${esc(path)}: ${esc(t("syspiper_"+error))}</li>`).join("")}</ul><label class="syspiper-filter"><span>${esc(t("systemFilter"))}</span><input type="search" data-system-filter aria-label="${esc(t("systemFilter"))}" placeholder="${esc(t("systemFilter"))}"></label><div class="table-scroll" tabindex="0"><table><thead><tr><th>${esc(t("key"))}</th><th>${esc(t("value"))}</th></tr></thead><tbody></tbody></table></div><p class="system-filter-empty" hidden>${esc(t("noMatches"))}</p>${values.details_truncated ? `<p class="system-truncated">${esc(t("syspiperTruncated"))}</p>` : ""}</details></article>`;
+    const html=`<article class="syspiper-card"><div class="panel-heading"><div><h3>${esc(node.ip)} <small>${esc(values.hostname || "")}</small></h3><p>${esc(node.sources.map(source=>t("syspiper_"+source)).join(" · "))}</p>${nodeSystemSummary(node)}</div><div><span class="status"><i class="dot ${stale || node.status === "unavailable" ? "alert" : node.status === "ok" ? "" : "dim"}"></i>${esc(stateText)}</span>${problem ? `<p class="syspiper-error">/${esc(problem[0])}: ${esc(t("syspiper_"+problem[1]))}</p>` : ""}</div></div><div class="syspiper-values">${["cpu","ram","disk","net"].map(metric=>`<button data-system-chart="${esc(node.id)}" data-system-metric="${metric}" aria-haspopup="dialog" aria-label="${esc(node.ip+" · "+t("syspiper_"+metric)+" · "+t("chartExpand"))}"><span>${esc(t("syspiper_"+metric))}</span><strong>${esc(metric === "net" ? bps(chart.rx)+" / "+bps(chart.tx) : percent(values[metric]))}</strong><small>${esc(t("chartExpand"))} ↗</small></button>`).join("")}</div><div class="syspiper-meta"><span>${node.sampled_at ? esc(new Date(node.sampled_at).toLocaleString(locale()))+` · ${age} s` : "—"} · ${info.interval_seconds} s</span>${processes.map(e=>`<button class="quiet-button" data-system-process="${esc(e.id)}">${esc(e.name)} · PID ${e.pid} ↗</button>`).join("")}</div><details data-node-details="${esc(node.id)}" ><summary>${esc(t("syspiperDetails"))}</summary><ul>${Object.entries(node.errors || {}).map(([path,error])=>`<li>/${esc(path)}: ${esc(t("syspiper_"+error))}</li>`).join("")}</ul><label class="syspiper-filter"><span>${esc(t("systemFilter"))}</span><input type="search" data-system-filter aria-label="${esc(t("systemFilter"))}" placeholder="${esc(t("systemFilter"))}"></label><div class="table-scroll" tabindex="0"><table><thead><tr><th>${esc(t("key"))}</th><th>${esc(t("value"))}</th></tr></thead><tbody></tbody></table></div><p class="system-filter-empty" hidden>${esc(t("noMatches"))}</p>${values.details_truncated ? `<p class="system-truncated">${esc(t("syspiperTruncated"))}</p>` : ""}</details></article>`;
     const template=document.createElement("template"); template.innerHTML=html;
     const fresh=template.content.firstElementChild;
     let card=cards.get(node.id);
