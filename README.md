@@ -523,3 +523,5 @@ deployment.
 | [LICENSE.md](LICENSE.md) | BSD 3-Clause license |
 
 UDP buffer options and bounded local EAGAIN retries: [UDP transport](docs/UDP_TRANSPORT.md).
+
+IPC backpressure and bounded retries: [docs/IPC_RETRY.md](docs/IPC_RETRY.md).

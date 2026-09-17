@@ -1,6 +1,7 @@
 #pragma once
 
 #include "switch_mmap.hpp"
+#include "retry_queue.hpp"
 #include <atomic>
 #include <ostream>
 
@@ -32,6 +33,7 @@ struct alignas(64) TransportStats {
 // RX and TX each have one owner. Ownership can migrate only through the existing
 // worker barrier. Neither direction touches the other's mutable fields.
 class Transport {
+    RetryQueue retry_;
     Parameters parameters_{};
     bool extended_ = false;
     alignas(64) Mapping input_;
@@ -85,6 +87,7 @@ public:
     Transport(const Transport &) = delete;
     Transport &operator=(const Transport &) = delete;
     void reset() {
+        retry_.discard();
         input_.reset(); output_.reset(); read_count_ = read_cursor_ = staged_count_ = 0;
         parameters_ = {}; extended_ = false;
     }
@@ -110,7 +113,7 @@ public:
     // prevented submitting the remainder. No TX pointer is retained here.
     ssize_t send_batch(int fd, const FrameParts *frames, std::size_t count) {
         if (!count) return 0;
-        if (staged_count_) { errno = EBUSY; return -1; } // Do not bypass append()/flush() work.
+        if (staged_count_ || !retry_.empty()) { errno = EBUSY; return -1; } // Do not bypass append()/flush() work.
         if (extended_ && (frames[0].size() < min_frame || frames[0].size() > parameters_.frame_limit)) {
             errno = EMSGSIZE; return -1;
         }
@@ -139,26 +142,28 @@ public:
     // an extra private payload copy or a timer. A full batch flushes immediately.
     // Outcomes count actual successful socket submissions and drops, never merely
     // staged frames. Caller MUST flush before sleeping or leaving the data slice.
-    struct Outcome {
-        std::uint64_t frames = 0, bytes = 0, drops = 0, backpressure = 0;
-        int error = 0;
-        void add(const Outcome &o) {
-            frames += o.frames; bytes += o.bytes; drops += o.drops; backpressure += o.backpressure;
-            if (o.error) error = o.error;
-        }
-    };
+    using Outcome = RetryQueue::Outcome;
+    bool retry_writable(RetryQueue::Time now) const { return retry_.writable(now); }
+    int retry_timeout(RetryQueue::Time now, int limit) const { return retry_.timeout(now, limit); }
     Outcome flush(int fd) {
-        Outcome out;
-        if (!staged_count_) return out;
+        auto out = retry_.flush(RetryQueue::Clock::now(), [&](const std::uint8_t* data, std::size_t size) -> ssize_t {
+            return inline_send(fd, {data,size}) == 1 ? static_cast<ssize_t>(size) : -1;
+        });
+        if (!staged_count_ || out.error) return out;
         const auto count = staged_count_;
         staged_count_ = 0;
         if (send_refs(fd, staged_.data(), count) < 0) {
-            out.drops = count;
-            if (retry_error()) out.backpressure = count;
-            else out.error = errno;
+            if (retry_error()) {
+                const auto now = RetryQueue::Clock::now();
+                // send_refs rolled back ownership, but no new reservation has
+                // overwritten these payloads. Copy before another append.
+                for (std::size_t i=0; i<count; ++i)
+                    out.add(retry_.enqueue(output_.data(staged_[i].slot), staged_[i].length, nullptr, 0, now));
+                retry_.blocked(now);
+            } else { out.drops += count; out.error = errno; }
         } else {
-            out.frames = count;
-            for (std::size_t i = 0; i < count; ++i) out.bytes += staged_[i].length;
+            out.frames += count;
+            for (std::size_t i=0; i<count; ++i) out.bytes += staged_[i].length;
         }
         return out;
     }
@@ -167,22 +172,35 @@ public:
         if (extended_ && (frame.size() < min_frame || frame.size() > parameters_.frame_limit)) {
             out.drops = 1; out.error = EMSGSIZE; return out;
         }
+        out.add(retry_.expire(RetryQueue::Clock::now()));
+        if (!retry_.empty()) {
+            out.add(retry_.enqueue(frame.first, frame.first_size, frame.second, frame.second_size, RetryQueue::Clock::now()));
+            return out;
+        }
         if (mapped() && frame.size() <= parameters_.capacity) {
             if (stage(frame, staged_[staged_count_])) {
-                if (++staged_count_ == batch_limit()) out = flush(fd);
+                if (++staged_count_ == batch_limit()) out.add(flush(fd));
                 return out;
             }
             if (errno == EOVERFLOW) { out.drops = 1; out.error = errno; return out; }
             TransportStats::add(tx.pool_fallback);
         }
-        out = flush(fd); // Earlier mapped frames must precede this inline frame.
+        out.add(flush(fd)); // Earlier mapped frames must precede this inline frame.
         if (out.error) { ++out.drops; return out; }
+        if (!retry_.empty()) {
+            out.add(retry_.enqueue(frame.first, frame.first_size, frame.second, frame.second_size, RetryQueue::Clock::now()));
+            return out;
+        }
         if (inline_send(fd, frame) == 1) { ++out.frames; out.bytes += frame.size(); }
-        else { ++out.drops; if (retry_error()) ++out.backpressure; else out.error = errno; }
+        else if (retry_error()) {
+            const auto now = RetryQueue::Clock::now();
+            out.add(retry_.enqueue(frame.first,frame.first_size,frame.second,frame.second_size,now));
+            retry_.blocked(now);
+        } else { ++out.drops; out.error = errno; }
         return out;
     }
     Outcome discard_staged() {
-        Outcome out; out.drops = staged_count_;
+        Outcome out = retry_.discard(); out.drops += staged_count_;
         for (std::size_t i = 0; i < staged_count_; ++i) output_.release(staged_[i]);
         staged_count_ = 0;
         return out;
@@ -232,6 +250,7 @@ public:
             << prefix << "mmap=" << (mapped() ? 1 : 0) << '\n'
             << prefix << "batch_limit=" << batch_limit() << '\n'
             << prefix << "mapping_bytes=" << mapping_bytes() << '\n';
+        retry_.stats(out, prefix + "retry_");
         rx.write(out, prefix + "rx_"); tx.write(out, prefix + "tx_");
     }
 };

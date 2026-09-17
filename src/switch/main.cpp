@@ -1,3 +1,4 @@
+#include "../ipc/retry_queue.hpp"
 #include "../common.hpp"
 #include "../runtime_recovery.hpp"
 #include "../switch_admission.hpp"
@@ -51,6 +52,7 @@ struct Connection {
     tuntom::RulesProgram program;
     bool exit_role = false;
     tuntom::relay::Registry relay;
+    tuntom::ipc::RetryQueue retry;
 };
 
 struct SwitchStats {
@@ -132,19 +134,20 @@ Connection* find_connection(
     return nullptr;
 }
 
-bool send_frame(int fd, const std::uint8_t* frame, std::size_t size, SwitchStats& stats) {
-    const ssize_t sent = ::send(
-        fd, frame, size, MSG_DONTWAIT | MSG_NOSIGNAL);
-    if (sent != static_cast<ssize_t>(size)) {
-        if (sent < 0 and (errno == EAGAIN or errno == EWOULDBLOCK))
-            ++stats.send_backpressure_drops;
-        else
-            ++stats.send_errors;
-        return false;
+void account_output(const tuntom::ipc::RetryQueue::Outcome& out, SwitchStats& stats) {
+    stats.frames_tx += out.frames; stats.bytes_tx += out.bytes;
+    stats.send_backpressure_drops += out.backpressure;
+    stats.send_errors += out.drops - out.backpressure;
+}
+bool send_frame(Connection& connection, const std::uint8_t* frame, std::size_t size, SwitchStats& stats) {
+    const auto out = connection.retry.submit(frame,size,tuntom::ipc::RetryQueue::Clock::now(),
+        [&](const std::uint8_t* data,std::size_t n) { return ::send(connection.fd,data,n,MSG_DONTWAIT|MSG_NOSIGNAL); });
+    account_output(out,stats);
+    if (out.error) {
+        account_output(connection.retry.discard(),stats);
+        ::close(connection.fd); connection.fd = -1;
     }
-    ++stats.frames_tx;
-    stats.bytes_tx += size;
-    return true;
+    return !out.drops;
 }
 
 void close_connections(std::vector<Connection>& connections) {
@@ -319,7 +322,7 @@ int main(int argc, char** argv) {
             for (auto& connection : connections) {
                 if (connection.fd >= 0 and connection.port.empty() and
                     now >= connection.registration_deadline) {
-                    ::close(connection.fd);
+                    account_output(connection.retry.discard(),stats); ::close(connection.fd);
                     connection.fd = -1;
                     ++stats.registrations_timed_out;
                 }
@@ -330,7 +333,7 @@ int main(int argc, char** argv) {
             // A ready record does not extend the registration's fixed lifetime.
             if (connection.port.empty() and std::chrono::steady_clock::now() >=
                 connection.registration_deadline) {
-                ::close(connection.fd);
+                account_output(connection.retry.discard(),stats); ::close(connection.fd);
                 connection.fd = -1;
                 ++stats.registrations_timed_out;
                 return true;
@@ -340,12 +343,12 @@ int main(int argc, char** argv) {
             if (received < 0) {
                 if (errno == EAGAIN or errno == EWOULDBLOCK or errno == EINTR)
                     return false;
-                ::close(connection.fd);
+                account_output(connection.retry.discard(),stats); ::close(connection.fd);
                 connection.fd = -1;
                 return true;
             }
             if (received == 0 or static_cast<std::size_t>(received) > buffer.size()) {
-                ::close(connection.fd);
+                account_output(connection.retry.discard(),stats); ::close(connection.fd);
                 connection.fd = -1;
                 return true;
             }
@@ -357,7 +360,7 @@ int main(int argc, char** argv) {
                     if (not tuntom::decode_switch_registration(
                             buffer.data(), size, registered_id)) {
                         ++stats.registrations_invalid;
-                        ::close(connection.fd);
+                        account_output(connection.retry.discard(),stats); ::close(connection.fd);
                         connection.fd = -1;
                         return true;
                     }
@@ -366,13 +369,13 @@ int main(int argc, char** argv) {
                         for (const auto& c : connections)
                             if (c.fd >= 0 && !c.port.empty() && !tuntom::via::compatible(*ruleset, registered_id, connection.fd, c.port, c.fd)) valid = false;
                         if (!valid) {
-                            ++stats.registrations_invalid; ::close(connection.fd); connection.fd = -1; return true;
+                            ++stats.registrations_invalid; account_output(connection.retry.discard(),stats); ::close(connection.fd); connection.fd = -1; return true;
                         }
                     }
                     auto* old = find_connection(connections, registered_id);
                     if (not old and connection_counts().first >= capacity.ports) {
                         ++stats.registrations_capacity_rejected;
-                        ::close(connection.fd);
+                        account_output(connection.retry.discard(),stats); ::close(connection.fd);
                         connection.fd = -1;
                         return true;
                     }
@@ -390,7 +393,7 @@ int main(int argc, char** argv) {
                     divert_path.swap(next_divert);
                     via_path.swap(next_via);
                     if (old and old != &connection) {
-                        ::close(old->fd);
+                        account_output(old->retry.discard(),stats); ::close(old->fd);
                         old->fd = -1;
                     }
                     ++stats.registrations_ok;
@@ -398,7 +401,7 @@ int main(int argc, char** argv) {
                 } catch (const std::bad_alloc&) {
                     // The registration record was already consumed. Force a
                     // reconnect rather than leaving a half-registered peer.
-                    ::close(connection.fd);
+                    account_output(connection.retry.discard(),stats); ::close(connection.fd);
                     connection.fd = -1;
                     throw;
                 }
@@ -422,8 +425,9 @@ int main(int argc, char** argv) {
                     auto previous = std::move(connection.relay); connection.relay = std::move(candidate);
                     try { if (changed) via_path = make_via_path(ruleset); }
                     catch (...) { connection.relay = std::move(previous); throw; }
+                    if (changed) account_output(connection.retry.discard(),stats);
                     const auto ack = tuntom::relay::encode(tuntom::relay::Type::acknowledged,record.channel,record.epoch);
-                    (void)send_frame(connection.fd,ack.data(),ack.size(),stats); return true;
+                    (void)send_frame(connection,ack.data(),ack.size(),stats); return true;
                 }
                 const auto channel = connection.relay.directory.channels.find(record.channel);
                 if (record.type != tuntom::relay::Type::data || !connection.relay.live() ||
@@ -473,7 +477,7 @@ int main(int argc, char** argv) {
                         }
                         if (decision.exit) ++stats.exit_deliveries;
                         if (decision.multipath) ++stats.ecmp_packets;
-                        if (send_frame(target->fd, buffer.data(), output_size, stats)) ++stats.divert_forwarded;
+                        if (send_frame(*target, buffer.data(), output_size, stats)) ++stats.divert_forwarded;
                     } else if (decision.result == Result::overflow) ++stats.divert_overflow_drops;
                     else if (decision.result == Result::malformed) ++stats.divert_invalid_drops;
                     else if (decision.result == Result::policy) ++stats.policy_drops;
@@ -513,7 +517,7 @@ int main(int argc, char** argv) {
                 auto output_size = size;
                 tuntom::rewrite_rules_frame(buffer.data(), output_size, frame, labels, count, exit);
                 if (exit) ++stats.exit_deliveries;
-                send_frame(target->fd, buffer.data(), output_size, stats);
+                send_frame(*target, buffer.data(), output_size, stats);
                 return true;
             }
 
@@ -543,12 +547,12 @@ int main(int argc, char** argv) {
                     buffer[1] = static_cast<std::uint8_t>(SwitchOpcode::exit_packet);
                     ++stats.exit_deliveries;
                 }
-                send_frame(target->fd, buffer.data(), size, stats);
+                send_frame(*target, buffer.data(), size, stats);
             } else if (default_back) {
                 ++stats.route_misses;
                 ++stats.default_back;
                 buffer[1] = static_cast<std::uint8_t>(SwitchOpcode::exit_packet);
-                send_frame(connection.fd, buffer.data(), size, stats);
+                send_frame(connection, buffer.data(), size, stats);
             } else {
                 ++stats.route_misses;
             }
@@ -608,6 +612,7 @@ int main(int argc, char** argv) {
                     << "malformed_frames=" << stats.malformed_frames << "\n"
                     << "send_errors=" << stats.send_errors << "\n"
                     << "send_backpressure_drops=" << stats.send_backpressure_drops << "\n";
+                for (const auto& c : connections) if (!c.port.empty()) c.retry.stats(out,"port_" + c.port + "_retry_");
                 out << "policy_drops=" << stats.policy_drops << "\nrewrite_drops=" << stats.rewrite_drops << '\n';
                 if (ruleset) out << "ruleset_format=" << ruleset->format << "\nruleset_serial=" << ruleset->serial << '\n';
                 if (divert_config) out << divert_config->command("divert.show");
@@ -653,6 +658,7 @@ int main(int argc, char** argv) {
                         connections[i].program = std::move(programs[i]);
                         connections[i].exit_role = exits[i];
                     }
+                    for (auto& c : connections) account_output(c.retry.discard(),stats);
                     ruleset.swap(next);
                     divert_path.swap(next_divert);
                     via_path.swap(next_via);
@@ -687,11 +693,12 @@ int main(int argc, char** argv) {
                 descriptors.push_back({pending_space and admission.ready(now) ? listener : -1, POLLIN, 0});
                 descriptors.push_back({control ? control->poll_fd() : -1, POLLIN, 0});
                 for (const auto& connection : connections)
-                    descriptors.push_back({connection.fd, POLLIN, 0});
+                    descriptors.push_back({connection.fd, static_cast<short>(POLLIN | (connection.retry.writable(now) ? POLLOUT : 0)), 0});
 
                 int timeout = pending_space ? admission.poll_timeout_ms(now, 1000) : 1000;
                 if (control) timeout = control->poll_timeout_ms(now, timeout);
                 for (const auto& connection : connections) {
+                    timeout = connection.retry.timeout(now, timeout);
                     if (connection.port.empty()) timeout = tuntom::deadline_timeout_ms(
                         now, connection.registration_deadline, timeout);
                 }
@@ -714,7 +721,7 @@ int main(int argc, char** argv) {
                     if (accepted >= 0) {
                         try {
                             connections.push_back({accepted, {}, std::chrono::steady_clock::now() +
-                                tuntom::SwitchAdmission::registration_timeout, {}, 0, {}, false, {}});
+                                tuntom::SwitchAdmission::registration_timeout, {}, 0, {}, false, {}, {}});
                         } catch (...) {
                             ::close(accepted);
                             throw;
@@ -732,9 +739,17 @@ int main(int argc, char** argv) {
                     const auto events = descriptors[index + 2].revents;
                     if (connection.fd < 0) continue;
                     if (events & (POLLHUP | POLLERR | POLLNVAL)) {
-                        ::close(connection.fd);
+                        account_output(connection.retry.discard(),stats); ::close(connection.fd);
                         connection.fd = -1;
                         continue;
+                    }
+                    const auto output = connection.retry.flush(poll_finished,[&](const std::uint8_t* data,std::size_t n) {
+                        return ::send(connection.fd,data,n,MSG_DONTWAIT|MSG_NOSIGNAL);
+                    });
+                    account_output(output,stats);
+                    if (output.error) {
+                        account_output(connection.retry.discard(),stats);
+                        ::close(connection.fd); connection.fd = -1; continue;
                     }
                     initially_ready[index] = (events & POLLIN) != 0;
                 }

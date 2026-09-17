@@ -102,6 +102,30 @@ static void backpressure() {
     require(pair.producer.send_batch(pair.a.get(), frames.data(), frames.size()) == 8, "failed send returned every slot");
     for (unsigned i = 0; i < 8; ++i) require(pair.consumer.receive(pair.b.get(), buffer.data(), buffer.size()) > 0, "post-backpressure drain");
 }
+static void deferred_batch() {
+    Pair pair(8,8);
+    int small=4096;
+    require(!setsockopt(pair.a.get(),SOL_SOCKET,SO_SNDBUF,&small,sizeof(small)),"sndbuf");
+    const auto packet=frame();
+    while (::send(pair.a.get(),packet.data(),packet.size(),MSG_DONTWAIT|MSG_NOSIGNAL)>=0) {}
+    require(errno==EAGAIN,"fill socket");
+    v2::Transport::Outcome total;
+    for(unsigned i=0;i<3;++i) total.add(pair.producer.append(pair.a.get(),{packet.data(),packet.size()}));
+    total.add(pair.producer.flush(pair.a.get()));
+    require(!total.frames && !total.drops,"EAGAIN retains batch");
+    std::array<uint8_t,v2::max_frame> buffer;
+    while (::recv(pair.b.get(),buffer.data(),buffer.size(),MSG_DONTWAIT)>0) {}
+    ::usleep(2000);
+    total.add(pair.producer.flush(pair.a.get()));
+    require(total.frames==3 && !total.drops,"retry submits batch exactly once");
+    for(unsigned i=0;i<3;++i) {
+        require(pair.consumer.receive(pair.b.get(),buffer.data(),buffer.size())==static_cast<ssize_t>(packet.size()),"retry receive");
+        require(std::equal(packet.begin(),packet.end(),buffer.begin()),"retry payload preserved");
+    }
+    require(pair.consumer.receive(pair.b.get(),buffer.data(),buffer.size())<0 && errno==EAGAIN,"no duplicates");
+    std::array<v2::FrameParts,8> frames; frames.fill({packet.data(),packet.size()});
+    require(pair.producer.send_batch(pair.a.get(),frames.data(),8)==8,"all mmap slots reclaimed");
+}
 static void invalid_references() {
     for (unsigned mutation = 0; mutation < 9; ++mutation) {
         Pair pair;
@@ -321,7 +345,7 @@ static void forked_transfer() {
 int main() {
     try {
         client_rejects_positive_corruption(); private_geometry(); forked_transfer();
-        codecs(); mixed_transport(); backpressure(); invalid_references(); invalid_mappings_and_fds();
+        codecs(); mixed_transport(); backpressure(); deferred_batch(); invalid_references(); invalid_mappings_and_fds();
         handshake(v2::Mode::automatic, 64 * 1024 * 1024);
         handshake(v2::Mode::automatic, 0);
         handshake(v2::Mode::inline_only, 64 * 1024 * 1024);

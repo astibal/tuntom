@@ -71,6 +71,7 @@ struct Port {
         return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count() < relay_expires.load(std::memory_order_relaxed);
     }
     ~Port() { while (auto* buffer = relay_control.pop()) buffer->release(); }
+    ipc::RetryQueue relay_ack_retry; // Main-thread owned; independent of worker TX.
     alignas(64) Pool pool; // RX-owned state must not share TX's writable cache line.
     Clock::time_point rx_retry{};
     std::unique_ptr<ipc::Transport> transport;
@@ -877,7 +878,14 @@ class Engine {
     void drain_events() { control_wake_.drain(); }
     void relay_maintenance() {
         const auto ports = plan_->ports;
-        for (const auto& port : ports) for (unsigned i=0;i<16;++i) {
+        for (const auto& port : ports) {
+            if (port->disconnected.load()) { port->relay_ack_retry.discard(); continue; }
+            const auto result = port->relay_ack_retry.flush(Clock::now(),[&](const std::uint8_t* p,std::size_t n) {
+                return ::send(port->fd.get(),p,n,MSG_DONTWAIT|MSG_NOSIGNAL);
+            });
+            if (result.error) disconnect(*port);
+        }
+        for (const auto& port : ports) for (unsigned i=0;i<16 && !port->disconnected.load();++i) {
             auto* buffer = port->relay_control.pop(); if (!buffer) break;
             struct Release { Buffer* p; ~Release() { p->release(); } } release{buffer};
             relay::View record;
@@ -896,7 +904,11 @@ class Engine {
             const auto ack = relay::encode(relay::Type::acknowledged,record.channel,record.epoch);
             // Legacy SEQPACKET records are atomic. No direction-owned Transport
             // state is touched by this bounded control-plane send.
-            (void)::send(port->fd.get(),ack.data(),ack.size(),MSG_DONTWAIT|MSG_NOSIGNAL);
+            if (changed) port->relay_ack_retry.discard();
+            const auto result = port->relay_ack_retry.submit(ack.data(),ack.size(),Clock::now(),[&](const std::uint8_t* p,std::size_t n) {
+                return ::send(port->fd.get(),p,n,MSG_DONTWAIT|MSG_NOSIGNAL);
+            });
+            if (result.error) disconnect(*port);
         }
     }
 
@@ -917,8 +929,11 @@ class Engine {
         // ACTIVE has been queued. Everything below is allocation-free.
         const auto began = Clock::now();
         pause();
-        for (auto &port : plan_->ports)
+        for (auto &port : plan_->ports) {
             reconfiguration_drops_ += discard_pending(*port, rules_changed ? nullptr : next.get());
+            if (rules_changed || std::find(next->ports.begin(),next->ports.end(),port) == next->ports.end())
+                port->relay_ack_retry.discard();
+        }
         for (auto &link : plan_->links)
             if (rules_changed || !next->links.count(link.first))
                 reconfiguration_drops_ += link.second->discard();
@@ -955,6 +970,7 @@ class Engine {
         return n;
     }
     void write_stats(std::ostream &out) const {
+        for (const auto& port : plan_->ports) port->relay_ack_retry.stats(out,"port_" + port->name + "_relay_ack_retry_");
         if (plan_->via_path) out << "via_enabled=1\n";
         if (config_.divert_config) out << config_.divert_config->command("divert.show");
         out << "scheduler_version=" << plan_->version << "\nworkers_pool=" << workers_.size()

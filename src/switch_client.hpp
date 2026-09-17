@@ -61,12 +61,13 @@ public:
     bool connecting() const { return state_ != State::disconnected && state_ != State::connected; }
     bool receive_pending() const { return connected() && transport_.receive_pending(); }
     short poll_events() const {
+        if (connected()) return static_cast<short>(POLLIN | (transport_.retry_writable(Clock::now()) ? POLLOUT : 0));
         return state_ == State::connecting || state_ == State::hello || state_ == State::registration ||
             state_ == State::ready ? POLLOUT : POLLIN;
     }
     int poll_timeout_ms(Time now, int maximum) const {
         if (receive_pending()) return 0;
-        if (!connecting()) return maximum;
+        if (!connecting()) return transport_.retry_timeout(now, maximum);
         const auto deadline = (state_ == State::hello || state_ == State::welcome) ? std::min(connect_deadline_, probe_deadline_) : connect_deadline_;
         if (now >= deadline) return 0;
         const auto left = std::chrono::ceil<std::chrono::milliseconds>(deadline - now).count();

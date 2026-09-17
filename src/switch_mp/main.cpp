@@ -234,8 +234,9 @@ int main(int argc, char **argv) {
                     descriptors.push_back({entry.socket(), entry.handshake.events(), 0});
                 // HUP monitoring also retires a closed ingress whose pool is full.
                 for (const auto &port : engine.plan().ports)
-                    descriptors.push_back({port->fd.get(), 0, 0});
+                    descriptors.push_back({port->fd.get(), static_cast<short>(port->relay_ack_retry.writable(now) ? POLLOUT : 0), 0});
                 auto timeout = admission.poll_timeout_ms(now, 100);
+                for (const auto& port : engine.plan().ports) timeout = port->relay_ack_retry.timeout(now,timeout);
                 if (control)
                     timeout = control->poll_timeout_ms(now, timeout);
                 const auto ready = ::poll(descriptors.data(), descriptors.size(), timeout);
