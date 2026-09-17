@@ -37,7 +37,7 @@ def connect(path, name):
     return peer
 
 
-def run(binary, ctl, tunnel, root, expect_queue=False):
+def run(binary, ctl, tunnel, root, expect_queue=False, expect_ipc_retry=False):
     sw = Harness(binary, ctl, root, RULES)
     processes, logs, peers = [], [], []
     try:
@@ -118,6 +118,14 @@ def run(binary, ctl, tunnel, root, expect_queue=False):
         assert duplicate.recv(100) == b''
         # Loss of the peer expires availability; reconnect must re-register the
         # still-open adapter sockets after the hub creates a new session.
+        if expect_ipc_retry:
+            snapshots = [sw.stats()]
+            for name in ('hub.ctl', 'remote.ctl'):
+                raw = subprocess.check_output([ctl, str(root/name), 'show', 'stats'], text=True)
+                snapshots.append(dict(line.split('=',1) for line in raw.splitlines() if '=' in line))
+            for values in snapshots:
+                assert sum(int(v) for k,v in values.items() if k.endswith('_retry_sent')) > 0, values
+                assert sum(int(v) for k,v in values.items() if k.endswith(('_retry_capacity_drops','_retry_expired','_retry_error_drops'))) == 0, values
         hub.terminate(); hub.wait(timeout=5); processes.remove(hub)
         time.sleep(3.3)
         edge.sendall(packet([17,42],tcp(sport=23456)))
@@ -143,5 +151,5 @@ if __name__ == '__main__':
     expect_queue = sys.argv[5:] == ['--expect-queue']
     for binary in (st,mp):
         with tempfile.TemporaryDirectory(prefix='tuntom-relay-') as root:
-            run(binary,ctl,tunnel,Path(root),expect_queue)
+            run(binary,ctl,tunnel,Path(root),expect_queue,sys.argv[5:] == ['--expect-ipc-retry'])
         print('PASS remote IPC relay:',Path(binary).name)

@@ -178,8 +178,9 @@ public:
                 const auto timeout_at = AdaptivePolling::Clock::now();
                 int timeout = switch_ && (udp_tx_queue_.empty() || !switch_->connected())
                     ? switch_->poll_timeout_ms(timeout_at, 1000) : 1000;
+                if (switch_ && switch_->connected()) timeout = switch_->transport().retry_timeout(timeout_at, timeout);
                 if (control_) timeout = control_->poll_timeout_ms(timeout_at, timeout);
-                if (relay_) { relay_->descriptors(descriptors); timeout = std::min(timeout, 100); }
+                if (relay_) { relay_->descriptors(descriptors); timeout = relay_->poll_timeout(timeout_at, std::min(timeout, 100)); }
                 timeout = udp_tx_queue_.poll_timeout(timeout_at, timeout);
                 const auto poll_started = AdaptivePolling::Clock::now();
                 const int rc = ::poll(descriptors.data(), descriptors.size(), timeout);

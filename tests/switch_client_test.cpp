@@ -279,6 +279,20 @@ static void frame_send() {
         require(::recv(peer, received.data(), received.size(), 0) == -1 and errno == EAGAIN,
                 "failed frame must not leave a partial record");
     }
+    send_error = EAGAIN;
+    auto deferred = client.append_frame(tuntom::SwitchOpcode::switch_packet, labels.data(), 1, payload.data(), 64);
+    require(!deferred.frames && !deferred.drops, "append retains EAGAIN frame");
+    require(client.poll_timeout_ms(tuntom::SwitchClient::Clock::now(),1000) <= 100, "retry bounds poll timeout");
+    send_error = 0;
+    ::usleep(2000);
+    require(client.poll_events() & POLLOUT, "pending output arms POLLOUT");
+    deferred = client.flush();
+    require(deferred.frames == 1 && !deferred.drops, "writable retry sends one frame");
+    require(!(client.poll_events() & POLLOUT), "drained output disarms POLLOUT");
+    require(::recv(peer,received.data(),received.size(),0) > 0, "deferred record delivered");
+    send_error = EAGAIN;
+    client.append_frame(tuntom::SwitchOpcode::switch_packet, labels.data(), 1, payload.data(), 64);
+    require(client.discard_staged().drops == 1, "disconnect cleanup owns deferred frame");
     send_error = 0;
     const auto jumbo = tuntom::encode_switch_frame(
         tuntom::SwitchOpcode::switch_packet, {labels[0]}, payload.data(), 9000);
