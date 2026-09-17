@@ -158,6 +158,7 @@ const messages = {
   syspiper_invalid_response:["Neplatná odpověď","Invalid response","Réponse invalide"],
   syspiper_response_too_large:["Příliš velká odpověď","Response too large","Réponse trop volumineuse"],
   syspiper_probe_failed:["Sběr systémových metrik selhal nebo je neúplný","System collection failed or is incomplete","Collecte système échouée ou incomplète"],
+  systemFilter:["Filtrovat názvy a hodnoty","Filter names and values","Filtrer les noms et valeurs"],
   syspiperDetails:["Další metriky a dostupnost endpointů","Additional metrics and endpoint availability","Autres métriques et disponibilité des endpoints"],
   syspiperTruncated:["Zobrazený seznam metrik je omezen na 128 položek.","Metric list is limited to 128 entries.","La liste est limitée à 128 métriques."],
   syspiperDiscovery:["Adresy rozhraní se nepodařilo načíst; parametry tunelů a zadané IP zůstávají dostupné.","Interface address discovery failed; tunnel arguments and configured IPs are still used.","Échec de découverte des interfaces ; les IP des tunnels et les IP configurées restent utilisées."],
@@ -909,24 +910,76 @@ $("chart-dialog").addEventListener("close",()=>{
 });
 let chartResize;
 window.addEventListener("resize",()=>{clearTimeout(chartResize);chartResize=setTimeout(()=>drawChart(),100);});
+$("syspiper-nodes").addEventListener("input",event=>{
+  if(event.target.matches("[data-system-filter]")) filterSystemRows(event.target.closest(".syspiper-card"));
+});
+function filterSystemRows(card) {
+  const words=card.querySelector("[data-system-filter]").value.toLowerCase().split(/\s+/).filter(Boolean);
+  let visible=0;
+  for(const row of card.querySelectorAll("tbody tr")) {
+    row.hidden=!words.every(word=>row.textContent.toLowerCase().includes(word));
+    if(!row.hidden) visible++;
+  }
+  card.querySelector(".system-filter-empty").hidden=visible>0;
+}
+function updateSystemRows(card,values) {
+  const body=card.querySelector("tbody"), scroll=card.querySelector(".table-scroll");
+  const top=scroll.scrollTop, left=scroll.scrollLeft;
+  const previous=new Map([...body.children].map(row=>[row.dataset.key,row]));
+  const entries=new Map([...Object.entries(values).filter(([key,value])=>typeof value === "number" || key.startsWith("net_")),
+    ...Object.entries(values.load || {}).map(([key,value])=>["load."+key,value]),...(values.details || [])]);
+  let index=0;
+  for(const [key,value] of entries) {
+    let row=previous.get(key);
+    if(!row) { row=document.createElement("tr"); row.dataset.key=key; row.append(document.createElement("td"),document.createElement("td")); row.children[0].textContent=key; row.children[1].className="system-value"; }
+    const text=String(value ?? "—"); if(row.children[1].textContent!==text) row.children[1].textContent=text;
+    if(body.children[index]!==row) body.insertBefore(row,body.children[index] || null);
+    previous.delete(key); index++;
+  }
+  for(const row of previous.values()) row.remove();
+  filterSystemRows(card);
+  scroll.scrollTop=top; scroll.scrollLeft=left;
+}
 function renderSyspiper() {
   const info=state.data?.syspiper;
   const nodes=info?.nodes || [];
   $("syspiper-notice").textContent=!info?.enabled ? t("syspiperDisabled") :
     [t("syspiperScope"), !nodes.length ? t("syspiperEmpty") : "",info.discovery_error ? t("syspiperDiscovery") : "",
       info.skipped ? t("syspiperLimit",{count:info.skipped}) : "",info.history_error ? t("historyFailed") : ""].filter(Boolean).join(" ");
-  const opened=new Set([...$("syspiper-nodes").querySelectorAll('details[open]')].map(el=>el.dataset.nodeDetails));
+  const root=$("syspiper-nodes");
+  const cards=new Map([...root.children].map(card=>[card.dataset.nodeId,card]));
   const percent=v=>Number.isFinite(v) ? v.toLocaleString(locale(),{maximumFractionDigits:1})+" %" : "—";
-  $("syspiper-nodes").innerHTML=nodes.map(node=>{
+  nodes.forEach((node,index)=>{
     const values=node.values || {}, chart=node.chart || {};
     const age=node.sampled_at ? Math.max(0,Math.round((Date.now()-Date.parse(node.sampled_at))/1000)) : null;
     const stale=state.failure || age > info.interval_seconds*3;
     const stateText=t(stale ? "stale" : "syspiper_"+node.status);
     const problem=Object.entries(node.errors || {}).find(([,code])=>code!=="unsupported");
     const processes=(node.processes || []).map(id=>state.data.endpoints.find(e=>e.id===id)).filter(Boolean);
-    return `<article class="syspiper-card"><div class="panel-heading"><div><h3>${esc(node.ip)} <small>${esc(values.hostname || "")}</small></h3><p>${esc(node.sources.map(source=>t("syspiper_"+source)).join(" · "))}</p></div><div><span class="status"><i class="dot ${stale || node.status === "unavailable" ? "alert" : node.status === "ok" ? "" : "dim"}"></i>${esc(stateText)}</span>${problem ? `<p class="syspiper-error">/${esc(problem[0])}: ${esc(t("syspiper_"+problem[1]))}</p>` : ""}</div></div><div class="syspiper-values">${["cpu","ram","disk","net"].map(metric=>`<button data-system-chart="${esc(node.id)}" data-system-metric="${metric}" aria-haspopup="dialog" aria-label="${esc(node.ip+" · "+t("syspiper_"+metric)+" · "+t("chartExpand"))}"><span>${esc(t("syspiper_"+metric))}</span><strong>${esc(metric === "net" ? bps(chart.rx)+" / "+bps(chart.tx) : percent(values[metric]))}</strong><small>${esc(t("chartExpand"))} ↗</small></button>`).join("")}</div><div class="syspiper-meta"><span>${node.sampled_at ? esc(new Date(node.sampled_at).toLocaleString(locale()))+` · ${age} s` : "—"} · ${info.interval_seconds} s</span>${processes.map(e=>`<button class="quiet-button" data-system-process="${esc(e.id)}">${esc(e.name)} · PID ${e.pid} ↗</button>`).join("")}</div><details data-node-details="${esc(node.id)}" ${opened.has(node.id) ? "open" : ""}><summary>${esc(t("syspiperDetails"))}</summary><ul>${Object.entries(node.errors || {}).map(([path,error])=>`<li>/${esc(path)}: ${esc(t("syspiper_"+error))}</li>`).join("")}</ul><div class="table-scroll"><table><tbody>${[...Object.entries(values).filter(([key,value])=>typeof value === "number" || key.startsWith("net_")).map(([key,value])=>[key,value]),...Object.entries(values.load || {}).map(([key,value])=>["load."+key,value]),...(values.details || [])].map(([key,value])=>`<tr><td>${esc(key)}</td><td class="system-value">${esc(value ?? "—")}</td></tr>`).join("")}</tbody></table></div>${values.details_truncated ? `<p>${esc(t("syspiperTruncated"))}</p>` : ""}</details></article>`;
-  }).join("");
+    const html=`<article class="syspiper-card"><div class="panel-heading"><div><h3>${esc(node.ip)} <small>${esc(values.hostname || "")}</small></h3><p>${esc(node.sources.map(source=>t("syspiper_"+source)).join(" · "))}</p></div><div><span class="status"><i class="dot ${stale || node.status === "unavailable" ? "alert" : node.status === "ok" ? "" : "dim"}"></i>${esc(stateText)}</span>${problem ? `<p class="syspiper-error">/${esc(problem[0])}: ${esc(t("syspiper_"+problem[1]))}</p>` : ""}</div></div><div class="syspiper-values">${["cpu","ram","disk","net"].map(metric=>`<button data-system-chart="${esc(node.id)}" data-system-metric="${metric}" aria-haspopup="dialog" aria-label="${esc(node.ip+" · "+t("syspiper_"+metric)+" · "+t("chartExpand"))}"><span>${esc(t("syspiper_"+metric))}</span><strong>${esc(metric === "net" ? bps(chart.rx)+" / "+bps(chart.tx) : percent(values[metric]))}</strong><small>${esc(t("chartExpand"))} ↗</small></button>`).join("")}</div><div class="syspiper-meta"><span>${node.sampled_at ? esc(new Date(node.sampled_at).toLocaleString(locale()))+` · ${age} s` : "—"} · ${info.interval_seconds} s</span>${processes.map(e=>`<button class="quiet-button" data-system-process="${esc(e.id)}">${esc(e.name)} · PID ${e.pid} ↗</button>`).join("")}</div><details data-node-details="${esc(node.id)}" ><summary>${esc(t("syspiperDetails"))}</summary><ul>${Object.entries(node.errors || {}).map(([path,error])=>`<li>/${esc(path)}: ${esc(t("syspiper_"+error))}</li>`).join("")}</ul><label class="syspiper-filter"><span>${esc(t("systemFilter"))}</span><input type="search" data-system-filter aria-label="${esc(t("systemFilter"))}" placeholder="${esc(t("systemFilter"))}"></label><div class="table-scroll" tabindex="0"><table><thead><tr><th>${esc(t("key"))}</th><th>${esc(t("value"))}</th></tr></thead><tbody></tbody></table></div><p class="system-filter-empty" hidden>${esc(t("noMatches"))}</p>${values.details_truncated ? `<p class="system-truncated">${esc(t("syspiperTruncated"))}</p>` : ""}</details></article>`;
+    const template=document.createElement("template"); template.innerHTML=html;
+    const fresh=template.content.firstElementChild;
+    let card=cards.get(node.id);
+    if (!card) { card=fresh; card.dataset.nodeId=node.id; }
+    else {
+      // Keep details, input and scroll container attached across refreshes.
+      for(let i=0;i<3;i++) if(card.children[i].innerHTML!==fresh.children[i].innerHTML) card.children[i].innerHTML=fresh.children[i].innerHTML;
+      const detail=card.querySelector("details"), next=fresh.querySelector("details");
+      for(const selector of ["summary","ul","thead",".syspiper-filter span",".system-filter-empty"]) {
+        const target=detail.querySelector(selector), source=next.querySelector(selector);
+        if(target.innerHTML!==source.innerHTML) target.innerHTML=source.innerHTML;
+      }
+      const input=detail.querySelector("input"); input.placeholder=t("systemFilter"); input.setAttribute("aria-label",t("systemFilter"));
+      detail.querySelector(".system-truncated")?.remove();
+      if(values.details_truncated) { const p=document.createElement("p"); p.className="system-truncated"; p.textContent=t("syspiperTruncated"); detail.append(p); }
+    }
+    if(root.children[index]!==card) root.insertBefore(card,root.children[index] || null);
+    cards.delete(node.id);
+    updateSystemRows(card,values);
+  });
+  for(const card of cards.values()) card.remove();
 }
+
 $("syspiper-nodes").addEventListener("click",event=>{
   const process=event.target.closest("[data-system-process]");
   if (process) { selectProcess(process.dataset.systemProcess,"overview"); return; }

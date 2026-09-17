@@ -120,3 +120,5 @@ input,select,textarea{background:#151b12;border-color:#424c35}button:hover:not(:
 .flow-context{display:grid;gap:3px;margin:9px 0 12px;font-size:11px;color:var(--muted);max-width:300px}.flow-context strong{font-size:10px;color:var(--text)}.flow-context code{color:var(--text);overflow-wrap:anywhere;white-space:normal}
 
 .rtt-value{white-space:nowrap;font-variant-numeric:tabular-nums;text-align:right}
+
+.syspiper-filter{display:grid;gap:6px;margin:12px 0;font-size:11px;color:var(--muted)}.syspiper-filter input{width:100%;min-width:0}.syspiper-card .table-scroll{overflow:auto;overflow-anchor:none}.syspiper-card thead th{position:sticky;top:0;background:var(--bg);z-index:1}.syspiper-card .system-value{font-variant-numeric:tabular-nums}
