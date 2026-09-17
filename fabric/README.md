@@ -44,7 +44,9 @@ python3 -B fabric/server.py --golden-token 'muj-spolecny-lab-token-2026'
 ```
 
 Pořadí je **`--golden-token TOKEN` → `TUNTOM_FABRIC_TOKEN` → náhodný token**.
-Vlastní token musí mít alespoň 24 znaků, písmena/číslice/`_.~-`. Zadává se
+`--golden-token` dovoluje libovolný neprázdný token z písmen/číslic/`_.~-`;
+při délce pod 24 znaků pouze vypíše varování bez hodnoty tokenu. Pro
+`TUNTOM_FABRIC_TOKEN` zůstává minimum 24 znaků. Token se zadává
 ve stávajícím přihlašovacím poli nebo odkazem z terminálu a platí i po restartu,
 pokud web spustíš se stejnou hodnotou. Volba patří pouze HTTP webu, collector ji
 nepotřebuje. Jde o pevný bearer token, nikoli další účet nebo obcházení autorizace.
@@ -130,6 +132,68 @@ jako snapshot. Vrací `samples` (body grafů), `until` a `next_after`;
 čas je v celočíselných Unix milisekundách. Další stránka používá `next_after`
 a stejné `until`, konec značí `null`. Stránka má nejvýše 250 vzorků.
 Plné čítače jsou uložené v cache, tento endpoint vrací pouze data existujících grafů.
+
+## Systémové metriky uzlů přes Syspiper
+
+Volitelný sběr zapneš **na backendu, který skutečně sbírá data**. Při odděleném
+sběru tedy na collectoru, nikoli HTTP webu:
+
+```bash
+sudo python3 -B fabric/collector.py \
+  --socket /run/tuntom-fabric-1000.sock --allow-uid 1000 \
+  --syspiper-key 'TVUJ_KLIC' --syspiper-node 192.168.55.143
+```
+
+Alternativa k `--syspiper-key` je `TUNTOM_SYSPIPER_KEY` v prostředí **collectoru**
+(u sudo ji případně nastav v prostředí služby). Web ani prohlížeč klíč nedostanou;
+nevstupuje do snapshotu, historie ani diagnostického exportu. Hodnota CLI volby je
+viditelná v seznamu procesů. Bez klíče je Syspiper sběr vypnutý. Interní collector
+v `server.py` podporuje stejné volby, pokud nepoužíváš `--collector`.
+
+Cíle jsou pouze konkrétní známé IP, nikoli skenování sítě:
+
+1. **Vždy `127.0.0.1`**, i bez běžících procesů; v namespace collectoru.
+2. Ručně doplněné IP přes opakovatelné `--syspiper-node IP`.
+3. IP protistrany z parametru běžícího Tuntom klienta.
+4. Lokální IP a explicitní point-to-point peer adresy rozhraní používaných
+   tunely/adaptéry/divert procesy. Čte se `ip -j address show` (iproute2), ale berou
+   se jen rozhraní těchto procesů, nikoli všechna rozhraní hostu.
+
+DNS jména v parametrech klienta (např. `psx`) se v této verzi nepřekládají;
+známou IP doplň přes `--syspiper-node`. Nepřidávají se adresy ze subnetů, rout,
+ARP/NDP, konfigurací Syspiper proxy ani výsledků vzdáleného `/interfaces`.
+Při známém odlišném network namespace se proces pro automatické cíle vynechá;
+pokud `/proc` neumožní namespace přečíst, IP se zkouší z namespace collectoru.
+Identické IP se sloučí a UI ukáže jejich zdroj a související procesy. Více IP
+jednoho fyzického hostu se zatím neslučuje. Limit je 64 IP včetně localhostu;
+přesah se hlásí v UI. Zmizelé automatické cíle při dalším průzkumu vypadnou.
+
+Výchozí `--syspiper-port 8181`, `--syspiper-interval 30` sekund (minimum 5).
+Samostatné vlákno se čtyřmi souběžnými sondami neblokuje Tuntom control sockety.
+Pomalý průzkum více nedostupných IP může prodloužit skutečný interval; UI ukazuje
+čas vzorku a označuje staré výsledky. HTTP používá `X-API-Key`, pouze pevné čtecí
+cesty, limit odpovědi 1 MiB a timeouty. Nepoužívá systémový HTTP proxy ani
+přesměrování; neposílá klíč na jiné místo podle odpovědi serveru. Přístup je HTTP
+v labové síti, stejně jako u ručního dotazu na Syspiper.
+
+V pohledu **Uzly / Syspiper** jsou CPU, RAM, zaplnění kořenového disku a síťové
+RX/TX celého hostu. Síťové rychlosti vyžadují dva vzorky `/net`; pokles čítačů,
+známá změna boot time nebo dlouhá mezera zruší baseline. U staré verze bez
+`/system` nelze spolehlivě poznat reboot, pokud nové čítače už přerostly staré.
+Síť zahrnuje všechny hostové interfacové čítače, nejde o provoz samotného Tuntomu.
+
+Rozšířené verze doplní hostname, uptime, load, čítače rozhraní, filesystem/inode
+metriky a PSI. Numerický detail je omezený na 128 položek s indikací zkrácení.
+Starší servery fungují přes `/cpu`, `/ram`, `/disk`, `/net`; nepodporované
+`/system`, `/interfaces`, `/filesystems`, `/pressure` se znovu zkusí po 10 min.
+Chybějící data jsou `—`, ne nula; chyba klíče, timeout nebo selhání mají popis.
+
+Kliknutím na hodnotu otevřeš graf (CPU, RAM, disk nebo RX/TX) se stejnými
+rozsahy a odečtem jako procesové grafy. Při zapnuté historii se body ukládají do
+stejné 24h SQLite cache, včetně mezer a příčin chyb sběru. F5 je obnoví přes
+`GET /api/v1/syspiper/{id}/history` se stejnou autentizací a stránkováním jako
+procesová historie. IP+port identifikuje sledovaný cíl; historie neslouží jako
+identita fyzického stroje, pokud na stejné IP později poběží jiný host.
 
 ## Co už umí
 
@@ -264,6 +328,7 @@ control.py    → omezené operace existujícího control protokolu
 telemetry.py  → zdraví, přírůstky, porty, workery
 logs.py       → omezené čtení logů a maskování známých tajných polí
 history.py    → SQLite cache telemetrie, retence a stránkované čtení
+syspiper.py   → oddělené sondy známých IP, normalizace systémových metrik
 collector.py  → samostatný sběr, Unix IPC a kontrola UID
 server.py     → snapshot, diagnostika, ruční akce, HTTP bez roota
 static/       → pohledy nad pozorovaným stavem

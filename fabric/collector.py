@@ -17,6 +17,7 @@ import threading
 from errors import APIError
 from server import Fabric
 from history import default_path
+from syspiper import add_arguments as syspiper_arguments, options as syspiper_options
 
 MAX_FRAME = 8 * 1024 * 1024
 
@@ -181,6 +182,7 @@ def main():
     parser.add_argument("--allow-write", action="store_true", help="also permit manual runtime rule loads")
     parser.add_argument("--history-db", type=Path, default=default_path(), help="SQLite telemetry cache (24 hour retention)")
     parser.add_argument("--no-history", action="store_true", help="disable telemetry cache")
+    syspiper_arguments(parser)
     args = parser.parse_args()
     if args.allow_uid < 0 or not 1 <= args.interval <= 3600:
         parser.error("invalid UID or interval")
@@ -191,7 +193,7 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     try:
         fabric = Fabric(allow_write=args.allow_write, interval=args.interval,
-                        history_path=None if args.no_history else args.history_db)
+                        history_path=None if args.no_history else args.history_db, syspiper=syspiper_options(args))
         server = CollectorServer(str(path), fabric, args.allow_uid)
     except (OSError, ValueError, sqlite3.Error) as error:
         parser.exit(1, f"Collector: {error}\n")

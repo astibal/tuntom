@@ -28,6 +28,7 @@ from discovery import discover, stat_fields
 from logs import read_logs
 from history import History, default_path
 from telemetry import changes, health, switch_detail
+from syspiper import Syspiper, add_arguments as syspiper_arguments, options as syspiper_options
 
 STATIC = Path(__file__).parent / "static"
 LOG = logging.getLogger("fabric")
@@ -72,7 +73,7 @@ def topology(endpoints):
 
 
 class Fabric:
-    def __init__(self, *, allow_write=False, interval=5, discover_fn=discover, history_path=None):
+    def __init__(self, *, allow_write=False, interval=5, discover_fn=discover, history_path=None, syspiper=None):
         self.allow_write, self.interval = allow_write, interval
         self.discover = discover_fn
         self.endpoints = {}
@@ -87,16 +88,19 @@ class Fabric:
         self.thread = None
         self.history_store = History(history_path) if history_path else None
         self.history_error = None
+        self.syspiper = Syspiper(history=self.history_store, **(syspiper or {}))
 
     def start(self):
         self.thread = threading.Thread(target=self._poll, name="fabric-poll", daemon=True)
         self.thread.start()
+        self.syspiper.start()
 
     def close(self):
         self.stop.set()
         self.wake.set()
         if self.thread:
             self.thread.join()
+        self.syspiper.close()
         if self.history_store:
             self.history_store.close()
 
@@ -168,6 +172,7 @@ class Fabric:
                         self.endpoints = {e.id: e for e in endpoints}
                         self.baselines = {key: value for key, value in self.baselines.items() if key in self.endpoints}
                         self.discovery_info = {**info, "status": "ok", "scanned_at": now()}
+                    self.syspiper.update(endpoints)
                     list(pool.map(self._sample, endpoints))
                     if self.history_store:
                         try:
@@ -178,6 +183,7 @@ class Fabric:
                     with self.mutex:
                         self.endpoints, self.samples, self.baselines = {}, {}, {}
                         self.discovery_info = {"source": "procfs", "status": "error", "error": str(error)}
+                    self.syspiper.update([])
                 self.wake.wait(max(.2, self.interval - (time.monotonic() - started)))
 
     def snapshot(self):
@@ -193,6 +199,7 @@ class Fabric:
                 "poll_interval_seconds": self.interval, "allow_write": self.allow_write,
                 "discovery": info, "endpoints": endpoints, "links": topology(endpoints),
                 "collector": {"mode": "local", "uid": os.geteuid()},
+                "syspiper": self.syspiper.snapshot(),
                 "history": {"enabled": self.history_store is not None, "retention_seconds": 86400,
                             "error": self.history_error}}
 
@@ -369,7 +376,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/v1/refresh" and self.command == "POST":
                 self.server.fabric.wake.set()
                 return self.respond(202, {"result": "discovery scheduled"})
-            match = re.fullmatch(r"/api/v1/endpoints/([^/]+)/history", path)
+            match = re.fullmatch(r"/api/v1/(?:endpoints|syspiper)/([^/]+)/history", path)
             if match and self.command == "GET":
                 params = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
                 if set(params) - {"after", "until"} or any(len(v) != 1 or not re.fullmatch(r"[0-9]{1,16}", v[0]) for v in params.values()):
@@ -420,25 +427,32 @@ def main():
     parser.add_argument("--interval", type=float, default=5, help="minimum poll interval in seconds")
     parser.add_argument("--allow-write", action="store_true", help="enable runtime rule loads")
     parser.add_argument("--collector", help="use a separate Unix-socket collector")
-    parser.add_argument("--golden-token", metavar="TOKEN", help="fixed lab access token; overrides TUNTOM_FABRIC_TOKEN (at least 24 URL-safe characters)")
+    parser.add_argument("--golden-token", metavar="TOKEN", help="fixed lab access token; overrides TUNTOM_FABRIC_TOKEN (short tokens produce a warning)")
     parser.add_argument("--history-db", type=Path, default=default_path(), help="SQLite telemetry cache for local collection")
     parser.add_argument("--no-history", action="store_true", help="disable local telemetry cache")
+    syspiper_arguments(parser)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     if not 1 <= args.interval <= 3600 or not 0 <= args.port <= 65535:
         parser.error("interval must be 1..3600 seconds; port must be 0..65535")
     try:
         token = args.golden_token if args.golden_token is not None else (os.environ.get("TUNTOM_FABRIC_TOKEN") or secrets.token_urlsafe(32))
-        if len(token) < 24 or not re.fullmatch(r"[a-zA-Z0-9_.~-]+", token):
-            raise ValueError("access token (--golden-token or TUNTOM_FABRIC_TOKEN) must have at least 24 URL-safe characters")
+        if not re.fullmatch(r"[a-zA-Z0-9_.~-]+", token):
+            raise ValueError("access token must be non-empty and contain only URL-safe characters")
+        if len(token) < 24:
+            if args.golden_token is None:
+                raise ValueError("TUNTOM_FABRIC_TOKEN must have at least 24 URL-safe characters")
+            LOG.warning("WARNING: --golden-token is shorter than 24 characters; use a longer token outside the lab.")
         if os.geteuid() == 0:
             raise ValueError("run the HTTP server as a regular user; use collector.py for privileged reads")
         if args.collector:
+            if args.syspiper_key is not None or args.syspiper_node or args.syspiper_port != 8181 or args.syspiper_interval != 30:
+                raise ValueError("configure Syspiper on collector.py when using --collector")
             from collector import RemoteFabric
             fabric = RemoteFabric(args.collector, allow_write=args.allow_write)
         else:
             fabric = Fabric(allow_write=args.allow_write, interval=args.interval,
-                            history_path=None if args.no_history else args.history_db)
+                            history_path=None if args.no_history else args.history_db, syspiper=syspiper_options(args))
         write_enabled = fabric.snapshot()["allow_write"]
         server = Server((str(args.host), args.port), fabric, token)
     except (ValueError, TypeError, OSError, sqlite3.Error, APIError) as error:

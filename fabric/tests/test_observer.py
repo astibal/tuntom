@@ -156,7 +156,7 @@ class CollectorTests(unittest.TestCase):
     def test_cli_remote_errors_keep_http_status(self):
         # A CLI entry point must share APIError with the imported IPC module.
         script = Path(__file__).resolve().parents[1] / "server.py"
-        golden = "shared-lab-golden-token-for-testing"
+        golden = "ttlab"
         env_token = "environment-token-with-lower-priority"
         with subprocess.Popen([sys.executable, "-B", str(script), "--collector", self.path, "--port", "0",
                                "--golden-token", golden], env={**os.environ, "TUNTOM_FABRIC_TOKEN":env_token},
@@ -168,6 +168,10 @@ class CollectorTests(unittest.TestCase):
                 url = urlsplit(line.strip().split(" ", 2)[2])
                 token = parse_qs(url.fragment)["token"][0]
                 self.assertEqual(token, golden)
+                self.assertTrue(select.select([process.stderr], [], [], 5)[0])
+                warning = process.stderr.readline().decode()
+                self.assertIn("shorter than 24 characters", warning)
+                self.assertNotIn(golden, warning)
                 connection = http.client.HTTPConnection("127.0.0.1", url.port, timeout=4)
                 connection.request("GET", "/api/v1/endpoints/unknown/logs", headers={"Authorization":"Bearer " + token})
                 response = connection.getresponse()
@@ -186,12 +190,12 @@ class CollectorTests(unittest.TestCase):
 class TokenCLITests(unittest.TestCase):
     def test_invalid_explicit_token_never_falls_back_or_echoes_value(self):
         script = Path(__file__).resolve().parents[1] / "server.py"
-        for token in ("", "short", "invalid token with spaces and secret"):
+        for token in ("", "invalid token with spaces and secret"):
             result = subprocess.run([sys.executable, "-B", str(script), "--golden-token", token],
                                     env={**os.environ, "TUNTOM_FABRIC_TOKEN":"valid-environment-token-for-testing"},
                                     capture_output=True, text=True, timeout=5)
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("at least 24 URL-safe characters", result.stderr)
+            self.assertIn("non-empty and contain only URL-safe characters", result.stderr)
             if token:
                 self.assertNotIn(token, result.stderr)
 

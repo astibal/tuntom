@@ -129,7 +129,7 @@ test("background polling continues and returning to the page refreshes immediate
 });
 
 test("returning to overview redraws after revealing the chart, even while paused",()=>{
-  const views=Object.fromEntries(["overview","metrics","rules","switch","diagnostics"].map(name=>
+  const views=Object.fromEntries(["overview","metrics","rules","switch","diagnostics","syspiper"].map(name=>
     ["view-"+name,{hidden:name!=="metrics",scrollIntoView(){}}]));
   let draws=0;
   const show=runInNewContext(source.slice(source.indexOf("function showView("),source.indexOf("function selectProcess("))+";showView",{
@@ -179,4 +179,20 @@ test("history loader fills all pages, keeps live samples and retries without API
   assert.equal(state.failure,undefined);
   assert.equal(history.samples.length,3);
   assert.equal(draws,2);
+});
+
+test("system percentage charts use saved RAM samples and the independent poll interval",()=>{
+  const id='syspiper:192.0.2.1:8181',history=new ThroughputHistory();
+  history.add({time:1000,ram:8.5},1000);
+  const svg={clientWidth:600,clientHeight:220,innerHTML:'',setAttribute(){}};
+  const context={state:{history:new Map([[id,history]]),chartRange:300000,chartNow:2000,data:{poll_interval_seconds:5,syspiper:{interval_seconds:30}}},
+    chartSeries,chartIssueBuckets,renderChartReadout(){},esc:String,bps:String,locale:()=>"en-GB",t:key=>key};
+  const chart=runInNewContext(source.slice(source.indexOf("const chartViews ="),source.indexOf("function renderChartReadout"))+";({drawTimeChart,chartViews})",context);
+  chart.drawTimeChart(svg,id,'ram',true);
+  const model=chart.chartViews.get(svg);
+  assert.equal(model.keys[0],'ram');
+  assert.equal(model.gap,90000);
+  assert.equal(model.max,100);
+  assert.match(svg.innerHTML,/class="rx" d="M/);
+  assert.ok(!/NaN|Infinity/.test(svg.innerHTML));
 });

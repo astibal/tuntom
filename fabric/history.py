@@ -79,10 +79,13 @@ class History:
     def record(self, endpoint, sample):
         point = chart_sample(endpoint, sample)
         # Preserve uint64 counter strings exactly; do not persist endpoint arguments/errors/logs.
-        telemetry = zlib.compress(json.dumps({'metrics': sample['metrics'], 'changes': sample['changes']}).encode())
+        self.record_point(endpoint.id, point, {'metrics': sample['metrics'], 'changes': sample['changes']})
+
+    def record_point(self, identity, point, values):
+        telemetry = zlib.compress(json.dumps(values, allow_nan=False).encode())
         with self.lock, self.db:
             self.db.execute('INSERT OR IGNORE INTO samples VALUES (?,?,?,?)',
-                            (endpoint.id, point['time'], json.dumps(point, allow_nan=False), telemetry))
+                            (identity, point['time'], json.dumps(point, allow_nan=False), telemetry))
         if time.monotonic() - self.last_prune > 60:
             self.prune()
 

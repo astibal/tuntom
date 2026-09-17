@@ -106,6 +106,11 @@ class HistoryAPITests(unittest.TestCase):
             self.assertEqual(self.request('GET','/api/v1/endpoints/boot%3A123%3A100/history')[0],200)
             self.assertEqual(self.request('GET','/api/v1/endpoints/id/history?after=-1')[0],400)
             self.assertEqual(self.request('GET','/api/v1/endpoints/id/history',auth=False)[0],401)
+            identity='syspiper:127.0.0.1:8181'
+            point={'time':int(time.time()*1000),'cpu':0,'ram':50,'rx':None,'tx':None}
+            self.fabric.history_store.record_point(identity,point,{'net_recv':'18446744073709551615'})
+            self.assertEqual(self.request('GET','/api/v1/syspiper/'+identity+'/history')[1]['samples'],[point])
+            self.assertEqual(self.request('GET','/api/v1/syspiper/'+identity+'/history',auth=False)[0],401)
         finally:
             self.fabric.history_store.close()
             self.fabric.history_store=None

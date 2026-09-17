@@ -102,6 +102,38 @@ const messages = {
   ruleset:["Sada pravidel","Ruleset","Jeu de règles"],
   checkRules:["Ověřit a zobrazit diff","Validate and show diff","Valider et afficher le diff"],
   loadRules:["Načíst do switche","Load into switch","Charger dans le switch"],
+  syspiperTitle:["Uzly / Syspiper","Nodes / Syspiper","Nœuds / Syspiper"],
+  syspiperHint:["Systémové metriky známých IP Tuntom sítě. Sběr zajišťuje backend.","System metrics for known Tuntom IPs. Collected by the backend.","Métriques système des IP Tuntom connues. Collectées par le backend."],
+  syspiperDisabled:["Syspiper není zapnutý. Nastav klíč v backendu (na collectoru při odděleném sběru).","Syspiper is disabled. Configure its key in the backend (on the separate collector when used).","Syspiper est désactivé. Configure sa clé sur le backend (collecteur séparé si utilisé)."],
+  syspiperEmpty:["Čekám na známé IP protistran nebo rozhraní Tuntomu. Další známou IP lze zadat backendu.","Waiting for known Tuntom peer or interface IPs. Additional known IPs can be configured in the backend.","En attente d’IP Tuntom connues. D’autres IP connues peuvent être configurées sur le backend."],
+  syspiperScope:["CPU, RAM a disk patří celému hostu. Síť je součet rozhraní hostu, nikoli pouze provoz Tuntomu. Síťová rychlost vyžaduje dva vzorky.","CPU, RAM and disk cover the whole host. Network totals include all host interfaces, not just Tuntom. Rates require two samples.","CPU, RAM et disque concernent l’hôte entier. Le réseau regroupe toutes les interfaces, pas seulement Tuntom. Les débits nécessitent deux échantillons."],
+  syspiper_ip:["IP","IP","IP"],
+  syspiper_cpu:["CPU","CPU","CPU"],
+  syspiper_ram:["RAM","RAM","RAM"],
+  syspiper_disk:["Disk /","Disk /","Disque /"],
+  syspiper_net:["Síť RX / TX","Network RX / TX","Réseau RX / TX"],
+  syspiper_ok:["Dostupné","Available","Disponible"],
+  syspiper_partial:["Částečné metriky","Partial metrics","Métriques partielles"],
+  syspiper_unavailable:["Nedostupné","Unavailable","Indisponible"],
+  syspiper_pending:["Čekám na vzorek","Waiting for sample","En attente d’un échantillon"],
+  syspiper_local_host:["Lokální host","Local host","Hôte local"],
+  syspiper_manual:["Zadaná IP","Configured IP","IP configurée"],
+  syspiper_tunnel_peer:["Protistrana tunelu","Tunnel peer","Pair du tunnel"],
+  syspiper_interface_local:["Adresa rozhraní","Interface address","Adresse d’interface"],
+  syspiper_interface_peer:["Protistrana rozhraní","Point-to-point peer","Pair point à point"],
+  syspiper_unauthorized:["Klíč odmítnut / přístup zakázán","Key rejected / access denied","Clé refusée / accès interdit"],
+  syspiper_unsupported:["Verze endpoint nepodporuje","Endpoint not supported by this version","Endpoint non pris en charge"],
+  syspiper_unreachable:["Spojení není dostupné","Connection unavailable","Connexion indisponible"],
+  syspiper_timeout:["Vypršel čas spojení","Request timed out","Délai dépassé"],
+  syspiper_redirect_rejected:["Přesměrování odmítnuto","Redirect rejected","Redirection refusée"],
+  syspiper_http_error:["HTTP chyba","HTTP error","Erreur HTTP"],
+  syspiper_invalid_response:["Neplatná odpověď","Invalid response","Réponse invalide"],
+  syspiper_response_too_large:["Příliš velká odpověď","Response too large","Réponse trop volumineuse"],
+  syspiper_probe_failed:["Sběr systémových metrik selhal nebo je neúplný","System collection failed or is incomplete","Collecte système échouée ou incomplète"],
+  syspiperDetails:["Další metriky a dostupnost endpointů","Additional metrics and endpoint availability","Autres métriques et disponibilité des endpoints"],
+  syspiperTruncated:["Zobrazený seznam metrik je omezen na 128 položek.","Metric list is limited to 128 entries.","La liste est limitée à 128 métriques."],
+  syspiperDiscovery:["Adresy rozhraní se nepodařilo načíst; parametry tunelů a zadané IP zůstávají dostupné.","Interface address discovery failed; tunnel arguments and configured IPs are still used.","Échec de découverte des interfaces ; les IP des tunnels et les IP configurées restent utilisées."],
+  syspiperLimit:["Limit 64 IP: vynecháno {count}.","64 IP limit: {count} omitted.","Limite de 64 IP : {count} ignorées."],
   footerSource:["Průzkum procesů · /proc + control sockety","Runtime discovery · /proc + control sockets","Détection des processus · /proc + sockets de contrôle"],
   footerState:["Historie telemetrie · žádné automatické změny","Telemetry history · no automatic changes","Historique de télémétrie · sans modifications automatiques"],
   stale:["Starý vzorek","Stale sample","Échantillon ancien"],
@@ -536,7 +568,7 @@ async function refresh(force = false) {
     $("login-error").hidden = true;
     state.loginError = "";
     if (!data.endpoints.some(e => e.id === state.selected)) state.selected = data.endpoints[0]?.id || null;
-    const present = new Set(data.endpoints.map(e => e.id));
+    const present = new Set([...data.endpoints.map(e => e.id),...(data.syspiper?.nodes || []).map(n=>n.id)]);
     for (const id of state.history.keys()) if (!present.has(id)) state.history.delete(id);
     for (const map of [state.logs,state.reports,state.historyLoads]) for (const id of map.keys()) if (!present.has(id)) map.delete(id);
     state.chartNow = Date.parse(data.generated_at) || Date.now();
@@ -548,6 +580,11 @@ async function refresh(force = false) {
         ...Object.fromEntries((e.switch_detail?.workers || []).map(w=>[`cpu_${w.index}`,w.cpu_percent])),
         ...(issues.length ? {issues,interval:e.changes?.interval_seconds} : {})}, state.chartNow);
       state.history.set(e.id, history);
+    }
+    for (const node of data.syspiper?.nodes || []) {
+      if (!node.chart) continue;
+      const history=state.history.get(node.id)||new ThroughputHistory();
+      history.add(node.chart,state.chartNow); state.history.set(node.id,history);
     }
     render();
     loadHistory(state.selected);
@@ -577,7 +614,7 @@ function render() {
   const ports = endpoints.filter(e => e.kind === "switch" && /^\d+$/.test(e.metrics.connections_current || ""));
   $("count-ports").textContent = ports.length ? ports.reduce((n,e) => n + BigInt(e.metrics.connections_current), 0n).toString() : "—";
   notice(); renderProcesses(); renderDetail(); renderTopology(); renderMetrics(); renderRules();
-  renderHealth(); renderSwitch(); renderDiagnostics(); renderWarnings();
+  renderHealth(); renderSwitch(); renderDiagnostics(); renderWarnings(); renderSyspiper();
 }
 function renderProcesses() {
   if (!state.data) return;
@@ -624,7 +661,7 @@ async function loadHistory(id) {
     // An overlap catches probes which finished committing while the previous page was read.
     let after=Math.max(0,load.until-60000), until=null;
     do {
-      const page=await api(`/api/v1/endpoints/${encodeURIComponent(id)}/history?after=${after}`+(until===null ? "" : `&until=${until}`));
+      const page=await api(`/api/v1/${id.startsWith("syspiper:") ? "syspiper" : "endpoints"}/${encodeURIComponent(id)}/history?after=${after}`+(until===null ? "" : `&until=${until}`));
       until=page.until;
       if (state.historyLoads.get(id)!==load) return;
       const history=state.history.get(id)||new ThroughputHistory();
@@ -661,8 +698,8 @@ function drawTimeChart(svg, endpointId, worker = null, expanded = false) {
   const width = Math.max(320,svg.clientWidth), height = Math.max(200,svg.clientHeight);
   const model = {endpointId,worker,samples,start:state.chartNow-state.chartRange,end:state.chartNow,
     width,height,left:76,right:width-18,top:24,bottom:height-66,
-    gap:Math.max(15000,(state.data?.poll_interval_seconds || 5)*3000),
-    keys:worker === null ? ["rx","tx"] : [`cpu_${worker}`],expanded,
+    gap:Math.max(15000,(endpointId?.startsWith("syspiper:") ? (state.data?.syspiper?.interval_seconds || 30) : (state.data?.poll_interval_seconds || 5))*3000),
+    keys:worker === null ? ["rx","tx"] : [typeof worker === "string" ? worker : `cpu_${worker}`],expanded,
     time:null,pinned:false,issue:false};
   if (previous && previous.endpointId === endpointId && previous.worker === worker) {
     for (const key of ["time","pinned","issue"]) model[key] = previous[key];
@@ -717,7 +754,7 @@ function renderChartReadout(svg) {
   const issues = group || (sample.issues?.length ? [sample] : []);
   const details = issues.length ? chartIssueText(issues) : null;
   const heading = details?.time || new Date(sample.time).toLocaleString(locale());
-  const values = model.keys.map((key,index)=>`<span class="chart-value ${index ? "tx-value" : "rx-value"}">${model.worker === null ? key.toUpperCase() : "CPU"} <strong>${esc(chartValue(sample[key],model.worker !== null))}</strong></span>`).join("");
+  const values = model.keys.map((key,index)=>`<span class="chart-value ${index ? "tx-value" : "rx-value"}">${model.worker === null ? key.toUpperCase() : typeof model.worker === "string" ? t("syspiper_"+model.worker) : "CPU"} <strong>${esc(chartValue(sample[key],model.worker !== null))}</strong></span>`).join("");
   // Grouped incident ranges list their causes; the value readout is the first sample.
   const html = `<div class="chart-readout-heading"><time>${esc(heading)}</time>${model.pinned ? `<span class="tag">${esc(t("chartPinned"))}</span>` : ""}</div>${issues.length > 1 ? `<small>${esc(t("chartValuesAt",{time:new Date(sample.time).toLocaleString(locale())}))}</small>` : ""}${values}${details ? `<div class="chart-issue-details"><strong>${esc(t("chartIssueCount",{count:issues.length}))}</strong><ul>${details.reasons.slice(0,10).map(reason=>`<li>${esc(reason)}</li>`).join("")}${details.reasons.length > 10 ? `<li>${esc(t("moreReasons",{count:details.reasons.length-10}))}</li>` : ""}</ul><small>${esc(t("chartIssueWindow"))}</small></div>` : ""}`;
   if (readout.innerHTML !== html) readout.innerHTML=html;
@@ -755,6 +792,17 @@ function openChart(endpointId,worker = null,inspection = null) {
 function renderChartDialog() {
   if (!$("chart-dialog").open || !state.chartDialog) return;
   const {endpointId,worker,name,pid}=state.chartDialog;
+  if (state.chartDialog.node) {
+    const metric=worker || "net";
+    $("chart-dialog-title").textContent=t("syspiper_"+metric);
+    $("chart-dialog-context").textContent=name+" · Syspiper";
+    $("chart-detail-range").value=String(state.chartRange);
+    $("chart-detail").setAttribute("aria-label",t("syspiper_"+metric));
+    $("chart-dialog-legend").innerHTML=`<span>${esc(worker === null ? "RX / TX" : t("syspiper_"+metric))}</span><span><i class="dot alert"></i>${esc(t("syspiper_probe_failed"))}</span>`;
+    $("chart-dialog-note").textContent=t("syspiperScope")+" "+historyNote(endpointId)+(state.data?.syspiper?.history_error ? " "+t("historyFailed") : "");
+    drawTimeChart($("chart-detail"),endpointId,worker,true);
+    return;
+  }
   const exists = state.data?.endpoints.some(e=>e.id===endpointId);
   $("chart-dialog-title").textContent=worker === null ? t("throughput") : t("chartWorker",{worker});
   $("chart-dialog-context").textContent=`${name} · PID ${pid}`+(exists ? "" : " · "+t("warningProcessGone"));
@@ -823,6 +871,36 @@ $("chart-dialog").addEventListener("close",()=>{
 });
 let chartResize;
 window.addEventListener("resize",()=>{clearTimeout(chartResize);chartResize=setTimeout(()=>drawChart(),100);});
+function renderSyspiper() {
+  const info=state.data?.syspiper;
+  const nodes=info?.nodes || [];
+  $("syspiper-notice").textContent=!info?.enabled ? t("syspiperDisabled") :
+    [t("syspiperScope"), !nodes.length ? t("syspiperEmpty") : "",info.discovery_error ? t("syspiperDiscovery") : "",
+      info.skipped ? t("syspiperLimit",{count:info.skipped}) : "",info.history_error ? t("historyFailed") : ""].filter(Boolean).join(" ");
+  const opened=new Set([...$("syspiper-nodes").querySelectorAll('details[open]')].map(el=>el.dataset.nodeDetails));
+  const percent=v=>Number.isFinite(v) ? v.toLocaleString(locale(),{maximumFractionDigits:1})+" %" : "—";
+  $("syspiper-nodes").innerHTML=nodes.map(node=>{
+    const values=node.values || {}, chart=node.chart || {};
+    const age=node.sampled_at ? Math.max(0,Math.round((Date.now()-Date.parse(node.sampled_at))/1000)) : null;
+    const stale=state.failure || age > info.interval_seconds*3;
+    const stateText=t(stale ? "stale" : "syspiper_"+node.status);
+    const problem=Object.entries(node.errors || {}).find(([,code])=>code!=="unsupported");
+    const processes=(node.processes || []).map(id=>state.data.endpoints.find(e=>e.id===id)).filter(Boolean);
+    return `<article class="syspiper-card"><div class="panel-heading"><div><h3>${esc(node.ip)} <small>${esc(values.hostname || "")}</small></h3><p>${esc(node.sources.map(source=>t("syspiper_"+source)).join(" · "))}</p></div><div><span class="status"><i class="dot ${stale || node.status === "unavailable" ? "alert" : node.status === "ok" ? "" : "dim"}"></i>${esc(stateText)}</span>${problem ? `<p class="syspiper-error">/${esc(problem[0])}: ${esc(t("syspiper_"+problem[1]))}</p>` : ""}</div></div><div class="syspiper-values">${["cpu","ram","disk","net"].map(metric=>`<button data-system-chart="${esc(node.id)}" data-system-metric="${metric}" aria-haspopup="dialog" aria-label="${esc(node.ip+" · "+t("syspiper_"+metric)+" · "+t("chartExpand"))}"><span>${esc(t("syspiper_"+metric))}</span><strong>${esc(metric === "net" ? bps(chart.rx)+" / "+bps(chart.tx) : percent(values[metric]))}</strong><small>${esc(t("chartExpand"))} ↗</small></button>`).join("")}</div><div class="syspiper-meta"><span>${node.sampled_at ? esc(new Date(node.sampled_at).toLocaleString(locale()))+` · ${age} s` : "—"} · ${info.interval_seconds} s</span>${processes.map(e=>`<button class="quiet-button" data-system-process="${esc(e.id)}">${esc(e.name)} · PID ${e.pid} ↗</button>`).join("")}</div><details data-node-details="${esc(node.id)}" ${opened.has(node.id) ? "open" : ""}><summary>${esc(t("syspiperDetails"))}</summary><ul>${Object.entries(node.errors || {}).map(([path,error])=>`<li>/${esc(path)}: ${esc(t("syspiper_"+error))}</li>`).join("")}</ul><div class="table-scroll"><table><tbody>${[...Object.entries(values).filter(([key,value])=>typeof value === "number" || key.startsWith("net_")).map(([key,value])=>[key,value]),...Object.entries(values.load || {}).map(([key,value])=>["load."+key,value]),...(values.details || [])].map(([key,value])=>`<tr><td>${esc(key)}</td><td class="system-value">${esc(value ?? "—")}</td></tr>`).join("")}</tbody></table></div>${values.details_truncated ? `<p>${esc(t("syspiperTruncated"))}</p>` : ""}</details></article>`;
+  }).join("");
+}
+$("syspiper-nodes").addEventListener("click",event=>{
+  const process=event.target.closest("[data-system-process]");
+  if (process) { selectProcess(process.dataset.systemProcess,"overview"); return; }
+  const button=event.target.closest("[data-system-chart]");
+  if (!button) return;
+  const node=state.data?.syspiper?.nodes.find(n=>n.id===button.dataset.systemChart);
+  if (!node) return;
+  const metric=button.dataset.systemMetric;
+  state.chartDialog={endpointId:node.id,worker:metric === "net" ? null : metric,name:node.ip,node:true};
+  chartViews.delete($("chart-detail"));
+  $("chart-dialog").showModal(); renderChartDialog(); loadHistory(node.id);
+});
 function renderTopology() {
   const data = state.data;
   const switches = data.endpoints.filter(e => e.kind === "switch");
@@ -884,7 +962,7 @@ async function ruleAction(operation) {
 function showView(view) {
   state.view=view;
   document.querySelectorAll("[data-view]").forEach(b=>b.classList.toggle("active",b.dataset.view === state.view));
-  for (const name of ["overview","metrics","rules","switch","diagnostics"]) $("view-"+name).hidden = view !== name;
+  for (const name of ["overview","metrics","rules","switch","diagnostics","syspiper"]) $("view-"+name).hidden = view !== name;
   $("view-"+view).scrollIntoView({block:"start"});
   if (view === "overview") drawChart();
   if (view === "diagnostics" && selected() && !state.logs.has(state.selected)) readLogs();
