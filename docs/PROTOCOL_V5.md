@@ -22,7 +22,7 @@ existing key derivations. Version 5 is transmitted only in INIT/RESPONSE.
 | Type | Extension at offset 9 | Total header |
 |---|---|---:|
 | DATA (3), no fragment flag | none | 25 B |
-| HELLO (1), KEEPALIVE (2) | none | 25 B |
+| HELLO (1), KEEPALIVE (2), INFO (13) | none | 25 B |
 | DATA (3), fragment flag set | message_id[8], offset[2], original_length[2] | 37 B |
 | PING (4), PONG (5) | probe_id[8] | 33 B |
 | MTU_PROBE (6), MTU_REPLY (7) | probe_id[8], outer_mtu[2] | 35 B |
@@ -43,6 +43,81 @@ must fit 16 bits (maximum inner packet 65535 bytes); redundant complete-packet
 fragment extensions are rejected. Fragment IDs remain 64 bits. HELLO, KEEPALIVE,
 PING, PONG, MTU_REPLY and confirmations have no payload. MTU_PROBE carries
 padding.
+
+## INFO (13)
+
+`--info-msg-enable` enables outgoing INFO (default off); reception is always
+supported. Send one fresh snapshot after the initial confirmed handshake and
+after each completed rekey, using the new session keys and ordinary nonzero
+sequence counter. INFO uses the 25-byte header, no fragment flag, and the
+session's authentication/encryption and replay protection. It is best-effort
+UDP: there is no acknowledgement or retry; a lost snapshot waits for the next
+completed handshake. Authentication-only mode has no periodic PFS rekey.
+
+The payload is 1..4096 bytes of ASCII text with at least one `key=value` pair.
+Each pair occupies one LF-delimited line; the final LF is optional. There is no
+version marker, BOM, quoting or escaping inside the payload.
+
+- Only printable ASCII (`0x20..0x7e`), TAB (`0x09`) and LF (`0x0a`) are allowed.
+  CR (including CRLF), NUL, DEL and all bytes `0x80..0xff` are invalid.
+- Keys match `[a-z][a-z0-9_]*`, without whitespace or normalization.
+- Split each line at the first `=`. Additional `=` bytes belong to the value.
+- Trim only leading/trailing spaces and TABs from values. An empty value is valid.
+- Values remain opaque text. Commas, including `, `, are preserved verbatim;
+  the receiver does not guess lists, numbers, addresses or booleans.
+- Empty lines, duplicate keys, missing `=`, invalid keys/bytes and oversized
+  payloads reject the entire message. No partial state is applied. A rejected
+  INFO leaves the previous snapshot unchanged.
+- All valid keys are retained, including unknown/custom keys. Each accepted INFO
+  replaces the complete snapshot: keys omitted from it disappear.
+
+When constructing INFO, the sender replaces each non-ASCII byte in a **value**
+with ASCII `?`, without decoding UTF-8 (a multibyte character produces multiple
+question marks). Keys are never repaired. Other invalid input fails the entire
+message; LF/CR in a value cannot inject extra fields. The receiver never repairs
+non-ASCII bytes received on the wire.
+
+The collector merges automatic `access` with static administrator fields from
+repeatable `--info-field="key=value"` (also accepted as two arguments).
+The first `=` separates key/value within the argument. The option alone does
+not enable sending. Duplicate keys, reserved `access`, invalid input and an
+oversized static configuration fail startup. Dynamic enumeration plus static
+fields must also fit the payload limit or the entire snapshot is dropped.
+
+The initial producer sends:
+
+```text
+access=10.0.0.1,10.0.0.2
+```
+
+With the feature enabled, a dedicated collector thread (128 KiB stack) sleeps
+until a confirmed handshake requests a fresh snapshot. It enumerates addresses
+with `getifaddrs()`, builds the text off the packet-processing thread, then
+publishes a complete bounded buffer (4096 bytes plus length and TX generation).
+An eventfd wakes the event loop, which alone owns session encryption and UDP
+transmission. A result from a superseded TX generation is discarded. Collection
+failure drops that snapshot; it never substitutes cached data. With the feature
+disabled, there is no collector thread.
+
+Only `AF_INET` addresses on interfaces flagged `IFF_LOOPBACK` are included, excluding the entire
+`127.0.0.0/8` range. All matches are sorted and deduplicated; there is no
+interface-name, scope, routing, reachability or other heuristic. Addresses use
+comma separators with no spaces. `access=` explicitly advertises no matching
+addresses. Enumeration/size failure sends no snapshot, never a partial list.
+INFO does not use tunnel fragmentation; packets exceeding the path MTU can fail
+UDP transmission even when within the INFO payload limit.
+
+The receiver exports every field as `peer_info_<key>=<value>` in `show stats`
+and stats files, e.g. `peer_info_access=10.0.0.1,10.0.0.2`. The operational
+`info_msg_peer_received` flag is outside that namespace to avoid collisions
+with custom keys; 0 means no INFO received for the confirmed session.
+A new confirmed session clears old metadata unless its INFO arrived before
+CONFIRM_ACK. Old-session INFO is rejected even during the rekey grace period;
+reordered older snapshots cannot replace newer ones within a session. Metadata
+does not modify routing or prove service availability.
+
+Older V5 binaries reject type 13 while ordinary tunnel traffic continues;
+upgrade the receiving binary to expose `peer_info_*`.
 
 ## Handshake messages
 

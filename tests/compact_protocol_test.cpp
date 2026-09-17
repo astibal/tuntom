@@ -15,16 +15,17 @@ int main() {
         ProtocolV5 sender(42, c2s, s2c, encrypted), receiver(42, s2c, c2s, encrypted);
         for (auto type : {PacketType::data, PacketType::hello, PacketType::keepalive,
                           PacketType::ping, PacketType::pong, PacketType::mtu_probe,
-                          PacketType::mtu_reply, PacketType::confirm, PacketType::confirm_ack}) {
+                          PacketType::mtu_reply, PacketType::confirm, PacketType::confirm_ack, PacketType::info}) {
             Packet p;
             p.type = type; p.sequence = 0xabcd000000000001ULL; p.message_id = 99;
+            if (type == PacketType::info) { p.payload = info::encode_access({0x0a000001}); p.message_id = 0; }
             if (type == PacketType::data) { p.payload.resize(20, 0x45); p.original_length = 20; }
             if (type == PacketType::hello || type == PacketType::keepalive) p.message_id = 0;
             if (type == PacketType::mtu_probe || type == PacketType::mtu_reply) p.original_length = 1400;
             if (type == PacketType::confirm || type == PacketType::confirm_ack) p.sequence &= ~0x0000ffffffffffffULL;
             const auto wire = sender.encode(p);
             const std::size_t expected = (type == PacketType::data || type == PacketType::hello ||
-                type == PacketType::keepalive) ? 25 :
+                type == PacketType::keepalive || type == PacketType::info) ? 25 :
                 (type == PacketType::mtu_probe || type == PacketType::mtu_reply) ? 35 : 33;
             require(wire.size() == expected + p.payload.size(), "compact control/data size");
             require(load_be64(wire.data() + 1) == p.sequence, "sequence offset");

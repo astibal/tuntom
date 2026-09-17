@@ -380,6 +380,45 @@ the respective hosts. Sockets use mode `0660`; filesystem permissions control
 access. Both `show stats` and `show flows` are supported. Existing stats signals
 remain available for compatibility.
 
+### Peer access addresses
+
+Pass `--info-msg-enable` to the **tuntom binary** on a spoke to advertise all
+IPv4 addresses assigned to loopback interfaces except `127.0.0.0/8`. The option
+is off by default and controls sending only. A fresh `INFO` snapshot
+is sent after the initial handshake and every completed rekey, without any
+routing or reachability heuristic. A small collector thread prepares the text
+buffer after each confirmed session; the event loop sends it. Reception needs no flag.
+
+Add static administrator fields with repeatable `--info-field="key=value"`
+(or `--info-field "key=value"`), for example:
+
+```bash
+tuntom client 42 tun42 hub.example --info-msg-enable \
+  --info-field="site=Praha, centrum" --info-field="role=spoke"
+```
+
+These fields do not enable sending on their own. `access` is reserved for the
+automatic collector; duplicate keys, invalid syntax/control bytes and oversized
+configuration are rejected at startup. Values have their outer spaces/TABs
+trimmed; each non-ASCII value byte becomes `?` before transmission. Keys are never
+repaired. Quotes above belong to the shell, not the INFO wire format.
+
+On the receiving tunnel, `tuntomctl <control-socket> show stats` includes:
+
+```text
+info_msg_peer_received=1
+peer_info_access=10.10.0.1,192.0.2.10
+peer_info_role=spoke
+peer_info_site=Praha, centrum
+```
+
+The wire payload is ASCII `key=value` lines; all received keys, including custom
+keys, are exported as `peer_info_<key>`. `access=` clears the address list. Each
+valid INFO replaces the complete snapshot; any malformed INFO is dropped without
+changing it. `info_msg_peer_received=0` means no snapshot
+has arrived for the current confirmed session. Delivery is best-effort, with the
+next completed handshake refreshing lost updates. See [INFO wire format](docs/PROTOCOL_V5.md#info-13).
+
 ### Flow and label snapshots
 
 Every component with a control socket accepts:
@@ -457,7 +496,11 @@ See [hook context](docs/DETAILS.md#lifecycle-hooks) and the
 [tuntom.lua](tuntom.lua) dissects v1, v2, v3, v4, and v5 captures, including handshake
 fields, session hints, sequence counters, fragments, authentication tags, and
 PMTUD probes. It reassembles unencrypted v5 DATA and passes inner packets to the
-IPv4/IPv6 dissector. Encrypted payloads remain encrypted in the capture.
+IPv4/IPv6 dissector. Plaintext INFO exposes validated key/value entries via
+`tuntom.info.entry`, `tuntom.info.key` and `tuntom.info.value`; malformed snapshots
+are marked with `tuntom.info.malformed` and expose no partial fields. Values stay
+text (including comma-separated addresses). Encrypted payloads remain encrypted
+in the capture; the dissector does not verify session authentication tags.
 
 ### PMTUD black-hole test
 

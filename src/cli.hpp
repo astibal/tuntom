@@ -1,6 +1,7 @@
 #pragma once
 
 #include "packet.hpp"
+#include "info_message.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
@@ -40,6 +41,8 @@ inline void usage(const char* program_name) {
         << "  --classifier-file <path> L3/L4 rules assigning stacks to received DATA\n"
         << "  --switch-exit-node      Allow IPC EXIT delivery through a local TUN\n"
         << "\n"
+        << "  --info-msg-enable     Advertise loopback IPv4 addresses after each handshake\n"
+        << "  --info-field <key=value>  Add a custom INFO field (repeatable; access is reserved)\n"
         << "Statistics:\n"
         << "  --no-stats             Disable periodic stats file writes; keep metrics/socket\n"
         << "  SIGUSR1 / SIGUSR2       Toggle file writes / write snapshot (needs --stats-file)\n"
@@ -101,6 +104,23 @@ inline void parse_options(
 
         if (option == "--crypto-auth-only") {
             options.pfs = options.encrypt_ascon = false;
+        } else if (option == "--info-msg-enable") {
+            options.info_msg_enable = true;
+        } else if (option == "--info-field" || option.rfind("--info-field=", 0) == 0) {
+            std::string field;
+            if (option == "--info-field") {
+                if (++i >= argc) throw std::runtime_error("--info-field requires key=value");
+                field = argv[i];
+            } else field = option.substr(13);
+            const auto equal = field.find('=');
+            if (equal == std::string::npos) throw std::runtime_error("--info-field requires key=value");
+            const auto key = field.substr(0, equal);
+            const auto value = field.substr(equal + 1);
+            if (key == "access") throw std::runtime_error("--info-field: access is supplied automatically");
+            // Validate without repairing keys. Value sanitization is shared with the collector.
+            (void)info::encode({{key, value}});
+            if (!options.info_fields.emplace(key, value).second)
+                throw std::runtime_error("duplicate --info-field key: " + key);
         } else if (option == "--init-window") {
             if (++i >= argc) throw std::runtime_error("--init-window requires a value");
             options.init_window = parse_size_option(option, argv[i], 2, 86400);
@@ -244,6 +264,8 @@ inline void parse_options(
     if (not options.switch_socket.empty() and options.switch_port_id.empty()) {
         throw std::runtime_error("--switch-socket requires --switch-port-id");
     }
+    (void)info::encode_access({}, options.info_fields);
+
 }
 
 inline std::uint16_t parse_tunnel_id(const char* value) {

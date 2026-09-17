@@ -81,6 +81,7 @@ local packet_type_names = {
     [10] = "CONFIRM",
     [11] = "CONFIRM_ACK",
     [12] = "IPC",
+    [13] = "INFO",
 }
 
 local f_magic = ProtoField.string(
@@ -204,6 +205,12 @@ local f_payload = ProtoField.bytes(
     "Payload"
 )
 
+local f_info_entry = ProtoField.string("tuntom.info.entry", "INFO Field")
+local f_info_key = ProtoField.string("tuntom.info.key", "INFO Key")
+local f_info_value = ProtoField.string("tuntom.info.value", "INFO Value")
+local e_info = ProtoExpert.new("tuntom.info.malformed", "Malformed INFO",
+    expert.group.MALFORMED, expert.severity.ERROR)
+
 local f_session_hint = ProtoField.uint16("tuntom.session_hint", "Session Hint", base.HEX)
 local f_counter = ProtoField.uint64("tuntom.counter", "Session Packet Counter", base.DEC)
 local f_init_timestamp = ProtoField.uint64("tuntom.init_timestamp", "INIT Unix Timestamp (seconds)", base.DEC)
@@ -214,9 +221,10 @@ local f_dh_length = ProtoField.uint16("tuntom.dh_length", "DH Public Key Length"
 local f_dh = ProtoField.bytes("tuntom.dh", "DH Public Key")
 local e_handshake = ProtoExpert.new("tuntom.handshake_error", "Invalid/unsupported handshake",
     expert.group.MALFORMED, expert.severity.ERROR)
-tuntom.experts = {e_handshake}
+tuntom.experts = {e_handshake, e_info}
 
 tuntom.fields = {
+    f_info_entry, f_info_key, f_info_value,
     f_session_hint, f_counter, f_init_timestamp, f_nonce, f_init_hash, f_suite, f_dh_length, f_dh,
     f_magic,
     f_tunnel_id,
@@ -818,6 +826,49 @@ end
 ipc_proto.dissector = dissect_ipc
 DissectorTable.get("wtap_encap"):add(wtap.USER0, ipc_proto)
 
+-- Validate the entire snapshot before exposing any fields. Authentication is
+-- not verified by this dissector; encrypted payloads never enter this parser.
+local function dissect_info(buffer, header, tree)
+    local length = buffer:len() - header
+    local function malformed(reason)
+        tree:add_proto_expert_info(e_info, reason)
+    end
+    if length == 0 or length > 4096 then
+        malformed("INFO payload must contain 1..4096 bytes")
+        return
+    end
+    local payload = buffer(header, length)
+    tree:add(f_payload, payload)
+    local text = payload:raw() -- Preserve NUL bytes for strict validation.
+    for i = 1, #text do
+        local byte = text:byte(i)
+        if (byte < 32 or byte > 126) and byte ~= 9 and byte ~= 10 then
+            malformed("INFO contains a forbidden byte (only printable ASCII, TAB and LF allowed)")
+            return
+        end
+    end
+    local entries, seen, at = {}, {}, 1
+    while at <= #text do
+        local newline = text:find("\n", at, true)
+        local last = newline and newline - 1 or #text
+        local line = text:sub(at, last)
+        local equal = line:find("=", 1, true)
+        if not equal then malformed("INFO line is empty or missing '='"); return end
+        local key = line:sub(1, equal - 1)
+        if not key:match("^[a-z][a-z0-9_]*$") then malformed("Invalid INFO key"); return end
+        if seen[key] then malformed("Duplicate INFO key: " .. key); return end
+        seen[key] = true
+        local value = line:sub(equal + 1):gsub("^[ \t]+", ""):gsub("[ \t]+$", "")
+        entries[#entries + 1] = {offset = header + at - 1, size = #line, key = key, value = value}
+        at = newline and newline + 1 or #text + 1
+    end
+    for _, entry in ipairs(entries) do
+        local item = tree:add(f_info_entry, buffer(entry.offset, entry.size), entry.key .. "=" .. entry.value)
+        item:add(f_info_key, buffer(entry.offset, #entry.key), entry.key)
+        item:add(f_info_value, buffer(entry.offset + #entry.key + 1, entry.size - #entry.key - 1), entry.value)
+    end
+end
+
 -- V5: no magic or tunnel ID on wire. Version occurs only in INIT/RESPONSE.
 -- Base = type/flags(1), sequence(8), type extension, tag(16), payload.
 -- Extensions: fragments(12), ping/confirm(8), PMTUD(10), handshake(9).
@@ -893,6 +944,10 @@ local function dissect_v5(buffer, pinfo, tree)
            buffer(9, 8):uint64() == UInt64(0, 0) then
             subtree:add_proto_expert_info(e_handshake, "Invalid confirmation")
         end
+        return buffer:len()
+    end
+    if kind == 13 then
+        dissect_info(buffer, header, subtree)
         return buffer:len()
     end
     if length == 0 then return buffer:len() end

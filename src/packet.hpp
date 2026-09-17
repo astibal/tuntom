@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -24,6 +25,7 @@ enum class PacketType : std::uint8_t {
     confirm = 10,
     confirm_ack = 11,
     ipc = 12,
+    info = 13,
 };
 
 enum class Direction {
@@ -52,6 +54,8 @@ enum class StatsFormat {
 struct Options {
     bool encrypt_ascon = true;
     bool pfs = true;
+    bool info_msg_enable = false;
+    std::map<std::string, std::string> info_fields;
     std::size_t init_window = 300;
     bool ttl_compensate = true;
     bool pmtud_auto = true;

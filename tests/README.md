@@ -13,6 +13,13 @@ The C++ tests are also available through CMake/CTest in CLion.
 Builds use a temporary directory that is removed on exit. No root privileges,
 live tunnel, or network access are needed.
 
+- `info_message_test.cpp`: strict ASCII key/value parsing, every byte value,
+  atomic peer snapshots, sender sanitization, custom CLI fields, collector-thread
+  handoff/failures/generation changes, authentication, replay and rekey isolation.
+- `info_integration_test.py`: real encrypted UDP between rootless tunnel processes,
+  opt-in behavior, injected loopback addresses and custom fields in `show stats`.
+  Run `python3 tests/info_integration_test.py <info_addresses_fixture> <tuntomctl>
+  --rekey` to additionally check fresh enumeration after the real two-minute rekey.
 - `packet_classifier_test.cpp`: shared IPv4/IPv6 header parsing, exact/CIDR
   addresses, protocol and port ranges, fragments, literal label stacks, bounds
   and invalid configuration. Checks packet/parsed-flow entry-point equivalence

@@ -75,6 +75,17 @@ with tempfile.TemporaryDirectory(prefix="tuntom-dissector-") as directory:
                 frame(wire(12,snapshot,hint|23,0,len(snapshot))),
                 frame(wire(0x8c,data,hint|24,0,len(data))),
                 frame(wire(12,b'TTR\x01',hint|25,0,4))]
+    info_start = len(records)
+    info_valid = b'access=10.0.0.1,10.0.0.2\ncustom=  Praha, centrum=x \t\nempty='
+    info_bad = [b'', b'\n', b'access=x\n\n', b'access=x\nmissing',
+                b'a=1\na=2', b'Bad=x', b'a =x', b'a-b=x', b'=x',
+                b'a=x\r\n', b'a=\x00', b'a=\x7f', b'a=\xc4\x8d',
+                b'\xef\xbb\xbfa=x', b'a=' + b'x' * 4095]
+    records += [frame(wire(13, info_valid, hint | 30)),
+                frame(wire(13, b'access=\n', hint | 31)),
+                frame(wire(0x8d, info_valid, hint | 32)),
+                frame(wire(13, b'a=' + b'x' * 4094, hint | 33))]
+    records += [frame(wire(13, payload, hint | (40 + i))) for i, payload in enumerate(info_bad)]
     pcap = directory / "packets.pcap"
     pcap.write_bytes(struct.pack("<IHHIIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, 101) +
                      b"".join(struct.pack("<IIII", i, 0, len(p), len(p)) + p
@@ -83,7 +94,8 @@ with tempfile.TemporaryDirectory(prefix="tuntom-dissector-") as directory:
               "tuntom_test.counter", "tuntom_test.dh_length", "tuntom_test.suite",
               "tuntom_test.reassembled_length", "_ws.expert.message",
               "tuntom_test.ipc.channel", "tuntom_test.ipc.label", "tuntom_test.ipc.via.chain",
-              "tuntom_test.ipc.via.action", "tuntom_test.ipc.name"]
+              "tuntom_test.ipc.via.action", "tuntom_test.ipc.name",
+              "tuntom_test.info.entry", "tuntom_test.info.key", "tuntom_test.info.value"]
     args = ["tshark", "-X", "lua_script:" + str(lua), "-r", str(pcap), "-T", "fields"]
     for field in fields:
         args.extend(["-e", field])
@@ -116,6 +128,15 @@ with tempfile.TemporaryDirectory(prefix="tuntom-dissector-") as directory:
     assert not rows[20][8], 'encrypted IPC was decoded as plaintext'
     assert 'Truncated relay' in rows[21][7], rows[21]
     assert "Lua Error" not in result.stdout, result.stdout
+    info_rows = rows[info_start:]
+    assert info_rows[0][1] == '13' and not info_rows[0][7], info_rows[0]
+    assert info_rows[0][13] == 'access=10.0.0.1,10.0.0.2,custom=Praha, centrum=x,empty=', info_rows[0]
+    assert info_rows[0][14] == 'access,custom,empty', info_rows[0]
+    assert info_rows[1][13:16] == ['access=', 'access', ''], info_rows[1]
+    assert not info_rows[2][7] and not any(info_rows[2][13:16]), 'encrypted INFO parsed as text'
+    assert info_rows[3][14] == 'a' and len(info_rows[3][15]) == 4094, info_rows[3]
+    for row in info_rows[4:]:
+        assert row[7] and not any(row[13:16]), 'malformed INFO published partial fields: ' + repr(row)
     raw_capture = directory / 'ipc.pcap'
     raw_capture.write_bytes(struct.pack('<IHHIIII',0xA1B2C3D4,2,4,0,0,70000,147) +
         b''.join(struct.pack('<IIII',i,0,len(p),len(p))+p for i,p in enumerate((ipc,data,snapshot),1)))
@@ -127,4 +148,4 @@ with tempfile.TemporaryDirectory(prefix="tuntom-dissector-") as directory:
     assert raw_rows[0][10:12] == ['7','1'], raw_rows
     assert raw_rows[1][8] == '9' and raw_rows[2][12] == 'proxy-0', raw_rows
 
-print("PASS: Wireshark V5 handshakes, DATA/IPC reassembly, relay channels, VIA fields and malformed messages")
+print("PASS: Wireshark V5 handshakes, DATA/IPC reassembly, relay channels, VIA fields, ASCII INFO and malformed messages")

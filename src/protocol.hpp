@@ -1,6 +1,7 @@
 #pragma once
 
 #include "packet.hpp"
+#include "info_message.hpp"
 #include "wire.hpp"
 #include <algorithm>
 #include <array>
@@ -65,7 +66,7 @@ public:
     // Type-specific metadata follows the common type/flags + sequence prefix.
     static std::size_t metadata_size(PacketType type, bool fragment = false) {
         switch (type) {
-        case PacketType::hello: case PacketType::keepalive: return 9;
+        case PacketType::hello: case PacketType::keepalive: case PacketType::info: return 9;
         case PacketType::data: return fragment ? 21 : 9;
         case PacketType::ipc: return fragment ? 25 : 9;
         case PacketType::ping: case PacketType::pong:
@@ -192,6 +193,9 @@ public:
             const auto dh_size = load_be16(packet.payload.data() + expected - 2);
             if (suite > 2 or dh_size != (suite == 2 ? 32 : 0) or
                 packet.payload.size() != expected + dh_size) return false;
+        } else if (type == PacketType::info) {
+            info::Fields fields;
+            if (!info::decode(packet.payload, fields)) return false;
         } else if (type == PacketType::confirm or type == PacketType::confirm_ack) {
             if (packet.message_id == 0 or packet.fragment_offset != 0 or
                 packet.original_length != 0 or not packet.payload.empty() or

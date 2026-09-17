@@ -8,6 +8,7 @@
 #include "packet_classifier.hpp"
 #include "ipc/switch_protocol.hpp"
 #include "session.hpp"
+#include "info_worker.hpp"
 #include "relay/endpoint.hpp"
 #include "ip.hpp"
 #include "fragmentation.hpp"
@@ -92,6 +93,14 @@ public:
         // root would hide permissions that make all later reconnects fail.
         try_switch_reconnect(std::chrono::steady_clock::now(), true);
         logger.start();
+        if (options_.info_msg_enable) {
+            try {
+                info_worker_ = std::make_unique<info::Worker>([fields = options_.info_fields] {
+                    return info::encode_access(info::loopback_addresses(), fields);
+                });
+            }
+            catch (const std::exception& error) { log_info("Unable to start INFO collector: ", error.what()); }
+        }
 
         if (log_enabled(LogLevel::info)) {
             LogLine()
@@ -152,7 +161,7 @@ public:
         }
 
         std::vector<pollfd> descriptors;
-        descriptors.reserve(relay_ ? relay::max_channels + 5 : 4);
+        descriptors.reserve(relay_ ? relay::max_channels + 6 : 5);
         while (true) {
             try {
                 if (recovery_.wait_for_retry(control_ ? control_->poll_fd() : -1)) {
@@ -162,7 +171,7 @@ public:
                 sync_udp_tx_session();
                 udp_tx_queue_.expire(UdpTxQueue::Clock::now());
                 update_stats_control();
-                descriptors.resize(4);
+                descriptors.resize(5);
                 descriptors[0].fd = tun_ ? tun_->fd() : -1;
                 descriptors[0].events = udp_tx_queue_.empty() ? POLLIN : 0;
                 descriptors[1].fd = udp_.fd();
@@ -174,6 +183,8 @@ public:
                     descriptors[2].events = static_cast<short>(descriptors[2].events & ~POLLIN);
                 descriptors[3].fd = control_ ? control_->poll_fd() : -1;
                 descriptors[3].events = POLLIN;
+                descriptors[4].fd = info_worker_ ? info_worker_->fd() : -1;
+                descriptors[4].events = POLLIN;
 
                 const auto timeout_at = AdaptivePolling::Clock::now();
                 int timeout = switch_ && (udp_tx_queue_.empty() || !switch_->connected())
@@ -197,6 +208,7 @@ public:
                 if (control_ and (descriptors[3].revents & POLLIN)) {
                     handle_control_request();
                 }
+                if (descriptors[4].revents & POLLIN) send_collected_info();
                 if (descriptors[1].revents & POLLOUT) flush_udp_tx();
                 if (relay_) relay_->step([&](const std::uint8_t* p, std::size_t n) { send_data(p,n,PacketType::ipc); });
 
@@ -426,8 +438,24 @@ private:
         stats_.udp_tx_bytes += static_cast<std::uint64_t>(n);
     }
 
+    void send_collected_info() {
+        info::Worker::Result result;
+        if (!info_worker_->take(result) ||
+            result.generation != protocol_v5_.transmit_generation() || !protocol_v5_.ready()) return;
+        if (!result.valid) {
+            log_info("INFO collection failed; snapshot dropped");
+            return;
+        }
+        Packet message;
+        message.type = PacketType::info;
+        message.payload.assign(result.text.begin(), result.text.begin() + result.size);
+        send_handshake(protocol_v5_.encode(message));
+    }
+
     void session_activated() {
         log_info("V5 session confirmed");
+        peer_info_.activated(relay_exchange_);
+        if (info_worker_) info_worker_->request(protocol_v5_.transmit_generation());
         if (relay_) relay_->session();
         rtt_probes_.clear();
         send_rtt_probe();
@@ -707,6 +735,12 @@ private:
                 << " original=" << packet.original_length
                 << " payload=" << packet.payload.size()
                 << "\n";
+        }
+
+        if (packet.type == PacketType::info) {
+            // SessionProtocol rejects old-session INFO before it reaches the snapshot.
+            peer_info_.accept(receive_session->exchange, packet.sequence, packet.payload);
+            return;
         }
 
         if (packet.type == PacketType::ping) {
@@ -1620,6 +1654,8 @@ private:
             << "pmtud_probes_ok=" << stats_.pmtud_probes_ok << "\n"
             << "pmtud_probes_lost=" << stats_.pmtud_probes_lost << "\n";
 
+        output << "info_msg_enable=" << options_.info_msg_enable << "\n";
+        peer_info_.write_stats(output);
         protocol_v5_.write_stats(output, now_steady);
         output << "processing_sample_interval=" << ProcessingStats::sample_interval << "\n";
         throughput_.write(output);
@@ -1685,6 +1721,8 @@ private:
 
     const ascon::key_type master_key_;
     SessionProtocol protocol_v5_;
+    info::PeerSnapshot peer_info_;
+    std::unique_ptr<info::Worker> info_worker_;
     UdpTxQueue udp_tx_queue_;
     std::uint64_t udp_tx_generation_ = 0;
     SessionProtocol::Time init_warning_next_ {};

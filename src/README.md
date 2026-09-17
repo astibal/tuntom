@@ -18,6 +18,8 @@ from multiple translation units.
 | `udp_endpoint.hpp` | UDP sockets and peer handling |
 | `reassembly.hpp` | Fragment reassembly |
 | `session.hpp` | V5 handshake and session lifecycle |
+| `info_message.hpp` | ASCII INFO codec, loopback access selection and peer snapshots |
+| `info_worker.hpp` | Background INFO collection and bounded text-buffer handoff |
 | `ip.hpp` | IP checksums and hop compensation |
 | `fragmentation.hpp` | Fragment sizing and probe state |
 | `tunnel.hpp` | Event loop, forwarding, RTT, PMTUD and stats |
