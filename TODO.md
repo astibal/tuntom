@@ -1,5 +1,34 @@
 # Project TODO
 
+## Fabric: peer access hints via encrypted ANNOUNCE (deferred 2026-09-17)
+
+Expose optional peer address hints in Fabric for monitoring discovery, without
+requiring IP addresses on tunnel interfaces or injecting management packets
+into the kernel IP stack.
+
+- Transport prerequisite: tuntom reads explicitly configured IPv4 addresses
+  on the local **loopback interface**, excluding `127.0.0.0/8`. Do not select
+  addresses from other interfaces, infer a management address, or query Syspiper.
+- Send the address list in a dedicated `ANNOUNCE` frame after the initial
+  completed handshake and each completed rekey, only within an authenticated,
+  encrypted session. No announcement in plaintext mode; no response/ACK required.
+- Expose the received list as `peer_access` metadata through control stats,
+  with announcement age/session provenance. Replace the previous list on a new
+  announcement, including an empty list; discard it when the session ends.
+- Fabric displays these hints and may try its existing Syspiper poller against
+  them, using the backend-configured key and bounded polling. Hint presence
+  does not assert reachability, service availability, or permission to change
+  network configuration. An empty list means only that no hints are provided.
+- Keep the announcement generic: a future trepd consumer might use the same
+  hints to try contacting a remote peer. No rendezvous URL, automatic routes,
+  tunnel addressing, HTTP proxy, or Syspiper-specific tunnel protocol.
+- Before implementation, define bounded/versioned payload encoding, peer
+  compatibility and stale-hint handling; test encrypted-only emission/reception,
+  rekey, empty-list replacement and Fabric deduplication of polling targets.
+
+Status: TODO only. Fabric is the focus here; the tunnel protocol prerequisite
+is deferred separately. IPv6 hint semantics remain to be defined.
+
 ## Adapter relay over tuntom tunnels (deferred 2026-09-15)
 
 Extend remote adapter connectivity with a generic relay, using the existing
