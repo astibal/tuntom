@@ -15,6 +15,9 @@ extern "C" int __real_ioctl(int, unsigned long, ...);
 extern "C" int __wrap_open(const char* path, int flags, ...) {
     if (std::strcmp(path, "/dev/net/tun") == 0) {
         const char* inherited = std::getenv("TUNTOM_TEST_TUN_FD");
+        static unsigned opened = 0;
+        if (opened++ == 1 && std::getenv("TUNTOM_TEST_TUN_OUT_FD"))
+            inherited = std::getenv("TUNTOM_TEST_TUN_OUT_FD");
         if (not inherited) std::abort();
         const int fd = ::fcntl(std::atoi(inherited), F_DUPFD_CLOEXEC, 0);
         if (fd >= 0) ::fcntl(fd, F_SETFL, O_NONBLOCK);

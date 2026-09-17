@@ -1,6 +1,7 @@
 #include "../src/via/switch.hpp"
 #include "../src/via/adapter.hpp"
 #include "../src/divert/flows.hpp"
+#include "../src/divert/paths.hpp"
 #include <iostream>
 using namespace tuntom;
 using namespace tuntom::via;
@@ -59,19 +60,49 @@ static void adapter() {
     divert::BasicRoutes<AdapterContext> routes(10, std::chrono::seconds(60), true);
     FlowKey flow{}; flow.version = 4; flow.protocol = 6; flow.source_port = 1000; flow.destination_port = 80;
     auto now = divert::Clock::time_point{};
-    check(routes.learn(flow, context, true, now) == divert::Learn::ok, "learn SYN");
-    check(routes.lookup(reverse_key(flow), true, now, response), "generated SYNACK has context before upstream SYNACK");
+    std::size_t path = 0;
+    check(routes.learn(flow, context, true, now, 3) == divert::Learn::ok, "learn SYN");
+    check(routes.lookup(reverse_key(flow), true, now, response, &path) && path == 3, "generated SYNACK has context and path before upstream SYNACK");
     codec.onward(response, 0);
     const auto& reply = std::get<Envelope>(response.value);
     check(reply.reverse && reply.action == onward && reply.step == 1, "direction from client TUN only");
     codec.onward(context, 1);
     check(!std::get<Envelope>(context.value).reverse, "direction from server TUN only");
     env.reverse = true; check(Codec::attach(env, labels) && codec.receive(labels, 1, context), "reverse OFFER");
+    check(routes.learn(reverse_key(flow), context, false, now, 7) == divert::Learn::ok, "reverse ingress migrates transport path");
+    check(routes.lookup(flow, false, now, response, &path) && path == 7, "forward output uses migrated path");
+    check(routes.lookup(reverse_key(flow), true, now, response, &path) && path == 7, "reverse output uses migrated path");
+    auto conflict = context; ++std::get<Envelope>(conflict.value).chain;
+    check(routes.learn(reverse_key(flow), conflict, false, now, 9) == divert::Learn::conflict, "conflicting chain rejected");
+    check(routes.lookup(flow, false, now, response, &path) && path == 7, "conflict cannot replace path");
     divert::BasicRoutes<AdapterContext> migrated(10, std::chrono::seconds(60), true);
     check(migrated.learn(reverse_key(flow), context, false, now) == divert::Learn::ok, "hash migration may start with reverse packet");
     check(migrated.lookup(reverse_key(flow), true, now, response), "reverse-first flow orientation");
 }
+static void paths() {
+    using divert::adapter_paths;
+    auto single = adapter_paths("/tmp/relay", {}, "smith#0", "in", "out");
+    check(single.size() == 1 && single[0].input == "in~via:c:smith#0", "single-path CLI unchanged");
+    auto multi = adapter_paths("", {"west=/tmp/a", "east=/tmp/b"}, "smith#0", "in", "out");
+    check(multi.size() == 2 && multi[0].input == "in.west~via:c:smith#0#path-west" &&
+        multi[0].output == "out.west~via:s:smith#0#path-west", "stable paired registration");
+    auto reordered = adapter_paths("", {"east=/tmp/b", "west=/tmp/a"}, "smith#0", "in", "out");
+    check(reordered[1].input == multi[0].input, "path identity independent of argument order");
+    for (const auto& values : std::vector<std::vector<std::string>>{{"bad"}, {"=/tmp/a"}, {"a="},
+            {"a=/tmp/a", "a=/tmp/b"}, {"a=/tmp/a", "b=/tmp/a"}, {"a.b=/tmp/a"},
+            {std::string(64, 'a') + "=/tmp/a"}, std::vector<std::string>(17, "a=/tmp/a")}) {
+        bool threw = false;
+        try { adapter_paths("", values, "smith#0", "in", "out"); } catch (const std::runtime_error&) { threw = true; }
+        check(threw, "invalid path specification rejected before opening TUNs");
+    }
+    for (bool legacy : {false, true}) {
+        bool threw = false;
+        try { adapter_paths(legacy ? "" : "/tmp/old", {"a=/tmp/a"}, legacy ? "" : "smith#0", "in", "out"); }
+        catch (const std::runtime_error&) { threw = true; }
+        check(threw, "relay paths require VIA and cannot mix with switch socket");
+    }
+}
 int main() {
-    try { codec(); parser(); adapter(); std::cout << "VIA codec, parser and adapter handshake contexts: OK\n"; }
+    try { codec(); parser(); adapter(); paths(); std::cout << "VIA codec, parser, paths and adapter handshake contexts: OK\n"; }
     catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }

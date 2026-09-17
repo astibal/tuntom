@@ -1,4 +1,5 @@
 #include "flows.hpp"
+#include "paths.hpp"
 #include "../via/adapter.hpp"
 #include "../via/registration.hpp"
 #include "../common.hpp"
@@ -23,8 +24,10 @@ std::size_t number(const std::string& value, std::size_t lo, std::size_t hi) {
     return static_cast<std::size_t>(n);
 }
 void usage(const char* program) {
-    std::cerr << "Usage: " << program << " TUN-IN TUN-OUT --switch-socket PATH (--cookie ABC | --via-instance ID) [options]\n"
+    std::cerr << "Usage: " << program << " TUN-IN TUN-OUT [--switch-socket PATH | --relay-path ID=SOCKET ...] (--cookie ABC | --via-instance ID) [options]\n"
         << "  --via-instance ID         opt-in VIA; replaces --cookie, ID shared by both sides\n"
+        << "  --relay-path ID=SOCKET    VIA only; up to 16 independent IPC pairs sharing the TUNs\n"
+        << "                           registers NAME.ID~via:c|s:INSTANCE#path-ID\n"
         << "  --admission immediate|warmup  default immediate for VIA, warmup for legacy\n"
         << "  --divert-in-port NAME      default divert-in\n"
         << "  --divert-out-port NAME     default divert-out\n"
@@ -66,6 +69,7 @@ int main(int argc, char** argv) {
             throw std::runtime_error("two distinct TUN names of at most 15 bytes are required");
         std::string socket, cookie, control_path, in_port = "divert-in", out_port = "divert-out";
         std::string instance, admission_mode;
+        std::vector<std::string> relay_paths;
         std::size_t mtu = 1500, capacity = 100000, admission_capacity = 100000, idle = 86400;
         ipc::Options options;
         for (int i = 3; i < argc; ++i) {
@@ -74,6 +78,7 @@ int main(int argc, char** argv) {
             if (++i >= argc) throw std::runtime_error(option + " requires a value");
             const std::string value = argv[i];
             if (option == "--switch-socket") socket = value;
+            else if (option == "--relay-path") relay_paths.push_back(value);
             else if (option == "--cookie") cookie = value;
             else if (option == "--via-instance") instance = value;
             else if (option == "--admission") admission_mode = value;
@@ -88,23 +93,27 @@ int main(int argc, char** argv) {
             else if (option == "--flow-idle-seconds") idle = number(value, 1, 604800);
             else throw std::runtime_error("unknown option: " + option);
         }
-        if (socket.empty() || in_port == out_port) throw std::runtime_error("switch socket and two distinct adapter ports are required");
+        const auto paths = adapter_paths(socket, relay_paths, instance, in_port, out_port);
         const bool via_mode = !instance.empty();
         if (admission_mode.empty()) admission_mode = via_mode ? "immediate" : "warmup";
         if (admission_mode != "immediate" && admission_mode != "warmup") throw std::runtime_error("expected immediate or warmup admission");
-        if (via_mode) {
-            in_port = via::port_name(in_port, instance, false);
-            out_port = via::port_name(out_port, instance, true);
-        }
         via::AdapterCodec codec(via_mode, cookie);
-        SwitchClient input(socket, in_port, options), output(socket, out_port, options);
+        std::vector<std::unique_ptr<SwitchClient>> clients;
+        for (const auto& path : paths) {
+            clients.push_back(std::make_unique<SwitchClient>(path.socket, path.input, options));
+            clients.push_back(std::make_unique<SwitchClient>(path.socket, path.output, options));
+        }
         std::unique_ptr<ControlSocket> control;
         if (!control_path.empty()) control = std::make_unique<ControlSocket>(control_path);
         TunDevice tun_in(in_name, mtu), tun_out(out_name, mtu);
         tun_in.set_up(); tun_out.set_up();
-        SwitchClient* clients[] = {&input, &output};
         TunDevice* tuns[] = {&tun_in, &tun_out};
-        Clock::time_point next_connect[2]{}, activated{};
+        std::vector<Clock::time_point> next_connect(clients.size());
+        std::vector<pollfd> fds(clients.size() + 3);
+        // Each pair gets one visit to both shared TUNs as well as its IPC sockets.
+        // Otherwise N busy IPC pairs could inject N times faster than we drain TUNs.
+        const auto sources = paths.size() * 4;
+        Clock::time_point activated{};
         bool active = false;
         Admission admission(admission_capacity);
         BasicRoutes<via::AdapterContext> routes(capacity, std::chrono::seconds(idle), via_mode);
@@ -115,48 +124,62 @@ int main(int argc, char** argv) {
         const auto seconds = [&](Clock::time_point now) {
             return active ? std::chrono::duration<double>(now - activated).count() : 0.0;
         };
-        const auto disconnect = [&](unsigned side) {
-            stats.disconnected += clients[side]->discard_staged().drops;
-            clients[side]->disconnect();
-            next_connect[side] = Clock::now() + std::chrono::seconds(1);
+        const auto disconnect = [&](std::size_t index) {
+            stats.disconnected += clients[index]->discard_staged().drops;
+            clients[index]->disconnect();
+            next_connect[index] = Clock::now() + std::chrono::seconds(1);
         };
-        const auto account = [&](unsigned side, const SwitchClient::Outcome& result) {
+        const auto account = [&](std::size_t index, const SwitchClient::Outcome& result) {
             stats.switch_tx += result.frames;
             stats.backpressure += result.backpressure;
             stats.send_errors += result.drops - result.backpressure;
-            if (result.error) disconnect(side);
+            if (result.error) disconnect(index);
         };
-        const auto send = [&](unsigned side, const via::AdapterContext& env, const std::uint8_t* payload, std::size_t size) {
+        const auto send = [&](std::size_t path, unsigned side, const via::AdapterContext& env, const std::uint8_t* payload, std::size_t size) {
             Stack labels;
             if (!codec.attach(env, labels)) { ++stats.invalid; return; }
-            if (!clients[side]->connected()) { ++stats.disconnected; return; }
-            account(side, clients[side]->append_frame(SwitchOpcode::switch_packet,
+            const auto index = path * 2 + side;
+            if (!clients[index]->connected()) { ++stats.disconnected; return; }
+            account(index, clients[index]->append_frame(SwitchOpcode::switch_packet,
                 labels.values.data(), labels.size, payload, size));
         };
         const auto control_step = [&] {
             if (!control) return;
             control->handle([&] {
                 std::ostringstream out;
+                std::size_t connected = 0;
+                for (std::size_t path = 0; path < paths.size(); ++path)
+                    connected += clients[path * 2]->connected() && clients[path * 2 + 1]->connected();
                 out << "format=txt\nformat_version=1\ncomponent=divert-adapter\n"
-                    << "divert_in_connected=" << input.connected() << "\ndivert_out_connected=" << output.connected()
+                    << "divert_in_connected=" << clients[0]->connected() << "\ndivert_out_connected=" << clients[1]->connected()
+                    << "\nrelay_paths=" << relay_paths.size() << "\nconnected_pairs=" << connected
                     << "\nvia_instance=" << instance << "\nadmission_mode=" << admission_mode
                     << "\nadmission_active=" << active << "\nadmission_seconds=" << seconds(Clock::now()) << '\n';
                 stats.write(out); admission.stats(out); routes.stats(out);
-                input.write_stats(out, "divert_in_ipc_"); output.write_stats(out, "divert_out_ipc_");
+                if (relay_paths.empty()) {
+                    clients[0]->write_stats(out, "divert_in_ipc_"); clients[1]->write_stats(out, "divert_out_ipc_");
+                } else for (std::size_t path = 0; path < paths.size(); ++path) {
+                    const auto prefix = "relay_path_" + paths[path].id + "_";
+                    out << prefix << "in_connected=" << clients[path * 2]->connected() << '\n'
+                        << prefix << "out_connected=" << clients[path * 2 + 1]->connected() << '\n';
+                    clients[path * 2]->write_stats(out, prefix + "in_ipc_");
+                    clients[path * 2 + 1]->write_stats(out, prefix + "out_ipc_");
+                }
                 recovery.write_stats(out);
                 return out.str();
             });
         };
-        const auto handle = [&](unsigned source) {
-            const unsigned side = source % 2;
-            auto& client = *clients[side];
+        const auto handle = [&](std::size_t source) {
+            const unsigned side = static_cast<unsigned>(source % 2);
+            std::size_t path = source / 4;
+            const auto index = path * 2 + side;
             auto& tun = *tuns[side];
-            const bool from_switch = source < 2;
-            if (from_switch && !client.connected()) return false;
-            const auto n = from_switch ? client.receive(buffer.data(), buffer.size()) : tun.read_packet(buffer.data(), buffer.size());
+            const bool from_switch = source % 4 < 2;
+            if (from_switch && !clients[index]->connected()) return false;
+            const auto n = from_switch ? clients[index]->receive(buffer.data(), buffer.size()) : tun.read_packet(buffer.data(), buffer.size());
             if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return false;
             if (n <= 0 || static_cast<std::size_t>(n) > buffer.size()) {
-                if (from_switch) disconnect(side); else ++stats.tun_errors;
+                if (from_switch) disconnect(index); else ++stats.tun_errors;
                 return true;
             }
             const auto now = Clock::now();
@@ -168,18 +191,18 @@ int main(int argc, char** argv) {
                 if (!decode_switch_frame(buffer.data(), static_cast<std::size_t>(n), frame) ||
                     frame.opcode != SwitchOpcode::exit_packet || !codec.receive(labels_of(frame), side, env)) { ++stats.invalid; return true; }
                 if (!packet_info(frame.payload, frame.payload_size, packet)) { ++stats.unsupported; return true; }
-                if (!input.connected() || !output.connected()) { ++stats.disconnected; return true; }
+                if (!clients[path * 2]->connected() || !clients[path * 2 + 1]->connected()) { ++stats.disconnected; return true; }
                 if (side == 0) {
                     if (!active) { activated = now; active = true; }
                     const auto decision = admission_mode == "immediate" ? AdmissionResult::proxy : admission.classify(packet, seconds(now));
                     if (decision == AdmissionResult::full) { ++stats.capacity; return true; }
                     if (decision == AdmissionResult::bypass) {
                         codec.bypass(env);
-                        send(side, env, frame.payload, frame.payload_size);
+                        send(path, side, env, frame.payload, frame.payload_size);
                         ++stats.bypass; return true;
                     }
                 }
-                const auto learned = routes.learn(packet.flow, env, side == 0, now);
+                const auto learned = routes.learn(packet.flow, env, side == 0, now, path);
                 if (learned != Learn::ok) {
                     if (learned == Learn::full) ++stats.capacity;
                     else if (learned == Learn::conflict) ++stats.conflict;
@@ -191,55 +214,57 @@ int main(int argc, char** argv) {
             } else {
                 ++stats.tun_rx;
                 if (!packet_info(buffer.data(), static_cast<std::size_t>(n), packet)) { ++stats.unsupported; return true; }
-                if (!routes.lookup(packet.flow, side == 0, now, env)) { ++stats.miss; return true; }
+                if (!routes.lookup(packet.flow, side == 0, now, env, &path)) { ++stats.miss; return true; }
                 codec.onward(env, side);
-                send(side, env, buffer.data(), static_cast<std::size_t>(n));
+                send(path, side, env, buffer.data(), static_cast<std::size_t>(n));
             }
             return true;
         };
         logger.start();
         log_info("tuntom-divert-adapter ready; admission starts with the first offered packet");
-        unsigned cursor = 0;
+        std::size_t cursor = 0;
         while (!stopping) {
             try {
                 if (recovery.wait_for_retry(control ? control->poll_fd() : -1)) { control_step(); continue; }
                 const auto now = Clock::now();
                 routes.maintain(now); if (active) admission.maintain(seconds(now));
-                for (unsigned side = 0; side < 2; ++side) {
-                    auto& client = *clients[side];
-                    if (!client.connected() && !client.connecting() && now >= next_connect[side]) {
+                for (std::size_t index = 0; index < clients.size(); ++index) {
+                    auto& client = *clients[index];
+                    if (!client.connected() && !client.connecting() && now >= next_connect[index]) {
                         client.start_connect(now);
                         if (client.connected()) ++stats.reconnects;
-                        else if (!client.connecting()) next_connect[side] = now + std::chrono::seconds(1);
+                        else if (!client.connecting()) next_connect[index] = now + std::chrono::seconds(1);
                     }
+                    fds[index] = {client.fd(), client.poll_events(), 0};
                 }
-                pollfd fds[] = {{input.fd(), input.poll_events(), 0}, {output.fd(), output.poll_events(), 0},
-                    {tun_in.fd(), POLLIN, 0}, {tun_out.fd(), POLLIN, 0}, {control ? control->poll_fd() : -1, POLLIN, 0}};
+                fds[clients.size()] = {tun_in.fd(), POLLIN, 0};
+                fds[clients.size() + 1] = {tun_out.fd(), POLLIN, 0};
+                fds.back() = {control ? control->poll_fd() : -1, POLLIN, 0};
                 int timeout = 1000;
-                for (auto* client : clients) timeout = client->poll_timeout_ms(now, timeout);
+                for (const auto& client : clients) timeout = client->poll_timeout_ms(now, timeout);
                 if (control) timeout = control->poll_timeout_ms(now, timeout);
-                const auto ready = ::poll(fds, 5, timeout);
+                const auto ready = ::poll(fds.data(), fds.size(), timeout);
                 if (ready < 0) { if (errno != EINTR) recovery.poll_failed(errno); continue; }
-                for (unsigned side = 0; side < 2; ++side) {
-                    auto& client = *clients[side];
+                for (std::size_t index = 0; index < clients.size(); ++index) {
+                    auto& client = *clients[index];
                     if (client.connecting()) {
-                        client.advance_connect(Clock::now(), fds[side].revents);
+                        client.advance_connect(Clock::now(), fds[index].revents);
                         if (client.connected()) ++stats.reconnects;
-                        else if (!client.connecting()) next_connect[side] = Clock::now() + std::chrono::seconds(1);
-                    } else if (fds[side].revents & (POLLHUP | POLLERR | POLLNVAL)) disconnect(side);
+                        else if (!client.connecting()) next_connect[index] = Clock::now() + std::chrono::seconds(1);
+                    } else if (fds[index].revents & (POLLHUP | POLLERR | POLLNVAL)) disconnect(index);
                 }
-                if (fds[4].revents & POLLIN) control_step();
+                if (fds.back().revents & POLLIN) control_step();
                 const auto slice = Clock::now();
                 for (unsigned round = 0; round < 64; ++round) {
                     bool progress = false;
-                    for (unsigned offset = 0; offset < 4; ++offset) progress |= handle((cursor + offset) % 4);
-                    cursor = (cursor + 1) % 4;
+                    for (std::size_t offset = 0; offset < sources; ++offset) progress |= handle((cursor + offset) % sources);
+                    cursor = (cursor + 1) % sources;
                     if (!progress || Clock::now() - slice >= std::chrono::milliseconds(1)) break;
                 }
-                for (unsigned side = 0; side < 2; ++side)
-                    if (clients[side]->connected()) account(side, clients[side]->flush());
+                for (std::size_t index = 0; index < clients.size(); ++index)
+                    if (clients[index]->connected()) account(index, clients[index]->flush());
             } catch (const std::bad_alloc&) {
-                for (auto* client : clients) stats.send_errors += client->discard_staged().drops;
+                for (const auto& client : clients) stats.send_errors += client->discard_staged().drops;
                 recovery.allocation_failed();
             }
         }

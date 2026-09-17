@@ -174,6 +174,9 @@ struct RuleStatement {
 
 struct ViaService {
     std::string name, client, server, relay;
+    bool relay_matches(const std::string& parent) const {
+        return relay.empty() ? parent.empty() : !parent.empty() && route_port_matches(relay, parent);
+    }
     bool failover = false, pass = false;
     std::vector<std::string> instances;
     std::string text() const {
@@ -427,8 +430,8 @@ inline std::shared_ptr<const SwitchRuleset> parse_switch_ruleset(const std::stri
                         (command == "client-side" ? service.client : service.server) = value;
                     } else if (command == "relay") {
                         service.relay = p.take(); rules_port(service.relay);
-                        if (service.relay == "*" || wildcard_port(service.relay) || service.relay.find("~via:") != std::string::npos)
-                            throw std::runtime_error("relay requires an exact physical port ID");
+                        if (service.relay == "*" || service.relay.find("~via:") != std::string::npos)
+                            throw std::runtime_error("relay requires a physical port ID or a prefix followed by *");
                     } else if (command == "stickiness") {
                         auto value = p.take();
                         if (value != "hash" && value != "failover") throw std::runtime_error("expected hash or failover");

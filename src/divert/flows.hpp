@@ -101,6 +101,7 @@ template<class Context> class BasicRoutes {
     struct Entry {
         FlowKey forward;
         Context client, server;
+        std::size_t path;
         Clock::time_point touched;
         std::list<FlowKey>::iterator position;
     };
@@ -128,7 +129,7 @@ public:
             entries_.erase(found); recent_.pop_front(); ++expired_;
         }
     }
-    Learn learn(const FlowKey& flow, const Context& env, bool from_client, Clock::time_point now) {
+    Learn learn(const FlowKey& flow, const Context& env, bool from_client, Clock::time_point now, std::size_t path = 0) {
         const auto key = canonical(flow);
         auto found = entries_.find(key);
         if (found != entries_.end() && now - found->second.touched >= idle_) {
@@ -140,7 +141,7 @@ public:
             if (entries_.size() >= capacity_) return Learn::full;
             recent_.push_back(key);
             try {
-                entries_.emplace(key, Entry{from_client ? flow : reverse_key(flow), env, env, now, std::prev(recent_.end())});
+                entries_.emplace(key, Entry{from_client ? flow : reverse_key(flow), env, env, path, now, std::prev(recent_.end())});
             } catch (...) { recent_.pop_back(); throw; }
             return Learn::ok;
         }
@@ -148,16 +149,19 @@ public:
         if (!same_context(entry.client, env) ||
             !(flow == (from_client ? entry.forward : reverse_key(entry.forward)))) return Learn::conflict;
         if (from_client) entry.client = env; else entry.server = env;
+        // One transport path for both directions; directional VIA envelopes stay separate.
+        entry.path = path;
         touch(entry, now);
         return Learn::ok;
     }
-    bool lookup(const FlowKey& flow, bool to_client_side, Clock::time_point now, Context& env) {
+    bool lookup(const FlowKey& flow, bool to_client_side, Clock::time_point now, Context& env, std::size_t* path = nullptr) {
         const auto found = entries_.find(canonical(flow));
         if (found == entries_.end()) return false;
         auto& entry = found->second;
         if (now - entry.touched >= idle_) return false;
         if (!(flow == (to_client_side ? reverse_key(entry.forward) : entry.forward))) return false;
         env = to_client_side ? entry.server : entry.client;
+        if (path) *path = entry.path;
         touch(entry, now);
         return true;
     }

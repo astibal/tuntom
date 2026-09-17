@@ -67,6 +67,14 @@ if(BUILD_TESTING)
             $<TARGET_FILE:tuntom-switch> $<TARGET_FILE:tomtom-switch-mp>
             $<TARGET_FILE:tuntomctl> $<TARGET_FILE:tuntom>)
         set_tests_properties(relay_integration_test PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE)
+        add_executable(divert_relay_fixture src/divert/main.cpp tests/adapter_tun_fixture.cpp)
+        target_compile_options(divert_relay_fixture PRIVATE -Wall -Wextra -Wconversion -pedantic)
+        target_link_options(divert_relay_fixture PRIVATE -Wl,--wrap=open -Wl,--wrap=ioctl)
+        add_test(NAME relay_multipath_test COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/relay_multipath_test.py
+            $<TARGET_FILE:tuntom-switch> $<TARGET_FILE:tomtom-switch-mp>
+            $<TARGET_FILE:tuntomctl> $<TARGET_FILE:tuntom> $<TARGET_FILE:divert_relay_fixture>)
+        set_tests_properties(relay_multipath_test PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE)
         add_test(NAME via_integration_test COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/via_integration_test.py
             $<TARGET_FILE:tuntom-switch> $<TARGET_FILE:tomtom-switch-mp> $<TARGET_FILE:tuntomctl>)

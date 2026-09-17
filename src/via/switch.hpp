@@ -45,7 +45,7 @@ inline bool accepted(const SwitchRuleset& rules, const std::string& name, const 
     unsigned matches = 0;
     for (const auto& item : rules.services) {
         const auto& service = item.second;
-        if (service.relay == relay && route_port_matches(r.server ? service.server : service.client, r.attachment) &&
+        if (service.relay_matches(relay) && route_port_matches(r.server ? service.server : service.client, r.attachment) &&
             (service.instances.empty() || std::find(service.instances.begin(), service.instances.end(), r.instance) != service.instances.end())) ++matches;
     }
     return matches == 1;
@@ -66,8 +66,9 @@ inline bool compatible(const SwitchRuleset& rules, const std::string& incoming, 
 
 class SwitchPath {
     struct Instance {
-        std::string id, client, server;
-        std::uint64_t hash;
+        std::string id, client, server, parent;
+        std::uint64_t hash = 0;
+        bool valid = true;
     };
     struct Service { const ViaService* config; std::vector<Instance> instances; };
     struct Chain {
@@ -102,14 +103,18 @@ public:
             for (const auto& port : ports_) {
                 Registration r;
                 const auto binding = relays.find(port);
-                if (config.relay != (binding == relays.end() ? "" : binding->second)) continue;
+                const std::string parent = binding == relays.end() ? "" : binding->second;
+                if (!config.relay_matches(parent)) continue;
                 if (!registration(port, r) || !route_port_matches(r.server ? config.server : config.client, r.attachment)) continue;
                 if (!config.instances.empty() && std::find(config.instances.begin(), config.instances.end(), r.instance) == config.instances.end()) continue;
-                auto& pair = pairs[r.instance]; pair.id = r.instance; pair.hash = ecmp_port_identity(r.instance);
-                (r.server ? pair.server : pair.client) = port;
+                auto& pair = pairs[r.instance];
+                auto& side = r.server ? pair.server : pair.client;
+                if (!pair.id.empty() && (pair.parent != parent || !side.empty())) pair.valid = false;
+                pair.id = r.instance; pair.hash = ecmp_port_identity(r.instance); pair.parent = parent;
+                side = port;
             }
             const auto append = [&](const Instance& pair) {
-                if (!pair.client.empty() && !pair.server.empty()) service.instances.push_back(pair);
+                if (pair.valid && !pair.client.empty() && !pair.server.empty()) service.instances.push_back(pair);
             };
             if (config.failover) {
                 for (const auto& id : config.instances) { const auto p = pairs.find(id); if (p != pairs.end()) append(p->second); }

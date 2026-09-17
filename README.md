@@ -44,7 +44,7 @@ Contributors remain responsible for the changes they submit.
 | MTU | Independent inner/outer MTUs, automatic PMTUD, balanced fragmentation |
 | Deployment | Local and remote compilation, staged restart, start/stop helper |
 | Networking | IPv4 policy routing, connection marks, MSS clamping, optional SNAT, lifecycle hooks |
-| Remote VIA adapters | [IPC relay over tuntom](docs/RELAY.md), one hub IPC connection, no remote switch |
+| Remote VIA adapters | [IPC relay over tuntom](docs/RELAY.md), optional multipath, one hub IPC connection per tunnel, no remote switch |
 | Observability | Text statistics, signal-controlled snapshots, logs, Wireshark dissector |
 | Runtime | No external crypto libraries; drops privileges to `tuntom:tuntom` |
 | Switching | Optional [label switching](README_SWITCHING.md) to connect tunnel links and exit paths |
@@ -71,8 +71,7 @@ socket permissions and lifecycle hooks.
 
 The optional [Fabric Observer](fabric/README.md) discovers running tuntom
 processes from `/proc` and shows their public startup parameters, local
-connections, health, counter deltas, MP ports/workers, logs and switch rules. It needs no inventory
-or database; run `python3 -B fabric/server.py` and open the printed URL. It listens on
+connections, health, counter deltas, MP ports/workers, logs and switch rules. It maintains no inventory or desired-state configuration; telemetry history uses a disposable SQLite cache. Run `python3 -B fabric/server.py` and open the printed URL. It listens on
 all IPv4 interfaces by default; use `--host 127.0.0.1` for local-only access.
 See its README for the separate privileged collector, SSH forwarding and optional runtime rule edits.
 

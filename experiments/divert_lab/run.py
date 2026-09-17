@@ -68,7 +68,7 @@ def server():
             threading.Thread(target=echo, args=(conn,), daemon=True).start()
 
 
-def client(switch_pid, activate=None):
+def client(switch_pid, activate=None, extra_flows=0):
     results = []
     def connect(port):
         sock = socket.socket()
@@ -106,6 +106,9 @@ def client(switch_pid, activate=None):
         exchange(old, "existing_after_new_flow", 32768)
         with connect(40002) as second:
             exchange(second, "second_diverted", 131072)
+        for port in range(40003, 40003 + extra_flows):
+            with connect(port) as extra:
+                exchange(extra, "multipath_diverted", 32768)
     print(json.dumps(results), flush=True)
 
 
