@@ -8,7 +8,6 @@ import math
 import os
 import socket
 import sqlite3
-import subprocess
 import threading
 import time
 
@@ -54,18 +53,7 @@ def options(args):
     return dict(key=key, nodes=nodes, port=args.syspiper_port, interval=args.syspiper_interval)
 
 
-def interface_addresses():
-    # Read only the local network namespace. No route/neighbor enumeration or scanning.
-    try:
-        result = subprocess.run(['ip', '-j', 'address', 'show'], capture_output=True, timeout=2, check=True)
-        if len(result.stdout) > MAX_BODY:
-            return [], 'interface_discovery_failed'
-        return json.loads(result.stdout), None
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return [], 'interface_discovery_failed'
-
-
-def candidates(endpoints, addresses, explicit, namespace):
+def candidates(endpoints, explicit, namespace, samples=None):
     found = {}
     def add(address, source, endpoint=None):
         ip = ip_literal(address)
@@ -79,21 +67,21 @@ def candidates(endpoints, addresses, explicit, namespace):
     add('127.0.0.1', 'local_host')
     for ip in explicit:
         add(ip, 'manual')
-    by_interface = {a.get('ifname'): a for a in addresses if isinstance(a, dict)}
     for e in endpoints:
         # Only addresses in the collector's namespace can be reached as discovered.
         if e.net_namespace and e.net_namespace != namespace:
             continue
-        if e.kind == 'tunnel' and e.role == 'client':
-            add(e.peer, 'tunnel_peer', e)
-        if e.kind not in {'tunnel', 'adapter', 'divert'}:
-            continue
-        for address in by_interface.get(e.interface, {}).get('addr_info', []):
-            if not isinstance(address, dict):
-                continue
-            add(address.get('local', ''), 'interface_local', e)
-            # iproute2 renders an explicit point-to-point peer as IP[/prefix].
-            add(str(address.get('peer', '')).split('/')[0], 'interface_peer', e)
+        if e.kind == 'tunnel':
+            sample = (samples or {}).get(e.id, {})
+            metrics = sample.get('metrics', {})
+            if (sample.get('status') == 'reachable' and metrics.get('session_ready') == '1'
+                    and metrics.get('info_msg_peer_received') == '1'):
+                access = metrics.get('peer_info_access', '')
+                if isinstance(access, str) and len(access) <= 4096:
+                    for value in access.split(',')[:256]:
+                        ip = ip_literal(value.strip())
+                        if ip and ipaddress.ip_address(ip).version == 4 and not ipaddress.ip_address(ip).is_loopback:
+                            add(ip, 'peer_access', e)
     return found
 
 
@@ -224,25 +212,26 @@ class Syspiper:
         self.stop = threading.Event()
         self.wake = threading.Event()
         self.endpoints = []
+        self.endpoint_samples = {}
         self.thread = None
         self.targets, self.samples, self.baselines, self.unsupported = {}, {}, {}, {}
         self.skipped = 0
         self.discovery_error = None
         self.history_error = False
 
-    def update(self, endpoints):
+    def update(self, endpoints, samples=None):
         if not self.key:
             return
         with self.lock:
             self.endpoints = list(endpoints)
+            self.endpoint_samples = dict(samples or {})
 
     def discover(self):
-        addresses, error = interface_addresses()
         with self.lock:
-            found = candidates(self.endpoints, addresses, self.explicit, os.readlink('/proc/self/ns/net'))
+            found = candidates(self.endpoints, self.explicit, os.readlink('/proc/self/ns/net'), self.endpoint_samples)
             self.targets = dict(list(found.items())[:MAX_NODES])
             self.skipped = max(0, len(found)-MAX_NODES)
-            self.discovery_error = error
+            self.discovery_error = None
 
     def start(self):
         if self.key:

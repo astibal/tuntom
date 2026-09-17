@@ -29,7 +29,7 @@ from discovery import discover, stat_fields
 from logs import read_logs
 from history import History, default_path
 from telemetry import changes, health, switch_detail
-from syspiper import Syspiper, add_arguments as syspiper_arguments, options as syspiper_options
+from syspiper import Syspiper
 
 STATIC = Path(__file__).parent / "static"
 LOG = logging.getLogger("fabric")
@@ -179,8 +179,10 @@ class Fabric:
                         self.endpoints = {e.id: e for e in endpoints}
                         self.baselines = {key: value for key, value in self.baselines.items() if key in self.endpoints}
                         self.discovery_info = {**info, "status": "ok", "scanned_at": now()}
-                    self.syspiper.update(endpoints)
                     list(pool.map(self._sample, endpoints))
+                    with self.mutex:
+                        samples = dict(self.samples)
+                    self.syspiper.update(endpoints, samples)
                     if self.history_store:
                         try:
                             self.history_store.prune()
@@ -454,7 +456,6 @@ def main():
     parser.add_argument("--golden-token", metavar="TOKEN", help="fixed lab access token; overrides TUNTOM_FABRIC_TOKEN (short tokens produce a warning)")
     parser.add_argument("--history-db", type=Path, default=default_path(), help="SQLite telemetry cache for local collection")
     parser.add_argument("--no-history", action="store_true", help="disable local telemetry cache")
-    syspiper_arguments(parser)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     if not 1 <= args.interval <= 3600 or not 0 <= args.port <= 65535:
@@ -470,13 +471,11 @@ def main():
         if os.geteuid() == 0:
             raise ValueError("run the HTTP server as a regular user; use collector.py for privileged reads")
         if args.collector:
-            if args.syspiper_key is not None or args.syspiper_node or args.syspiper_port != 8181 or args.syspiper_interval != 30:
-                raise ValueError("configure Syspiper on collector.py when using --collector")
             from collector import RemoteFabric
             fabric = RemoteFabric(args.collector, allow_write=args.allow_write)
         else:
             fabric = Fabric(allow_write=args.allow_write, interval=args.interval,
-                            history_path=None if args.no_history else args.history_db, syspiper=syspiper_options(args))
+                            history_path=None if args.no_history else args.history_db)
         write_enabled = fabric.snapshot()["allow_write"]
         server = Server((str(args.host), args.port), fabric, token)
     except (ValueError, TypeError, OSError, sqlite3.Error, APIError) as error:

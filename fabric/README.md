@@ -135,8 +135,7 @@ Plné čítače jsou uložené v cache, tento endpoint vrací pouze data existuj
 
 ## Systémové metriky uzlů přes Syspiper
 
-Volitelný sběr zapneš **na backendu, který skutečně sbírá data**. Při odděleném
-sběru tedy na collectoru, nikoli HTTP webu:
+Volitelný sběr zapneš pouze na **collectoru**; HTTP web Syspiper volby nemá:
 
 ```bash
 sudo python3 -B fabric/collector.py \
@@ -147,20 +146,30 @@ sudo python3 -B fabric/collector.py \
 Alternativa k `--syspiper-key` je `TUNTOM_SYSPIPER_KEY` v prostředí **collectoru**
 (u sudo ji případně nastav v prostředí služby). Web ani prohlížeč klíč nedostanou;
 nevstupuje do snapshotu, historie ani diagnostického exportu. Hodnota CLI volby je
-viditelná v seznamu procesů. Bez klíče je Syspiper sběr vypnutý. Interní collector
-v `server.py` podporuje stejné volby, pokud nepoužíváš `--collector`.
+viditelná v seznamu procesů. Bez klíče je Syspiper sběr vypnutý. Web spusť s `--collector`;
+samostatný `server.py` Syspiper nesbírá.
 
 Cíle jsou pouze konkrétní známé IP, nikoli skenování sítě:
 
 1. **Vždy `127.0.0.1`**, i bez běžících procesů; v namespace collectoru.
 2. Ručně doplněné IP přes opakovatelné `--syspiper-node IP`.
-3. IP protistrany z parametru běžícího Tuntom klienta.
-4. Lokální IP a explicitní point-to-point peer adresy rozhraní používaných
-   tunely/adaptéry/divert procesy. Čte se `ip -j address show` (iproute2), ale berou
-   se jen rozhraní těchto procesů, nikoli všechna rozhraní hostu.
+3. IPv4 hinty z `peer_info_access` (V5 INFO, patch `aaa9b4c`) z aktuálních
+   statistik tunelu: `session_ready=1`, `info_msg_peer_received=1`. Platí pro
+   klienta i server. Vzdálený Tuntom musí mít `--info-msg-enable`; oznamuje
+   explicitní ne-127/8 IPv4 adresy svého loopback rozhraní po handshaku/rekey.
+   Fabric odmítá loopback, neplatné a ne-unicast cíle. Vlastní INFO pole nejsou
+   zdrojem pollingových cílů. Hint není zárukou dosažitelnosti ani služby.
 
-DNS jména v parametrech klienta (např. `psx`) se v této verzi nepřekládají;
-známou IP doplň přes `--syspiper-node`. Nepřidávají se adresy ze subnetů, rout,
+Bez INFO se žádná vzdálená adresa neodhaduje. Rozhraní hostu ani tunelů se
+pro výběr cílů neprocházejí. Jedna IP se polluje jen jednou, i pokud ji oznámí
+více tunelů nebo se zároveň zadá ručně.
+
+Vnější adresa protistrany z parametrů tunelu se už automaticky nepolluje
+(a DNS se nepřekládá). Pro starší peer bez INFO použij `--syspiper-node`.
+Prázdné INFO nebo ztráta aktuálních statistik/session odstraní hint ze seznamu
+cílů při dalším discovery Syspiperu (výchozí interval 30 s); právě probíhající
+poll může doběhnout. Nevytváří se routy ani proxy přes tunel; HTTP polling
+používá existující síťovou dosažitelnost a backendový Syspiper klíč. Nepřidávají se adresy ze subnetů, rout,
 ARP/NDP, konfigurací Syspiper proxy ani výsledků vzdáleného `/interfaces`.
 Při známém odlišném network namespace se proces pro automatické cíle vynechá;
 pokud `/proc` neumožní namespace přečíst, IP se zkouší z namespace collectoru.

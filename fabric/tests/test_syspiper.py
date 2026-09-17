@@ -21,20 +21,40 @@ from server import Fabric
 class DiscoveryTests(unittest.TestCase):
     def test_only_known_ips_deduplicated_localhost_and_namespace(self):
         client=replace(endpoint('tunnel'),role='client',peer='192.168.55.143',interface='ut42',net_namespace='here')
-        addresses=[{'ifname':'ut42','addr_info':[{'local':'100.100.1.1','peer':'100.100.1.2/32'}]},
-                   {'ifname':'eth0','addr_info':[{'local':'192.168.99.1','peer':'192.168.99.2/24'}]}]
-        found=candidates([client],addresses,['192.168.55.143'],'here')
-        self.assertEqual(list(found),['127.0.0.1','192.168.55.143','100.100.1.1','100.100.1.2'])
-        self.assertEqual(found['192.168.55.143']['sources'],['manual','tunnel_peer'])
-        self.assertEqual(found['192.168.55.143']['processes'],[client.id])
-        self.assertEqual(list(candidates([replace(client,net_namespace='other')],addresses,[],'here')),['127.0.0.1'])
-        self.assertEqual(list(candidates([replace(client,peer='example.com',interface='')],[],[],'here')),['127.0.0.1'])
+        found=candidates([client],['192.168.55.143'],'here')
+        self.assertEqual(list(found),['127.0.0.1','192.168.55.143'])
+        self.assertEqual(found['192.168.55.143']['sources'],['manual'])
+        self.assertEqual(list(candidates([client],[],'here')),['127.0.0.1'])
         for value in ('0.0.0.0','::','224.0.0.1','fe80::1','192.168.0.0/24','host','http://1.2.3.4','1.2.3.4:8181'):
             self.assertIsNone(ip_literal(value))
 
+    def test_peer_access_replaces_outer_peer_and_requires_current_stats(self):
+        peer=replace(endpoint('tunnel'),role='server',peer='192.0.2.99',interface='',net_namespace='here')
+        metrics={'session_ready':'1','info_msg_peer_received':'1',
+                 'peer_info_access':'10.1.1.1,10.1.1.1,127.0.0.2,::1,host,0.0.0.0,224.0.0.1,10.1.1.2',
+                 'peer_info_custom':'192.0.2.88'}
+        def discover(m=metrics,status='reachable'):
+            return candidates([peer],[],'here',{peer.id:{'status':status,'metrics':m}})
+        found=discover()
+        self.assertEqual(list(found),['127.0.0.1','10.1.1.1','10.1.1.2'])
+        self.assertEqual(found['10.1.1.1']['sources'],['peer_access'])
+        self.assertEqual(found['10.1.1.1']['processes'],[peer.id])
+        for m in ({}, {**metrics,'peer_info_access':''}, {**metrics,'session_ready':'0'},
+                  {**metrics,'info_msg_peer_received':'0'}):
+            self.assertEqual(list(discover(m)),['127.0.0.1'])
+        self.assertEqual(list(discover(status='unavailable')),['127.0.0.1'])
+        other=replace(peer,id='second-peer')
+        samples={e.id:{'status':'reachable','metrics':metrics} for e in (peer,other)}
+        found=candidates([peer,other],['10.1.1.1'],'here',samples)
+        self.assertEqual(list(found),['127.0.0.1','10.1.1.1','10.1.1.2'])
+        self.assertEqual(found['10.1.1.1']['sources'],['manual','peer_access'])
+        self.assertEqual(found['10.1.1.1']['processes'],[peer.id,other.id])
+        self.assertEqual(list(candidates([replace(peer,net_namespace='other')],[],'here',samples)),['127.0.0.1'])
+        self.assertEqual(list(candidates([replace(peer,role='client')],[],'here')),['127.0.0.1'])
+
     def test_disabled_and_no_secret_in_snapshot(self):
         f=Fabric(syspiper={'key':'test-secret','nodes':['192.168.55.143']})
-        with patch('syspiper.interface_addresses',return_value=([],None)):
+        with patch('syspiper.os.readlink',return_value='here'):
             f.syspiper.discover()
         snapshot=f.snapshot()
         self.assertNotIn('test-secret',json.dumps(snapshot))
@@ -79,7 +99,7 @@ class PollTests(unittest.TestCase):
             raise ReadError('unreachable')
         f=Fabric(interval=1, discover_fn=discover, syspiper={'key':'secret','fetch_fn':read})
         try:
-            with patch('syspiper.interface_addresses',return_value=([],None)):
+            with patch('syspiper.os.readlink',return_value='here'):
                 f.start()
                 self.assertTrue(entered.wait(2))
                 self.assertTrue(scanned_twice.wait(2))

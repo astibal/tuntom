@@ -145,6 +145,7 @@ const messages = {
   syspiper_pending:["Čekám na vzorek","Waiting for sample","En attente d’un échantillon"],
   syspiper_local_host:["Lokální host","Local host","Hôte local"],
   syspiper_manual:["Zadaná IP","Configured IP","IP configurée"],
+  syspiper_peer_access:["Peer access · INFO tunelu","Peer access · tunnel INFO","Peer access · INFO du tunnel"],
   syspiper_tunnel_peer:["Protistrana tunelu","Tunnel peer","Pair du tunnel"],
   syspiper_interface_local:["Adresa rozhraní","Interface address","Adresse d’interface"],
   syspiper_interface_peer:["Protistrana rozhraní","Point-to-point peer","Pair point à point"],
@@ -676,7 +677,7 @@ function renderDetail() {
   if (!e) { $("detail").innerHTML = `<p class="muted">${esc(t("appearAfterStart"))}</p>`; drawChart(); return; }
   const values = [["PID / UID", `${e.pid} / ${e.uid}`], [t("binary"), e.executable], [t("control"), e.control || t("unset")],
     ["Switch", e.switch_socket || "—"], [t("portRole"), [e.port_id,e.role].filter(Boolean).join(" / ") || "—"],
-    [t("peer"), e.peer || "—"], [t("memoryThreads"), `${(e.rss_bytes / 1048576).toLocaleString(locale(),{minimumFractionDigits:1,maximumFractionDigits:1})} MiB / ${e.threads}`],
+    [t("peer"), e.peer || "—"], ["Peer access (INFO)", e.metrics?.peer_info_access || "—"], [t("memoryThreads"), `${(e.rss_bytes / 1048576).toLocaleString(locale(),{minimumFractionDigits:1,maximumFractionDigits:1})} MiB / ${e.threads}`],
     [t("cgroup"), e.unit || "—"], [t("metricAge"), sampleAge(e) === null ? "—" : `${sampleAge(e)} s`]];
   const notes = [...e.notes, e.error].filter(Boolean).map(diagnostic);
   const wasOpen = $("detail").querySelector("details")?.open;
