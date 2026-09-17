@@ -107,3 +107,76 @@ test("chart renders before discovery has selected any endpoint",()=>{
   assert.ok(svg.innerHTML.includes('class="grid"'));
   assert.ok(!/NaN|Infinity/.test(svg.innerHTML));
 });
+
+test("background polling continues and returning to the page refreshes immediately",()=>{
+  const listeners={},timers=[];
+  let refreshes=0,draws=0;
+  const document={hidden:true,addEventListener:(name,fn)=>listeners[name]=fn};
+  runInNewContext(source.slice(source.indexOf("function resumeVisiblePage()")),{
+    document,window:{addEventListener:(name,fn)=>listeners[name]=fn},
+    setInterval:fn=>timers.push(fn),refresh:()=>refreshes++,drawChart:()=>draws++,renderWarnings(){}
+  });
+  timers[0]();
+  assert.equal(refreshes,1); // Hidden pages must not deliberately discard observations.
+  listeners.visibilitychange();
+  assert.equal(draws,0);
+  document.hidden=false;
+  listeners.visibilitychange();
+  assert.equal(refreshes,2);
+  assert.equal(draws,1);
+  listeners.pageshow();
+  assert.equal(refreshes,3);
+});
+
+test("returning to overview redraws after revealing the chart, even while paused",()=>{
+  const views=Object.fromEntries(["overview","metrics","rules","switch","diagnostics"].map(name=>
+    ["view-"+name,{hidden:name!=="metrics",scrollIntoView(){}}]));
+  let draws=0;
+  const show=runInNewContext(source.slice(source.indexOf("function showView("),source.indexOf("function selectProcess("))+";showView",{
+    state:{view:"metrics",paused:true},document:{querySelectorAll:()=>[]},$:id=>views[id],
+    drawChart(){assert.equal(views["view-overview"].hidden,false);draws++;}
+  });
+  show("overview");
+  assert.equal(draws,1);
+  assert.equal(views["view-metrics"].hidden,true);
+});
+
+test("persisted history merges with live points without duplicates or losing worker incidents",()=>{
+  const history=new ThroughputHistory();
+  history.add(point(10000,1),10000);
+  history.merge([point(5000,0),{...point(10000,2),cpu_0:50,issues:[{code:'telemetry_missing'}]}],10000);
+  history.merge([point(5000,0)],10000);
+  assert.equal(history.samples.length,2);
+  assert.equal(history.samples[0].time,5000);
+  assert.equal(history.samples[1].rx,2);
+  assert.equal(history.samples[1].cpu_0,50);
+  assert.equal(history.samples[1].issues[0].code,'telemetry_missing');
+  history.merge([point(10000+day+1)],10000+day+1);
+  assert.equal(history.samples.length,1);
+});
+
+test("history loader fills all pages, keeps live samples and retries without API disconnect",async()=>{
+  const now=Date.now(),history=new ThroughputHistory(),calls=[];
+  history.add(point(now),now);
+  const state={paused:false,data:{history:{enabled:true}},historyLoads:new Map(),history:new Map([['id',history]]),chartNow:now};
+  let fail=false,draws=0;
+  const load=runInNewContext(source.slice(source.indexOf('async function loadHistory('),source.indexOf('const chartViews ='))+';loadHistory',{
+    state,ThroughputHistory,drawChart:()=>draws++,api:async url=>{
+      calls.push(url);
+      if(fail) throw Error('offline');
+      return calls.length===1 ? {samples:[point(now-10000)],until:now,next_after:now-10000} :
+        {samples:[point(now-5000)],until:now,next_after:null};
+    }
+  });
+  await load('id');
+  assert.equal(calls.length,2);
+  assert.ok(calls[1].includes('until='+now));
+  assert.equal(history.samples.length,3);
+  assert.equal(history.samples.at(-1).time,now);
+  fail=true;state.historyLoads.get('id').retry=0;
+  await load('id');
+  assert.equal(state.historyLoads.get('id').error,true);
+  assert.equal(state.failure,undefined);
+  assert.equal(history.samples.length,3);
+  assert.equal(draws,2);
+});

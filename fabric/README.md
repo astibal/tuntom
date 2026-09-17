@@ -1,8 +1,8 @@
 # Tuntom Fabric Observer
 
 Dočasný **stateless dashboard nad právě běžícími procesy**. Nahrazuje opakované
-`ps`, čtení parametrů a `tuntomctl show stats`. Nemá inventář, databázi ani
-konfiguraci požadovaného stavu. Procesy znovu objevuje při každém scanu.
+`ps`, čtení parametrů a `tuntomctl show stats`. Nemá inventář ani
+konfiguraci požadovaného stavu. Telemetrii uchovává v postradatelné SQLite cache. Procesy znovu objevuje při každém scanu.
 
 ```text
 prohlížeč → HTTP API (běžný uživatel) → collector → /proc + control sockety
@@ -36,8 +36,20 @@ python3 -B fabric/server.py --host 0.0.0.0    # všechna IPv4 rozhraní (výchoz
 python3 -B fabric/server.py --allow-write   # navíc ruční načítání pravidel
 ```
 
-Volitelný `TUNTOM_FABRIC_TOKEN` nastaví stabilní token (alespoň 24 znaků,
-písmena/číslice/`_.~-`). Bez něj se pro každé spuštění vygeneruje nový.
+Pro pohodlné přihlašování v labu můžeš webům nastavit jeden stálý token:
+
+```bash
+python3 -B fabric/server.py --golden-token 'muj-spolecny-lab-token-2026'
+# Stejná volba funguje i s --collector /run/tuntom-fabric-1000.sock.
+```
+
+Pořadí je **`--golden-token TOKEN` → `TUNTOM_FABRIC_TOKEN` → náhodný token**.
+Vlastní token musí mít alespoň 24 znaků, písmena/číslice/`_.~-`. Zadává se
+ve stávajícím přihlašovacím poli nebo odkazem z terminálu a platí i po restartu,
+pokud web spustíš se stejnou hodnotou. Volba patří pouze HTTP webu, collector ji
+nepotřebuje. Jde o pevný bearer token, nikoli další účet nebo obcházení autorizace.
+Hodnota CLI argumentu je vidět v seznamu procesů; mimo lab preferuj dosavadní
+proměnnou prostředí. PAM přihlášení tato volba nezavádí.
 
 Pro vzdálený stroj spusť observer přímo tam a přenes port přes SSH; oba porty
 ponech stejné kvůli kontrole HTTP Host:
@@ -81,7 +93,43 @@ ruční load pravidel, zapni `--allow-write` **u collectoru i webu**; čtení a 
 fungují i bez něj. Interval sběru určuje `--interval` na collectoru.
 
 Oddělení lze použít i bez roota s adresářem a socketem vlastněným tvým UID.
-Collector drží jen aktuální procesy a předchozí vzorek v paměti, bez inventáře.
+Collector drží aktuální procesy a předchozí vzorek v paměti, bez inventáře.
+Historii telemetrie ukládá do cache popsané níže.
+
+## Historie telemetrie (SQLite cache)
+
+Výchozí ukládání je na collectoru, každých `--interval` sekund (výchozí 5 s):
+
+- root collector: `/var/cache/tuntom-fabric/history.sqlite`;
+- běžný uživatel: `$XDG_CACHE_HOME/tuntom-fabric/history.sqlite`, jinak
+  `~/.cache/tuntom-fabric/history.sqlite`;
+- jiná cesta: `--history-db /cesta/k/privatnimu/adresari/history.sqlite`;
+- vypnutí: `--no-history`.
+
+Při odděleném sběru nastavuj tyto volby **na collector.py**, ne na webu.
+U samostatného `server.py` platí pro jeho interní collector. Rodič databáze
+musí patřit účtu collectoru a mít práva 0700, soubor 0600. Adresář se vytvoří
+automaticky. Pro systemd lze použít `CacheDirectory=tuntom-fabric` a
+`CacheDirectoryMode=0700` s cestou `--history-db /var/cache/tuntom-fabric/history.sqlite`.
+
+Retence je **24 h**, staré záznamy se průběžně mažou a SQLite jejich stránky
+znovu používá. Ukládají se původní metriky a přírůstky (uint64 jako přesné řetězce),
+RX/TX, CPU workerů a příčiny varování. Neukládají se argumenty procesů,
+konfigurace, pravidla, logy ani přístupové tokeny. Identita obsahuje boot ID,
+PID a start procesu; po restartu procesu se graf nepřipojí ke staré instanci.
+UI zůstává přehledem právě běžících procesů, není archivním prohlížečem.
+
+Cache přežije F5 a restart collectoru/webu/stroje. Při úklidu ji lze smazat
+**po zastavení collectoru** (včetně případných souborů `-wal`/`-shm`); při dalším
+startu vznikne prázdná. Zpětně nelze doplnit dobu, kdy collector neběžel.
+Chyba zápisu za běhu nezastaví živý sběr; API a graf zobrazí nedostupnost historie.
+Poškozená/nepřístupná databáze při startu vyvolá chybu, nemaže se potichu.
+
+`GET /api/v1/endpoints/{id}/history?after=0&until=<ms>` vyžaduje stejný token
+jako snapshot. Vrací `samples` (body grafů), `until` a `next_after`;
+čas je v celočíselných Unix milisekundách. Další stránka používá `next_after`
+a stejné `until`, konec značí `null`. Stránka má nejvýše 250 vzorků.
+Plné čítače jsou uložené v cache, tento endpoint vrací pouze data existujících grafů.
 
 ## Co už umí
 
@@ -130,16 +178,17 @@ Collector drží jen aktuální procesy a předchozí vzorek v paměti, bez inve
   lokální vazby, logy a dostupná aktivní pravidla. Report má v UI náhled.
   Logy maskují známá tajná pole a bloky privátních klíčů; jde o best effort,
   vlastní formáty logů mohou obsahovat další citlivé údaje. Před sdílením ho zkontroluj.
-- Stáhnout aktuální snapshot jako JSON. Graf drží až **24 hodin** pouze v paměti
-  stránky, s rozsahy **5m (výchozí), 1h, 12h, 24h**. Přepnutí rozsahu historii
-  nemaže; delší pohled zhušťuje vykreslení se zachováním minim, špiček a mezer.
-  Sběr probíhá při obnovování viditelné stránky; pauza/skrytá karta zanechá mezeru,
-  F5 historii vymaže. Historie ukončeného procesu se zahodí.
+- Stáhnout aktuální snapshot jako JSON. Grafy načítají až **24 hodin** z cache
+  collectoru, s rozsahy **5m (výchozí), 1h, 12h, 24h**. F5 historii zachová.
+  Přepnutí rozsahu historii nemaže; delší pohled zhušťuje vykreslení se zachováním
+  minim, špiček a mezer. Collector sbírá i bez otevřené stránky; pauza v UI
+  pozastaví jen její obnovování. Po návratu se chybějící vzorky doplní přes API.
+  S vypnutou cache (`--no-history`) zůstává pouze historie v paměti stránky.
 - Kliknutím na graf RX/TX nebo CPU ukazatel workeru otevřít velký detail.
   Pod kurzorem ukazuje čas a přesnou hodnotu původního vzorku; kliknutím bod
   připneš i přes refresh. Šipky procházejí vzorky, Home/End první/poslední,
   Escape zavírá detail. Rozsah 5m/1h/12h/24h je společný s malým grafem.
-  Také historie CPU se sbírá jen v paměti stránky.
+  Také historie CPU workerů a příčiny červených bodů se obnoví z cache.
 - Červené body pod křivkou zachovávají problémy konkrétního procesu v okamžiku
   sběru, včetně původního důvodu a délky intervalu chybových přírůstků.
   Zůstávají s grafem až 24 h, nezávisle na zavření nebo expiraci balónků.
@@ -214,6 +263,7 @@ discovery.py  → pozorovaný proces + veřejné parametry + stabilní identita
 control.py    → omezené operace existujícího control protokolu
 telemetry.py  → zdraví, přírůstky, porty, workery
 logs.py       → omezené čtení logů a maskování známých tajných polí
+history.py    → SQLite cache telemetrie, retence a stránkované čtení
 collector.py  → samostatný sběr, Unix IPC a kontrola UID
 server.py     → snapshot, diagnostika, ruční akce, HTTP bez roota
 static/       → pohledy nad pozorovaným stavem
@@ -222,7 +272,7 @@ static/       → pohledy nad pozorovaným stavem
 Další kroky mohou přidat síťová rozhraní/routes, skutečné zaplnění front
 (po rozšíření metrik daemonu) nebo další ruční runtime akce. Pro více strojů lze přidat další zdroj
 discovery; konkrétní akce vždy patří k identitě nalezeného procesu. Není nutné
-kvůli tomu zavádět databázi, provisioning ani trvalý inventář.
+kvůli tomu zavádět provisioning ani trvalý inventář. SQLite slouží pouze jako cache telemetrie.
 
 ## Ověření
 

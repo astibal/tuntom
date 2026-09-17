@@ -65,7 +65,10 @@ const messages = {
   chartLabel:["Historie RX a TX vybraného procesu","RX and TX history for the selected process","Historique RX et TX du processus sélectionné"],
   chartCollecting:["Historie se sbírá po dobu otevření stránky.","History is collected while this page is open.","L’historique est collecté tant que cette page est ouverte."],
   chartUnavailable:["Tento proces zatím neposkytuje metriky propustnosti.","This process does not yet provide throughput metrics.","Ce processus ne fournit pas encore de métriques de débit."],
-  chartHistory:["Až 24 h v paměti stránky · F5 historii smaže. Pauza a skrytá karta přerušují sběr; mezery značí chybějící data.","Up to 24 h in page memory · reloading clears history. Pausing or hiding the tab interrupts collection; gaps mean missing data.","Jusqu’à 24 h en mémoire · recharger efface l’historique. La pause ou un onglet masqué interrompt la collecte ; les lacunes indiquent des données manquantes."],
+  chartHistory:["Historie v SQLite cache collectoru · až 24 h · F5 ji zachová. Mezery značí chybějící vzorky.","Collector SQLite cache · up to 24 h · retained across reloads. Gaps mean missing samples.","Cache SQLite du collecteur · jusqu’à 24 h · conservé après rechargement. Les lacunes indiquent des échantillons manquants."],
+  historyMemory:["Historie pouze v paměti stránky · F5 ji smaže. Collector nemá zapnutou historii.","Page memory only · reload clears history. Collector history is disabled.","Mémoire de la page uniquement · recharger efface l’historique. Historique du collecteur désactivé."],
+  historyLoading:["Načítám uloženou historii…","Loading saved history…","Chargement de l’historique…"],
+  historyFailed:["Uložená historie není dostupná; zobrazuji načtené vzorky.","Saved history unavailable; showing loaded samples.","Historique enregistré indisponible ; affichage des échantillons chargés."],
   chartRange:["Rozsah grafu","Chart range","Période du graphique"],
   chartExpand:["Zvětšit graf","Expand chart","Agrandir le graphique"],
   chartClose:["Zavřít graf","Close chart","Fermer le graphique"],
@@ -100,7 +103,7 @@ const messages = {
   checkRules:["Ověřit a zobrazit diff","Validate and show diff","Valider et afficher le diff"],
   loadRules:["Načíst do switche","Load into switch","Charger dans le switch"],
   footerSource:["Průzkum procesů · /proc + control sockety","Runtime discovery · /proc + control sockets","Détection des processus · /proc + sockets de contrôle"],
-  footerState:["Žádná databáze · žádné automatické změny","No database · no automatic changes","Sans base de données · sans modifications automatiques"],
+  footerState:["Historie telemetrie · žádné automatické změny","Telemetry history · no automatic changes","Historique de télémétrie · sans modifications automatiques"],
   stale:["Starý vzorek","Stale sample","Échantillon ancien"],
   waitingSession:["Čeká na session","Waiting for session","En attente de session"],
   metricsReady:["Metriky dostupné","Metrics available","Métriques disponibles"],
@@ -248,7 +251,7 @@ function diagnostic(value) {
 }
 const messageText = message => message?.key ? t(message.key,message.params) : diagnostic(message || "");
 
-// Keep raw five-second averages in page memory; changing the view never discards them.
+// Merge collector history with live five-second averages; changing views preserves it.
 class ThroughputHistory {
   static retention = 24 * 60 * 60 * 1000;
   constructor() { this.samples = []; }
@@ -263,6 +266,13 @@ class ThroughputHistory {
     if (!Number.isFinite(sample.time) || sample.time < now - ThroughputHistory.retention ||
         sample.time <= (this.samples.at(-1)?.time ?? -Infinity)) return;
     this.samples.push(sample);
+  }
+  merge(samples, now) {
+    const points = new Map(this.samples.map(p=>[p.time,p]));
+    // Persisted samples are authoritative and include collector-side incidents.
+    for (const p of samples) if (Number.isFinite(p.time)) points.set(p.time,p);
+    this.samples=[...points.values()].sort((a,b)=>a.time-b.time);
+    this.prune(now);
   }
   window(range, now) {
     this.prune(now);
@@ -355,7 +365,7 @@ class WarningHistory {
 
 const $ = id => document.getElementById(id);
 const state = {data: null, selected: null, view: "overview", paused: false, busy: false,
-  history: new Map(), chartRange: 300000, chartNow: Date.now(), drafts: new Map(), logs: new Map(), reports: new Map(), diagnosticBusy: false,
+  history: new Map(), historyLoads: new Map(), chartRange: 300000, chartNow: Date.now(), drafts: new Map(), logs: new Map(), reports: new Map(), diagnosticBusy: false,
   warnings: new WarningHistory(), warningsLayout: "", chartDialog: null,
   token: "", failure: "", loginError: "", ruleBusy: false};
 const types = {tunnel:"typeTunnel", switch:"typeSwitch", adapter:"typeAdapter", divert:"typeDivert", process:"typeProcess"};
@@ -528,8 +538,8 @@ async function refresh(force = false) {
     if (!data.endpoints.some(e => e.id === state.selected)) state.selected = data.endpoints[0]?.id || null;
     const present = new Set(data.endpoints.map(e => e.id));
     for (const id of state.history.keys()) if (!present.has(id)) state.history.delete(id);
-    for (const map of [state.logs,state.reports]) for (const id of map.keys()) if (!present.has(id)) map.delete(id);
-    state.chartNow = Date.now();
+    for (const map of [state.logs,state.reports,state.historyLoads]) for (const id of map.keys()) if (!present.has(id)) map.delete(id);
+    state.chartNow = Date.parse(data.generated_at) || Date.now();
     for (const e of data.endpoints) {
       const history = state.history.get(e.id) || new ThroughputHistory();
       const issues = warningChecks(e);
@@ -540,6 +550,8 @@ async function refresh(force = false) {
       state.history.set(e.id, history);
     }
     render();
+    loadHistory(state.selected);
+    if (state.chartDialog) loadHistory(state.chartDialog.endpointId);
   } catch (error) {
     state.failure = error.message;
     state.loginError = error.message;
@@ -596,6 +608,37 @@ function renderDetail() {
   const wasOpen = $("detail").querySelector("details")?.open;
   $("detail").innerHTML = `<dl>${values.map(([key,value])=>`<dt>${esc(key)}</dt><dd>${esc(value)}</dd>`).join("")}</dl>${notes.length ? `<div class="notice">${notes.map(esc).join("<br>")}</div>` : ""}<details ${wasOpen ? "open" : ""}><summary>${esc(t("publicArgs"))}</summary><pre>${esc(Object.entries(e.options).map(([k,v])=>`--${k}${v === true ? "" : " " + v}`).join("\n") || t("noArgs"))}</pre></details>`;
   drawChart();
+}
+function historyNote(id) {
+  if (!state.data?.history?.enabled) return t("historyMemory");
+  const load=state.historyLoads.get(id);
+  return t("chartHistory")+" "+(state.data.history.error || load?.error ? t("historyFailed") : load?.busy ? t("historyLoading") : "");
+}
+async function loadHistory(id) {
+  if (!id || state.paused || !state.data?.history?.enabled) return;
+  let load=state.historyLoads.get(id);
+  if (!load) { load={busy:false,until:0,retry:0}; state.historyLoads.set(id,load); }
+  if (load.busy || Date.now()<load.retry) return;
+  load.busy=true;
+  try {
+    // An overlap catches probes which finished committing while the previous page was read.
+    let after=Math.max(0,load.until-60000), until=null;
+    do {
+      const page=await api(`/api/v1/endpoints/${encodeURIComponent(id)}/history?after=${after}`+(until===null ? "" : `&until=${until}`));
+      until=page.until;
+      if (state.historyLoads.get(id)!==load) return;
+      const history=state.history.get(id)||new ThroughputHistory();
+      history.merge(page.samples,state.chartNow);
+      state.history.set(id,history);
+      after=page.next_after;
+    } while (after!==null);
+    load.until=until; load.error=false;
+  } catch (error) {
+    load.error=true;
+  } finally {
+    load.busy=false; load.retry=Date.now()+(load.error ? 10000 : 4000);
+    if (state.historyLoads.get(id)===load) drawChart();
+  }
 }
 const chartViews = new WeakMap();
 function chartValue(value, cpu = false) {
@@ -701,6 +744,7 @@ function openChart(endpointId,worker = null,inspection = null) {
   if (!endpoint) return;
   state.chartDialog={endpointId,worker,name:endpoint.name,pid:endpoint.pid};
   chartViews.delete($("chart-detail"));
+  loadHistory(endpointId);
   $("chart-dialog").showModal();
   renderChartDialog();
   if (inspection) {
@@ -717,7 +761,7 @@ function renderChartDialog() {
   $("chart-detail-range").value=String(state.chartRange);
   $("chart-detail").setAttribute("aria-label",worker === null ? t("chartLabel") : t("chartWorker",{worker}));
   $("chart-dialog-legend").innerHTML=(worker === null ? '<span><i class="dot"></i>RX <i class="dot tx"></i>TX</span>' : '<span><i class="dot"></i>CPU</span>')+`<span><i class="dot alert"></i>${esc(t("chartIssueLegend"))}</span>`;
-  $("chart-dialog-note").textContent=t(worker === null ? "fiveSecondAverage" : "workersHint")+" "+t("chartIssueScope")+" "+t("chartHistory");
+  $("chart-dialog-note").textContent=t(worker === null ? "fiveSecondAverage" : "workersHint")+" "+t("chartIssueScope")+" "+historyNote(endpointId);
   drawTimeChart($("chart-detail"),endpointId,worker,true);
 }
 function drawChart() {
@@ -726,7 +770,7 @@ function drawChart() {
   $("chart-expand").disabled = !e;
   $("chart-range").value=String(state.chartRange);
   drawTimeChart($("chart"),e?.id);
-  $("chart-note").textContent = (rate(e,"rx") === null ? t("chartUnavailable")+" " : "")+t("chartHistory");
+  $("chart-note").textContent = (rate(e,"rx") === null ? t("chartUnavailable")+" " : "")+historyNote(e?.id);
   renderChartDialog();
 }
 function changeChartRange(value) {
@@ -842,10 +886,11 @@ function showView(view) {
   document.querySelectorAll("[data-view]").forEach(b=>b.classList.toggle("active",b.dataset.view === state.view));
   for (const name of ["overview","metrics","rules","switch","diagnostics"]) $("view-"+name).hidden = view !== name;
   $("view-"+view).scrollIntoView({block:"start"});
+  if (view === "overview") drawChart();
   if (view === "diagnostics" && selected() && !state.logs.has(state.selected)) readLogs();
 }
 function selectProcess(id, view) {
-  state.selected=id; render();
+  state.selected=id; render(); loadHistory(id);
   if (view) showView(view);
   else if (state.view === "diagnostics" && !state.logs.has(id)) readLogs();
 }
@@ -1051,5 +1096,14 @@ if (!readTokenLink()) {
   const saved = sessionStorage.getItem("tuntom-fabric-token");
   if (saved) connect(saved); else $("login").hidden=false;
 }
-setInterval(()=>{ if (!document.hidden) refresh(); },2000);
+// Collect independently of tab visibility; browsers may still throttle timers.
+// Refresh immediately on return, including after a suspended/backgrounded tab.
+function resumeVisiblePage() {
+  if (document.hidden) return;
+  drawChart();
+  refresh();
+}
+document.addEventListener("visibilitychange",resumeVisiblePage);
+window.addEventListener("pageshow",resumeVisiblePage);
+setInterval(()=>refresh(),2000);
 setInterval(()=>{ if (!document.hidden) renderWarnings(); },1000);

@@ -10,11 +10,13 @@ from pathlib import Path
 import socket
 import socketserver
 import stat
+import sqlite3
 import struct
 import threading
 
 from errors import APIError
 from server import Fabric
+from history import default_path
 
 MAX_FRAME = 8 * 1024 * 1024
 
@@ -59,6 +61,8 @@ class CollectorHandler(socketserver.BaseRequestHandler):
             if operation == "snapshot":
                 result = fabric.snapshot()
                 result["collector"] = {"mode": "separate", "uid": os.geteuid()}
+            elif operation == "history" and isinstance(key, str):
+                result = fabric.history(key, request.get("body"))
             elif operation == "refresh":
                 fabric.wake.set()
                 result = {"result": "discovery scheduled"}
@@ -159,6 +163,9 @@ class RemoteFabric:
             raise APIError(403, "rule writes are disabled; restart with --allow-write")
         return self.call(operation, key, body)
 
+    def history(self, key, body=None):
+        return self.call("history", key, body)
+
     def logs(self, key):
         return self.call("logs", key)
 
@@ -172,6 +179,8 @@ def main():
     parser.add_argument("--allow-uid", required=True, type=int, help="UID of the unprivileged web process")
     parser.add_argument("--interval", type=float, default=5)
     parser.add_argument("--allow-write", action="store_true", help="also permit manual runtime rule loads")
+    parser.add_argument("--history-db", type=Path, default=default_path(), help="SQLite telemetry cache (24 hour retention)")
+    parser.add_argument("--no-history", action="store_true", help="disable telemetry cache")
     args = parser.parse_args()
     if args.allow_uid < 0 or not 1 <= args.interval <= 3600:
         parser.error("invalid UID or interval")
@@ -180,10 +189,11 @@ def main():
     if parent.st_uid != os.geteuid() or parent.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
         parser.error("socket directory must belong to the collector UID and not be group/world writable")
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    fabric = Fabric(allow_write=args.allow_write, interval=args.interval)
     try:
+        fabric = Fabric(allow_write=args.allow_write, interval=args.interval,
+                        history_path=None if args.no_history else args.history_db)
         server = CollectorServer(str(path), fabric, args.allow_uid)
-    except OSError as error:
+    except (OSError, ValueError, sqlite3.Error) as error:
         parser.exit(1, f"Collector: {error}\n")
     identity = path.stat().st_ino
     print(f"Fabric collector: {path}; peer UID {args.allow_uid}; writes {'enabled' if args.allow_write else 'disabled'}", flush=True)

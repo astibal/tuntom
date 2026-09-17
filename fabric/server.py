@@ -17,14 +17,16 @@ from pathlib import Path
 import re
 import secrets
 import socket
+import sqlite3
 import threading
 import time
-from urllib.parse import unquote, urlsplit
+from urllib.parse import unquote, urlsplit, parse_qs
 
 from control import ControlError, MAX_BODY, query
 from errors import APIError
 from discovery import discover, stat_fields
 from logs import read_logs
+from history import History, default_path
 from telemetry import changes, health, switch_detail
 
 STATIC = Path(__file__).parent / "static"
@@ -70,7 +72,7 @@ def topology(endpoints):
 
 
 class Fabric:
-    def __init__(self, *, allow_write=False, interval=5, discover_fn=discover):
+    def __init__(self, *, allow_write=False, interval=5, discover_fn=discover, history_path=None):
         self.allow_write, self.interval = allow_write, interval
         self.discover = discover_fn
         self.endpoints = {}
@@ -83,6 +85,8 @@ class Fabric:
         self.samples = {}
         self.baselines = {}
         self.thread = None
+        self.history_store = History(history_path) if history_path else None
+        self.history_error = None
 
     def start(self):
         self.thread = threading.Thread(target=self._poll, name="fabric-poll", daemon=True)
@@ -92,7 +96,9 @@ class Fabric:
         self.stop.set()
         self.wake.set()
         if self.thread:
-            self.thread.join(timeout=15)
+            self.thread.join()
+        if self.history_store:
+            self.history_store.close()
 
     def control_query(self, endpoint, operation, body=""):
         if not endpoint.control:
@@ -124,7 +130,25 @@ class Fabric:
             if result["status"] == "reachable":
                 self.baselines[endpoint.id] = (tick, result["metrics"])
             self.samples[endpoint.id] = result
+        if self.history_store:
+            try:
+                self.history_store.record(endpoint, result)
+                self.history_error = None
+            except (sqlite3.Error, OSError, ValueError) as error:
+                self.history_error = "history cache write failed"
+                LOG.warning("History cache write failed: %s", error)
         return result
+
+    def history(self, key, body=None):
+        if not self.history_store:
+            raise APIError(503, "history cache is disabled")
+        body = {} if body is None else body
+        if not isinstance(body, dict) or set(body) - {"after", "until"}:
+            raise APIError(400, "invalid history query")
+        try:
+            return self.history_store.read(key, **body)
+        except sqlite3.Error as error:
+            raise APIError(503, "history cache unavailable") from error
 
     def _poll(self):
         with ThreadPoolExecutor(max_workers=8, thread_name_prefix="fabric-probe") as pool:
@@ -145,6 +169,11 @@ class Fabric:
                         self.baselines = {key: value for key, value in self.baselines.items() if key in self.endpoints}
                         self.discovery_info = {**info, "status": "ok", "scanned_at": now()}
                     list(pool.map(self._sample, endpoints))
+                    if self.history_store:
+                        try:
+                            self.history_store.prune()
+                        except sqlite3.Error:
+                            self.history_error = "history cache cleanup failed"
                 except OSError as error:
                     with self.mutex:
                         self.endpoints, self.samples, self.baselines = {}, {}, {}
@@ -163,7 +192,9 @@ class Fabric:
         return {"api_version": 1, "generated_at": now(), "started_at": self.started_at,
                 "poll_interval_seconds": self.interval, "allow_write": self.allow_write,
                 "discovery": info, "endpoints": endpoints, "links": topology(endpoints),
-                "collector": {"mode": "local", "uid": os.geteuid()}}
+                "collector": {"mode": "local", "uid": os.geteuid()},
+                "history": {"enabled": self.history_store is not None, "retention_seconds": 86400,
+                            "error": self.history_error}}
 
     def logs(self, key):
         try:
@@ -338,6 +369,12 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/v1/refresh" and self.command == "POST":
                 self.server.fabric.wake.set()
                 return self.respond(202, {"result": "discovery scheduled"})
+            match = re.fullmatch(r"/api/v1/endpoints/([^/]+)/history", path)
+            if match and self.command == "GET":
+                params = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+                if set(params) - {"after", "until"} or any(len(v) != 1 or not re.fullmatch(r"[0-9]{1,16}", v[0]) for v in params.values()):
+                    raise APIError(400, "invalid history query")
+                return self.respond(200, self.server.fabric.history(unquote(match[1]), {k:int(v[0]) for k,v in params.items()}))
             match = re.fullmatch(r"/api/v1/endpoints/([^/]+)/(logs|diagnostics)", path)
             if match and self.command == "GET":
                 action = getattr(self.server.fabric, match[2])
@@ -383,24 +420,28 @@ def main():
     parser.add_argument("--interval", type=float, default=5, help="minimum poll interval in seconds")
     parser.add_argument("--allow-write", action="store_true", help="enable runtime rule loads")
     parser.add_argument("--collector", help="use a separate Unix-socket collector")
+    parser.add_argument("--golden-token", metavar="TOKEN", help="fixed lab access token; overrides TUNTOM_FABRIC_TOKEN (at least 24 URL-safe characters)")
+    parser.add_argument("--history-db", type=Path, default=default_path(), help="SQLite telemetry cache for local collection")
+    parser.add_argument("--no-history", action="store_true", help="disable local telemetry cache")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     if not 1 <= args.interval <= 3600 or not 0 <= args.port <= 65535:
         parser.error("interval must be 1..3600 seconds; port must be 0..65535")
     try:
-        token = os.environ.get("TUNTOM_FABRIC_TOKEN") or secrets.token_urlsafe(32)
+        token = args.golden_token if args.golden_token is not None else (os.environ.get("TUNTOM_FABRIC_TOKEN") or secrets.token_urlsafe(32))
         if len(token) < 24 or not re.fullmatch(r"[a-zA-Z0-9_.~-]+", token):
-            raise ValueError("TUNTOM_FABRIC_TOKEN must have at least 24 URL-safe characters")
+            raise ValueError("access token (--golden-token or TUNTOM_FABRIC_TOKEN) must have at least 24 URL-safe characters")
         if os.geteuid() == 0:
             raise ValueError("run the HTTP server as a regular user; use collector.py for privileged reads")
         if args.collector:
             from collector import RemoteFabric
             fabric = RemoteFabric(args.collector, allow_write=args.allow_write)
         else:
-            fabric = Fabric(allow_write=args.allow_write, interval=args.interval)
+            fabric = Fabric(allow_write=args.allow_write, interval=args.interval,
+                            history_path=None if args.no_history else args.history_db)
         write_enabled = fabric.snapshot()["allow_write"]
         server = Server((str(args.host), args.port), fabric, token)
-    except (ValueError, TypeError, OSError, APIError) as error:
+    except (ValueError, TypeError, OSError, sqlite3.Error, APIError) as error:
         parser.exit(1, f"Fabric: {error}\n")
     link_host = "127.0.0.1" if args.host.is_unspecified else str(args.host)
     print(f"Tuntom Fabric: http://{link_host}:{server.server_port}/#token={token}", flush=True)

@@ -156,7 +156,10 @@ class CollectorTests(unittest.TestCase):
     def test_cli_remote_errors_keep_http_status(self):
         # A CLI entry point must share APIError with the imported IPC module.
         script = Path(__file__).resolve().parents[1] / "server.py"
-        with subprocess.Popen([sys.executable, "-B", str(script), "--collector", self.path, "--port", "0"],
+        golden = "shared-lab-golden-token-for-testing"
+        env_token = "environment-token-with-lower-priority"
+        with subprocess.Popen([sys.executable, "-B", str(script), "--collector", self.path, "--port", "0",
+                               "--golden-token", golden], env={**os.environ, "TUNTOM_FABRIC_TOKEN":env_token},
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
             try:
                 self.assertTrue(select.select([process.stdout], [], [], 5)[0])
@@ -164,14 +167,33 @@ class CollectorTests(unittest.TestCase):
                 self.assertTrue(line.startswith("Tuntom Fabric: http"), line)
                 url = urlsplit(line.strip().split(" ", 2)[2])
                 token = parse_qs(url.fragment)["token"][0]
+                self.assertEqual(token, golden)
                 connection = http.client.HTTPConnection("127.0.0.1", url.port, timeout=4)
                 connection.request("GET", "/api/v1/endpoints/unknown/logs", headers={"Authorization":"Bearer " + token})
                 response = connection.getresponse()
                 self.assertEqual(response.status, 404, response.read())
                 connection.close()
+                connection = http.client.HTTPConnection("127.0.0.1", url.port, timeout=4)
+                connection.request("GET", "/api/v1/snapshot", headers={"Authorization":"Bearer " + env_token})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 401, response.read())
+                connection.close()
             finally:
                 process.terminate()
                 process.wait(timeout=5)
+
+
+class TokenCLITests(unittest.TestCase):
+    def test_invalid_explicit_token_never_falls_back_or_echoes_value(self):
+        script = Path(__file__).resolve().parents[1] / "server.py"
+        for token in ("", "short", "invalid token with spaces and secret"):
+            result = subprocess.run([sys.executable, "-B", str(script), "--golden-token", token],
+                                    env={**os.environ, "TUNTOM_FABRIC_TOKEN":"valid-environment-token-for-testing"},
+                                    capture_output=True, text=True, timeout=5)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("at least 24 URL-safe characters", result.stderr)
+            if token:
+                self.assertNotIn(token, result.stderr)
 
 
 if __name__ == "__main__":
