@@ -31,6 +31,9 @@ void usage(const char* program) {
         << "                           registers NAME.ID~via:c|s:INSTANCE#path-ID\n"
         << "  --shared-flows PATH      shared VIA flow/admission table; exactly one --relay-path\n"
         << "                           one process per path, common multiqueue TUN pair\n"
+        << "  --side both|in|out       default both; in/out requires --shared-flows\n"
+        << "                           opens only that side's TUN and relay channel\n"
+        << "                           registers NAME.ID~via:c|s:INSTANCE (no path suffix)\n"
         << "  --admission immediate|warmup  default immediate for VIA, warmup for legacy\n"
         << "  --divert-in-port NAME      default divert-in\n"
         << "  --divert-out-port NAME     default divert-out\n"
@@ -71,7 +74,7 @@ int main(int argc, char** argv) {
         if (in_name.empty() || out_name.empty() || in_name == out_name || in_name.size() >= IFNAMSIZ || out_name.size() >= IFNAMSIZ)
             throw std::runtime_error("two distinct TUN names of at most 15 bytes are required");
         std::string socket, cookie, control_path, in_port = "divert-in", out_port = "divert-out";
-        std::string instance, admission_mode, shared_path;
+        std::string instance, admission_mode, shared_path, worker_side = "both";
         std::vector<std::string> relay_paths;
         std::size_t mtu = 1500, capacity = 100000, admission_capacity = 100000, idle = 86400;
         ipc::Options options;
@@ -82,6 +85,7 @@ int main(int argc, char** argv) {
             const std::string value = argv[i];
             if (option == "--switch-socket") socket = value;
             else if (option == "--relay-path") relay_paths.push_back(value);
+            else if (option == "--side") worker_side = value;
             else if (option == "--shared-flows") {
                 if (value.empty()) throw std::runtime_error("--shared-flows requires a nonempty path");
                 shared_path = value;
@@ -100,7 +104,12 @@ int main(int argc, char** argv) {
             else if (option == "--flow-idle-seconds") idle = number(value, 1, 604800);
             else throw std::runtime_error("unknown option: " + option);
         }
-        const auto paths = adapter_paths(socket, relay_paths, instance, in_port, out_port);
+        if (worker_side != "both" && worker_side != "in" && worker_side != "out")
+            throw std::runtime_error("--side expects both, in or out");
+        const bool split = worker_side != "both";
+        if (split && shared_path.empty()) throw std::runtime_error("--side in/out requires --shared-flows");
+        const auto has_side = [&](unsigned side) { return !split || side == (worker_side == "in" ? 0U : 1U); };
+        const auto paths = adapter_paths(socket, relay_paths, instance, in_port, out_port, split);
         const bool via_mode = !instance.empty();
         if (admission_mode.empty()) admission_mode = via_mode ? "immediate" : "warmup";
         if (admission_mode != "immediate" && admission_mode != "warmup") throw std::runtime_error("expected immediate or warmup admission");
@@ -109,24 +118,28 @@ int main(int argc, char** argv) {
         if (!shared_path.empty()) {
             if (!via_mode || relay_paths.size() != 1)
                 throw std::runtime_error("--shared-flows requires VIA and exactly one --relay-path");
-            shared = std::make_unique<SharedFlows>(shared_path,
-                SharedFlows::group({instance, in_name, out_name, in_port, out_port, std::to_string(mtu)}),
-                paths[0].id, capacity, std::chrono::seconds(idle), admission_capacity, admission_mode == "warmup");
+            std::vector<std::string> group{instance, in_name, out_name, in_port, out_port, std::to_string(mtu)};
+            if (split) group.push_back("split-sides");
+            shared = std::make_unique<SharedFlows>(shared_path, SharedFlows::group(group),
+                split ? worker_side + ":" + paths[0].id : paths[0].id,
+                capacity, std::chrono::seconds(idle), admission_capacity, admission_mode == "warmup");
         }
         std::vector<std::unique_ptr<SwitchClient>> clients;
         for (const auto& path : paths) {
-            clients.push_back(std::make_unique<SwitchClient>(path.socket, path.input, options));
-            clients.push_back(std::make_unique<SwitchClient>(path.socket, path.output, options));
+            clients.push_back(has_side(0) ? std::make_unique<SwitchClient>(path.socket, path.input, options) : nullptr);
+            clients.push_back(has_side(1) ? std::make_unique<SwitchClient>(path.socket, path.output, options) : nullptr);
         }
         std::unique_ptr<ControlSocket> control;
         if (!control_path.empty()) control = std::make_unique<ControlSocket>(control_path);
-        TunDevice tun_in(in_name, mtu, bool(shared)), tun_out(out_name, mtu, bool(shared));
-        if (shared) { tun_in.set_queue(false); tun_out.set_queue(false); }
-        tun_in.set_up(); tun_out.set_up();
-        TunDevice* tuns[] = {&tun_in, &tun_out};
+        std::unique_ptr<TunDevice> tuns[2];
+        for (unsigned side = 0; side < 2; ++side) if (has_side(side)) {
+            tuns[side] = std::make_unique<TunDevice>(side ? out_name : in_name, mtu, bool(shared));
+            if (shared) tuns[side]->set_queue(false);
+            tuns[side]->set_up();
+        }
         std::vector<Clock::time_point> next_connect(clients.size());
         std::vector<pollfd> fds(clients.size() + 3);
-        // Each pair gets one visit to both shared TUNs as well as its IPC sockets.
+        // Each path gets one visit to its active TUNs as well as its IPC sockets.
         // Otherwise N busy IPC pairs could inject N times faster than we drain TUNs.
         const auto sources = paths.size() * 4;
         Clock::time_point activated{};
@@ -142,11 +155,16 @@ int main(int argc, char** argv) {
             if (shared) return shared->seconds(now);
             return active ? std::chrono::duration<double>(now - activated).count() : 0.0;
         };
+        const auto connected = [&](std::size_t index) { return clients[index] && clients[index]->connected(); };
+        const auto path_ready = [&](std::size_t path) {
+            return (!has_side(0) || connected(path * 2)) && (!has_side(1) || connected(path * 2 + 1));
+        };
         const auto update_queues = [&] {
             if (!shared) return;
-            const bool ready = clients[0]->connected() && clients[1]->connected();
+            const bool ready = path_ready(0);
             if (ready != queues_active) {
-                tun_in.set_queue(ready); tun_out.set_queue(ready); queues_active = ready;
+                for (const auto& tun : tuns) if (tun) tun->set_queue(ready);
+                queues_active = ready;
             }
         };
         const auto disconnect = [&](std::size_t index) {
@@ -165,7 +183,7 @@ int main(int argc, char** argv) {
             Stack labels;
             if (!codec.attach(env, labels)) { ++stats.invalid; return; }
             const auto index = path * 2 + side;
-            if (!clients[index]->connected()) { ++stats.disconnected; return; }
+            if (!connected(index)) { ++stats.disconnected; return; }
             account(index, clients[index]->append_frame(SwitchOpcode::switch_packet,
                 labels.values.data(), labels.size, payload, size));
         };
@@ -173,12 +191,15 @@ int main(int argc, char** argv) {
             if (!control) return;
             control->handle([&] {
                 std::ostringstream out;
-                std::size_t connected = 0;
-                for (std::size_t path = 0; path < paths.size(); ++path)
-                    connected += clients[path * 2]->connected() && clients[path * 2 + 1]->connected();
+                std::size_t ready_paths = 0, pairs = 0;
+                for (std::size_t path = 0; path < paths.size(); ++path) {
+                    ready_paths += path_ready(path);
+                    pairs += connected(path * 2) && connected(path * 2 + 1);
+                }
                 out << "format=txt\nformat_version=1\ncomponent=divert-adapter\n"
-                    << "divert_in_connected=" << clients[0]->connected() << "\ndivert_out_connected=" << clients[1]->connected()
-                    << "\nrelay_paths=" << relay_paths.size() << "\nconnected_pairs=" << connected
+                    << "divert_in_connected=" << connected(0) << "\ndivert_out_connected=" << connected(1)
+                    << "\nrelay_paths=" << relay_paths.size() << "\nconnected_pairs=" << pairs
+                    << "\nconnected_paths=" << ready_paths << "\nworker_side=" << worker_side
                     << "\nvia_instance=" << instance << "\nadmission_mode=" << admission_mode
                     << "\nadmission_active=" << (shared ? shared->active() : active) << "\nadmission_seconds=" << seconds(Clock::now()) << '\n';
                 stats.write(out);
@@ -189,10 +210,10 @@ int main(int argc, char** argv) {
                     clients[0]->write_stats(out, "divert_in_ipc_"); clients[1]->write_stats(out, "divert_out_ipc_");
                 } else for (std::size_t path = 0; path < paths.size(); ++path) {
                     const auto prefix = "relay_path_" + paths[path].id + "_";
-                    out << prefix << "in_connected=" << clients[path * 2]->connected() << '\n'
-                        << prefix << "out_connected=" << clients[path * 2 + 1]->connected() << '\n';
-                    clients[path * 2]->write_stats(out, prefix + "in_ipc_");
-                    clients[path * 2 + 1]->write_stats(out, prefix + "out_ipc_");
+                    out << prefix << "in_connected=" << connected(path * 2) << '\n'
+                        << prefix << "out_connected=" << connected(path * 2 + 1) << '\n';
+                    if (clients[path * 2]) clients[path * 2]->write_stats(out, prefix + "in_ipc_");
+                    if (clients[path * 2 + 1]) clients[path * 2 + 1]->write_stats(out, prefix + "out_ipc_");
                 }
                 recovery.write_stats(out);
                 return out.str();
@@ -211,6 +232,7 @@ int main(int argc, char** argv) {
         };
         const auto handle = [&](std::size_t source) {
             const unsigned side = static_cast<unsigned>(source % 2);
+            if (!has_side(side)) return false;
             std::size_t path = source / 4;
             const auto index = path * 2 + side;
             auto& tun = *tuns[side];
@@ -232,7 +254,7 @@ int main(int argc, char** argv) {
                 if (!decode_switch_frame(buffer.data(), static_cast<std::size_t>(n), frame) ||
                     frame.opcode != SwitchOpcode::exit_packet || !codec.receive(labels_of(frame), side, env)) { ++stats.invalid; return true; }
                 if (!packet_info(frame.payload, frame.payload_size, packet)) { ++stats.unsupported; return true; }
-                if (!clients[path * 2]->connected() || !clients[path * 2 + 1]->connected()) { ++stats.disconnected; return true; }
+                if (!path_ready(path)) { ++stats.disconnected; return true; }
                 if (side == 0) {
                     if (!active) { activated = now; active = true; }
                     const auto decision = shared ? shared->classify(packet, now) :
@@ -259,7 +281,7 @@ int main(int argc, char** argv) {
                 if (!packet_info(buffer.data(), static_cast<std::size_t>(n), packet)) { ++stats.unsupported; return true; }
                 const bool found = shared ? shared->lookup(packet.flow, side == 0, now, env) : routes.lookup(packet.flow, side == 0, now, env, &path);
                 if (!found) { ++stats.miss; return true; }
-                // A shared worker returns through its own pair, irrespective of the ingress worker.
+                // A shared worker returns through its own side's channel, irrespective of the ingress worker.
                 codec.onward(env, side);
                 send(path, side, env, buffer.data(), static_cast<std::size_t>(n));
             }
@@ -275,6 +297,7 @@ int main(int argc, char** argv) {
                 if (shared) shared->maintain(now);
                 else { routes.maintain(now); if (active) admission.maintain(seconds(now)); }
                 for (std::size_t index = 0; index < clients.size(); ++index) {
+                    if (!clients[index]) { fds[index] = {-1, 0, 0}; continue; }
                     auto& client = *clients[index];
                     if (!client.connected() && !client.connecting() && now >= next_connect[index]) {
                         client.start_connect(now);
@@ -284,15 +307,16 @@ int main(int argc, char** argv) {
                     fds[index] = {client.fd(), client.poll_events(), 0};
                 }
                 update_queues();
-                fds[clients.size()] = {queues_active ? tun_in.fd() : -1, POLLIN, 0};
-                fds[clients.size() + 1] = {queues_active ? tun_out.fd() : -1, POLLIN, 0};
+                for (unsigned side = 0; side < 2; ++side)
+                    fds[clients.size() + side] = {queues_active && tuns[side] ? tuns[side]->fd() : -1, POLLIN, 0};
                 fds.back() = {control ? control->poll_fd() : -1, POLLIN, 0};
                 int timeout = 1000;
-                for (const auto& client : clients) timeout = client->poll_timeout_ms(now, timeout);
+                for (const auto& client : clients) if (client) timeout = client->poll_timeout_ms(now, timeout);
                 if (control) timeout = control->poll_timeout_ms(now, timeout);
                 const auto ready = ::poll(fds.data(), fds.size(), timeout);
                 if (ready < 0) { if (errno != EINTR) recovery.poll_failed(errno); continue; }
                 for (std::size_t index = 0; index < clients.size(); ++index) {
+                    if (!clients[index]) continue;
                     auto& client = *clients[index];
                     if (client.connecting()) {
                         client.advance_connect(Clock::now(), fds[index].revents);
@@ -310,9 +334,9 @@ int main(int argc, char** argv) {
                     if (!progress || Clock::now() - slice >= std::chrono::milliseconds(1)) break;
                 }
                 for (std::size_t index = 0; index < clients.size(); ++index)
-                    if (clients[index]->connected()) account(index, clients[index]->flush());
+                    if (connected(index)) account(index, clients[index]->flush());
             } catch (const std::bad_alloc&) {
-                for (const auto& client : clients) stats.send_errors += client->discard_staged().drops;
+                for (const auto& client : clients) if (client) stats.send_errors += client->discard_staged().drops;
                 recovery.allocation_failed();
             }
         }

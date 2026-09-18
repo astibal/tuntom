@@ -16,6 +16,7 @@ extern "C" int __wrap_open(const char* path, int flags, ...) {
     if (std::strcmp(path, "/dev/net/tun") == 0) {
         const char* inherited = std::getenv("TUNTOM_TEST_TUN_FD");
         static unsigned opened = 0;
+        if (opened && std::getenv("TUNTOM_TEST_TUN_NAME")) std::abort();
         if (opened++ == 1 && std::getenv("TUNTOM_TEST_TUN_OUT_FD"))
             inherited = std::getenv("TUNTOM_TEST_TUN_OUT_FD");
         if (not inherited) std::abort();
@@ -38,6 +39,8 @@ extern "C" int __wrap_ioctl(int fd, unsigned long request, ...) {
     va_start(args, request);
     void* value = va_arg(args, void*);
     va_end(args);
+    if (request == TUNSETIFF && std::getenv("TUNTOM_TEST_TUN_NAME") &&
+        std::strcmp(static_cast<ifreq*>(value)->ifr_name, std::getenv("TUNTOM_TEST_TUN_NAME"))) std::abort();
     if (request == TUNSETIFF or request == TUNSETQUEUE or request == SIOCSIFMTU or
         request == SIOCGIFFLAGS or request == SIOCSIFFLAGS) return 0;
     return __real_ioctl(fd, request, value);

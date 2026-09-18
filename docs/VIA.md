@@ -13,8 +13,11 @@ optional admission learning remain in the divert adapter.
 - The legacy adapter still requires `--cookie ABC` and defaults to warmup.
   VIA cookies are automatic and VIA adapters default to immediate admission.
 - Remote adapters can use [IPC relay tunnels](RELAY.md); no remote switch is needed.
-- No `strict`, PINs, single-sided/bidir attachment, or RETURN action.
-- The adapter creates/opens and raises its two TUNs in its current namespace.
+- No `strict`, PINs, single-sided/bidir service, or RETURN action. A service still
+  needs both sides; [split-side workers](RELAY_SPLIT_SIDES.md) can provide them
+  through separate relay groups.
+- The adapter creates/opens and raises its TUNs in its current namespace
+  (both by default, only the selected side with `--side in|out`).
   It does not create namespaces, VRFs, addresses, or routes.
 
 ## Complete permanent configuration

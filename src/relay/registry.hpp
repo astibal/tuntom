@@ -10,7 +10,8 @@ struct Registry {
     bool live(Clock::time_point now = Clock::now()) const { return directory.epoch && now < expires; }
 };
 inline bool configured(const SwitchRuleset& rules, const std::string& parent) {
-    for (const auto& item : rules.services) if (!item.second.relay.empty() && item.second.relay_matches(parent)) return true;
+    if (parent.empty()) return false;
+    for (const auto& item : rules.services) if (item.second.relay_matches(parent)) return true;
     return false;
 }
 // Snapshots are atomic and idempotent. A parent connection has one epoch; a new
@@ -30,8 +31,16 @@ inline bool update(Registry& registry, const SwitchRuleset& rules, const std::st
         via::Registration a; via::registration(c.name,a);
         for (const auto& name : occupied) {
             via::Registration b;
-            // A pair belongs to one relay parent, never two independently owned tunnels.
-            if (via::registration(name,b) && a.instance == b.instance) return false;
+            if (via::registration(name,b) && a.instance == b.instance) {
+                // Only explicit split-side services may share an instance across parents.
+                bool split = false;
+                for (const auto& entry : rules.services) {
+                    const auto& service = entry.second;
+                    if (service.split_relay() && service.relay_matches(parent, a.server) &&
+                        via::attachment_matches(service, a) && via::attachment_matches(service, b)) split = true;
+                }
+                if (!split) return false;
+            }
         }
         for (const auto& other : channels) if (other.first != item.first) {
             via::Registration b; via::registration(other.second.name,b);

@@ -86,6 +86,9 @@ static void paths() {
     auto multi = adapter_paths("", {"west=/tmp/a", "east=/tmp/b"}, "smith#0", "in", "out");
     check(multi.size() == 2 && multi[0].input == "in.west~via:c:smith#0#path-west" &&
         multi[0].output == "out.west~via:s:smith#0#path-west", "stable paired registration");
+    auto split = adapter_paths("", {"west=/tmp/a"}, "smith#0", "in", "out", true);
+    check(split[0].input == "in.west~via:c:smith#0" && split[0].output == "out.west~via:s:smith#0",
+        "split workers share proxy identity, with distinct attachments");
     auto reordered = adapter_paths("", {"east=/tmp/b", "west=/tmp/a"}, "smith#0", "in", "out");
     check(reordered[1].input == multi[0].input, "path identity independent of argument order");
     for (const auto& values : std::vector<std::vector<std::string>>{{"bad"}, {"=/tmp/a"}, {"a="},

@@ -5,6 +5,10 @@ and the existing divert adapter; it does not run a switch. Both ST and MP switch
 support the same configuration. Existing local VIA services and tunnel CLI
 options retain their meanings.
 
+To separate the two proxy traversals onto different tunnels and CPUs, use
+[IN/OUT-only workers and relay groups](RELAY_SPLIT_SIDES.md). This is an explicit
+alternative to the paired modes described below.
+
 ```text
 Hub host                                  Service host
 
@@ -288,13 +292,16 @@ measurement on the intended proxy host.
 
 ## Registration, loss and resource bounds
 
-- Each adapter owns two local IPC connections per path. The remote listener supports
+- In paired mode each adapter owns two local IPC connections per path; split-side
+  workers own one. The remote listener supports
   legacy TTP and V2 inline IPC; it negotiates inline transport instead of mmap.
   The hub multiplex connection uses legacy SEQPACKET records with relay framing.
 - A snapshot carries channel IDs, full VIA port names and process-owner tokens.
   Owner tokens come from local `SO_PEERCRED` comparisons. The switch admits only
-  names belonging to services bound to that relay. A complete side pair must have
-  one owner. Duplicate live names and duplicate instance sides are rejected.
+  names belonging to services bound to that relay. A pair within one relay must
+  have one owner. Explicit `client-relay`/`server-relay` bindings permit separate
+  workers on different relays to share a proxy instance. Duplicate live names
+  remain rejected; duplicate instance sides within one relay are rejected.
 - Up to 128 active/pending remote sockets are allowed per relay endpoint. Channel
   IDs are monotonic within the process. A fresh tunnel session gets a random
   64-bit epoch and reconnects the hub's physical switch port.

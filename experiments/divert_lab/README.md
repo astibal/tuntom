@@ -181,3 +181,9 @@ and are excluded from Git.
 cookies and paired instance registration. It retains the existing warmup scenario
 by passing `--admission warmup`. Combine it with `--switch st` or `--switch mp`,
 `--vrf`, and `--mtu 9000`. See [VIA commands](../../docs/VIA.md#validation).
+
+`--split-sides --relay-paths 2` starts two IN workers and two OUT workers, each
+with its own V5 relay tunnel, sharing the flow table. In this opt-in mode the path
+count is per side (at most eight per side). It checks actual TCP routing through
+both TUNs and verifies that every worker's sole IPC channel carries traffic.
+See [split-side commands and semantics](../../docs/RELAY_SPLIT_SIDES.md).

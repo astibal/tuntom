@@ -44,7 +44,7 @@ Contributors remain responsible for the changes they submit.
 | MTU | Independent inner/outer MTUs, automatic PMTUD, balanced fragmentation |
 | Deployment | Local and remote compilation, staged restart, start/stop helper |
 | Networking | IPv4 policy routing, connection marks, MSS clamping, optional SNAT, lifecycle hooks |
-| Remote VIA adapters | [IPC relay over tuntom](docs/RELAY.md), optional multipath, one hub IPC connection per tunnel, no remote switch |
+| Remote VIA adapters | [IPC relay over tuntom](docs/RELAY.md), optional multipath and [separate IN/OUT workers](docs/RELAY_SPLIT_SIDES.md), one hub IPC connection per tunnel, no remote switch |
 | Observability | Text statistics, signal-controlled snapshots, logs, Wireshark dissector |
 | Runtime | No external crypto libraries; drops privileges to `tuntom:tuntom` |
 | Switching | Optional [label switching](README_SWITCHING.md) to connect tunnel links and exit paths |

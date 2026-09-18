@@ -173,9 +173,15 @@ struct RuleStatement {
 };
 
 struct ViaService {
-    std::string name, client, server, relay;
+    std::string name, client, server, relay, client_relay, server_relay;
+    bool split_relay() const { return !client_relay.empty(); }
     bool relay_matches(const std::string& parent) const {
+        if (split_relay()) return relay_matches(parent, false) || relay_matches(parent, true);
         return relay.empty() ? parent.empty() : !parent.empty() && route_port_matches(relay, parent);
+    }
+    bool relay_matches(const std::string& parent, bool server_side) const {
+        if (!split_relay()) return relay_matches(parent);
+        return !parent.empty() && route_port_matches(server_side ? server_relay : client_relay, parent);
     }
     bool failover = false, pass = false;
     std::vector<std::string> instances;
@@ -184,6 +190,7 @@ struct ViaService {
             "\n    server-side " + server + "\n    stickiness " + (failover ? "failover" : "hash") +
             "\n    unavailable " + (pass ? "pass" : "drop") + "\n";
         if (!relay.empty()) out += "    relay " + relay + "\n";
+        if (split_relay()) out += "    client-relay " + client_relay + "\n    server-relay " + server_relay + "\n";
         if (!instances.empty()) {
             out += "    instances [";
             for (const auto& id : instances) { if (out.back() != '[') out += ", "; out += "\"" + id + "\""; }
@@ -420,6 +427,15 @@ inline std::shared_ptr<const SwitchRuleset> parse_switch_ruleset(const std::stri
                     if (service.client.empty() || service.server.empty() ||
                         (service.failover && service.instances.empty()))
                         throw std::runtime_error("service requires two sides; failover requires ordered instances");
+                    if (service.client_relay.empty() != service.server_relay.empty() ||
+                        (service.split_relay() && !service.relay.empty()))
+                        throw std::runtime_error("client-relay and server-relay must be used together, without relay");
+                    if (service.split_relay()) {
+                        const auto a = service.client_relay.substr(0, service.client_relay.find('*'));
+                        const auto b = service.server_relay.substr(0, service.server_relay.find('*'));
+                        if (route_port_matches(service.client_relay, b) || route_port_matches(service.server_relay, a))
+                            throw std::runtime_error("client-relay and server-relay must not overlap");
+                    }
                     if (!rules->services.emplace(service.name, service).second) throw std::runtime_error("duplicate service");
                     in_service = false;
                 } else {
@@ -428,9 +444,11 @@ inline std::shared_ptr<const SwitchRuleset> parse_switch_ruleset(const std::stri
                         auto value = p.take(); rules_port(value);
                         if (value.find("~via:") != std::string::npos) throw std::runtime_error("reserved VIA suffix");
                         (command == "client-side" ? service.client : service.server) = value;
-                    } else if (command == "relay") {
-                        service.relay = p.take(); rules_port(service.relay);
-                        if (service.relay == "*" || service.relay.find("~via:") != std::string::npos)
+                    } else if (command == "relay" || command == "client-relay" || command == "server-relay") {
+                        auto& selector = command == "relay" ? service.relay :
+                            command == "client-relay" ? service.client_relay : service.server_relay;
+                        selector = p.take(); rules_port(selector);
+                        if (selector == "*" || selector.find("~via:") != std::string::npos)
                             throw std::runtime_error("relay requires a physical port ID or a prefix followed by *");
                     } else if (command == "stickiness") {
                         auto value = p.take();

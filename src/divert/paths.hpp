@@ -8,7 +8,7 @@ struct AdapterPath {
     std::string id, socket, input, output;
 };
 inline std::vector<AdapterPath> adapter_paths(const std::string& socket, const std::vector<std::string>& paths,
-        const std::string& instance, const std::string& input, const std::string& output) {
+        const std::string& instance, const std::string& input, const std::string& output, bool split = false) {
     if (input == output) throw std::runtime_error("two distinct adapter ports are required");
     if (paths.empty()) {
         if (socket.empty()) throw std::runtime_error("--switch-socket or --relay-path is required");
@@ -28,7 +28,7 @@ inline std::vector<AdapterPath> adapter_paths(const std::string& socket, const s
         if (id.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-") != std::string::npos ||
             !ids.insert(id).second || !sockets.insert(path).second)
             throw std::runtime_error("relay path IDs must be unique alphanumeric/_/- names; sockets must be distinct");
-        const auto identity = instance + "#path-" + id;
+        const auto identity = split ? instance : instance + "#path-" + id;
         result.push_back({id, path, via::port_name(input + "." + id, identity, false),
                                     via::port_name(output + "." + id, identity, true)});
     }

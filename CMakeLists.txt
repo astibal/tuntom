@@ -107,6 +107,11 @@ if(BUILD_TESTING)
             $<TARGET_FILE:tuntom-switch> $<TARGET_FILE:tomtom-switch-mp>
             $<TARGET_FILE:tuntomctl> $<TARGET_FILE:tuntom> $<TARGET_FILE:divert_relay_fixture>)
         set_tests_properties(relay_shared_test PROPERTIES TIMEOUT 90 RUN_SERIAL TRUE)
+        add_test(NAME relay_split_test COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/relay_split_test.py
+            $<TARGET_FILE:tuntom-switch> $<TARGET_FILE:tomtom-switch-mp>
+            $<TARGET_FILE:tuntomctl> $<TARGET_FILE:tuntom> $<TARGET_FILE:divert_relay_fixture>)
+        set_tests_properties(relay_split_test PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE)
         add_test(NAME via_integration_test COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/via_integration_test.py
             $<TARGET_FILE:tuntom-switch> $<TARGET_FILE:tomtom-switch-mp> $<TARGET_FILE:tuntomctl>)

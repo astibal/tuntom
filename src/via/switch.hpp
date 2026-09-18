@@ -38,6 +38,10 @@ struct State {
     }
 };
 inline bool enabled(const std::shared_ptr<const SwitchRuleset>& rules) { return rules && rules->format == 3; }
+inline bool attachment_matches(const ViaService& service, const Registration& r) {
+    return route_port_matches(r.server ? service.server : service.client, r.attachment) &&
+        (service.instances.empty() || std::find(service.instances.begin(), service.instances.end(), r.instance) != service.instances.end());
+}
 inline bool accepted(const SwitchRuleset& rules, const std::string& name, const std::string& relay = "") {
     if (!reserved(name)) return true;
     Registration r;
@@ -45,8 +49,7 @@ inline bool accepted(const SwitchRuleset& rules, const std::string& name, const 
     unsigned matches = 0;
     for (const auto& item : rules.services) {
         const auto& service = item.second;
-        if (service.relay_matches(relay) && route_port_matches(r.server ? service.server : service.client, r.attachment) &&
-            (service.instances.empty() || std::find(service.instances.begin(), service.instances.end(), r.instance) != service.instances.end())) ++matches;
+        if (service.relay_matches(relay, r.server) && attachment_matches(service, r)) ++matches;
     }
     return matches == 1;
 }
@@ -65,10 +68,21 @@ inline bool compatible(const SwitchRuleset& rules, const std::string& incoming, 
 }
 
 class SwitchPath {
+    struct Port { std::string name; std::uint64_t hash; };
     struct Instance {
-        std::string id, client, server, parent;
+        std::string id, parent;
+        std::vector<Port> client, server;
         std::uint64_t hash = 0;
         bool valid = true;
+        template<class Live> static bool available(const std::vector<Port>& ports, Live live) {
+            return std::any_of(ports.begin(), ports.end(), [&](const Port& p) { return live(p.name); });
+        }
+        template<class Live> bool available(Live live) const {
+            return available(client, live) && available(server, live);
+        }
+        static bool contains(const std::vector<Port>& ports, const std::string& name) {
+            return std::any_of(ports.begin(), ports.end(), [&](const Port& p) { return p.name == name; });
+        }
     };
     struct Service { const ViaService* config; std::vector<Instance> instances; };
     struct Chain {
@@ -104,14 +118,12 @@ public:
                 Registration r;
                 const auto binding = relays.find(port);
                 const std::string parent = binding == relays.end() ? "" : binding->second;
-                if (!config.relay_matches(parent)) continue;
-                if (!registration(port, r) || !route_port_matches(r.server ? config.server : config.client, r.attachment)) continue;
-                if (!config.instances.empty() && std::find(config.instances.begin(), config.instances.end(), r.instance) == config.instances.end()) continue;
+                if (!registration(port, r) || !config.relay_matches(parent, r.server) || !attachment_matches(config, r)) continue;
                 auto& pair = pairs[r.instance];
                 auto& side = r.server ? pair.server : pair.client;
-                if (!pair.id.empty() && (pair.parent != parent || !side.empty())) pair.valid = false;
+                if (!config.split_relay() && !pair.id.empty() && (pair.parent != parent || !side.empty())) pair.valid = false;
                 pair.id = r.instance; pair.hash = ecmp_port_identity(r.instance); pair.parent = parent;
-                side = port;
+                side.push_back({port, ecmp_port_identity(port)});
             }
             const auto append = [&](const Instance& pair) {
                 if (pair.valid && !pair.client.empty() && !pair.server.empty()) service.instances.push_back(pair);
@@ -163,7 +175,7 @@ public:
             const auto side = [&](std::size_t begin, std::size_t end, bool server) {
                 for (auto i = begin; i < end; ++i)
                     for (const auto& instance : chain.services[i]->instances)
-                        if (to == (server ? instance.server : instance.client)) return true;
+                        if (Instance::contains(server ? instance.server : instance.client, to)) return true;
                 return false;
             };
             if (from == chain.origin && (output() || side(0, chain.services.size(), false))) return true;
@@ -171,8 +183,8 @@ public:
                 (to == chain.origin || side(0, chain.services.size(), true))) return true;
             for (std::size_t i = 0; i < chain.services.size(); ++i) {
                 for (const auto& instance : chain.services[i]->instances) {
-                    if (from == instance.client && (to == chain.origin || output() || side(0, i, true))) return true;
-                    if (from == instance.server && (output() || side(i + 1, chain.services.size(), false))) return true;
+                    if (Instance::contains(instance.client, from) && (to == chain.origin || output() || side(0, i, true))) return true;
+                    if (Instance::contains(instance.server, from) && (output() || side(i + 1, chain.services.size(), false))) return true;
                 }
             }
         }
@@ -231,10 +243,10 @@ public:
                 const Instance* instance = nullptr;
                 bool client = false;
                 for (const auto& member : service.instances) {
-                    if (physical == member.client) { instance = &member; client = true; break; }
-                    if (physical == member.server) { instance = &member; break; }
+                    if (Instance::contains(member.client, physical)) { instance = &member; client = true; break; }
+                    if (Instance::contains(member.server, physical)) { instance = &member; break; }
                 }
-                if (!instance || !live(instance->client) || !live(instance->server)) return reject(Result::missing);
+                if (!instance || !live(physical) || !instance->available(live)) return reject(Result::missing);
                 if (env.action == bypass && client && !env.reverse) skip_chain = true;
                 else if (env.action != onward || env.reverse != client) return reject(Result::malformed);
                 next = static_cast<int>(env.step) + (env.reverse ? -1 : 1);
@@ -246,7 +258,7 @@ public:
                 const Instance* selected = nullptr;
                 EcmpSelector selector(frame);
                 for (const auto& member : service.instances) {
-                    if (!live(member.client) || !live(member.server)) continue;
+                    if (!member.available(live)) continue;
                     if (service.config->failover) { selected = &member; break; }
                     if (selector.consider(member.hash, member.id)) selected = &member;
                 }
@@ -256,8 +268,11 @@ public:
                 }
                 env.step = static_cast<std::uint16_t>(next); env.action = offer;
                 if (!Codec::attach(env, d.labels)) return reject(Result::overflow);
-                d.target = env.reverse ? &selected->server : &selected->client;
-                d.exit = true; d.result = Result::forward; d.multipath = selector.multipath(); return d;
+                EcmpSelector paths(frame);
+                for (const auto& port : env.reverse ? selected->server : selected->client)
+                    if (live(port.name) && paths.consider(port.hash, port.name)) d.target = &port.name;
+                d.exit = true; d.result = Result::forward;
+                d.multipath = selector.multipath() || paths.multipath(); return d;
             }
         }
         if (env.reverse) {

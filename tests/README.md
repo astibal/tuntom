@@ -10,6 +10,12 @@ Requires a C++17 compiler (`g++` by default; override with `CXX=clang++`).
 The runner checks that each header compiles on its own, then compiles
 `src/main.cpp`. The regression tests include the real `src/` headers.
 The C++ tests are also available through CMake/CTest in CLion.
+
+`relay_split_test` exercises separate IN/OUT adapter workers through encrypted
+V5 relays with both ST and MP switches. It forces cross-worker TUN replies and
+checks worker loss/restart, missing sides, unequal group sizes, and CLI validation.
+The TUN fixture asserts each worker opens only its assigned TUN. For real Linux
+TUN routing, use the [split-side namespace lab](../docs/RELAY_SPLIT_SIDES.md#validation).
 Builds use a temporary directory that is removed on exit. No root privileges,
 live tunnel, or network access are needed.
 
