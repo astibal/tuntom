@@ -129,11 +129,11 @@ test("background polling continues and returning to the page refreshes immediate
 });
 
 test("returning to overview redraws after revealing the chart, even while paused",()=>{
-  const views=Object.fromEntries(["overview","metrics","rules","switch","diagnostics","syspiper","flows"].map(name=>
+  const views=Object.fromEntries(["overview","metrics","rules","switch","diagnostics","syspiper","flows","observed"].map(name=>
     ["view-"+name,{hidden:name!=="metrics",scrollIntoView(){}}]));
   let draws=0;
   const show=runInNewContext(source.slice(source.indexOf("function showView("),source.indexOf("function selectProcess("))+";showView",{
-    state:{view:"metrics",paused:true},document:{querySelectorAll:()=>[]},$:id=>views[id],
+    state:{view:"metrics",paused:true},document:{querySelectorAll:()=>[],querySelector:()=>({hidden:false})},$:id=>views[id],
     drawChart(){assert.equal(views["view-overview"].hidden,false);draws++;}
   });
   show("overview");

@@ -8,6 +8,13 @@ const messages = {
   workspace:["Pracovní prostor","Workspace","Espace de travail"],
   views:["Zobrazení","Views","Vues"],
   language:["Jazyk rozhraní","Interface language","Langue de l’interface"],
+  observedTitle:["Pozorovaná topologie","Observed topology","Topologie observée"],
+  observedHint:["Lokální procesy a doložené vazby. Vyber uzel pro detail.","Local processes and observed attachments. Select a node for details.","Processus locaux et liens observés. Sélectionne un nœud."],
+  observedLive:["ŽIVÁ TELEMETRIE","LIVE TELEMETRY","TÉLÉMÉTRIE EN DIRECT"],
+  observedLegend:["Plná: registrovaný port · přerušovaná: vazba z parametrů · pohyb: provoz procesu, nikoli trasování paketů","Solid: registered port · dashed: argument-based attachment · motion: process traffic, not packet tracing","Plein : port enregistré · pointillé : lien par paramètres · mouvement : trafic du processus, pas traçage des paquets"],
+  mapInputs:["TUNELY / OSTATNÍ","TUNNELS / OTHER","TUNNELS / AUTRES"],
+  mapAdapters:["ADAPTÉRY / DIVERT","ADAPTERS / DIVERT","ADAPTATEURS / DIVERT"],
+  mapOpen:["Otevřít detail →","Open details →","Ouvrir les détails →"],
   overview:["Živý přehled","Live overview","Vue en direct"],
   metrics:["Metriky","Metrics","Métriques"],
   rules:["Pravidla switche","Switch rules","Règles du switch"],
@@ -1044,7 +1051,46 @@ $("syspiper-nodes").addEventListener("click",event=>{
   chartViews.delete($("chart-detail"));
   $("chart-dialog").showModal(); renderChartDialog(); loadHistory(node.id);
 });
+$("map-zoom").addEventListener("change",event=>{$("observed-canvas").style.zoom=event.target.value;});
+const observedSlots=new Map();
+function renderObserved() {
+  const canvas=$("observed-canvas");
+  if(!canvas || !state.data) return;
+  const endpoints=state.data.endpoints;
+  for(const id of observedSlots.keys()) if(!endpoints.some(e=>e.id===id)) observedSlots.delete(id);
+  const lane=e=>e.kind === "switch" ? 1 : ["adapter","divert"].includes(e.kind) ? 2 : 0;
+  for(const e of endpoints) if(!observedSlots.has(e.id)) {
+    const col=lane(e), used=new Set([...observedSlots.values()].filter(p=>p.col===col).map(p=>p.slot));
+    let slot=0; while(used.has(slot)) slot++;
+    observedSlots.set(e.id,{col,slot});
+  }
+  const position=e=>{const p=observedSlots.get(e.id);return {x:24+p.col*300,y:65+p.slot*146};};
+  const height=Math.max(420,...[...observedSlots.values()].map(p=>p.slot*146+211));
+  const links=(state.data.links || []).map(link=>{
+    const source=endpoints.find(e=>e.id===link.source), target=endpoints.find(e=>e.id===link.target);
+    if(!source || !target) return "";
+    const a=position(source),b=position(target), left=a.x<b.x;
+    const x1=a.x+(left?250:0),x2=b.x+(left?0:250),y1=a.y+57,y2=b.y+57,mid=(x1+x2)/2;
+    const registered=link.namespace_verified && target.switch_detail?.ports.some(p=>p.name===link.port_id);
+    const active=(rate(source,"rx") || 0)+(rate(source,"tx") || 0)>0 && !outdated(source) && source.status === "reachable";
+    const problem=attentionReasons(source).length>0;
+    return `<path class="map-link ${registered?"confirmed":"inferred"} ${active?"flowing":""} ${problem?"problem":""}" d="M${x1} ${y1} C${mid} ${y1},${mid} ${y2},${x2} ${y2}"><title>${esc(source.name+" ↔ "+target.name+" · "+(link.port_id || "—")+" · "+t(registered?"confirmedPort":"observed"))}</title></path>`;
+  }).join("");
+  const focus=canvas.contains(document.activeElement) ? document.activeElement.dataset.mapNode : null;
+  canvas.style.height=height+"px";
+  canvas.innerHTML=`<div class="map-lane" data-map-left="24">${esc(t("mapInputs"))}</div><div class="map-lane" data-map-left="324">SWITCH FABRIC</div><div class="map-lane" data-map-left="624">${esc(t("mapAdapters"))}</div><svg width="900" height="${height}" aria-hidden="true">${links}</svg>`+endpoints.map(e=>{
+    const p=position(e), [color,label]=status(e);
+    return `<button data-map-node="${esc(e.id)}" class="map-node ${color} ${state.selected===e.id?"selected":""}" data-map-left="${p.x}" data-map-top="${p.y}" aria-pressed="${state.selected===e.id}"><span class="map-node-kind">${esc(typeName(e.kind))} · PID ${e.pid}<i class="dot ${color}"></i></span><strong>${esc(e.name)}</strong><span class="map-node-status">${esc(label)}${e.kind === "tunnel"?" · RTT "+esc(lastRTT(e)):""}</span><span class="map-node-rate">↓ ${esc(bps(rate(e,"rx")))} &nbsp; ↑ ${esc(bps(rate(e,"tx")))}</span></button>`;
+  }).join("")+(endpoints.length?"":`<p class="map-empty">${esc(t("noTopology"))}</p>`);
+  for(const el of canvas.querySelectorAll("[data-map-left]")) { el.style.left=el.dataset.mapLeft+"px"; el.style.top=(el.dataset.mapTop || 24)+"px"; }
+  if(focus) [...canvas.querySelectorAll("[data-map-node]")].find(b=>b.dataset.mapNode===focus)?.focus({preventScroll:true});
+  const e=selected(),detail=$("observed-detail");
+  detail.innerHTML=e?`<span class="eyebrow">${esc(typeName(e.kind))}</span><h3>${esc(e.name)}</h3><p>PID ${e.pid} · ${esc(duration(e.uptime_seconds))}</p>${peerNodes(e,state.data?.syspiper?.nodes || []).map(nodeSystemSummary).join("")}<dl><dt>RTT</dt><dd>${esc(lastRTT(e))}</dd><dt>RX / TX</dt><dd>${esc(bps(rate(e,"rx")))} / ${esc(bps(rate(e,"tx")))}</dd><dt>Peer access</dt><dd>${esc(e.metrics?.peer_info_access || "—")}</dd><dt>${esc(t("port"))}</dt><dd>${esc(e.port_id || "—")}</dd></dl>${attentionReasons(e).map(r=>`<p class="map-issue">${esc(r.text)}</p>`).join("")}<button class="quiet-button" data-map-open>${esc(t("mapOpen"))}</button>`:`<p>${esc(t("chooseProcess"))}</p>`;
+}
+$("observed-canvas").addEventListener("click",event=>{const node=event.target.closest("[data-map-node]");if(node)selectProcess(node.dataset.mapNode);});
+$("observed-detail").addEventListener("click",event=>{if(event.target.closest("[data-map-open]"))showView("overview");});
 function renderTopology() {
+  renderObserved();
   const data = state.data;
   const switches = data.endpoints.filter(e => e.kind === "switch");
   const attached = new Set(data.links.map(l=>l.source));
@@ -1105,7 +1151,9 @@ async function ruleAction(operation) {
 function showView(view) {
   state.view=view;
   document.querySelectorAll("[data-view]").forEach(b=>b.classList.toggle("active",b.dataset.view === state.view));
-  for (const name of ["overview","metrics","rules","switch","diagnostics","syspiper","flows"]) $("view-"+name).hidden = view !== name;
+  for (const name of ["overview","metrics","rules","switch","diagnostics","syspiper","flows","observed"]) $("view-"+name).hidden = view !== name;
+  document.querySelector(".process-panel").hidden=view === "observed";
+  if(view === "observed") renderObserved();
   $("view-"+view).scrollIntoView({block:"start"});
   if (view === "overview") drawChart();
   if (view === "diagnostics" && selected() && !state.logs.has(state.selected)) readLogs();

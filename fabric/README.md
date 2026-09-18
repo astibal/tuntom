@@ -426,3 +426,13 @@ Syspiperu (user až steal, bez opětovného započítání guest). Vyžaduje Sys
 s tímto polem. První vzorek, restart hostu, pokles čítače, dlouhá mezera nebo
 chybějící údaj znamenají „—“, nikoli nulu. Zastaralá data se označí a procenta
 se skryjí. CPU a steal popisují celý host, nikoli jednu tunelovou instanci.
+
+### Observed topology
+
+Pod Live overview je samostatná mapa lokálních procesů: tunely, switche a
+adaptéry/divert. Stabilní pozice, zoom 50/75/100 %, RTT a RX/TX na uzlech,
+výběr uzlu s detailem (na menším okně pod mapou). Plná linka znamená port
+potvrzený statistikami switche a namespace; přerušovaná vazbu z parametrů.
+Pulzování značí provoz procesu, ne trasování konkrétních paketů. Respektuje
+reduced-motion. Procesy bez doložené vazby zůstávají samostatné; mapa
+nedoplňuje vzdálenou topologii odhadem. Stačí aktualizace statických souborů a F5.
