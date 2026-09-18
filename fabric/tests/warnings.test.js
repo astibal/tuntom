@@ -73,3 +73,15 @@ test("expired warning does not return when the same snapshot is fetched again", 
   assert.equal(history.list().length, 1);
   assert.equal(history.list()[0].sampleId, "three");
 });
+
+test("clear dismisses all existing warnings but allows new samples", () => {
+  const history = new WarningHistory(() => 0);
+  const samples = [sample("one", "process-a"), sample("one", "process-b")];
+  history.observe(samples);
+  history.clear();
+  assert.equal(history.list().length, 0);
+  history.observe(samples);
+  assert.equal(history.list().length, 0);
+  history.observe([sample("two", "process-a")]);
+  assert.equal(history.list().length, 1);
+});

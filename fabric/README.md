@@ -446,3 +446,15 @@ IPC relay vazby na lokální switch se objevují také přes `--relay-connect`
 a `--relay-port-id` (včetně rozlišení mount namespace). Mapa používá zelené
 DATA a modrošedé IPC linky s odděleným vedením a jemně zaoblenými koleny.
 Po této změně discovery restartuj collector; samotné F5 nové vazby nedoplní.
+
+### Topology rule labels
+
+The topology reads active switch rules while its view is open. Next to verified
+tunnel attachments it lists matching source and destination label selectors,
+rewrites, destination patterns and via services, including destinations absent
+from the map. Collapsed groups combine duplicate rules; hover shows the original
+rule and associated ports. Red entries retain matching drops in switch order.
+These are declared policy selectors, not a computed effective reachability set:
+ordered drops, rewrites, service availability and connected destinations still
+determine forwarding. Unknown rules are shown explicitly; editor drafts are never
+used. Lists scroll independently and retain their scroll position on refresh.

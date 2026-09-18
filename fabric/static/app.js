@@ -8,6 +8,10 @@ const messages = {
   workspace:["Pracovní prostor","Workspace","Espace de travail"],
   views:["Zobrazení","Views","Vues"],
   language:["Jazyk rozhraní","Interface language","Langue de l’interface"],
+  mapShowLabels:["Label stacky","Label stacks","Piles de labels"],
+  mapPolicy:["Stacky podle pravidel","Rule label stacks","Piles de labels des règles"],
+  mapPolicyHint:["Deklarovaná pravidla v pořadí switche. Drop, přepisy a dostupnost cíle mohou průchod omezit. * = bez omezení / beze změny.","Declared rules in switch order. Drops, rewrites and destination availability may restrict forwarding. * = unrestricted / unchanged.","Règles déclarées dans l’ordre du switch. Rejets, réécritures et disponibilité peuvent limiter le transfert. * = sans restriction / inchangé."],
+  mapPolicyUnknown:["Pravidla nejsou dostupná","Rules unavailable","Règles indisponibles"],
   mapExpandAll:["Rozbalit vše","Expand all","Tout déplier"],
   mapDensity:["Hustota","Density","Densité"],
   mapAuto:["Automaticky","Automatic","Automatique"],
@@ -310,6 +314,7 @@ Object.assign(messages, {
   warningRetention:["Posledních 5 chybových vzorků · nejvýše 5 minut","Last 5 warning samples · up to 5 minutes","5 derniers relevés en alerte · pendant 5 minutes maximum"],
   recordedWarning:["Zachycené upozornění","Recorded warning","Alerte enregistrée"],
   secondsAgo:["Před {seconds} s","{seconds} s ago","Il y a {seconds} s"],
+  clearWarnings:["Smazat vše","Clear all","Tout effacer"],
   dismissWarning:["Zavřít upozornění pro {name}","Dismiss warning for {name}","Fermer l’alerte pour {name}"],
   warningProcessGone:["Proces už není v přehledu","Process is no longer listed","Le processus n’est plus dans la liste"],
 });
@@ -443,6 +448,7 @@ class WarningHistory {
   }
   list() { this.prune(); return this.items; }
   age(item) { return Math.max(0, Math.floor((this.clock() - item.recordedAt) / 1000)); }
+  clear() { this.items = []; }
   dismiss(id) { this.items = this.items.filter(item => item.id !== id); }
 }
 
@@ -466,7 +472,7 @@ function payloadClass(e) {
 }
 function payloadMark(e) {
   const mode=tunnelPayload(e);
-  return mode ? `<span class="payload-mark" aria-hidden="true">${mode === "IPC" ? "▣─▣" : "➜"}</span>` : "";
+  return mode ? `<span class="payload-mark ${mode === "DATA" ? "payload-arrows" : ""}" aria-hidden="true">${mode === "IPC" ? "▣─▣" : "<span>→</span><span>←</span>"}</span>` : "";
 }
 function endpointType(e) {
   return typeName(e?.kind)+(e?.kind === "tunnel" ? " · "+(tunnelPayload(e) || "?") : "");
@@ -658,6 +664,7 @@ async function refresh(force = false) {
       history.add(node.chart,state.chartNow); state.history.set(node.id,history);
     }
     render();
+    refreshMapRules();
     loadHistory(state.selected);
     if (state.chartDialog) loadHistory(state.chartDialog.endpointId);
   } catch (error) {
@@ -1087,6 +1094,64 @@ function mapConnector(x1,y1,x2,y2,offset=0) {
   return `M${x1} ${y1} H${mid-dx*radius} Q${mid} ${y1} ${mid} ${y1+dy*radius} V${y2-dy*radius} Q${mid} ${y2} ${mid+dx*radius} ${y2} H${x2}`;
 }
 // Name is only a candidate: verify the encoded tunnel ID and local context.
+// Read canonical rules exported by the switch, never the editor's draft.
+function topologyRules(text, port) {
+  const matches=pattern=>!pattern || pattern==='*' || (pattern.endsWith('*')?port.startsWith(pattern.slice(0,-1)):port===pattern);
+  const side=text=>{
+    text=text.trim();
+    if(!text)return {port:'',stack:'*'};
+    if(text.startsWith('['))return {port:'',stack:text};
+    const comma=text.indexOf(',');
+    return comma<0?{port:text,stack:'*'}:{port:text.slice(0,comma).trim(),stack:text.slice(comma+1).trim()};
+  };
+  const rows=[];
+  for(const [index,line] of text.split('\n').entries()) {
+    const rule=line.match(/^switch(?:\s+(.*?))?\s+(allow|drop)(?:\s+\[id=[^\]]+\])?$/);
+    if(!rule)continue;
+    let body=(rule[1] || '').trim(),via='';
+    const service=body.match(/(?:^|\s)via\s+(\[[^\]]*\])$/);
+    if(service){via=service[1];body=body.slice(0,service.index).trim();}
+    const parts=body.split(/(?:^|\s)to\s+/);
+    const input=side(parts[0]),output=side(parts[1] || '');
+    if(matches(input.port))rows.push({direction:'→',stack:input.stack,target:output.port || '*',rewrite:output.stack,action:rule[2],line:index+1,raw:line,via});
+    if(matches(output.port))rows.push({direction:'←',stack:output.stack,target:input.port || '*',rewrite:input.stack,action:rule[2],line:index+1,raw:line,via});
+  }
+  return rows;
+}
+const mapRules=new Map();
+let mapRulesBusy=false;
+async function refreshMapRules() {
+  if(state.view!=="observed" || !$("map-show-labels").checked || mapRulesBusy)return;
+  mapRulesBusy=true;
+  try {
+    const switches=(state.data?.endpoints || []).filter(e=>e.kind==="switch");
+    const live=new Set(switches.map(e=>e.id));
+    for(const key of mapRules.keys())if(!live.has(key))mapRules.delete(key);
+    await Promise.all(switches.map(async sw=>{
+      try {const result=await api(endpointURL(sw.id));mapRules.set(sw.id,{text:result.rules});}
+      catch {mapRules.set(sw.id,{error:true});}
+    }));
+    renderObserved();
+  } finally {mapRulesBusy=false;}
+}
+function mapPolicyRows(members) {
+  const rows=new Map();let unknown=false;
+  for(const e of members) {
+    if(e.kind!=="tunnel")continue;
+    for(const link of state.data.links || []) {
+      if(link.source!==e.id || !link.port_id || !link.namespace_verified)continue;
+      const rules=mapRules.get(link.target);
+      if(!rules || rules.error){unknown=true;continue;}
+      for(const row of topologyRules(rules.text,link.port_id)) {
+        const key=link.target+':'+row.line+':'+row.direction;
+        if(!rows.has(key))rows.set(key,{...row,ports:new Set()});
+        rows.get(key).ports.add(link.port_id);
+      }
+    }
+  }
+  return {rows:[...rows.values()],unknown};
+}
+
 function observedGroups(endpoints) {
   const grouped=new Map();
   for(const e of endpoints) {
@@ -1110,6 +1175,7 @@ function cancelMapHover() {
 }
 $("map-expand-all").addEventListener("change",()=>{cancelMapHover();mapHovered=null;renderObserved();});
 $("map-density").addEventListener("change",renderObserved);
+$("map-show-labels").addEventListener("change",()=>{renderObserved();refreshMapRules();});
 function renderObserved() {
   const canvas=$("observed-canvas");
   if(!canvas || !state.data) return;
@@ -1119,13 +1185,15 @@ function renderObserved() {
   for(const id of mapLarge) if(!ids.has(id))mapLarge.delete(id);
   for(const g of groups) if(!mapOrder.has(g.key)) mapOrder.set(g.key,mapOrderNext++);
   groups.sort((a,b)=>mapOrder.get(a.key)-mapOrder.get(b.key));
+  const showLabels=$("map-show-labels").checked, laneWidth=showLabels?560:300, canvasWidth=showLabels?1400:900;
+  canvas.style.minWidth=canvasWidth+"px";
   const all=$("map-expand-all").checked, density=$("map-density").value;
   const size=density === "auto" ? (groups.length>30?"names":groups.length>12?"compact":"full") : density;
   const heightFor=full=>full?114:size==="names"?36:size==="compact"?66:114;
   const lanes=[65,65,65], positions=new Map(), layouts=[];
   const lane=e=>e.kind === "switch"?1:["adapter","divert"].includes(e.kind)?2:0;
   for(const g of groups) {
-    const col=lane(g.members[0]),x=24+col*300,y=lanes[col], stack=g.members.length>1;
+    const col=lane(g.members[0]),x=24+col*laneWidth,y=lanes[col], stack=g.members.length>1;
     const open=stack && (all || mapPinned.has(g.key) || mapHovered===g.key);
     const full=all || open || (!stack && mapLarge.has(g.members[0].id));
     let offset=stack && open ? 44 : 0;
@@ -1148,9 +1216,9 @@ function renderObserved() {
     const active=(rate(source,"rx") || 0)+(rate(source,"tx") || 0)>0 && !outdated(source) && source.status === "reachable";
     return `<path class="map-link ${payloadClass(source)} ${registered?"confirmed":"inferred"} ${active?"flowing":""} ${attentionReasons(source).length?"problem":""}" d="${mapConnector(a.x+(left?250:0),a.y+a.h/2,b.x+(left?0:250),b.y+b.h/2,tunnelPayload(source)==="IPC"?6:-6)}"><title>${esc(source.name+" ↔ "+target.name+" · "+(link.port_id || "—"))}</title></path>`;
   }).join("");
-  if(!canvas.querySelector("svg")) canvas.innerHTML=`<div class="map-lane">${esc(t("mapInputs"))}</div><div class="map-lane">SWITCH FABRIC</div><div class="map-lane">${esc(t("mapAdapters"))}</div><svg width="900" aria-hidden="true"></svg>`;
-  [...canvas.querySelectorAll(".map-lane")].forEach((el,i)=>{el.style.left=(24+i*300)+"px";el.textContent=i===0?t("mapInputs"):i===1?"SWITCH FABRIC":t("mapAdapters");});
-  canvas.style.height=height+"px";const svg=canvas.querySelector("svg");svg.setAttribute("height",height);svg.innerHTML=links;
+  if(!canvas.querySelector("svg")) canvas.innerHTML=`<div class="map-lane">${esc(t("mapInputs"))}</div><div class="map-lane">SWITCH FABRIC</div><div class="map-lane">${esc(t("mapAdapters"))}</div><svg width="1400" aria-hidden="true"></svg>`;
+  [...canvas.querySelectorAll(".map-lane")].forEach((el,i)=>{el.style.left=(24+i*laneWidth)+"px";el.textContent=i===0?t("mapInputs"):i===1?"SWITCH FABRIC":t("mapAdapters");});
+  canvas.style.height=height+"px";const svg=canvas.querySelector("svg");svg.setAttribute("height",height);svg.setAttribute("width",canvasWidth);svg.innerHTML=links;
   const previous=new Map([...canvas.querySelectorAll(".map-group")].map(el=>[el.dataset.mapGroup,el]));
   for(const layout of layouts) {
     const {g,x,y,stack,open,full,cards}=layout;
@@ -1167,14 +1235,21 @@ function renderObserved() {
     const focus=wrapper.contains(document.activeElement)?document.activeElement.dataset.mapNode || "group":null;
     const header=stack && open?`<button class="map-stack-header ${payloadClass(g.members[0])}" data-map-toggle="${esc(g.key)}" aria-expanded="true" title="${esc(t("mapStackHint"))}">${esc(g.name)} · ×${g.members.length} ${mapPinned.has(g.key)||all?"▣":"◇"} ▴</button>`:"";
     const aggregate=(members,dir)=>{const rates=members.map(e=>rate(e,dir));return rates.every(Number.isFinite)?rates.reduce((a,b)=>a+b,0):null;};
-    const html=header+cards.map(card=>{
+    let html=header+cards.map(card=>{
       const e=card.members[0],issues=card.members.filter(e=>attentionReasons(e).length).length;
       const worst=card.members.find(e=>attentionReasons(e).length) || card.members.find(e=>status(e)[0]!=="") || e;
       const [color,label]=status(worst),compact=!full && size!=="full";
       const attrs=card.stack?`data-map-toggle="${esc(g.key)}" aria-expanded="false"`:`data-map-node="${esc(e.id)}" aria-pressed="${state.selected===e.id}"`;
       return `<button ${attrs} data-offset="${card.y-y}" data-height="${card.h}" class="map-node ${payloadClass(e)} ${color} ${card.stack?"map-stack":""} ${compact?"map-"+size:""} ${!card.stack && state.selected===e.id?"selected":""}" title="${esc(card.stack?t("mapStackHint"):e.name+" · "+endpointType(e))}"><span class="map-node-kind">${payloadMark(e)}${esc(endpointType(e))}${card.stack?"":" · PID "+e.pid}<i class="dot ${color}"></i></span><strong>${esc(card.stack?g.name:e.name)}${card.stack?` <em>×${g.members.length}</em>`:""}</strong><span class="map-node-status">${esc(card.stack?t("mapMembers",{count:g.members.length,issues}):label+(e.kind==="tunnel"?" · RTT "+lastRTT(e):""))}</span><span class="map-node-rate">↓ ${esc(bps(aggregate(card.members,"rx")))} &nbsp; ↑ ${esc(bps(aggregate(card.members,"tx")))}</span></button>`;
     }).join("");
+    for(const card of showLabels?cards:[]) {
+      const policy=mapPolicyRows(card.members);
+      if(!policy.rows.length && !policy.unknown)continue;
+      html+=`<aside class="map-policy ${payloadClass(card.members[0])}" data-offset="${card.y-y}" data-height="${card.h}" tabindex="0" aria-label="${esc(t("mapPolicy"))}" title="${esc(t("mapPolicyHint"))}"><strong>${esc(t("mapPolicy"))}</strong>${policy.unknown?`<p>${esc(t("mapPolicyUnknown"))}</p>`:""}${policy.rows.map(row=>`<div class="map-policy-row ${row.action==='drop'?'denied':''}" title="${esc([...row.ports].join(', ')+" · "+row.raw)}"><span>${row.direction} ${esc(row.stack)}</span><small>${esc(row.action)} · ${esc(row.target)}${row.rewrite!=='*'?' · '+esc(row.rewrite):''}${row.via?' via '+esc(row.via):''}</small></div>`).join("")}</aside>`;
+    }
+    const policyScroll=[...wrapper.querySelectorAll(".map-policy")].map(el=>el.scrollTop);
     if(wrapper.innerHTML!==html)wrapper.innerHTML=html;
+    [...wrapper.querySelectorAll(".map-policy")].forEach((el,i)=>{el.scrollTop=policyScroll[i] || 0;});
     for(const button of wrapper.querySelectorAll("[data-offset]")){button.style.top=button.dataset.offset+"px";button.style.height=button.dataset.height+"px";}
     if(focus){const button=[...wrapper.querySelectorAll("button")].find(el=>focus==="group"?el.hasAttribute("data-map-toggle"):el.dataset.mapNode===focus);button?.focus({preventScroll:true});}
   }
@@ -1253,7 +1328,7 @@ function showView(view) {
   document.querySelectorAll("[data-view]").forEach(b=>b.classList.toggle("active",b.dataset.view === state.view));
   for (const name of ["overview","metrics","rules","switch","diagnostics","syspiper","flows","observed"]) $("view-"+name).hidden = view !== name;
   document.querySelector(".process-panel").hidden=view === "observed";
-  if(view === "observed") renderObserved();
+  if(view === "observed") {renderObserved();refreshMapRules();}
   $("view-"+view).scrollIntoView({block:"start"});
   if (view === "overview") drawChart();
   if (view === "diagnostics" && selected() && !state.logs.has(state.selected)) readLogs();
@@ -1320,6 +1395,9 @@ function renderWarnings() {
     age.setAttribute("aria-label",t("secondsAgo",{seconds}));
   }
 }
+$("warning-clear").addEventListener("click",()=>{
+  state.warnings.clear();renderWarnings();$("refresh").focus({preventScroll:true});
+});
 $("warning-list").addEventListener("click",event=>{
   const close=event.target.closest("[data-dismiss-warning]"),process=event.target.closest("[data-warning-process]");
   if (close) {
