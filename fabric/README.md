@@ -436,3 +436,13 @@ potvrzený statistikami switche a namespace; přerušovaná vazbu z parametrů.
 Pulzování značí provoz procesu, ne trasování konkrétních paketů. Respektuje
 reduced-motion. Procesy bez doložené vazby zůstávají samostatné; mapa
 nedoplňuje vzdálenou topologii odhadem. Stačí aktualizace statických souborů a F5.
+
+Přehled a mapa rozlišují `TUNEL · DATA` a `TUNEL · IPC`. IPC vychází ze
+stats `relay_mode=listen/connect`; úplný vzorek tunelu s `tunnel_id` bez
+`relay_mode` označuje DATA režim. Bez dostupných stats je režim `?`.
+Neodvozuje se z počtu paketů ani názvu procesu; protokol se nemění.
+
+IPC relay vazby na lokální switch se objevují také přes `--relay-connect`
+a `--relay-port-id` (včetně rozlišení mount namespace). Mapa používá zelené
+DATA a modrošedé IPC linky s odděleným vedením a jemně zaoblenými koleny.
+Po této změně discovery restartuj collector; samotné F5 nové vazby nedoplní.

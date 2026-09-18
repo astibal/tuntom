@@ -13,7 +13,7 @@ VALUE_OPTIONS = set("""control-socket stats-file stats-format socket switch-sock
 switch-port-id switch-label switch-ipc switch-ipc-batch classifier-file rules-file
 divert-file divert-in-port divert-out-port mtu transport-mtu init-window workers
 pool-size queue-size ipc-mode ipc-batch reserve-cpus flow-capacity flow-idle-seconds
-admission-capacity default-back port-id label exit-port trunk-port""".split())
+admission-capacity default-back port-id label exit-port trunk-port relay-connect relay-listen relay-port-id""".split())
 FLAG_OPTIONS = set("""no-stats crypto-auth-only pmtud no-pmtud no-ttl-compensate
 switch-exit-node quiet debug auto-pool""".split())
 
@@ -135,6 +135,8 @@ def inspect_process(directory, *, host, boot, uptime, ticks, page_size):
     peer = argv[4] if role == "client" and len(argv) > 4 else ""
     control = path_option("control-socket")
     switch_socket = path_option("socket" if kind == "switch" else "switch-socket")
+    if kind == "tunnel" and opts.get("relay-connect"):
+        switch_socket = path_option("relay-connect")
     endpoint_name = (argv[2] + ("c" if role == "client" else "s")) if kind == "tunnel" and len(argv) > 2 else (
         Path(switch_socket).stem if kind == "switch" and switch_socket else interface or comm)
     if not argv:
@@ -154,7 +156,7 @@ def inspect_process(directory, *, host, boot, uptime, ticks, page_size):
         host=host, kind=kind, name=endpoint_name, executable=executable, uid=directory.stat().st_uid,
         state=after[0], uptime_seconds=max(0, int(uptime - int(before[19]) / ticks)),
         rss_bytes=max(0, int(after[21])) * page_size, threads=int(after[17]), control=control,
-        switch_socket=switch_socket, port_id=opts.get("switch-port-id", opts.get("port-id", "")),
+        switch_socket=switch_socket, port_id=opts.get("relay-port-id", opts.get("switch-port-id", opts.get("port-id", ""))),
         interface=interface, role=role, peer=peer, unit=units[-1] if units else "",
         mount_namespace=read_link(directory / "ns/mnt"), net_namespace=read_link(directory / "ns/net"),
         options=opts, notes=notes)

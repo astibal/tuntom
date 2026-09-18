@@ -8,6 +8,14 @@ const messages = {
   workspace:["Pracovní prostor","Workspace","Espace de travail"],
   views:["Zobrazení","Views","Vues"],
   language:["Jazyk rozhraní","Interface language","Langue de l’interface"],
+  mapExpandAll:["Rozbalit vše","Expand all","Tout déplier"],
+  mapDensity:["Hustota","Density","Densité"],
+  mapAuto:["Automaticky","Automatic","Automatique"],
+  mapFull:["Plné karty","Full cards","Cartes complètes"],
+  mapCompact:["Kompaktní","Compact","Compact"],
+  mapNames:["Jen názvy","Names only","Noms seuls"],
+  mapStackHint:["Hover: náhled · klik: připnout / sbalit","Hover: preview · click: pin / collapse","Survol : aperçu · clic : fixer / replier"],
+  mapMembers:["{count} tunelů · {issues} s upozorněním","{count} tunnels · {issues} with warnings","{count} tunnels · {issues} avec alertes"],
   observedTitle:["Pozorovaná topologie","Observed topology","Topologie observée"],
   observedHint:["Lokální procesy a doložené vazby. Vyber uzel pro detail.","Local processes and observed attachments. Select a node for details.","Processus locaux et liens observés. Sélectionne un nœud."],
   observedLive:["ŽIVÁ TELEMETRIE","LIVE TELEMETRY","TÉLÉMÉTRIE EN DIRECT"],
@@ -445,6 +453,24 @@ const state = {data: null, selected: null, view: "overview", paused: false, busy
   token: "", failure: "", loginError: "", ruleBusy: false};
 const types = {tunnel:"typeTunnel", switch:"typeSwitch", adapter:"typeAdapter", divert:"typeDivert", process:"typeProcess"};
 const typeName = kind => types[kind] ? t(types[kind]) : kind || "—";
+function tunnelPayload(e) {
+  if(e?.kind !== "tunnel" || e.status !== "reachable") return null;
+  const metrics=e.metrics || {};
+  if(["listen","connect"].includes(metrics.relay_mode)) return "IPC";
+  if(!Object.hasOwn(metrics,"relay_mode") && /^[0-9]+$/.test(metrics.tunnel_id || "")) return "DATA";
+  return null;
+}
+function payloadClass(e) {
+  return ({DATA:"payload-data",IPC:"payload-ipc"})[tunnelPayload(e)] || "";
+}
+function payloadMark(e) {
+  const mode=tunnelPayload(e);
+  return mode ? `<span class="payload-mark" aria-hidden="true">${mode === "IPC" ? "▣─▣" : "➜"}</span>` : "";
+}
+function endpointType(e) {
+  return typeName(e?.kind)+(e?.kind === "tunnel" ? " · "+(tunnelPayload(e) || "?") : "");
+}
+
 const esc = text => String(text ?? "").replace(/[&<>"']/g, char => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"}[char]));
 
 // Interpretations follow src/ipc/switch_transport.hpp, switch_mp/runtime.hpp,
@@ -723,7 +749,7 @@ function renderProcesses() {
     const [color, text] = status(e);
     const reasons=attentionReasons(e);
     const indicator=reasons.length ? `<button class="status attention-status" data-attention="${esc(e.id)}" title="${esc(reasons.map(reason=>reason.text).join("\n"))}"><span class="attention-title"><span class="attention-mark" aria-hidden="true">!</span>${esc(text)} ↗</span><span class="status-reasons">${reasons.slice(0,2).map(reason=>esc(reason.text)).join("<br>")}${reasons.length > 2 ? `<br>${esc(t("moreReasons",{count:reasons.length-2}))}` : ""}</span></button>` : `<span class="status"><i class="dot ${color}"></i>${esc(text)}</span>`;
-    return `<tr data-process-row="${esc(e.id)}" class="${e.id === state.selected ? "selected" : ""} ${count>1 ? "peer-group"+(first ? " peer-group-first" : "")+(last ? " peer-group-last" : "") : ""}"><td><button class="process-name" data-id="${esc(e.id)}" aria-pressed="${e.id === state.selected}">${esc(e.name)}<small>PID ${e.pid}${e.interface && e.interface !== "-" ? " · " + esc(e.interface) : ""}</small></button>${first ? peerSecuritySummary(e,peers) : ""}</td><td><span class="kind">${esc(typeName(e.kind))}</span></td><td>${indicator}</td><td>${bps(rate(e,"rx"))}<small>↑ ${bps(rate(e,"tx"))}</small></td><td class="rtt-value" title="${esc(metricHelp("rtt_last_ms"))}">${esc(lastRTT(e))}</td><td>${duration(e.uptime_seconds)}</td></tr>`;
+    return `<tr data-process-row="${esc(e.id)}" class="${e.id === state.selected ? "selected" : ""} ${count>1 ? "peer-group"+(first ? " peer-group-first" : "")+(last ? " peer-group-last" : "") : ""}"><td><button class="process-name" data-id="${esc(e.id)}" aria-pressed="${e.id === state.selected}">${esc(e.name)}<small>PID ${e.pid}${e.interface && e.interface !== "-" ? " · " + esc(e.interface) : ""}</small></button>${first ? peerSecuritySummary(e,peers) : ""}</td><td><span class="kind ${payloadClass(e)}">${payloadMark(e)}${esc(endpointType(e))}</span></td><td>${indicator}</td><td>${bps(rate(e,"rx"))}<small>↑ ${bps(rate(e,"tx"))}</small></td><td class="rtt-value" title="${esc(metricHelp("rtt_last_ms"))}">${esc(lastRTT(e))}</td><td>${duration(e.uptime_seconds)}</td></tr>`;
   }).join("");
   $("empty").hidden = rows.length > 0;
   $("empty").querySelector("h3").textContent = t(state.data.endpoints.length ? "noMatches" : "noProcesses");
@@ -732,7 +758,8 @@ function renderProcesses() {
 function renderDetail() {
   const e = selected();
   $("detail-title").textContent = e?.name || t("chooseProcess");
-  $("detail-kind").textContent = typeName(e?.kind);
+  $("detail-kind").innerHTML = payloadMark(e)+esc(endpointType(e));
+  $("detail-kind").className="kind "+payloadClass(e);
   if (!e) { $("detail").innerHTML = `<p class="muted">${esc(t("appearAfterStart"))}</p>`; drawChart(); return; }
   const values = [["PID / UID", `${e.pid} / ${e.uid}`], [t("binary"), e.executable], [t("control"), e.control || t("unset")],
     ["Switch", e.switch_socket || "—"], [t("portRole"), [e.port_id,e.role].filter(Boolean).join(" / ") || "—"],
@@ -1052,42 +1079,114 @@ $("syspiper-nodes").addEventListener("click",event=>{
   $("chart-dialog").showModal(); renderChartDialog(); loadHistory(node.id);
 });
 $("map-zoom").addEventListener("change",event=>{$("observed-canvas").style.zoom=event.target.value;});
-const observedSlots=new Map();
+function mapConnector(x1,y1,x2,y2,offset=0) {
+  if(y1===y2) return `M${x1} ${y1} H${x2}`;
+  const mid=(x1+x2)/2+offset, dx=Math.sign(x2-x1), dy=Math.sign(y2-y1);
+  const radius=Math.min(9,Math.abs(x2-x1)/4,Math.abs(y2-y1)/2);
+  return `M${x1} ${y1} H${mid-dx*radius} Q${mid} ${y1} ${mid} ${y1+dy*radius} V${y2-dy*radius} Q${mid} ${y2} ${mid+dx*radius} ${y2} H${x2}`;
+}
+// Name is only a candidate: verify the encoded tunnel ID and local context.
+function observedGroups(endpoints) {
+  const grouped=new Map();
+  for(const e of endpoints) {
+    const match=e.kind === "tunnel" && /^([1-9][0-9]{0,2})(?:_([1-9][0-9]?))?([sc])$/.exec(e.name);
+    const group=match ? Number(match[1]) : 0, member=match ? Number(match[2] || 0) : 0;
+    const mode=tunnelPayload(e);
+    const verified=match && group<=255 && member<=63 && mode &&
+      e.metrics?.tunnel_id === String(group+256*member) && e.role === (match[3]==="s"?"server":"client") && e.net_namespace && e.mount_namespace;
+    const key=verified ? JSON.stringify([e.host,e.net_namespace,e.mount_namespace,group,e.role,mode,e.switch_socket || "",e.peer || "",e.metrics?.peer_info_access || ""]) : "single:"+e.id;
+    if(!grouped.has(key)) grouped.set(key,{key,name:verified?match[1]+match[3]:e.name,members:[]});
+    grouped.get(key).members.push(e);
+  }
+  for(const group of grouped.values()) group.members.sort((a,b)=>Number(a.metrics?.tunnel_id || 0)-Number(b.metrics?.tunnel_id || 0) || a.id.localeCompare(b.id));
+  return [...grouped.values()];
+}
+const mapPinned=new Set(), mapLarge=new Set(), mapOrder=new Map();
+let mapHovered=null, mapOrderNext=0, mapHoverTimer=null, mapHoverPending=null;
+function cancelMapHover() {
+  clearTimeout(mapHoverTimer);mapHoverTimer=null;
+  mapHoverPending?.classList.remove("map-hover-pending");mapHoverPending=null;
+}
+$("map-expand-all").addEventListener("change",()=>{cancelMapHover();mapHovered=null;renderObserved();});
+$("map-density").addEventListener("change",renderObserved);
 function renderObserved() {
   const canvas=$("observed-canvas");
   if(!canvas || !state.data) return;
-  const endpoints=state.data.endpoints;
-  for(const id of observedSlots.keys()) if(!endpoints.some(e=>e.id===id)) observedSlots.delete(id);
-  const lane=e=>e.kind === "switch" ? 1 : ["adapter","divert"].includes(e.kind) ? 2 : 0;
-  for(const e of endpoints) if(!observedSlots.has(e.id)) {
-    const col=lane(e), used=new Set([...observedSlots.values()].filter(p=>p.col===col).map(p=>p.slot));
-    let slot=0; while(used.has(slot)) slot++;
-    observedSlots.set(e.id,{col,slot});
+  const endpoints=state.data.endpoints, groups=observedGroups(endpoints);
+  const keys=new Set(groups.map(g=>g.key)), ids=new Set(endpoints.map(e=>e.id));
+  for(const key of mapOrder.keys()) if(!keys.has(key)) {mapOrder.delete(key);mapPinned.delete(key);}
+  for(const id of mapLarge) if(!ids.has(id))mapLarge.delete(id);
+  for(const g of groups) if(!mapOrder.has(g.key)) mapOrder.set(g.key,mapOrderNext++);
+  groups.sort((a,b)=>mapOrder.get(a.key)-mapOrder.get(b.key));
+  const all=$("map-expand-all").checked, density=$("map-density").value;
+  const size=density === "auto" ? (groups.length>30?"names":groups.length>12?"compact":"full") : density;
+  const heightFor=full=>full?114:size==="names"?36:size==="compact"?66:114;
+  const lanes=[65,65,65], positions=new Map(), layouts=[];
+  const lane=e=>e.kind === "switch"?1:["adapter","divert"].includes(e.kind)?2:0;
+  for(const g of groups) {
+    const col=lane(g.members[0]),x=24+col*300,y=lanes[col], stack=g.members.length>1;
+    const open=stack && (all || mapPinned.has(g.key) || mapHovered===g.key);
+    const full=all || open || (!stack && mapLarge.has(g.members[0].id));
+    let offset=stack && open ? heightFor(false)+12 : 0;
+    const cards=[];
+    if(stack && !open) {
+      const h=heightFor(false); cards.push({members:g.members,x,y,h,stack:true}); offset=h;
+      for(const e of g.members)positions.set(e.id,{x,y,h});
+    } else for(const e of g.members) {
+      const h=heightFor(full);cards.push({members:[e],x,y:y+offset,h,stack:false});
+      positions.set(e.id,{x,y:y+offset,h});offset+=h+12;
+    }
+    layouts.push({g,x,y,stack,open,full,cards,height:offset});lanes[col]+=offset+28;
   }
-  const position=e=>{const p=observedSlots.get(e.id);return {x:24+p.col*300,y:65+p.slot*146};};
-  const height=Math.max(420,...[...observedSlots.values()].map(p=>p.slot*146+211));
+  const height=Math.max(420,...lanes);
   const links=(state.data.links || []).map(link=>{
-    const source=endpoints.find(e=>e.id===link.source), target=endpoints.find(e=>e.id===link.target);
-    if(!source || !target) return "";
-    const a=position(source),b=position(target), left=a.x<b.x;
-    const x1=a.x+(left?250:0),x2=b.x+(left?0:250),y1=a.y+57,y2=b.y+57,mid=(x1+x2)/2;
+    const source=endpoints.find(e=>e.id===link.source),target=endpoints.find(e=>e.id===link.target);
+    if(!source || !target)return "";
+    const a=positions.get(source.id),b=positions.get(target.id),left=a.x<b.x;
     const registered=link.namespace_verified && target.switch_detail?.ports.some(p=>p.name===link.port_id);
     const active=(rate(source,"rx") || 0)+(rate(source,"tx") || 0)>0 && !outdated(source) && source.status === "reachable";
-    const problem=attentionReasons(source).length>0;
-    return `<path class="map-link ${registered?"confirmed":"inferred"} ${active?"flowing":""} ${problem?"problem":""}" d="M${x1} ${y1} C${mid} ${y1},${mid} ${y2},${x2} ${y2}"><title>${esc(source.name+" ↔ "+target.name+" · "+(link.port_id || "—")+" · "+t(registered?"confirmedPort":"observed"))}</title></path>`;
+    return `<path class="map-link ${payloadClass(source)} ${registered?"confirmed":"inferred"} ${active?"flowing":""} ${attentionReasons(source).length?"problem":""}" d="${mapConnector(a.x+(left?250:0),a.y+a.h/2,b.x+(left?0:250),b.y+b.h/2,tunnelPayload(source)==="IPC"?6:-6)}"><title>${esc(source.name+" ↔ "+target.name+" · "+(link.port_id || "—"))}</title></path>`;
   }).join("");
-  const focus=canvas.contains(document.activeElement) ? document.activeElement.dataset.mapNode : null;
-  canvas.style.height=height+"px";
-  canvas.innerHTML=`<div class="map-lane" data-map-left="24">${esc(t("mapInputs"))}</div><div class="map-lane" data-map-left="324">SWITCH FABRIC</div><div class="map-lane" data-map-left="624">${esc(t("mapAdapters"))}</div><svg width="900" height="${height}" aria-hidden="true">${links}</svg>`+endpoints.map(e=>{
-    const p=position(e), [color,label]=status(e);
-    return `<button data-map-node="${esc(e.id)}" class="map-node ${color} ${state.selected===e.id?"selected":""}" data-map-left="${p.x}" data-map-top="${p.y}" aria-pressed="${state.selected===e.id}"><span class="map-node-kind">${esc(typeName(e.kind))} · PID ${e.pid}<i class="dot ${color}"></i></span><strong>${esc(e.name)}</strong><span class="map-node-status">${esc(label)}${e.kind === "tunnel"?" · RTT "+esc(lastRTT(e)):""}</span><span class="map-node-rate">↓ ${esc(bps(rate(e,"rx")))} &nbsp; ↑ ${esc(bps(rate(e,"tx")))}</span></button>`;
-  }).join("")+(endpoints.length?"":`<p class="map-empty">${esc(t("noTopology"))}</p>`);
-  for(const el of canvas.querySelectorAll("[data-map-left]")) { el.style.left=el.dataset.mapLeft+"px"; el.style.top=(el.dataset.mapTop || 24)+"px"; }
-  if(focus) [...canvas.querySelectorAll("[data-map-node]")].find(b=>b.dataset.mapNode===focus)?.focus({preventScroll:true});
+  if(!canvas.querySelector("svg")) canvas.innerHTML=`<div class="map-lane">${esc(t("mapInputs"))}</div><div class="map-lane">SWITCH FABRIC</div><div class="map-lane">${esc(t("mapAdapters"))}</div><svg width="900" aria-hidden="true"></svg>`;
+  [...canvas.querySelectorAll(".map-lane")].forEach((el,i)=>{el.style.left=(24+i*300)+"px";el.textContent=i===0?t("mapInputs"):i===1?"SWITCH FABRIC":t("mapAdapters");});
+  canvas.style.height=height+"px";const svg=canvas.querySelector("svg");svg.setAttribute("height",height);svg.innerHTML=links;
+  const previous=new Map([...canvas.querySelectorAll(".map-group")].map(el=>[el.dataset.mapGroup,el]));
+  for(const layout of layouts) {
+    const {g,x,y,stack,open,full,cards}=layout;
+    let wrapper=previous.get(g.key);
+    if(!wrapper) {
+      wrapper=document.createElement("section");wrapper.className="map-group";wrapper.dataset.mapGroup=g.key;
+      wrapper.addEventListener("pointerenter",event=>{if(event.pointerType!=="touch" && wrapper.dataset.stack === "true" && !$("map-expand-all").checked && !mapPinned.has(g.key)){cancelMapHover();mapHoverPending=wrapper;wrapper.classList.add("map-hover-pending");
+        mapHoverTimer=setTimeout(()=>{cancelMapHover();if(wrapper.isConnected && wrapper.matches(":hover")){mapHovered=g.key;renderObserved();}},650);
+      }});
+      wrapper.addEventListener("pointerleave",()=>{if(mapHoverPending===wrapper)cancelMapHover();if(mapHovered===g.key){mapHovered=null;renderObserved();}});
+      canvas.append(wrapper);
+    }
+    previous.delete(g.key);wrapper.dataset.stack=String(stack);wrapper.style.left=x+"px";wrapper.style.top=y+"px";wrapper.style.height=layout.height+"px";
+    const focus=wrapper.contains(document.activeElement)?document.activeElement.dataset.mapNode || "group":null;
+    const header=stack && open?`<button data-offset="0" data-height="${heightFor(false)}" class="map-stack-header ${payloadClass(g.members[0])}" data-map-toggle="${esc(g.key)}" aria-expanded="true" title="${esc(t("mapStackHint"))}">${esc(g.name)} · ×${g.members.length} ${mapPinned.has(g.key)||all?"▣":"◇"} ▴</button>`:"";
+    const aggregate=(members,dir)=>{const rates=members.map(e=>rate(e,dir));return rates.every(Number.isFinite)?rates.reduce((a,b)=>a+b,0):null;};
+    const html=header+cards.map(card=>{
+      const e=card.members[0],issues=card.members.filter(e=>attentionReasons(e).length).length;
+      const worst=card.members.find(e=>attentionReasons(e).length) || card.members.find(e=>status(e)[0]!=="") || e;
+      const [color,label]=status(worst),compact=!full && size!=="full";
+      const attrs=card.stack?`data-map-toggle="${esc(g.key)}" aria-expanded="false"`:`data-map-node="${esc(e.id)}" aria-pressed="${state.selected===e.id}"`;
+      return `<button ${attrs} data-offset="${card.y-y}" data-height="${card.h}" class="map-node ${payloadClass(e)} ${color} ${card.stack?"map-stack":""} ${compact?"map-"+size:""} ${!card.stack && state.selected===e.id?"selected":""}" title="${esc(card.stack?t("mapStackHint"):e.name+" · "+endpointType(e))}"><span class="map-node-kind">${payloadMark(e)}${esc(endpointType(e))}${card.stack?"":" · PID "+e.pid}<i class="dot ${color}"></i></span><strong>${esc(card.stack?g.name:e.name)}${card.stack?` <em>×${g.members.length}</em>`:""}</strong><span class="map-node-status">${esc(card.stack?t("mapMembers",{count:g.members.length,issues}):label+(e.kind==="tunnel"?" · RTT "+lastRTT(e):""))}</span><span class="map-node-rate">↓ ${esc(bps(aggregate(card.members,"rx")))} &nbsp; ↑ ${esc(bps(aggregate(card.members,"tx")))}</span></button>`;
+    }).join("");
+    if(wrapper.innerHTML!==html)wrapper.innerHTML=html;
+    for(const button of wrapper.querySelectorAll("[data-offset]")){button.style.top=button.dataset.offset+"px";button.style.height=button.dataset.height+"px";}
+    if(focus){const button=[...wrapper.querySelectorAll("button")].find(el=>focus==="group"?el.hasAttribute("data-map-toggle"):el.dataset.mapNode===focus);button?.focus({preventScroll:true});}
+  }
+  for(const wrapper of previous.values()){if(mapHoverPending===wrapper)cancelMapHover();wrapper.remove();}
   const e=selected(),detail=$("observed-detail");
-  detail.innerHTML=e?`<span class="eyebrow">${esc(typeName(e.kind))}</span><h3>${esc(e.name)}</h3><p>PID ${e.pid} · ${esc(duration(e.uptime_seconds))}</p>${peerNodes(e,state.data?.syspiper?.nodes || []).map(nodeSystemSummary).join("")}<dl><dt>RTT</dt><dd>${esc(lastRTT(e))}</dd><dt>RX / TX</dt><dd>${esc(bps(rate(e,"rx")))} / ${esc(bps(rate(e,"tx")))}</dd><dt>Peer access</dt><dd>${esc(e.metrics?.peer_info_access || "—")}</dd><dt>${esc(t("port"))}</dt><dd>${esc(e.port_id || "—")}</dd></dl>${attentionReasons(e).map(r=>`<p class="map-issue">${esc(r.text)}</p>`).join("")}<button class="quiet-button" data-map-open>${esc(t("mapOpen"))}</button>`:`<p>${esc(t("chooseProcess"))}</p>`;
+  detail.innerHTML=e?`<span class="kind ${payloadClass(e)}">${payloadMark(e)}${esc(endpointType(e))}</span><h3>${esc(e.name)}</h3><p>PID ${e.pid} · ${esc(duration(e.uptime_seconds))}</p>${peerNodes(e,state.data?.syspiper?.nodes || []).map(nodeSystemSummary).join("")}<dl><dt>RTT</dt><dd>${esc(lastRTT(e))}</dd><dt>RX / TX</dt><dd>${esc(bps(rate(e,"rx")))} / ${esc(bps(rate(e,"tx")))}</dd><dt>Peer access</dt><dd>${esc(e.metrics?.peer_info_access || "—")}</dd><dt>${esc(t("port"))}</dt><dd>${esc(e.port_id || "—")}</dd></dl>${attentionReasons(e).map(r=>`<p class="map-issue">${esc(r.text)}</p>`).join("")}<button class="quiet-button" data-map-open>${esc(t("mapOpen"))}</button>`:`<p>${esc(t("chooseProcess"))}</p>`;
 }
-$("observed-canvas").addEventListener("click",event=>{const node=event.target.closest("[data-map-node]");if(node)selectProcess(node.dataset.mapNode);});
+$("observed-canvas").addEventListener("click",event=>{
+  const toggle=event.target.closest("[data-map-toggle]");
+  if(toggle){cancelMapHover();const key=toggle.dataset.mapToggle;mapPinned.has(key)?mapPinned.delete(key):mapPinned.add(key);mapHovered=null;renderObserved();return;}
+  const node=event.target.closest("[data-map-node]");
+  if(node){const id=node.dataset.mapNode;mapLarge.has(id)?mapLarge.delete(id):mapLarge.add(id);selectProcess(id);}
+});
 $("observed-detail").addEventListener("click",event=>{if(event.target.closest("[data-map-open]"))showView("overview");});
 function renderTopology() {
   renderObserved();
@@ -1099,12 +1198,12 @@ function renderTopology() {
     const lines = links.map(l => {
       const e = data.endpoints.find(e=>e.id === l.source);
       const registered = sw.switch_detail?.ports.some(p=>p.name === l.port_id);
-      return `<div class="topology-branch"><button data-node="${esc(e?.id)}" class="topology-node ${e?.id === state.selected ? "active" : ""}"><span><i class="dot ${status(e)[0]}"></i>${esc(e?.name)}</span><small>${esc(typeName(e?.kind))} · ${esc(l.port_id || "—")}</small></button><span class="link-basis">${esc(t(registered ? "confirmedPort" : "observed"))}${l.namespace_verified ? "" : " (?)"}</span></div>`;
+      return `<div class="topology-branch"><button data-node="${esc(e?.id)}" class="topology-node ${payloadClass(e)} ${e?.id === state.selected ? "active" : ""}"><span><i class="dot ${status(e)[0]}"></i>${esc(e?.name)}</span><small>${esc(endpointType(e))} · ${esc(l.port_id || "—")}</small></button><span class="link-basis">${esc(t(registered ? "confirmedPort" : "observed"))}${l.namespace_verified ? "" : " (?)"}</span></div>`;
     });
     return `<div class="topology-cluster"><div class="topology-root"><button class="topology-node ${sw.id === state.selected ? "active" : ""}" data-node="${esc(sw.id)}"><span><i class="dot ${status(sw)[0]}"></i>${esc(sw.name)}</span><small>SWITCH · PID ${sw.pid}</small></button><button class="quiet-button" data-node-rules="${esc(sw.id)}">${esc(t("openRules"))}</button></div><div class="topology-branches">${lines.join("") || `<p>${esc(t("noLinks"))}</p>`}</div></div>`;
   });
   const others = data.endpoints.filter(e=>e.kind !== "switch" && !attached.has(e.id));
-  if (others.length) blocks.push(`<div class="topology-cluster"><p>${esc(t("noLocalSwitch"))}</p>${others.map(e=>`<button class="topology-node" data-node="${esc(e.id)}"><span>${esc(e.name)}</span><small>${esc(typeName(e.kind))}${e.peer ? " → "+esc(e.peer) : ""}</small></button>`).join("")}</div>`);
+  if (others.length) blocks.push(`<div class="topology-cluster"><p>${esc(t("noLocalSwitch"))}</p>${others.map(e=>`<button class="topology-node ${payloadClass(e)}" data-node="${esc(e.id)}"><span>${esc(e.name)}</span><small>${esc(endpointType(e))}${e.peer ? " → "+esc(e.peer) : ""}</small></button>`).join("")}</div>`);
   $("topology").innerHTML = blocks.join("") || `<p class="muted">${esc(t("noTopology"))}</p>`;
 }
 function renderMetrics() {

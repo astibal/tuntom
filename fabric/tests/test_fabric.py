@@ -75,6 +75,11 @@ class DiscoveryTests(unittest.TestCase):
             self.assertEqual(endpoints[0].id, "fixture-boot:123:100")
             self.assertEqual(endpoints[0].unit, "tuntom-switch-test.service")
             self.assertEqual(endpoints[0].threads, 3)
+            (directory / "comm").write_text("tuntom\n")
+            (directory / "cmdline").write_bytes(b"/tmp/tuntom\0server\0" b"232\0-\0--relay-connect\0data.sock\0--relay-port-id\0relay-core\0--control-socket\0control.sock\0")
+            relay = discover(proc)[0][0]
+            self.assertEqual(relay.switch_socket, "/tmp/test-cwd/data.sock")
+            self.assertEqual(relay.port_id, "relay-core")
             fields[19] = "200"
             (directory / "stat").write_text("123 (restarted) " + " ".join(fields))
             self.assertNotEqual(discover(proc)[0][0].id, endpoints[0].id)
