@@ -52,7 +52,9 @@ def health(endpoint, sample):
                    for key in ("session", "traffic", "errors")]
     else:
         flags = ["session_ready"] if endpoint.kind == "tunnel" else []
-        if endpoint.switch_socket and endpoint.kind != "switch":
+        if endpoint.kind == "tunnel" and metrics.get("relay_mode") in {"listen", "connect"}:
+            flags.append("relay_local_connected")
+        elif endpoint.switch_socket and endpoint.kind != "switch":
             flags += ["divert_in_connected", "divert_out_connected"] if endpoint.kind == "divert" else ["switch_connected"]
         values = {key: metrics.get(key) for key in flags}
         connected = all(value == "1" for value in values.values())

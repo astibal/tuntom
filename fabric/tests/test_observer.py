@@ -60,6 +60,25 @@ class TelemetryTests(unittest.TestCase):
         sample["metrics"] = {**m, "udp_rx_bps_5s":"invalid"}
         self.assertEqual(health(e, sample)["checks"][2]["state"], "unknown")
 
+    def test_relay_health_uses_local_ipc_connection(self):
+        for mode in ("listen", "connect"):
+            for switch_socket in (None, "/tmp/switch.sock"):
+                for connected, expected in (("1", "ok"), ("0", "warn"), (None, "unknown")):
+                    with self.subTest(mode=mode, socket=switch_socket, connected=connected):
+                        e = replace(endpoint("tunnel"), switch_socket=switch_socket)
+                        metrics = {"session_ready": "1", "switch_connected": "0", "relay_mode": mode}
+                        if connected is not None:
+                            metrics["relay_local_connected"] = connected
+                        session = health(e, {"status": "reachable", "metrics": metrics})["checks"][1]
+                        self.assertEqual(session["state"], expected)
+                        self.assertNotIn("switch_connected", session["values"])
+                        self.assertIn("relay_local_connected", session["values"])
+        e = replace(endpoint("tunnel"), switch_socket="/tmp/switch.sock")
+        session = health(e, {"status": "reachable", "metrics": {
+            "session_ready": "1", "switch_connected": "0", "relay_local_connected": "1"}})["checks"][1]
+        self.assertEqual(session["state"], "warn")
+        self.assertIn("switch_connected", session["values"])
+
     def test_failed_probe_discards_baseline(self):
         f = Fabric()
         e = endpoint()

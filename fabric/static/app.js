@@ -302,6 +302,7 @@ Object.assign(messages, {
   processStopped:["Proces je zastavený (stav {state})","Process is stopped (state {state})","Processus arrêté (état {state})"],
   processWaitingIO:["Proces čeká v nepřerušitelném I/O (stav D)","Process is waiting in uninterruptible I/O (state D)","Processus en attente d’E/S non interruptibles (état D)"],
   reason_session_ready:["Tunnel session není navázaná","Tunnel session is not established","La session tunnel n’est pas établie"],
+  reason_relay_local_connected:["Lokální IPC spojení relay tunelu je přerušené","Local relay IPC connection is down","La connexion IPC locale du relais est interrompue"],
   reason_switch_connected:["Spojení se switchem je přerušené","Switch connection is down","La connexion au switch est interrompue"],
   reason_divert_in_connected:["Vstupní spojení divertu je přerušené","Divert input connection is down","La connexion d’entrée divert est interrompue"],
   reason_divert_out_connected:["Výstupní spojení divertu je přerušené","Divert output connection is down","La connexion de sortie divert est interrompue"],
@@ -532,7 +533,7 @@ function metricHelp(key) {
   if (!Object.hasOwn(metricDescriptions,description)) {
     if (/_bps_5s$|_pps_5s$/.test(base)) description = "rate5s";
     else if (/_bps_1m$|_pps_1m$/.test(base)) description = "rate1m";
-    else if (/^(session_ready|session_confirmed|switch_connected|divert_(in|out)_connected)$/.test(base)) description = "connection";
+    else if (/^(session_ready|session_confirmed|switch_connected|relay_local_connected|divert_(in|out)_connected)$/.test(base)) description = "connection";
     else if (/backpressure_drops$/.test(base)) description = "backpressure";
     else if (/_eagain$/.test(base)) description = "eagain";
     else if (/_disconnects$/.test(base)) description = "disconnects";
@@ -1127,7 +1128,7 @@ function renderObserved() {
     const col=lane(g.members[0]),x=24+col*300,y=lanes[col], stack=g.members.length>1;
     const open=stack && (all || mapPinned.has(g.key) || mapHovered===g.key);
     const full=all || open || (!stack && mapLarge.has(g.members[0].id));
-    let offset=stack && open ? heightFor(false)+12 : 0;
+    let offset=stack && open ? 44 : 0;
     const cards=[];
     if(stack && !open) {
       const h=heightFor(false); cards.push({members:g.members,x,y,h,stack:true}); offset=h;
@@ -1164,7 +1165,7 @@ function renderObserved() {
     }
     previous.delete(g.key);wrapper.dataset.stack=String(stack);wrapper.style.left=x+"px";wrapper.style.top=y+"px";wrapper.style.height=layout.height+"px";
     const focus=wrapper.contains(document.activeElement)?document.activeElement.dataset.mapNode || "group":null;
-    const header=stack && open?`<button data-offset="0" data-height="${heightFor(false)}" class="map-stack-header ${payloadClass(g.members[0])}" data-map-toggle="${esc(g.key)}" aria-expanded="true" title="${esc(t("mapStackHint"))}">${esc(g.name)} · ×${g.members.length} ${mapPinned.has(g.key)||all?"▣":"◇"} ▴</button>`:"";
+    const header=stack && open?`<button data-offset="0" data-height="32" class="map-stack-header ${payloadClass(g.members[0])}" data-map-toggle="${esc(g.key)}" aria-expanded="true" title="${esc(t("mapStackHint"))}">${esc(g.name)} · ×${g.members.length} ${mapPinned.has(g.key)||all?"▣":"◇"} ▴</button>`:"";
     const aggregate=(members,dir)=>{const rates=members.map(e=>rate(e,dir));return rates.every(Number.isFinite)?rates.reduce((a,b)=>a+b,0):null;};
     const html=header+cards.map(card=>{
       const e=card.members[0],issues=card.members.filter(e=>attentionReasons(e).length).length;
