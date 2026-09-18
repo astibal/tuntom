@@ -1220,11 +1220,12 @@ function renderObserved() {
     const registered=link.namespace_verified && target.switch_detail?.ports.some(p=>p.name===link.port_id);
     const traffic=!outdated(source) && source.status === "reachable" ? (rate(source,"rx") || 0)+(rate(source,"tx") || 0) : 0;
     const active=traffic>0;
-    return `<path style="stroke-width:${mapLinkWidth(traffic).toFixed(2)}px" class="map-link ${payloadClass(source)} ${registered?"confirmed":"inferred"} ${active?"flowing":""} ${attentionReasons(source).length?"problem":""}" d="${mapConnector(a.x+(left?250:0),a.y+a.h/2,b.x+(left?0:250),b.y+b.h/2,tunnelPayload(source)==="IPC"?6:-6)}"><title>${esc(source.name+" ↔ "+target.name+" · "+(link.port_id || "—"))}</title></path>`;
+    return `<path data-link-width="${mapLinkWidth(traffic).toFixed(2)}" class="map-link ${payloadClass(source)} ${registered?"confirmed":"inferred"} ${active?"flowing":""} ${attentionReasons(source).length?"problem":""}" d="${mapConnector(a.x+(left?250:0),a.y+a.h/2,b.x+(left?0:250),b.y+b.h/2,tunnelPayload(source)==="IPC"?6:-6)}"><title>${esc(source.name+" ↔ "+target.name+" · "+(link.port_id || "—"))}</title></path>`;
   }).join("");
   if(!canvas.querySelector("svg")) canvas.innerHTML=`<div class="map-lane">${esc(t("mapInputs"))}</div><div class="map-lane">SWITCH FABRIC</div><div class="map-lane">${esc(t("mapAdapters"))}</div><svg width="1400" aria-hidden="true"></svg>`;
   [...canvas.querySelectorAll(".map-lane")].forEach((el,i)=>{el.style.left=(24+i*laneWidth)+"px";el.textContent=i===0?t("mapInputs"):i===1?"SWITCH FABRIC":t("mapAdapters");});
   canvas.style.height=height+"px";const svg=canvas.querySelector("svg");svg.setAttribute("height",height);svg.setAttribute("width",canvasWidth);svg.innerHTML=links;
+  for(const path of svg.querySelectorAll("[data-link-width]"))path.style.strokeWidth=path.dataset.linkWidth+"px";
   const previous=new Map([...canvas.querySelectorAll(".map-group")].map(el=>[el.dataset.mapGroup,el]));
   for(const layout of layouts) {
     const {g,x,y,stack,open,full,cards}=layout;
