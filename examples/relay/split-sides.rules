@@ -1,0 +1,14 @@
+format 3
+serial 1
+port edge id 123
+service smithproxy {
+    client-side proxy-in*
+    server-side proxy-out*
+    client-relay proxy-in-link*
+    server-relay proxy-out-link*
+    instances ["smithproxy#0"]
+    stickiness hash
+    unavailable drop
+}
+exit internet
+switch edge,[17,42] to internet,[99,42] via [smithproxy] allow bidir
