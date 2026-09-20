@@ -1,6 +1,7 @@
 #pragma once
 
 #include "packet.hpp"
+#include "info_message.hpp"
 #include "wire.hpp"
 #include <algorithm>
 #include <array>
@@ -58,15 +59,16 @@ public:
     }
 
     static bool fragmented(const Packet& packet) {
-        return packet.type == PacketType::data and
+        return (packet.type == PacketType::data || packet.type == PacketType::ipc) and
             (packet.fragment_offset != 0 or packet.original_length != packet.payload.size());
     }
 
     // Type-specific metadata follows the common type/flags + sequence prefix.
     static std::size_t metadata_size(PacketType type, bool fragment = false) {
         switch (type) {
-        case PacketType::hello: case PacketType::keepalive: return 9;
+        case PacketType::hello: case PacketType::keepalive: case PacketType::info: return 9;
         case PacketType::data: return fragment ? 21 : 9;
+        case PacketType::ipc: return fragment ? 25 : 9;
         case PacketType::ping: case PacketType::pong:
         case PacketType::confirm: case PacketType::confirm_ack: return 17;
         case PacketType::mtu_probe: case PacketType::mtu_reply: return 19;
@@ -83,9 +85,9 @@ public:
                      std::vector<std::uint8_t>& mac_input) const {
         const bool fragment = fragmented(packet);
         const auto meta = metadata_size(packet.type, fragment);
-        if (meta == 0 or packet.fragment_offset > max_ip_packet_size or
-            packet.original_length > max_ip_packet_size or
-            packet.payload.size() > max_ip_packet_size)
+        const auto limit = packet.type == PacketType::ipc ? max_ipc_packet_size : max_ip_packet_size;
+        if (meta == 0 or packet.fragment_offset > limit or
+            packet.original_length > limit or packet.payload.size() > limit)
             throw std::runtime_error("Invalid V5 packet metadata");
         const bool handshake = packet.type == PacketType::init or packet.type == PacketType::response;
         if (handshake and encrypt_) throw std::runtime_error("INIT/RESPONSE must use handshake authentication");
@@ -100,8 +102,12 @@ public:
         } else if (meta > 9) {
             store_be64(output.data() + 9, packet.message_id);
             if (fragment) {
-                store_be16(output.data() + 17, static_cast<std::uint16_t>(packet.fragment_offset));
-                store_be16(output.data() + 19, static_cast<std::uint16_t>(packet.original_length));
+                if (packet.type == PacketType::ipc) {
+                    store_be32(output.data()+17,packet.fragment_offset); store_be32(output.data()+21,packet.original_length);
+                } else {
+                    store_be16(output.data() + 17, static_cast<std::uint16_t>(packet.fragment_offset));
+                    store_be16(output.data() + 19, static_cast<std::uint16_t>(packet.original_length));
+                }
             } else if (meta == 19) {
                 store_be16(output.data() + 17, static_cast<std::uint16_t>(packet.original_length));
             }
@@ -134,10 +140,10 @@ public:
         if (bool(data[0] & 0x80) != encrypt_ or (data[0] & 0x30)) return false;
         const auto type = static_cast<PacketType>(data[0] & 0x0f);
         const bool fragment = (data[0] & 0x40) != 0;
-        if (fragment and type != PacketType::data) return false;
+        if (fragment and type != PacketType::data and type != PacketType::ipc) return false;
         const auto meta = metadata_size(type, fragment);
         const auto header = meta + 16;
-        if (meta == 0 or size < header or size - header > max_ip_packet_size) return false;
+        if (meta == 0 or size < header or size - header > (type == PacketType::ipc ? max_ipc_packet_size : max_ip_packet_size)) return false;
         const bool handshake = type == PacketType::init or type == PacketType::response;
         if (handshake and (encrypt_ or data[9] != protocol_version_v5)) return false;
         if (encrypt_) {
@@ -166,12 +172,13 @@ public:
         else if (meta > 9) {
             packet.message_id = load_be64(data + 9);
             if (fragment) {
-                packet.fragment_offset = load_be16(data + 17);
-                packet.original_length = load_be16(data + 19);
+                packet.fragment_offset = type == PacketType::ipc ? load_be32(data+17) : load_be16(data+17);
+                packet.original_length = type == PacketType::ipc ? load_be32(data+21) : load_be16(data+19);
+                if (packet.original_length > (type == PacketType::ipc ? max_ipc_packet_size : max_ip_packet_size)) return false;
                 // Reject a redundant fragment extension: one canonical layout.
                 if (packet.fragment_offset == 0 and packet.original_length == packet.payload.size()) return false;
             } else if (meta == 19) packet.original_length = load_be16(data + 17);
-        } else if (type == PacketType::data) {
+        } else if (type == PacketType::data || type == PacketType::ipc) {
             // A complete datagram needs no transmitted reassembly identity.
             packet.message_id = packet.sequence;
             packet.original_length = static_cast<std::uint32_t>(packet.payload.size());
@@ -186,11 +193,14 @@ public:
             const auto dh_size = load_be16(packet.payload.data() + expected - 2);
             if (suite > 2 or dh_size != (suite == 2 ? 32 : 0) or
                 packet.payload.size() != expected + dh_size) return false;
+        } else if (type == PacketType::info) {
+            info::Fields fields;
+            if (!info::decode(packet.payload, fields)) return false;
         } else if (type == PacketType::confirm or type == PacketType::confirm_ack) {
             if (packet.message_id == 0 or packet.fragment_offset != 0 or
                 packet.original_length != 0 or not packet.payload.empty() or
                 (packet.sequence & 0x0000ffffffffffffULL) != 0) return false;
-        } else if (packet.type == PacketType::data) {
+        } else if (packet.type == PacketType::data || packet.type == PacketType::ipc) {
             if (
                 packet.message_id == 0 or
                 packet.original_length == 0 or

@@ -1,0 +1,9 @@
+# New ruleset format. Increase serial before applying an edited configuration.
+format 2
+serial 2026091403
+
+exit internet
+
+switch client-42*, [17, ...] to internet, [1001, ...] allow
+switch internet, [1001, ...] to client-42*, [44, ...] allow
+# All other traffic is implicitly dropped.

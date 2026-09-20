@@ -1,0 +1,30 @@
+- name: Stop a verified mk switch or adapter through its existing helper
+  ansible.builtin.command:
+    argv: [bash, "{{ job.stage }}/src/mk_{{ job.spec.kind }}.sh", "{{ job.spec.alias }}", --stop]
+  when: job.before.legacy is not none and job.spec.kind != 'tunnel'
+
+- name: Refuse occupied TUN devices, UDP ports or another deployment's resources
+  tuntom_node:
+    action: assert-free
+    payload: "{{ job.spec }}"
+  changed_when: false
+
+- ansible.builtin.include_tasks: configure.yml
+
+- name: Bring stopped trial artifacts inside this deployment's wipe boundary
+  tuntom_node:
+    action: retire-legacy
+    payload: "{{ job }}"
+  when: job.before.legacy is not none
+
+- name: Enable and start the complete new deployment
+  ansible.builtin.systemd_service:
+    name: "{{ job.spec.target }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Verify group readiness separately from target activation
+  ansible.builtin.command:
+    argv: [systemctl, is-active, "tuntom-{{ job.key }}-ready.service"]
+  changed_when: false

@@ -80,6 +80,8 @@ local packet_type_names = {
     [9] = "RESPONSE",
     [10] = "CONFIRM",
     [11] = "CONFIRM_ACK",
+    [12] = "IPC",
+    [13] = "INFO",
 }
 
 local f_magic = ProtoField.string(
@@ -203,6 +205,12 @@ local f_payload = ProtoField.bytes(
     "Payload"
 )
 
+local f_info_entry = ProtoField.string("tuntom.info.entry", "INFO Field")
+local f_info_key = ProtoField.string("tuntom.info.key", "INFO Key")
+local f_info_value = ProtoField.string("tuntom.info.value", "INFO Value")
+local e_info = ProtoExpert.new("tuntom.info.malformed", "Malformed INFO",
+    expert.group.MALFORMED, expert.severity.ERROR)
+
 local f_session_hint = ProtoField.uint16("tuntom.session_hint", "Session Hint", base.HEX)
 local f_counter = ProtoField.uint64("tuntom.counter", "Session Packet Counter", base.DEC)
 local f_init_timestamp = ProtoField.uint64("tuntom.init_timestamp", "INIT Unix Timestamp (seconds)", base.DEC)
@@ -213,9 +221,10 @@ local f_dh_length = ProtoField.uint16("tuntom.dh_length", "DH Public Key Length"
 local f_dh = ProtoField.bytes("tuntom.dh", "DH Public Key")
 local e_handshake = ProtoExpert.new("tuntom.handshake_error", "Invalid/unsupported handshake",
     expert.group.MALFORMED, expert.severity.ERROR)
-tuntom.experts = {e_handshake}
+tuntom.experts = {e_handshake, e_info}
 
 tuntom.fields = {
+    f_info_entry, f_info_key, f_info_value,
     f_session_hint, f_counter, f_init_timestamp, f_nonce, f_init_hash, f_suite, f_dh_length, f_dh,
     f_magic,
     f_tunnel_id,
@@ -466,10 +475,11 @@ local function accept_fragment_first_pass(
     key,
     fragment_offset,
     original_length,
-    payload
+    payload,
+    limit
 )
     if original_length == 0 or
-       original_length > max_original_length then
+       original_length > (limit or max_original_length) then
         return nil, "invalid original length"
     end
 
@@ -504,7 +514,7 @@ local function accept_fragment_first_pass(
     end
 
     if count_fragments(entry) >=
-       max_fragments_per_message then
+       (limit == 65639 and 256 or max_fragments_per_message) then
         remove_reassembly_entry(key)
         return nil, "too many fragments"
     end
@@ -718,6 +728,147 @@ local function dissect_reassembled_raw(
     )
 end
 
+-- Canonical IPC relay records. No session keys are exported by tuntom; encrypted
+-- tunnel payloads stay opaque. USER0 captures can contain decoded TTR records or
+-- ordinary switch IPC frames directly.
+local ipc_proto = Proto("tuntom_ipc", "tuntom IPC")
+local ipc_fields = {
+    type = ProtoField.uint8("tuntom.ipc.type", "Relay type", base.DEC, {[1]="RESET",[2]="SNAPSHOT",[3]="ACK",[4]="DATA"}),
+    channel = ProtoField.uint32("tuntom.ipc.channel", "Channel / snapshot revision", base.DEC),
+    epoch = ProtoField.uint64("tuntom.ipc.epoch", "Relay epoch", base.HEX),
+    owner = ProtoField.uint64("tuntom.ipc.owner", "Owner", base.HEX),
+    name = ProtoField.string("tuntom.ipc.name", "Port identity"),
+    count = ProtoField.uint16("tuntom.ipc.channels", "Channel count", base.DEC),
+    opcode = ProtoField.uint8("tuntom.ipc.opcode", "Opcode", base.DEC, {[1]="SWITCH",[2]="EXIT"}),
+    labels = ProtoField.uint8("tuntom.ipc.label_count", "Label count", base.DEC),
+    label = ProtoField.uint64("tuntom.ipc.label", "Label", base.HEX),
+    length = ProtoField.uint32("tuntom.ipc.length", "Record length", base.DEC),
+    cookie = ProtoField.string("tuntom.ipc.via.cookie", "VIA cookie"),
+    chain = ProtoField.uint32("tuntom.ipc.via.chain", "Chain ID", base.DEC),
+    step = ProtoField.uint16("tuntom.ipc.via.step", "Step", base.DEC),
+    saved = ProtoField.uint8("tuntom.ipc.via.saved", "Saved label count", base.DEC),
+    action = ProtoField.uint8("tuntom.ipc.via.action", "Action", base.DEC, {[0]="OFFER",[1]="CONTINUE",[2]="BYPASS",[3]="COMPLETE"}),
+    reverse = ProtoField.bool("tuntom.ipc.via.reverse", "Reverse direction"),
+    origin = ProtoField.uint64("tuntom.ipc.via.origin", "Origin port ID", base.DEC),
+    payload = ProtoField.bytes("tuntom.ipc.payload", "Payload"),
+}
+local field_list = {}
+for _, f in pairs(ipc_fields) do field_list[#field_list+1] = f end
+ipc_proto.fields = field_list
+local ipc_error = ProtoExpert.new("tuntom.ipc.malformed", "Malformed IPC", expert.group.MALFORMED, expert.severity.ERROR)
+ipc_proto.experts = {ipc_error}
+local function dissect_ipc(buffer, pinfo, tree)
+    local t = tree:add(ipc_proto, buffer())
+    local function bad(message) t:add_proto_expert_info(ipc_error, message); return buffer:len() end
+    local at, n = 0, buffer:len()
+    if n >= 4 and buffer(0,4):string() == "TTR\001" then
+        if n < 32 then return bad("Truncated relay header") end
+        local kind = buffer(4,1):uint()
+        t:add(ipc_fields.type,buffer(4,1)); t:add(ipc_fields.channel,buffer(8,4))
+        t:add(ipc_fields.length,buffer(12,4)); t:add(ipc_fields.epoch,buffer(16,8))
+        if n > 65639 or buffer(12,4):uint() ~= n or buffer(5,3):uint() ~= 0 or
+            buffer(24,8):uint64() ~= UInt64(0,0) or kind < 1 or kind > 4 then return bad("Invalid relay header") end
+        if kind == 1 then
+            if n ~= 32 or buffer(8,4):uint() ~= 0 or buffer(16,8):uint64() ~= UInt64(0,0) then return bad("Invalid reset") end
+            return n
+        end
+        if buffer(8,4):uint() == 0 or buffer(16,8):uint64() == UInt64(0,0) then return bad("Zero channel/revision or epoch") end
+        if kind == 3 then if n ~= 32 then return bad("Invalid ACK length") end; return n end
+        if kind == 2 then
+            if n < 34 then return bad("Truncated snapshot") end
+            local count = buffer(32,2):uint(); t:add(ipc_fields.count,buffer(32,2)); at = 34
+            if count > 128 then return bad("Too many channels") end
+            local ids, names = {}, {}
+            for i=1,count do
+                if at+13 > n then return bad("Truncated channel") end
+                local length = buffer(at+12,1):uint()
+                if length == 0 or length > 63 or at+13+length > n then return bad("Invalid channel name length") end
+                local id, name = buffer(at,4):uint(), buffer(at+13,length):string()
+                if id == 0 or ids[id] or names[name] or buffer(at+4,8):uint64() == UInt64(0,0) then return bad("Invalid or duplicate channel identity") end
+                ids[id], names[name] = true, true
+                local c = t:add(buffer(at,13+length), "Channel " .. id .. ": " .. name)
+                c:add(ipc_fields.channel,buffer(at,4)); c:add(ipc_fields.owner,buffer(at+4,8)); c:add(ipc_fields.name,buffer(at+13,length))
+                at = at+13+length
+            end
+            if at ~= n then return bad("Trailing snapshot bytes") end
+            return n
+        end
+        at = 32
+    end
+    if n-at < 8 then return bad("Truncated switch frame") end
+    local count, opcode = buffer(at+3,1):uint(), buffer(at+1,1):uint()
+    t:add(ipc_fields.opcode,buffer(at+1,1)); t:add(ipc_fields.labels,buffer(at+3,1)); t:add(ipc_fields.length,buffer(at+4,4))
+    if buffer(at,1):uint() ~= 1 or (opcode ~= 1 and opcode ~= 2) or buffer(at+2,1):uint() ~= 0 or count < 1 or count > 8 or
+        buffer(at+4,4):uint() ~= n-at or n-at <= 8+count*8 or n-at-8-count*8 > 65535 then return bad("Invalid switch frame") end
+    at = at+8
+    for i=0,count-1 do
+        local offset = at+i*8
+        local label = t:add(ipc_fields.label,buffer(offset,8))
+        if i+2 < count and buffer(offset+3,3):string() == "VIA" and buffer(offset+6,1):uint() == 1 then
+            local length = buffer(offset+7,1):uint()
+            local saved = buffer(offset+14,1):uint()
+            if length == 3+saved and i+length == count then
+                local flags = buffer(offset+15,1):uint()
+                label:add(ipc_fields.cookie,buffer(offset,3))
+                label:add(ipc_fields.chain,buffer(offset+8,4)); label:add(ipc_fields.step,buffer(offset+12,2))
+                label:add(ipc_fields.saved,buffer(offset+14,1)); label:add(ipc_fields.action,buffer(offset+15,1),math.floor(flags/2))
+                label:add(ipc_fields.reverse,buffer(offset+15,1),flags%2==1); label:add(ipc_fields.origin,buffer(offset+16,8))
+            end
+        end
+    end
+    local payload = buffer(at+count*8)
+    t:add(ipc_fields.payload,payload)
+    if payload:len() >= 20 and (math.floor(payload(0,1):uint()/16) == 4 or math.floor(payload(0,1):uint()/16) == 6) then
+        dissect_inner_ip_with_tuntom_info(payload:tvb(),pinfo,t,"tuntom IPC")
+    end
+    return n
+end
+ipc_proto.dissector = dissect_ipc
+DissectorTable.get("wtap_encap"):add(wtap.USER0, ipc_proto)
+
+-- Validate the entire snapshot before exposing any fields. Authentication is
+-- not verified by this dissector; encrypted payloads never enter this parser.
+local function dissect_info(buffer, header, tree)
+    local length = buffer:len() - header
+    local function malformed(reason)
+        tree:add_proto_expert_info(e_info, reason)
+    end
+    if length == 0 or length > 4096 then
+        malformed("INFO payload must contain 1..4096 bytes")
+        return
+    end
+    local payload = buffer(header, length)
+    tree:add(f_payload, payload)
+    local text = payload:raw() -- Preserve NUL bytes for strict validation.
+    for i = 1, #text do
+        local byte = text:byte(i)
+        if (byte < 32 or byte > 126) and byte ~= 9 and byte ~= 10 then
+            malformed("INFO contains a forbidden byte (only printable ASCII, TAB and LF allowed)")
+            return
+        end
+    end
+    local entries, seen, at = {}, {}, 1
+    while at <= #text do
+        local newline = text:find("\n", at, true)
+        local last = newline and newline - 1 or #text
+        local line = text:sub(at, last)
+        local equal = line:find("=", 1, true)
+        if not equal then malformed("INFO line is empty or missing '='"); return end
+        local key = line:sub(1, equal - 1)
+        if not key:match("^[a-z][a-z0-9_]*$") then malformed("Invalid INFO key"); return end
+        if seen[key] then malformed("Duplicate INFO key: " .. key); return end
+        seen[key] = true
+        local value = line:sub(equal + 1):gsub("^[ \t]+", ""):gsub("[ \t]+$", "")
+        entries[#entries + 1] = {offset = header + at - 1, size = #line, key = key, value = value}
+        at = newline and newline + 1 or #text + 1
+    end
+    for _, entry in ipairs(entries) do
+        local item = tree:add(f_info_entry, buffer(entry.offset, entry.size), entry.key .. "=" .. entry.value)
+        item:add(f_info_key, buffer(entry.offset, #entry.key), entry.key)
+        item:add(f_info_value, buffer(entry.offset + #entry.key + 1, entry.size - #entry.key - 1), entry.value)
+    end
+end
+
 -- V5: no magic or tunnel ID on wire. Version occurs only in INIT/RESPONSE.
 -- Base = type/flags(1), sequence(8), type extension, tag(16), payload.
 -- Extensions: fragments(12), ping/confirm(8), PMTUD(10), handshake(9).
@@ -728,13 +879,13 @@ local function dissect_v5(buffer, pinfo, tree)
     local encrypted = flags >= 128
     local fragment = math.floor(flags / 64) % 2 == 1
     if math.floor(flags / 16) % 4 ~= 0 or not packet_type_names[kind] or
-       (fragment and kind ~= 3) then return 0 end
+       (fragment and kind ~= 3 and kind ~= 12) then return 0 end
     local handshake = kind == 8 or kind == 9
     local meta = 9
-    if fragment then meta = 21
+    if fragment then meta = kind == 12 and 25 or 21
     elseif handshake then meta = 18
     elseif kind == 6 or kind == 7 then meta = 19
-    elseif kind >= 4 then meta = 17 end
+    elseif kind >= 4 and kind <= 11 then meta = 17 end
     local header = meta + 16
     if buffer:len() < header then return 0 end
     local length = buffer:len() - header
@@ -753,12 +904,12 @@ local function dissect_v5(buffer, pinfo, tree)
             ((kind == 6 or kind == 7) and f_mtu_probe_id or f_message_id)
         subtree:add(field, buffer(handshake and 10 or 9, 8))
     end
-    if kind == 6 or kind == 7 then subtree:add(f_mtu, buffer(17, 2)) end
+    if kind == 6 or kind == 7 then subtree:add(f_mtu, buffer(17, kind == 12 and 4 or 2)) end
     if fragment then
-        subtree:add(f_fragment_offset, buffer(17, 2))
-        subtree:add(f_original_length, buffer(19, 2))
+        subtree:add(f_fragment_offset, buffer(17, kind == 12 and 4 or 2))
+        subtree:add(f_original_length, buffer(kind == 12 and 21 or 19, kind == 12 and 4 or 2))
     end
-    if kind == 3 then add_generated_field(subtree, f_fragmented, fragment) end
+    if kind == 3 or kind == 12 then add_generated_field(subtree, f_fragmented, fragment) end
     if handshake then
         local fields_end = header + (kind == 8 and 44 or 68)
         if length < (kind == 8 and 44 or 68) then
@@ -795,33 +946,41 @@ local function dissect_v5(buffer, pinfo, tree)
         end
         return buffer:len()
     end
+    if kind == 13 then
+        dissect_info(buffer, header, subtree)
+        return buffer:len()
+    end
     if length == 0 then return buffer:len() end
     local payload = buffer(header)
-    if kind ~= 3 then
+    if kind ~= 3 and kind ~= 12 then
         subtree:add(kind == 6 and f_mtu_padding or f_payload, payload)
         return buffer:len()
     end
     if not fragment then
-        dissect_inner_ip_with_tuntom_info(payload:tvb(), pinfo, subtree, info)
+        if kind == 12 then dissect_ipc(payload:tvb(), pinfo, subtree)
+        else dissect_inner_ip_with_tuntom_info(payload:tvb(), pinfo, subtree, info) end
         return buffer:len()
     end
-    local offset = buffer(17, 2):uint()
-    local original = buffer(19, 2):uint()
+    local offset = buffer(17, kind == 12 and 4 or 2):uint()
+    local original = buffer(kind == 12 and 21 or 19, kind == 12 and 4 or 2):uint()
     subtree:add(f_payload, payload)
     add_generated_field(subtree, f_fragment_length, length)
     add_generated_field(subtree, f_fragment_end, offset + length)
     -- UDP endpoints identify the tunnel; no tunnel ID is inferred from payload.
-    local key = message_key(pinfo, 0, buffer(9, 8):uint64(), 5, buffer(1, 2):uint())
+    local key = message_key(pinfo, 0, buffer(9, 8):uint64(), 5, buffer(1, 2):uint()) .. "|type=" .. kind
     local raw, err
     if not pinfo.visited then
-        raw, err = accept_fragment_first_pass(pinfo, key, offset, original, payload)
+        raw, err = accept_fragment_first_pass(pinfo, key, offset, original, payload, kind == 12 and 65639 or 65535)
     elseif frame_info[pinfo.number] then
         raw = frame_info[pinfo.number].complete_raw
     end
     if err then subtree:add("Reassembly: " .. err) end
     add_reassembly_links(subtree, pinfo)
     if raw then
-        dissect_reassembled_raw(raw, pinfo, subtree, original, info .. ", reassembled")
+        if kind == 12 then
+            add_generated_field(subtree, f_reassembled_length, original)
+            dissect_ipc(ByteArray.new(raw,true):tvb("Reassembled IPC"),pinfo,subtree)
+        else dissect_reassembled_raw(raw, pinfo, subtree, original, info .. ", reassembled") end
         add_generated_field(subtree, f_reassembled_in, pinfo.number)
     end
     return buffer:len()

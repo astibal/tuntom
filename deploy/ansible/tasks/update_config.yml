@@ -1,0 +1,79 @@
+- name: Unpublish shared group resources using the old hooks
+  ansible.builtin.systemd_service:
+    name: "tuntom-{{ job.key }}-ready.service"
+    state: stopped
+  when: job.before.services['tuntom-' + job.key + '-ready.service'].LoadState != 'not-found'
+
+- name: Stop old endpoint services using their old configuration
+  ansible.builtin.systemd_service:
+    name: "{{ item.unit }}"
+    state: stopped
+  loop: "{{ job.before.spec.endpoints }}"
+  when: job.before.services[item.unit].LoadState != 'not-found'
+  loop_control:
+    label: "{{ item.id }}"
+
+- name: Complete old group teardown
+  ansible.builtin.systemd_service:
+    name: "tuntom-{{ job.key }}-prepare.service"
+    state: stopped
+  when: job.before.services['tuntom-' + job.key + '-prepare.service'].LoadState != 'not-found'
+
+- name: Disable retired endpoint units
+  ansible.builtin.systemd_service:
+    name: "{{ item.unit }}"
+    enabled: false
+  loop: "{{ job.before.spec.endpoints }}"
+  when: item.unit not in job.units
+  loop_control:
+    label: "{{ item.id }}"
+
+- name: Remove retired endpoint units and drop-ins
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ item.0.unit }}{{ item.1 }}"
+    state: absent
+  loop: "{{ job.before.spec.endpoints | product(['', '.d']) | list }}"
+  when: item.0.unit not in job.units
+  loop_control:
+    label: "{{ item.0.id }}{{ item.1 }}"
+
+- name: Check newly requested resources after teardown
+  tuntom_node:
+    action: assert-free
+    payload: "{{ job.spec }}"
+  changed_when: false
+
+- ansible.builtin.include_tasks: configure.yml
+
+- name: Reload unit definitions without changing autostart
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Record the members intentionally restored during this operation
+  ansible.builtin.copy:
+    content: "{{ job.restore_ids | to_json }}"
+    dest: "{{ job.root }}/restore-members.json"
+    mode: '0600'
+
+- name: Restore group preparation if previously active
+  ansible.builtin.systemd_service:
+    name: "tuntom-{{ job.key }}-prepare.service"
+    state: started
+  when: job.prepare_active or (job.restore_members | length > 0)
+
+- name: Restore running members and explicitly added members of an active group
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+  loop: "{{ job.restore_members }}"
+
+- name: Republish group resources if previously active
+  ansible.builtin.systemd_service:
+    name: "tuntom-{{ job.key }}-ready.service"
+    state: started
+  when: job.ready_active
+
+- name: Remove the operation-specific readiness selection
+  ansible.builtin.file:
+    path: "{{ job.root }}/restore-members.json"
+    state: absent

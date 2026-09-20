@@ -1,0 +1,85 @@
+- name: Record ownership before installing remaining files (allows cleanup of interrupted installs)
+  tuntom_node:
+    action: claim
+    payload: "{{ job.spec }}"
+
+- name: Create this instance's private installation directories
+  ansible.builtin.file:
+    path: "{{ job.root }}/{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+  loop: ['', bin, secrets, logs]
+
+- name: Replace the managed configuration tree
+  ansible.builtin.file:
+    path: "{{ job.root }}/assets"
+    state: absent
+
+- name: Install prepared public configuration
+  ansible.builtin.copy:
+    src: "{{ job.stage }}/assets/"
+    dest: "{{ job.root }}/assets/"
+    remote_src: true
+    mode: preserve
+
+- name: Install prepared executables
+  ansible.builtin.copy:
+    src: "{{ job.stage }}/bin/"
+    dest: "{{ job.root }}/bin/"
+    remote_src: true
+    mode: preserve
+
+- name: Install the credential (not part of binary-only updates)
+  ansible.builtin.copy:
+    src: "{{ job.stage }}/secrets/master.key"
+    dest: "{{ job.root }}/{{ job.spec.secret_file }}"
+    remote_src: true
+    mode: '0600'
+  when: job.spec.kind == 'tunnel'
+  no_log: true
+  diff: false
+
+- name: Install the local lifecycle helper
+  ansible.builtin.copy:
+    src: "{{ job.stage }}/runtime.py"
+    dest: "{{ job.root }}/runtime.py"
+    remote_src: true
+    mode: '0600'
+
+- name: Install the existing network helper without changing repository sources
+  ansible.builtin.copy:
+    src: "{{ job.stage }}/src/tuntom-net.sh"
+    dest: "{{ job.root }}/tuntom-net.sh"
+    remote_src: true
+    mode: '0600'
+
+- name: Install readable endpoint configuration
+  ansible.builtin.copy:
+    content: "{{ job.spec | to_nice_json }}\n"
+    dest: "{{ job.root }}/config.json"
+    mode: '0600'
+
+- name: Install the group manifest used by existing hooks
+  ansible.builtin.copy:
+    content: "{{ job.spec.manifest }}"
+    dest: "{{ job.root }}/manifest.tsv"
+    mode: '0600'
+  when: job.spec.kind == 'tunnel'
+
+- name: Install instance-owned systemd units
+  ansible.builtin.copy:
+    content: "{{ item.value }}"
+    dest: "/etc/systemd/system/{{ item.key }}"
+    owner: root
+    group: root
+    mode: '0644'
+  loop: "{{ job.units | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Save the deployed public baseline and binary fingerprints
+  tuntom_node:
+    action: metadata
+    payload: "{{ job.spec }}"

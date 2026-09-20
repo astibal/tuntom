@@ -1,0 +1,18 @@
+# Copy into a PRIVATE inventory and supply your own secrets/master.key (0600).
+tuntom_instance:
+  schema: 1
+  tunnel_id: 42
+  count: 4
+  mtu: 9000
+  transport_mtu: 1400
+  prefix16: '10.254'
+  no_address: false
+  crypto_auth_only: false
+  snat: false
+  mss_clamp: true
+  secret_file: secrets/master.key
+  client:
+    host: local
+    peer_address: 192.0.2.2
+  server:
+    host: psx2

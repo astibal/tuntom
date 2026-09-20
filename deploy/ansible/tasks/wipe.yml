@@ -1,0 +1,71 @@
+- name: Stop and disable the deployment target
+  ansible.builtin.systemd_service:
+    name: "{{ job.before.spec.target }}"
+    state: stopped
+    enabled: false
+  when: job.before.services[job.before.spec.target].LoadState != 'not-found'
+
+- name: Stop any independently running instance units
+  ansible.builtin.systemd_service:
+    name: "{{ item.key }}"
+    state: stopped
+  loop: "{{ job.before.services | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when: item.value.LoadState != 'not-found'
+
+- name: Inspect the lifecycle helper for a partially installed deployment
+  ansible.builtin.stat:
+    path: "{{ job.root }}/{{ item }}"
+  loop: [runtime.py, config.json]
+  register: wipe_lifecycle
+
+- name: Retry unfinished teardown before deleting its saved hooks
+  ansible.builtin.command:
+    argv: [/usr/bin/python3, "{{ job.root }}/runtime.py", cleanup-all]
+  when: wipe_lifecycle.results | map(attribute='stat.exists') | min
+
+- name: Remove all private staging belonging to this deployment
+  tuntom_node:
+    action: wipe-staging
+    payload: "{{ job.spec }}"
+
+- name: Finish any interrupted move of adopted trial files before wiping them
+  tuntom_node:
+    action: finish-retirement
+    payload: "{{ job.spec }}"
+
+- name: Disable independently enabled endpoint units too
+  ansible.builtin.systemd_service:
+    name: "{{ item.key }}"
+    enabled: false
+  loop: "{{ job.before.services | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when: item.value.UnitFileState | default('') in ['enabled', 'enabled-runtime', 'linked', 'linked-runtime']
+
+- name: Remove instance units and their manually added drop-ins
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ item.0 }}{{ item.1 }}"
+    state: absent
+  loop: "{{ job.before.services.keys() | product(['', '.d']) | list }}"
+
+- name: Remove the entire instance directory including manual files and credentials
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ job.root }}"
+    - "{{ job.before.spec.run }}"
+  no_log: true
+  diff: false
+
+- name: Reload after removing the units
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Forget failed state for the removed instance units
+  ansible.builtin.command:
+    argv: "{{ ['systemctl', 'reset-failed'] + (job.before.services.keys() | list) }}"
+  changed_when: false
+  failed_when: false

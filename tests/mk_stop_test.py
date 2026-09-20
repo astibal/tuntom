@@ -25,24 +25,25 @@ int main(int argc, char **argv) {
         child = subprocess.Popen([str(exe or binary), role, tunnel, interface, extra])
         children.append(child)
         return child
-    def cleanup(remote=False, stale=None):
+    def cleanup(remote=False, stale=None, instance='42'):
         pidfile = directory / 'instance.pid'
         if stale is not None:
             pidfile.write_text(str(stale))
         command = functions + '''
 set -euo pipefail
 root_cmd=()
-local_bin="$1"; remote_bin="$1"; id=42
-client_if=ut42c; server_if=ut42s
+local_bin="$1"; remote_bin="$1"; instance="$3"; id="${instance%%_*}"
+client_if="ut${instance}c"; server_if="ut${instance}s"
 local_pid_file="$2"; remote_pid_file="$2"; remote=unused
 # Exercise the remote stdin script without making an SSH connection.
 ssh() { shift; bash -c "$*"; }
 ''' + ('stop_remote_process' if remote else 'stop_local_process')
-        subprocess.run(['bash', '-c', command, '--', str(binary), str(pidfile)],
+        subprocess.run(['bash', '-c', command, '--', str(binary), str(pidfile), instance],
                        check=True, timeout=10)
         assert not pidfile.exists()
     try:
         other_id = spawn(tunnel='43')
+        member = spawn(tunnel='42_1', interface='ut42_1c')
         other_if = spawn(interface='ut_other')
         other_role = spawn(role='server')
         duplicate1, duplicate2 = spawn(), spawn()
@@ -50,6 +51,9 @@ ssh() { shift; bash -c "$*"; }
         for p in (duplicate1, duplicate2):
             p.wait(timeout=2)
         assert all(p.poll() is None for p in (other_id, other_if, other_role))
+        assert member.poll() is None
+        cleanup(instance='42_1')
+        member.wait(timeout=2)
         orphan = spawn()
         cleanup(stale=other_id.pid)  # Stale PID must not kill an unrelated process.
         orphan.wait(timeout=2)

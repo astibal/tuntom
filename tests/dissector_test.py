@@ -12,9 +12,9 @@ def wire(kind, payload=b"", seq=0, offset=0, original=0, version=5):
                            seq, 99, offset, original) + bytes(16) + payload
     base_kind = kind & 15
     extension = b""
-    if base_kind == 3 and (offset or original != len(payload)):
+    if base_kind in (3,12) and (offset or original != len(payload)):
         kind |= 0x40
-        extension = struct.pack("!QHH", 99, offset, original)
+        extension = struct.pack("!QII" if base_kind == 12 else "!QHH", 99, offset, original)
     elif base_kind in (8, 9):
         extension = struct.pack("!BQ", 5, 99)
     elif base_kind in (6, 7):
@@ -63,13 +63,39 @@ with tempfile.TemporaryDirectory(prefix="tuntom-dissector-") as directory:
         frame(wire(9, bytes(64) + b"\x00\x02\x00\x20" + bytes(32)), True),
         frame(wire(8, bytes(40) + b"\x00\x02\x00\x1f" + bytes(31))),
     ]
+    labels = [17,42,int.from_bytes(b'hTXVIA\x01\x05','big'), (7<<32)|(2<<8)|2,123,17,42]
+    ipc = struct.pack('!BBBBI',1,2,0,len(labels),8+8*len(labels)+len(ip)) + b''.join(struct.pack('!Q',v) for v in labels) + ip
+    def relay(kind, channel, payload=b''):
+        return b'TTR\x01' + struct.pack('!B3xIIQQ',kind,channel,32+len(payload),1234,0) + payload
+    data = relay(4,9,ipc)
+    snapshot = relay(2,3,struct.pack('!HIQB',1,9,22,7)+b'proxy-0')
+    records += [frame(wire(12,data,hint|20,0,len(data))),
+                frame(wire(12,data[:50],hint|21,0,len(data))),
+                frame(wire(12,data[50:],hint|22,50,len(data))),
+                frame(wire(12,snapshot,hint|23,0,len(snapshot))),
+                frame(wire(0x8c,data,hint|24,0,len(data))),
+                frame(wire(12,b'TTR\x01',hint|25,0,4))]
+    info_start = len(records)
+    info_valid = b'access=10.0.0.1,10.0.0.2\ncustom=  Praha, centrum=x \t\nempty='
+    info_bad = [b'', b'\n', b'access=x\n\n', b'access=x\nmissing',
+                b'a=1\na=2', b'Bad=x', b'a =x', b'a-b=x', b'=x',
+                b'a=x\r\n', b'a=\x00', b'a=\x7f', b'a=\xc4\x8d',
+                b'\xef\xbb\xbfa=x', b'a=' + b'x' * 4095]
+    records += [frame(wire(13, info_valid, hint | 30)),
+                frame(wire(13, b'access=\n', hint | 31)),
+                frame(wire(0x8d, info_valid, hint | 32)),
+                frame(wire(13, b'a=' + b'x' * 4094, hint | 33))]
+    records += [frame(wire(13, payload, hint | (40 + i))) for i, payload in enumerate(info_bad)]
     pcap = directory / "packets.pcap"
     pcap.write_bytes(struct.pack("<IHHIIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, 101) +
                      b"".join(struct.pack("<IIII", i, 0, len(p), len(p)) + p
                               for i, p in enumerate(records, 1)))
     fields = ["tuntom_test.version", "tuntom_test.type", "tuntom_test.session_hint",
               "tuntom_test.counter", "tuntom_test.dh_length", "tuntom_test.suite",
-              "tuntom_test.reassembled_length", "_ws.expert.message"]
+              "tuntom_test.reassembled_length", "_ws.expert.message",
+              "tuntom_test.ipc.channel", "tuntom_test.ipc.label", "tuntom_test.ipc.via.chain",
+              "tuntom_test.ipc.via.action", "tuntom_test.ipc.name",
+              "tuntom_test.info.entry", "tuntom_test.info.key", "tuntom_test.info.value"]
     args = ["tshark", "-X", "lua_script:" + str(lua), "-r", str(pcap), "-T", "fields"]
     for field in fields:
         args.extend(["-e", field])
@@ -95,5 +121,31 @@ with tempfile.TemporaryDirectory(prefix="tuntom-dissector-") as directory:
     assert rows[13][4:6] == ["32", "2"] and not rows[13][7], rows[13]
     assert rows[14][4:6] == ["32", "2"] and not rows[14][7], rows[14]
     assert "Expected suite 0" in rows[15][7], rows[15]
+    assert rows[16][8] == '9' and rows[16][10:12] == ['7','1'], rows[16]
+    assert len(rows[16][9].split(',')) == 7, rows[16]
+    assert rows[18][6] == str(len(data)) and rows[18][10:12] == ['7','1'], rows[18]
+    assert rows[19][12] == 'proxy-0', rows[19]
+    assert not rows[20][8], 'encrypted IPC was decoded as plaintext'
+    assert 'Truncated relay' in rows[21][7], rows[21]
     assert "Lua Error" not in result.stdout, result.stdout
-print("PASS: Wireshark V5 handshake fields, counters, session fragment separation and malformed messages")
+    info_rows = rows[info_start:]
+    assert info_rows[0][1] == '13' and not info_rows[0][7], info_rows[0]
+    assert info_rows[0][13] == 'access=10.0.0.1,10.0.0.2,custom=Praha, centrum=x,empty=', info_rows[0]
+    assert info_rows[0][14] == 'access,custom,empty', info_rows[0]
+    assert info_rows[1][13:16] == ['access=', 'access', ''], info_rows[1]
+    assert not info_rows[2][7] and not any(info_rows[2][13:16]), 'encrypted INFO parsed as text'
+    assert info_rows[3][14] == 'a' and len(info_rows[3][15]) == 4094, info_rows[3]
+    for row in info_rows[4:]:
+        assert row[7] and not any(row[13:16]), 'malformed INFO published partial fields: ' + repr(row)
+    raw_capture = directory / 'ipc.pcap'
+    raw_capture.write_bytes(struct.pack('<IHHIIII',0xA1B2C3D4,2,4,0,0,70000,147) +
+        b''.join(struct.pack('<IIII',i,0,len(p),len(p))+p for i,p in enumerate((ipc,data,snapshot),1)))
+    raw_args = args.copy()
+    raw_args[raw_args.index('-r')+1] = str(raw_capture)
+    raw_result = subprocess.run(raw_args,capture_output=True,text=True,check=True)
+    assert 'Lua' not in raw_result.stderr and 'Lua Error' not in raw_result.stdout, raw_result
+    raw_rows = [line.split('\t') for line in raw_result.stdout.splitlines()]
+    assert raw_rows[0][10:12] == ['7','1'], raw_rows
+    assert raw_rows[1][8] == '9' and raw_rows[2][12] == 'proxy-0', raw_rows
+
+print("PASS: Wireshark V5 handshakes, DATA/IPC reassembly, relay channels, VIA fields, ASCII INFO and malformed messages")

@@ -3,13 +3,23 @@
 #include "privileges.hpp"
 #include "tun_device.hpp"
 #include "udp_endpoint.hpp"
+#include "udp_tx_queue.hpp"
+#include "switch_client.hpp"
+#include "packet_classifier.hpp"
+#include "ipc/switch_protocol.hpp"
 #include "session.hpp"
+#include "info_worker.hpp"
+#include "relay/endpoint.hpp"
 #include "ip.hpp"
 #include "fragmentation.hpp"
 #include "processing_stats.hpp"
 #include "throughput_stats.hpp"
+#include "adaptive_polling.hpp"
 #include "stats_control.hpp"
+#include "control_socket.hpp"
+#include "runtime_recovery.hpp"
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
@@ -18,6 +28,8 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -38,9 +50,9 @@ public:
         : tunnel_id_(tunnel_id),
           server_mode_(server_mode),
           options_(options),
-          tun_(interface_name, options.tun_mtu),
+          classifier_(PacketClassifier::from_file(options.classifier_file)),
           master_key_(parse_master_key()),
-          protocol_v5_(tunnel_id, master_key_, server_mode, options.tun_mtu, options.encrypt_ascon, options.init_window, options.pfs) {
+          protocol_v5_(tunnel_id, master_key_, server_mode, options.logical_limit(), options.encrypt_ascon, options.init_window, options.pfs) {
 
         options_.encrypt_ascon = options_.encrypt_ascon or options_.pfs;
 
@@ -53,6 +65,18 @@ public:
             udp_.open_client(remote_host, port);
         }
 
+        udp_.configure_buffers(options_.udp_send_buffer, options_.udp_receive_buffer);
+
+        if (!options_.relay_mode() && (options_.switch_socket.empty() or options_.switch_exit_node)) {
+            tun_ = std::make_unique<TunDevice>(interface_name, options_.tun_mtu);
+        }
+        if (not options_.switch_socket.empty()) {
+            switch_ = std::make_unique<SwitchClient>(
+                options_.switch_socket, options_.switch_port_id, options_.switch_ipc);
+        }
+        if (not options_.control_socket.empty())
+            control_ = std::make_unique<ControlSocket>(options_.control_socket);
+
         active_transport_mtu_ =
             options_.pmtud_auto
                 ? min_transport_mtu
@@ -61,10 +85,25 @@ public:
         validate_fragment_capacity();
         reserve_hot_path_buffers();
 
-        drop_privileges();
+        if (options_.switch_socket.empty() && !options_.relay_mode()) drop_privileges();
+        else harden_unprivileged_process();
+        if (options_.relay_mode()) relay_ = std::make_unique<relay::Endpoint>(options_.relay_connect, options_.relay_listen, options_.relay_port_id);
+
+        // The initial check must use the final runtime identity. Connecting as
+        // root would hide permissions that make all later reconnects fail.
+        try_switch_reconnect(std::chrono::steady_clock::now(), true);
+        logger.start();
+        if (options_.info_msg_enable) {
+            try {
+                info_worker_ = std::make_unique<info::Worker>([fields = options_.info_fields] {
+                    return info::encode_access(info::loopback_addresses(), fields);
+                });
+            }
+            catch (const std::exception& error) { log_info("Unable to start INFO collector: ", error.what()); }
+        }
 
         if (log_enabled(LogLevel::info)) {
-            std::cerr
+            LogLine()
                 << "tuntom id=" << tunnel_id_
                 << " tun-mtu=" << options_.tun_mtu
                 << " transport-mtu-configured=" << options_.transport_mtu
@@ -77,7 +116,11 @@ public:
                 << " ttl-compensate="
                 << (options_.ttl_compensate ? "yes" : "no")
                 << " stats="
-                << (stats_enabled() ? options_.stats_file : "off")
+                << (stats_file_enabled() ? options_.stats_file : "off")
+                << " switch="
+                << (switch_ ? options_.switch_socket : "off")
+                << " switch-exit="
+                << (options_.switch_exit_node ? "on" : "off")
                 << "\n";
         }
     }
@@ -89,11 +132,14 @@ public:
             std::chrono::steady_clock::now();
 
         throughput_.update(started_now, {
-            stats_.tun_rx_bytes, stats_.tun_tx_bytes,
-            stats_.udp_rx_bytes, stats_.udp_tx_bytes});
+            {stats_.tun_rx_packets, stats_.tun_rx_bytes},
+            {stats_.tun_tx_packets, stats_.tun_tx_bytes},
+            {stats_.udp_rx_packets, stats_.udp_rx_bytes},
+            {stats_.udp_tx_packets, stats_.udp_tx_bytes},
+            {stats_.switch_rx_packets, stats_.switch_rx_bytes},
+            {stats_.switch_tx_packets, stats_.switch_tx_bytes}});
 
         if (not server_mode_) {
-            send_handshake(protocol_v5_.begin(started_now));
             next_rtt_probe_ =
                 started_now +
                 std::chrono::seconds(rtt_probe_interval_seconds);
@@ -107,133 +153,163 @@ public:
         auto last_stats_write =
             std::chrono::steady_clock::now();
 
-        write_stats();
+        try {
+            if (not server_mode_) send_handshake(protocol_v5_.begin(started_now));
+            write_stats();
+        } catch (const std::bad_alloc&) {
+            recovery_.allocation_failed();
+        }
 
+        std::vector<pollfd> descriptors;
+        descriptors.reserve(relay_ ? relay::max_channels + 6 : 5);
         while (true) {
-            update_stats_control();
-            pollfd descriptors[2] {};
-            descriptors[0].fd = tun_.fd();
-            descriptors[0].events = POLLIN;
-            descriptors[1].fd = udp_.fd();
-            descriptors[1].events = POLLIN;
+            try {
+                if (recovery_.wait_for_retry(control_ ? control_->poll_fd() : -1)) {
+                    if (control_) handle_control_request();
+                    continue;
+                }
+                sync_udp_tx_session();
+                udp_tx_queue_.expire(UdpTxQueue::Clock::now());
+                update_stats_control();
+                descriptors.resize(5);
+                descriptors[0].fd = tun_ ? tun_->fd() : -1;
+                descriptors[0].events = udp_tx_queue_.empty() ? POLLIN : 0;
+                descriptors[1].fd = udp_.fd();
+                descriptors[1].events = static_cast<short>(POLLIN |
+                    (udp_tx_queue_.writable_interest(UdpTxQueue::Clock::now()) ? POLLOUT : 0));
+                descriptors[2].fd = switch_ ? switch_->fd() : -1;
+                descriptors[2].events = switch_ ? switch_->poll_events() : POLLIN;
+                if (!udp_tx_queue_.empty() && switch_ && switch_->connected())
+                    descriptors[2].events = static_cast<short>(descriptors[2].events & ~POLLIN);
+                descriptors[3].fd = control_ ? control_->poll_fd() : -1;
+                descriptors[3].events = POLLIN;
+                descriptors[4].fd = info_worker_ ? info_worker_->fd() : -1;
+                descriptors[4].events = POLLIN;
 
-            const int rc = ::poll(descriptors, 2, 1000);
+                const auto timeout_at = AdaptivePolling::Clock::now();
+                int timeout = switch_ && (udp_tx_queue_.empty() || !switch_->connected())
+                    ? switch_->poll_timeout_ms(timeout_at, 1000) : 1000;
+                if (switch_ && switch_->connected()) timeout = switch_->transport().retry_timeout(timeout_at, timeout);
+                if (control_) timeout = control_->poll_timeout_ms(timeout_at, timeout);
+                if (relay_) { relay_->descriptors(descriptors); timeout = relay_->poll_timeout(timeout_at, std::min(timeout, 100)); }
+                timeout = udp_tx_queue_.poll_timeout(timeout_at, timeout);
+                const auto poll_started = AdaptivePolling::Clock::now();
+                const int rc = ::poll(descriptors.data(), descriptors.size(), timeout);
+                const auto poll_finished = AdaptivePolling::Clock::now();
 
-            if (rc < 0) {
-                if (errno == EINTR) {
+                if (rc < 0) {
+                    if (errno != EINTR) recovery_.poll_failed(errno);
                     continue;
                 }
 
-                throw std::runtime_error(
-                    "poll() failed: " +
-                    std::string(std::strerror(errno)));
-            }
+                adaptive_polling_.observe_poll(poll_finished - poll_started);
 
-            if ((descriptors[0].revents & POLLIN) != 0) {
-                const ssize_t received =
-                    tun_.read_packet(
-                        tun_rx_buffer_.data(),
-                        tun_rx_buffer_.size());
+                // Control traffic is never held behind an overload data slice.
+                if (control_ and (descriptors[3].revents & POLLIN)) {
+                    handle_control_request();
+                }
+                if (descriptors[4].revents & POLLIN) send_collected_info();
+                if (descriptors[1].revents & POLLOUT) flush_udp_tx();
+                if (relay_) relay_->step([&](const std::uint8_t* p, std::size_t n) { send_data(p,n,PacketType::ipc); });
 
-                if (received > 0) {
-                    tx_sample_active_ = stats_enabled() and tx_processing_.select();
-                    if (tx_sample_active_) tx_sample_start_ = ProcessingStats::Clock::now();
-                    const std::size_t packet_size =
-                        static_cast<std::size_t>(received);
+                const bool initially_ready[3] {
+                    (descriptors[0].revents & POLLIN) != 0,
+                    (descriptors[1].revents & POLLIN) != 0,
+                    (descriptors[2].revents & POLLIN) != 0 || (switch_ && switch_->receive_pending()),
+                };
+                const unsigned rounds = adaptive_polling_.batch_size();
+                const auto slice_started = AdaptivePolling::Clock::now();
 
-                    ++stats_.tun_rx_packets;
-                    stats_.tun_rx_bytes += packet_size;
+                for (unsigned round = 0; round < rounds; ++round) {
+                    bool progress = false;
+                    for (unsigned offset = 0; offset < 3; ++offset) {
+                        const unsigned source = (next_data_source_ + offset) % 3;
+                        if (round == 0 and not initially_ready[source]) continue;
+                        if (source == 0 && udp_tx_queue_.empty()) progress |= try_handle_tun_packet();
+                        else if (source == 1) progress |= try_handle_udp_packet();
+                        else if (source == 2 && udp_tx_queue_.empty()) progress |= try_handle_switch_packet();
+                    }
+                    next_data_source_ = (next_data_source_ + 1) % 3;
+                    if (not progress) break;
+                    if (
+                        AdaptivePolling::Clock::now() - slice_started >=
+                        AdaptivePolling::processing_slice) {
 
-                    dump_bytes(
-                        "TUN read",
-                        tun_rx_buffer_.data(),
-                        packet_size,
-                        20);
-
-                    if (packet_size > options_.tun_mtu) {
-                        ++stats_.drops_mtu;
-                        log_info("DROP TUN packet larger than configured MTU");
-                    } else {
-                        send_data(
-                            tun_rx_buffer_.data(),
-                            packet_size);
+                        adaptive_polling_.note_slice_limit();
+                        break;
                     }
                 }
-            }
 
-            if ((descriptors[1].revents & POLLIN) != 0) {
-                sockaddr_storage source {};
-                socklen_t source_length = 0;
+                if (switch_ && switch_->connected()) account_switch_output(switch_->flush());
 
-                const ssize_t received =
-                    udp_.receive(
-                        udp_rx_buffer_.data(),
-                        udp_rx_buffer_.size(),
-                        source,
-                        source_length);
-
-                if (received > 0) {
-                    rx_sample_active_ = stats_enabled() and rx_processing_.select();
-                    if (rx_sample_active_) rx_sample_start_ = ProcessingStats::Clock::now();
-                    ++stats_.udp_rx_packets;
-                    stats_.udp_rx_bytes +=
-                        static_cast<std::uint64_t>(received);
-
-                    handle_udp_packet(
-                        udp_rx_buffer_.data(),
-                        static_cast<std::size_t>(received),
-                        source,
-                        source_length);
+                if (switch_ and
+                    (descriptors[2].revents & (POLLHUP | POLLERR | POLLNVAL)) != 0) {
+                    disconnect_switch(ECONNRESET);
                 }
-            }
 
-            const auto now = std::chrono::steady_clock::now();
-            if (stats_enabled()) {
+                if (adaptive_polling_.should_check_backlog()) {
+                    adaptive_polling_.observe_backlog(
+                        data_backlog_ready(),
+                        AdaptivePolling::Clock::now());
+                }
+
+                const auto now = std::chrono::steady_clock::now();
+                try_switch_reconnect(now, false, descriptors[2].revents);
                 throughput_.update(now, {
-                    stats_.tun_rx_bytes, stats_.tun_tx_bytes,
-                    stats_.udp_rx_bytes, stats_.udp_tx_bytes});
-            }
-            send_handshake(protocol_v5_.tick(now));
+                    {stats_.tun_rx_packets, stats_.tun_rx_bytes},
+                    {stats_.tun_tx_packets, stats_.tun_tx_bytes},
+                    {stats_.udp_rx_packets, stats_.udp_rx_bytes},
+                    {stats_.udp_tx_packets, stats_.udp_tx_bytes},
+                    {stats_.switch_rx_packets, stats_.switch_rx_bytes},
+                    {stats_.switch_tx_packets, stats_.switch_tx_bytes}});
+                const auto handshake = protocol_v5_.tick(now);
+                sync_udp_tx_session();
+                send_handshake(handshake);
 
-            if (
-                not server_mode_ and
-                now - last_keepalive >=
-                    std::chrono::seconds(keepalive_seconds)) {
+                if (
+                    not server_mode_ and
+                    now - last_keepalive >=
+                        std::chrono::seconds(keepalive_seconds)) {
 
-                send_control(PacketType::keepalive);
-                last_keepalive = now;
-            }
+                    send_control(PacketType::keepalive);
+                    last_keepalive = now;
+                }
 
-            if (
-                rtt_probe_schedule_active_ and
-                now >= next_rtt_probe_) {
+                if (
+                    rtt_probe_schedule_active_ and
+                    now >= next_rtt_probe_) {
 
-                send_rtt_probe();
-                next_rtt_probe_ +=
-                    std::chrono::seconds(
-                        rtt_probe_interval_seconds);
-            }
+                    send_rtt_probe();
+                    next_rtt_probe_ +=
+                        std::chrono::seconds(
+                            rtt_probe_interval_seconds);
+                }
 
-            cleanup_rtt_probes(now);
+                cleanup_rtt_probes(now);
 
-            if (options_.pmtud_auto) {
-                handle_pmtud_timeout(now);
-            }
+                if (options_.pmtud_auto) {
+                    handle_pmtud_timeout(now);
+                }
 
-            if (
-                now - last_reassembly_cleanup >=
-                std::chrono::seconds(1)) {
-
-                protocol_v5_.cleanup();
-                last_reassembly_cleanup = now;
-            }
-
-            if (
-                now - last_stats_write >=
+                if (
+                    now - last_reassembly_cleanup >=
                     std::chrono::seconds(1)) {
 
-                write_stats();
-                last_stats_write = now;
+                    protocol_v5_.cleanup(now);
+                    report_reassembly_drops();
+                    last_reassembly_cleanup = now;
+                }
+
+                if (
+                    now - last_stats_write >=
+                        std::chrono::seconds(1)) {
+
+                    write_stats();
+                    last_stats_write = now;
+                }
+            } catch (const std::bad_alloc&) {
+                if (switch_) stats_.switch_drops += switch_->discard_staged().drops;
+                recovery_.allocation_failed();
             }
         }
     }
@@ -246,6 +322,111 @@ protected:
     }
 
 private:
+    void sync_udp_tx_session() {
+        const auto generation = protocol_v5_.transmit_generation();
+        if (generation != udp_tx_generation_ || !protocol_v5_.ready()) udp_tx_queue_.discard();
+        udp_tx_generation_ = generation;
+    }
+
+    void flush_udp_tx() {
+        sync_udp_tx_session();
+        const auto sent = udp_tx_queue_.flush(UdpTxQueue::Clock::now(),
+            [&](const std::uint8_t* p, std::size_t n) { return udp_.send(p, n); });
+        stats_.udp_tx_packets += sent.packets;
+        stats_.udp_tx_bytes += sent.bytes;
+        stats_.fragments_tx += sent.packets;
+        if (sent.error) {
+            ++stats_.udp_send_errors;
+            if (sent.error == EMSGSIZE && options_.pmtud_auto) {
+                // Queued wire datagrams cannot be resized/re-encrypted safely.
+                udp_tx_queue_.discard();
+                restart_pmtud("queued data exceeded path MTU");
+            }
+        }
+    }
+
+    // Called at most once per second, including when automatic stats are off.
+    void report_reassembly_drops() {
+        const auto& m = protocol_v5_.reassembly_metrics();
+        const auto losses = m.capacity_evictions + m.expired_entries +
+            m.late_fragment_drops + m.invalid_fragments + m.overlap_drops +
+            m.capacity_drops + m.session_discarded_entries;
+        if (losses == reassembly_reported_losses_) return;
+        reassembly_reported_losses_ = losses;
+        if (not log_enabled(LogLevel::info)) return;
+        LogLine() << "Reassembly cumulative losses: evicted=" << m.capacity_evictions
+                  << " expired=" << m.expired_entries
+                  << " late-fragments=" << m.late_fragment_drops
+                  << " invalid=" << m.invalid_fragments
+                  << " overlap=" << m.overlap_drops
+                  << " capacity-drops=" << m.capacity_drops
+                  << " session-discarded=" << m.session_discarded_entries
+                  << " active=" << m.active_entries << "\n";
+    }
+
+    void handle_control_request() {
+        control_->handle([this] {
+            std::ostringstream output;
+            output.exceptions(std::ios::badbit);
+            format_stats(output);
+            return output.str();
+        });
+    }
+
+    bool try_handle_tun_packet() {
+        if (not tun_) return false;
+        const ssize_t received = tun_->read_packet(
+            tun_rx_buffer_.data(), tun_rx_buffer_.size());
+        if (received <= 0) return false;
+
+        tx_sample_active_ = tx_processing_.select();
+        if (tx_sample_active_) tx_sample_start_ = ProcessingStats::Clock::now();
+        const std::size_t packet_size = static_cast<std::size_t>(received);
+        ++stats_.tun_rx_packets;
+        stats_.tun_rx_bytes += packet_size;
+        dump_bytes("TUN read", tun_rx_buffer_.data(), packet_size, 20);
+
+        if (packet_size > options_.tun_mtu) {
+            ++stats_.drops_mtu;
+            log_info("DROP TUN packet larger than configured MTU");
+        } else {
+            send_data(tun_rx_buffer_.data(), packet_size);
+        }
+        return true;
+    }
+
+    bool try_handle_udp_packet() {
+        sockaddr_storage source {};
+        socklen_t source_length = 0;
+        const ssize_t received = udp_.receive(
+            udp_rx_buffer_.data(), udp_rx_buffer_.size(), source, source_length);
+        if (received <= 0) return false;
+
+        rx_sample_active_ = rx_processing_.select();
+        if (rx_sample_active_) rx_sample_start_ = ProcessingStats::Clock::now();
+        ++stats_.udp_rx_packets;
+        stats_.udp_rx_bytes += static_cast<std::uint64_t>(received);
+        handle_udp_packet(
+            udp_rx_buffer_.data(), static_cast<std::size_t>(received),
+            source, source_length);
+        return true;
+    }
+
+    bool data_backlog_ready() const {
+        if (udp_tx_queue_.empty() && switch_ && switch_->receive_pending()) return true;
+        pollfd descriptors[3] {
+            {tun_ && udp_tx_queue_.empty() ? tun_->fd() : -1, POLLIN, 0},
+            {udp_.fd(), POLLIN, 0},
+            {switch_ && switch_->connected() && udp_tx_queue_.empty() ? switch_->fd() : -1, POLLIN, 0},
+        };
+        const int ready = ::poll(descriptors, 3, 0);
+        if (ready <= 0) return false;
+        for (const auto& descriptor : descriptors) {
+            if ((descriptor.revents & POLLIN) != 0) return true;
+        }
+        return false;
+    }
+
     void send_handshake(const std::vector<std::uint8_t>& wire,
                         const sockaddr_storage* source = nullptr,
                         socklen_t source_length = 0) {
@@ -257,8 +438,25 @@ private:
         stats_.udp_tx_bytes += static_cast<std::uint64_t>(n);
     }
 
+    void send_collected_info() {
+        info::Worker::Result result;
+        if (!info_worker_->take(result) ||
+            result.generation != protocol_v5_.transmit_generation() || !protocol_v5_.ready()) return;
+        if (!result.valid) {
+            log_info("INFO collection failed; snapshot dropped");
+            return;
+        }
+        Packet message;
+        message.type = PacketType::info;
+        message.payload.assign(result.text.begin(), result.text.begin() + result.size);
+        send_handshake(protocol_v5_.encode(message));
+    }
+
     void session_activated() {
         log_info("V5 session confirmed");
+        peer_info_.activated(relay_exchange_);
+        if (info_worker_) info_worker_->request(protocol_v5_.transmit_generation());
+        if (relay_) relay_->session();
         rtt_probes_.clear();
         send_rtt_probe();
         next_rtt_probe_ = std::chrono::steady_clock::now() +
@@ -271,26 +469,34 @@ private:
         const std::size_t maximum_payload =
             maximum_fragment_payload();
 
-        tun_rx_buffer_.resize(options_.tun_mtu);
+        tun_rx_buffer_.resize(options_.logical_limit());
         udp_rx_buffer_.resize(buffer_size);
+        switch_rx_buffer_.resize(
+            switch_base_header_size +
+            switch_max_labels * switch_label_size +
+            options_.logical_limit());
 
-        tx_logical_packet_.payload.reserve(options_.tun_mtu);
+        tx_logical_packet_.payload.reserve(options_.logical_limit());
         tx_fragment_packet_.payload.reserve(maximum_payload);
-        rx_packet_.payload.reserve(options_.tun_mtu);
-        rx_logical_packet_.payload.reserve(options_.tun_mtu);
+        rx_packet_.payload.reserve(options_.logical_limit());
+        rx_logical_packet_.payload.reserve(options_.logical_limit());
 
         tx_encoded_buffer_.reserve(
             protocol_fragment_v5_size + maximum_payload);
+        const std::size_t fragments =
+            (options_.logical_limit() + maximum_payload - 1) / maximum_payload;
+        for (std::size_t i = 0; i < fragments; ++i)
+            tx_encoded_fragments_[i].reserve(protocol_fragment_v5_size + maximum_payload);
         tx_mac_buffer_.reserve(32 + maximum_payload);
-        rx_mac_buffer_.reserve(32 + options_.tun_mtu);
-        reassembled_packet_.reserve(options_.tun_mtu);
+        rx_mac_buffer_.reserve(32 + options_.logical_limit());
+        reassembled_packet_.reserve(options_.logical_limit());
     }
 
     std::size_t maximum_fragment_payload() const {
         const std::size_t overhead =
             udp_.outer_ip_header_size() +
             udp_header_size +
-            protocol_fragment_v5_size;
+            protocol_fragment_v5_size + (options_.relay_mode() ? 4 : 0);
 
         if (active_transport_mtu_ <= overhead) {
             throw std::runtime_error(
@@ -305,23 +511,24 @@ private:
             maximum_fragment_payload();
 
         const std::size_t fragment_count =
-            (options_.tun_mtu + maximum_payload - 1) /
+            (options_.logical_limit() + maximum_payload - 1) /
             maximum_payload;
 
-        if (fragment_count > max_fragments_per_packet) {
+        if (fragment_count > (options_.relay_mode() ? max_ipc_fragments_per_packet : max_fragments_per_packet)) {
             throw std::runtime_error(
                 "Configured MTU/transport-MTU combination may require "
-                "more than 64 fragments");
+                "more than the allowed number of fragments");
         }
     }
 
     void send_data(
         const std::uint8_t* data,
-        std::size_t size) {
+        std::size_t size, PacketType type = PacketType::data) {
 
+        sync_udp_tx_session();
         if (not protocol_v5_.ready()) return;
         Packet& logical_packet = tx_logical_packet_;
-        logical_packet.type = PacketType::data;
+        logical_packet.type = type;
         logical_packet.tunnel_id = tunnel_id_;
         logical_packet.protocol_version = protocol_version_v5;
         logical_packet.sequence = 0;
@@ -331,12 +538,12 @@ private:
             static_cast<std::uint32_t>(size);
         logical_packet.payload.assign(data, data + size);
 
-        if (not process(logical_packet, Direction::tun_to_udp)) {
+        if (type == PacketType::data && not process(logical_packet, Direction::tun_to_udp)) {
             ++stats_.drops_process;
             return;
         }
 
-        if (logical_packet.payload.size() > options_.tun_mtu) {
+        if (logical_packet.payload.size() > options_.logical_limit()) {
             ++stats_.drops_mtu;
             log_info("DROP processed packet larger than configured MTU");
             return;
@@ -344,8 +551,20 @@ private:
 
         ++stats_.data_tx_packets;
 
-        const FragmentPlan plan = make_v5_fragment_plan(
-            logical_packet.payload.size(), maximum_fragment_payload());
+        const auto maximum = maximum_fragment_payload();
+        const auto size_limit = logical_packet.payload.size() <= maximum + (type == PacketType::ipc ? 16 : 12)
+            ? maximum + (type == PacketType::ipc ? 16 : 12) : maximum;
+        const FragmentPlan plan = make_fragment_plan(logical_packet.payload.size(), size_limit, relay_ ? max_ipc_fragments_per_packet : max_fragments_per_packet);
+
+        udp_tx_queue_.expire(UdpTxQueue::Clock::now());
+        // Relay inputs also contain registration/control traffic and keep being
+        // serviced. Reject excess data before consuming sequence numbers, so a
+        // full queue cannot age its own retained packets out of the replay window.
+        if (!udp_tx_queue_.empty() &&
+            !udp_tx_queue_.fits(plan.count, logical_packet.payload.size() + plan.count * 64)) {
+            udp_tx_queue_.reject(plan.count);
+            return;
+        }
 
         const std::uint64_t message_id =
             message_id_generator_.next();
@@ -358,7 +577,7 @@ private:
                 (index < plan.larger_fragments ? 1 : 0);
 
             Packet& fragment = tx_fragment_packet_;
-            fragment.type = PacketType::data;
+            fragment.type = type;
             fragment.tunnel_id = tunnel_id_;
             fragment.protocol_version = protocol_version_v5;
             fragment.message_id = message_id;
@@ -376,54 +595,56 @@ private:
                         offset + fragment_size));
 
             if (not protocol_v5_.encode_into(
-                fragment, tx_encoded_buffer_, tx_mac_buffer_)) return;
+                fragment, tx_encoded_fragments_[index], tx_mac_buffer_)) return;
+            offset += fragment_size;
+        }
 
-            const ssize_t sent =
-                udp_.send(
-                    tx_encoded_buffer_.data(),
-                    tx_encoded_buffer_.size());
+        const auto queued_at = UdpTxQueue::Clock::now();
+        udp_tx_queue_.expire(queued_at);
+        if (!udp_tx_queue_.empty()) {
+            // New data must not overtake a delayed prefix (replay window).
+            udp_tx_queue_.append(tx_encoded_fragments_.data(), plan.count, queued_at);
+            return;
+        }
+        auto sent = udp_.send_batch(tx_encoded_fragments_.data(), std::min(plan.count,max_fragments_per_packet));
+        while (!sent.error && sent.packets < plan.count) {
+            const auto batch = udp_.send_batch(tx_encoded_fragments_.data()+sent.packets, std::min(plan.count-sent.packets,max_fragments_per_packet));
+            sent.packets += batch.packets; sent.bytes += batch.bytes; sent.error = batch.error;
+        }
+        if (sent.error == EAGAIN || sent.error == EWOULDBLOCK || sent.error == EINTR) {
+            if (sent.error != EINTR) udp_tx_queue_.blocked(queued_at);
+            udp_tx_queue_.append(tx_encoded_fragments_.data() + sent.packets,
+                                 plan.count - sent.packets, queued_at);
+            // Queuing is not an OS send failure; queue drop counters cover overflow.
+            sent.error = 0;
+        }
+        if (tx_sample_active_ and sent.packets == plan.count)
+            tx_processing_.finish(tx_sample_start_);
+        stats_.udp_tx_packets += sent.packets;
+        stats_.udp_tx_bytes += sent.bytes;
+        stats_.fragments_tx += sent.packets;
 
-            if (sent < 0) {
-                ++stats_.udp_send_errors;
-                const int send_error = errno;
-
-                if (log_enabled(LogLevel::info)) {
-                    std::cerr
-                        << "UDP send failed: "
-                        << std::strerror(send_error)
-                        << "\n";
-                }
-
-                if (
-                    options_.pmtud_auto and
-                    send_error == EMSGSIZE) {
-
-                    restart_pmtud(
-                        "data datagram exceeded path MTU");
-                }
-
-                return;
-            }
-
-            if (tx_sample_active_ and index + 1 == plan.count) {
-                tx_processing_.finish(tx_sample_start_);
-            }
-            ++stats_.udp_tx_packets;
-            stats_.udp_tx_bytes +=
-                static_cast<std::uint64_t>(sent);
-            ++stats_.fragments_tx;
-
-            if (log_enabled(LogLevel::debug)) {
-                std::cerr
+        if (log_enabled(LogLevel::debug)) {
+            offset = 0;
+            for (std::size_t index = 0; index < sent.packets; ++index) {
+                const std::size_t fragment_size =
+                    plan.base_size + (index < plan.larger_fragments ? 1 : 0);
+                LogLine()
                     << "FRAGMENT "
                     << (index + 1) << "/" << plan.count
                     << " msg=" << message_id
                     << " offset=" << offset
                     << " size=" << fragment_size
                     << "\n";
+                offset += fragment_size;
             }
+        }
 
-            offset += fragment_size;
+        if (sent.error != 0) {
+            ++stats_.udp_send_errors;
+            log_info("UDP send failed: errno=", sent.error);
+            if (options_.pmtud_auto and sent.error == EMSGSIZE)
+                restart_pmtud("data datagram exceeded path MTU");
         }
     }
 
@@ -454,7 +675,7 @@ private:
                         char host[NI_MAXHOST] {}, service[NI_MAXSERV] {};
                         ::getnameinfo(reinterpret_cast<const sockaddr*>(&source), source_length,
                             host, sizeof(host), service, sizeof(service), NI_NUMERICHOST | NI_NUMERICSERV);
-                        std::cerr << "WARN INIT tunnel=" << packet.tunnel_id
+                        LogLine() << "WARN INIT tunnel=" << packet.tunnel_id
                             << " peer=[" << host << "]:" << service
                             << " observed_clock_offset=" << result.clock_offset
                             << "s allowed=+/-" << options_.init_window / 2 << "s"
@@ -469,13 +690,16 @@ private:
                     init_warning_next_ = now + std::chrono::seconds(30);
                 } else ++init_warning_suppressed_;
             }
+            sync_udp_tx_session();
             // Replies to unconfirmed INIT go directly to its source, without
             // changing the active return path. Clients retain their configured peer.
             send_handshake(result.reply, server_mode_ ? &source : nullptr, source_length);
             session_update_peer = result.update_peer;
             session_activated_now = result.activated;
-            if (session_activated_now and session_update_peer) udp_.set_peer(source, source_length);
-            if (session_activated_now) session_activated();
+            if (session_activated_now and session_update_peer) {
+                if (udp_.set_peer(source, source_length)) udp_tx_queue_.discard();
+            }
+            if (session_activated_now) { relay_exchange_ = packet.message_id; session_activated(); }
             if (not result.data) {
                 if (result.replay_drop) ++stats_.drops_replay;
                 else if (not result.control) ++stats_.drops_protocol;
@@ -491,6 +715,7 @@ private:
             const bool peer_changed =
                 udp_.set_peer(source, source_length);
 
+            if (peer_changed) udp_tx_queue_.discard();
             if (
                 options_.pmtud_auto and
                 peer_changed) {
@@ -500,7 +725,7 @@ private:
         }
 
         if (log_enabled(LogLevel::debug)) {
-            std::cerr
+            LogLine()
                 << "ACCEPT v"
                 << static_cast<unsigned>(packet.protocol_version)
                 << " seq=" << packet.sequence
@@ -510,6 +735,12 @@ private:
                 << " original=" << packet.original_length
                 << " payload=" << packet.payload.size()
                 << "\n";
+        }
+
+        if (packet.type == PacketType::info) {
+            // SessionProtocol rejects old-session INFO before it reaches the snapshot.
+            peer_info_.accept(receive_session->exchange, packet.sequence, packet.payload);
+            return;
         }
 
         if (packet.type == PacketType::ping) {
@@ -551,7 +782,8 @@ private:
             return;
         }
 
-        if (packet.type != PacketType::data) {
+        if (packet.type != (relay_ ? PacketType::ipc : PacketType::data) ||
+            (relay_ && receive_session->exchange != relay_exchange_)) {
             return;
         }
 
@@ -573,13 +805,13 @@ private:
             not receive_session->reassembly.accept(
                 packet,
                 reassembled_packet_,
-                stats_enabled() ? &reassembly_span_ : nullptr)) {
+                &reassembly_span_)) {
 
             return;
         }
 
         Packet& logical_packet = rx_logical_packet_;
-        logical_packet.type = PacketType::data;
+        logical_packet.type = packet.type;
         logical_packet.tunnel_id = tunnel_id_;
         logical_packet.protocol_version = protocol_version_v5;
         logical_packet.sequence = packet.sequence;
@@ -590,14 +822,15 @@ private:
                 reassembled_packet_.size());
 
         logical_packet.payload.swap(reassembled_packet_);
-        deliver_to_tun(logical_packet);
+        if (relay_) relay_->receive(logical_packet.payload.data(), logical_packet.payload.size());
+        else deliver_received_data(logical_packet);
 
         // Recycle the storage used by the completed logical packet.
         logical_packet.payload.swap(reassembled_packet_);
         reassembled_packet_.clear();
     }
 
-    void deliver_to_tun(Packet& packet) {
+    void deliver_received_data(Packet& packet) {
         if (not process(packet, Direction::udp_to_tun)) {
             ++stats_.drops_process;
             return;
@@ -606,6 +839,40 @@ private:
         if (packet.payload.size() > options_.tun_mtu) {
             ++stats_.drops_mtu;
             log_info("DROP reassembled packet larger than configured MTU");
+            return;
+        }
+
+        if (switch_) {
+            if (not switch_->connected()) {
+                ++stats_.switch_drops;
+                return;
+            }
+            const auto* labels = classifier_.classify(packet.payload.data(), packet.payload.size());
+            account_switch_output(switch_->append_frame(
+                SwitchOpcode::switch_packet, labels ? labels->data() : &options_.switch_label,
+                labels ? labels->size() : 1,
+                packet.payload.data(), packet.payload.size()));
+            return;
+        }
+
+        deliver_to_tun(packet);
+    }
+
+    void account_switch_output(const SwitchClient::Outcome &out) {
+        stats_.switch_tx_packets += out.frames;
+        stats_.switch_tx_bytes += out.bytes;
+        stats_.data_rx_packets += out.frames;
+        stats_.switch_drops += out.drops;
+        stats_.switch_backpressure_drops += out.backpressure;
+        if (out.error) {
+            ++stats_.switch_send_errors;
+            disconnect_switch(out.error);
+        }
+    }
+
+    void deliver_to_tun(Packet& packet) {
+        if (not tun_) {
+            ++stats_.switch_drops;
             return;
         }
 
@@ -620,7 +887,7 @@ private:
             20);
 
         const ssize_t written =
-            tun_.write_packet(
+            tun_->write_packet(
                 packet.payload.data(),
                 packet.payload.size());
 
@@ -628,9 +895,9 @@ private:
             ++stats_.tun_write_errors;
 
             if (log_enabled(LogLevel::info)) {
-                std::cerr
+                LogLine()
                     << "TUN write failed: "
-                    << std::strerror(errno)
+                    << "errno=" << errno
                     << "\n";
             }
         } else {
@@ -639,6 +906,127 @@ private:
                 static_cast<std::uint64_t>(written);
             ++stats_.data_rx_packets;
         }
+    }
+
+    bool try_handle_switch_packet() {
+        if (not switch_ or not switch_->connected()) return false;
+        const ssize_t received = switch_->receive(
+            switch_rx_buffer_.data(), switch_rx_buffer_.size());
+        if (received == 0) {
+            disconnect_switch(ECONNRESET);
+            return true;
+        }
+        if (received < 0) {
+            if (errno == EAGAIN or errno == EWOULDBLOCK or errno == EINTR)
+                return false;
+            disconnect_switch(errno);
+            return true;
+        }
+        if (static_cast<std::size_t>(received) > switch_rx_buffer_.size()) {
+            ++stats_.switch_drops;
+            return true;
+        }
+
+        ++stats_.switch_rx_packets;
+        stats_.switch_rx_bytes += static_cast<std::uint64_t>(received);
+
+        SwitchFrameView frame;
+        if (not decode_switch_frame(
+                switch_rx_buffer_.data(),
+                static_cast<std::size_t>(received),
+                frame)) {
+            ++stats_.switch_drops;
+            return true;
+        }
+
+        if (frame.payload_size > options_.tun_mtu) {
+            ++stats_.drops_mtu;
+            ++stats_.switch_drops;
+            return true;
+        }
+
+        if (frame.opcode == SwitchOpcode::switch_packet) {
+            send_data(frame.payload, frame.payload_size);
+            return true;
+        }
+
+        if (not options_.switch_exit_node) {
+            ++stats_.switch_drops;
+            return true;
+        }
+
+        Packet packet;
+        packet.type = PacketType::data;
+        packet.tunnel_id = tunnel_id_;
+        packet.protocol_version = protocol_version_v5;
+        packet.original_length = static_cast<std::uint32_t>(frame.payload_size);
+        packet.payload.assign(frame.payload, frame.payload + frame.payload_size);
+        deliver_to_tun(packet);
+        return true;
+    }
+
+    void record_switch_error(int error) {
+        stats_.switch_last_error_ts = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count());
+        stats_.switch_last_error_no = error;
+    }
+
+    void disconnect_switch(int error) {
+        if (not switch_ or not switch_->connected()) return;
+        record_switch_error(error);
+        stats_.switch_drops += switch_->discard_staged().drops;
+        switch_->disconnect();
+        ++stats_.switch_disconnects;
+        next_switch_reconnect_ =
+            std::chrono::steady_clock::now() + switch_reconnect_interval_;
+        log_info("Switch socket disconnected; DATA will be dropped until reconnect");
+    }
+
+    void try_switch_reconnect(
+        std::chrono::steady_clock::time_point now,
+        bool startup = false,
+        short revents = 0) {
+
+        if (not switch_ or switch_->connected()) return;
+        if (switch_->connecting()) {
+            switch_->advance_connect(now, revents);
+        } else {
+            if (now < next_switch_reconnect_) return;
+            ++stats_.switch_reconnect_attempts;
+            switch_->start_connect(now);
+        }
+        if (switch_->connecting()) return;
+        if (switch_->connected()) {
+            ++stats_.switch_reconnects;
+            last_switch_connect_error_ = 0;
+            log_info("Switch socket connected");
+            return;
+        }
+
+        const int error = switch_->last_error();
+        ++stats_.switch_socket_errors;
+        record_switch_error(error);
+        if (error == EACCES or error == EPERM) {
+            ++stats_.switch_socket_eacces;
+        } else if (error == ENOENT) {
+            ++stats_.switch_socket_enoent;
+        } else if (error == ECONNREFUSED) {
+            ++stats_.switch_socket_econnrefused;
+        } else {
+            ++stats_.switch_socket_other_errors;
+        }
+        if (startup and (error == EACCES or error == EPERM)) {
+            throw std::runtime_error(
+                "Cannot access switch socket " + options_.switch_socket +
+                " as runtime user: " + std::strerror(error));
+        }
+        if (error != last_switch_connect_error_) {
+            log_info(
+                "Switch reconnect failed: errno=", error);
+            last_switch_connect_error_ = error;
+        }
+        next_switch_reconnect_ = now + switch_reconnect_interval_;
     }
 
     bool send_control_packet(
@@ -805,7 +1193,7 @@ private:
                 pmtud_upper_bound());
 
         if (log_enabled(LogLevel::debug)) {
-            std::cerr
+            LogLine()
                 << "PMTUD start: known-good="
                 << pmtud_known_good_
                 << " first-probe="
@@ -828,7 +1216,7 @@ private:
         active_transport_mtu_ = min_transport_mtu;
 
         if (log_enabled(LogLevel::debug)) {
-            std::cerr
+            LogLine()
                 << "PMTUD restart: "
                 << reason
                 << "\n";
@@ -841,7 +1229,7 @@ private:
         if (not protocol_v5_.ready()) return;
         if (pmtud_probe_pending_) {
             if (log_enabled(LogLevel::debug)) {
-                std::cerr
+                LogLine()
                     << "PMTUD send skipped: probe pending id="
                     << pmtud_probe_id_
                     << " mtu="
@@ -858,7 +1246,7 @@ private:
 
         if (target_mtu <= overhead) {
             if (log_enabled(LogLevel::debug)) {
-                std::cerr
+                LogLine()
                     << "PMTUD send skipped: target-mtu="
                     << target_mtu
                     << " overhead="
@@ -881,7 +1269,7 @@ private:
         if (encoded.empty()) return;
 
         if (log_enabled(LogLevel::debug)) {
-            std::cerr
+            LogLine()
                 << "PMTUD send probe: id="
                 << packet.message_id
                 << " target-mtu="
@@ -905,16 +1293,14 @@ private:
 
         if (sent < 0) {
             if (log_enabled(LogLevel::info)) {
-                std::cerr
+                LogLine()
                     << "PMTUD probe send failed: id="
                     << packet.message_id
                     << " target-mtu="
                     << target_mtu
                     << " errno="
                     << send_error
-                    << " ("
-                    << std::strerror(send_error)
-                    << ")\n";
+                    << "\n";
             }
 
             ++stats_.udp_send_errors;
@@ -926,7 +1312,7 @@ private:
             pmtud_known_bad_ = target_mtu;
 
             if (log_enabled(LogLevel::info)) {
-                std::cerr
+                LogLine()
                     << "PMTUD continuing below failed mtu="
                     << target_mtu
                     << "\n";
@@ -941,7 +1327,7 @@ private:
             static_cast<std::uint64_t>(sent);
 
         if (log_enabled(LogLevel::debug)) {
-            std::cerr
+            LogLine()
                 << "PMTUD probe sent: id="
                 << packet.message_id
                 << " target-mtu="
@@ -969,7 +1355,7 @@ private:
             udp_payload_size;
 
         if (log_enabled(LogLevel::debug)) {
-            std::cerr
+            LogLine()
                 << "PMTUD recv probe: id="
                 << packet.message_id
                 << " declared-mtu="
@@ -1011,16 +1397,14 @@ private:
         if (sent < 0) {
             ++stats_.udp_send_errors;
             if (log_enabled(LogLevel::info)) {
-                std::cerr
+                LogLine()
                     << "PMTUD reply send failed: id="
                     << reply.message_id
                     << " mtu="
                     << reply.original_length
                     << " errno="
                     << send_error
-                    << " ("
-                    << std::strerror(send_error)
-                    << ")\n";
+                    << "\n";
             }
             return;
         }
@@ -1030,7 +1414,7 @@ private:
             static_cast<std::uint64_t>(sent);
 
         if (log_enabled(LogLevel::info)) {
-            std::cerr
+            LogLine()
                 << "PMTUD reply sent: id="
                 << reply.message_id
                 << " mtu="
@@ -1043,7 +1427,7 @@ private:
 
     void handle_mtu_reply(const Packet& packet) {
         if (log_enabled(LogLevel::info)) {
-            std::cerr
+            LogLine()
                 << "PMTUD recv reply: id="
                 << packet.message_id
                 << " mtu="
@@ -1078,7 +1462,7 @@ private:
             pmtud_known_good_;
 
         if (log_enabled(LogLevel::info)) {
-            std::cerr
+            LogLine()
                 << "PMTUD probe confirmed: id="
                 << packet.message_id
                 << " mtu="
@@ -1108,7 +1492,7 @@ private:
             pmtud_probe_size_;
 
         if (log_enabled(LogLevel::info)) {
-            std::cerr
+            LogLine()
                 << "PMTUD probe timeout: id="
                 << pmtud_probe_id_
                 << " mtu="
@@ -1132,7 +1516,7 @@ private:
                     pmtud_known_good_ + 1)) {
 
             if (log_enabled(LogLevel::info)) {
-                std::cerr
+                LogLine()
                     << "PMTUD complete: outer-mtu="
                     << active_transport_mtu_
                     << " max-fragment-payload="
@@ -1161,31 +1545,28 @@ private:
         send_mtu_probe(candidate);
     }
 
-    bool stats_enabled() const {
+    bool stats_file_enabled() const {
         return not options_.stats_disabled and not options_.stats_file.empty();
     }
 
     void update_stats_control() {
         const auto request = take_stats_requests();
-        if (request.toggle) {
+        if (request.toggle)
             options_.stats_disabled = not options_.stats_disabled;
-            if (stats_enabled()) {
-                // Exclude bytes accumulated while sampling was paused.
-                throughput_ = ThroughputStats {};
-                throughput_.update(std::chrono::steady_clock::now(), {
-                    stats_.tun_rx_bytes, stats_.tun_tx_bytes,
-                    stats_.udp_rx_bytes, stats_.udp_tx_bytes});
-            }
-        }
-        if (request.snapshot or (request.toggle and stats_enabled()))
+        if (request.snapshot or (request.toggle and stats_file_enabled()))
             write_stats(request.snapshot);
     }
 
-    void write_stats(bool snapshot = false) {
-        if (not stats_write_requested(not options_.stats_file.empty(),
-                                      options_.stats_disabled, snapshot)) return;
-
+    // One in-memory snapshot format for both the socket and optional file export.
+    void format_stats(std::ostream& output) {
         const auto now_steady = std::chrono::steady_clock::now();
+        throughput_.update(now_steady, {
+            {stats_.tun_rx_packets, stats_.tun_rx_bytes},
+            {stats_.tun_tx_packets, stats_.tun_tx_bytes},
+            {stats_.udp_rx_packets, stats_.udp_rx_bytes},
+            {stats_.udp_tx_packets, stats_.udp_tx_bytes},
+            {stats_.switch_rx_packets, stats_.switch_rx_bytes},
+            {stats_.switch_tx_packets, stats_.switch_tx_bytes}});
         const auto uptime =
             std::chrono::duration_cast<std::chrono::seconds>(
                 now_steady - started_at_).count();
@@ -1195,6 +1576,97 @@ private:
         const auto updated_unix =
             std::chrono::duration_cast<std::chrono::seconds>(
                 now_system.time_since_epoch()).count();
+
+        output
+            << "format=txt\n"
+            << "format_version=1\n"
+            << "pid=" << ::getpid() << "\n"
+            << "tunnel_id=" << tunnel_id_ << "\n"
+            << "mode=" << (server_mode_ ? "server" : "client") << "\n"
+            << "updated_unix=" << updated_unix << "\n"
+            << "uptime_seconds=" << uptime << "\n"
+            << "stats_enabled=" << (stats_file_enabled() ? 1 : 0) << "\n"
+            << "tun_rx_packets=" << stats_.tun_rx_packets << "\n"
+            << "tun_rx_bytes=" << stats_.tun_rx_bytes << "\n"
+            << "tun_tx_packets=" << stats_.tun_tx_packets << "\n"
+            << "tun_tx_bytes=" << stats_.tun_tx_bytes << "\n"
+            << "udp_send_buffer_requested=" << options_.udp_send_buffer << "\n"
+            << "udp_receive_buffer_requested=" << options_.udp_receive_buffer << "\n"
+            << "udp_send_buffer_actual=" << udp_.send_buffer() << "\n"
+            << "udp_receive_buffer_actual=" << udp_.receive_buffer() << "\n"
+            << "udp_rx_packets=" << stats_.udp_rx_packets << "\n"
+            << "udp_rx_bytes=" << stats_.udp_rx_bytes << "\n"
+            << "udp_tx_packets=" << stats_.udp_tx_packets << "\n"
+            << "udp_tx_bytes=" << stats_.udp_tx_bytes << "\n"
+            << "data_tx_packets=" << stats_.data_tx_packets << "\n"
+            << "data_rx_packets=" << stats_.data_rx_packets << "\n"
+            << "fragments_tx=" << stats_.fragments_tx << "\n"
+            << "fragments_rx=" << stats_.fragments_rx << "\n"
+            << "drops_protocol=" << stats_.drops_protocol << "\n"
+            << "drops_tunnel_id=" << stats_.drops_tunnel_id << "\n"
+            << "drops_replay=" << stats_.drops_replay << "\n"
+            << "init_timestamp_rejected=" << stats_.init_timestamp_rejected << "\n"
+            << "init_nonce_capacity_rejected=" << stats_.init_nonce_capacity_rejected << "\n"
+            << "drops_mtu=" << stats_.drops_mtu << "\n"
+            << "drops_process=" << stats_.drops_process << "\n"
+            << "udp_send_errors=" << stats_.udp_send_errors << "\n"
+            << "tun_write_errors=" << stats_.tun_write_errors << "\n"
+            << "switch_rx_packets=" << stats_.switch_rx_packets << "\n"
+            << "switch_rx_bytes=" << stats_.switch_rx_bytes << "\n"
+            << "switch_tx_packets=" << stats_.switch_tx_packets << "\n"
+            << "switch_tx_bytes=" << stats_.switch_tx_bytes << "\n"
+            << "switch_drops=" << stats_.switch_drops << "\n"
+            << "switch_send_errors=" << stats_.switch_send_errors << "\n"
+            << "switch_backpressure_drops=" << stats_.switch_backpressure_drops << "\n"
+            << "switch_connected=" << (switch_ and switch_->connected() ? 1 : 0) << "\n"
+            << "switch_disconnects=" << stats_.switch_disconnects << "\n"
+            << "switch_reconnect_attempts=" << stats_.switch_reconnect_attempts << "\n"
+            << "switch_reconnects=" << stats_.switch_reconnects << "\n"
+            << "switch_socket_errors=" << stats_.switch_socket_errors << "\n"
+            << "switch_socket_eacces=" << stats_.switch_socket_eacces << "\n"
+            << "switch_socket_enoent=" << stats_.switch_socket_enoent << "\n"
+            << "switch_socket_econnrefused=" << stats_.switch_socket_econnrefused << "\n"
+            << "switch_socket_other_errors=" << stats_.switch_socket_other_errors << "\n"
+            << "switch_last_error_ts=" << stats_.switch_last_error_ts << "\n"
+            << "switch_last_error_no=" << stats_.switch_last_error_no << "\n";
+        udp_tx_queue_.stats(output);
+        if (switch_) switch_->write_stats(output);
+        if (relay_) relay_->write_stats(output);
+        classifier_.write_stats(output);
+        recovery_.write_stats(output);
+        logger.write_stats(output);
+        adaptive_polling_.write_stats(output);
+        output << std::fixed << std::setprecision(3)
+            << "rtt_last_ms=" << stats_.rtt_last_ms << "\n"
+            << "rtt_min_ms=" << stats_.rtt_min_ms << "\n"
+            << "rtt_max_ms=" << stats_.rtt_max_ms << "\n"
+            << "rtt_avg_ms=" << stats_.rtt_avg_ms << "\n"
+            << "rtt_jitter_ms=" << stats_.rtt_jitter_ms << "\n"
+            << std::defaultfloat
+            << "rtt_samples=" << stats_.rtt_samples << "\n"
+            << "rtt_lost=" << stats_.rtt_lost << "\n"
+            << "pmtud=" << (options_.pmtud_auto ? "auto" : "off") << "\n"
+            << "transport_mtu_configured=" << options_.transport_mtu << "\n"
+            << "transport_mtu_active=" << active_transport_mtu_ << "\n"
+            << "pmtud_known_good=" << pmtud_known_good_ << "\n"
+            << "pmtud_known_bad=" << pmtud_known_bad_ << "\n"
+            << "pmtud_probes_sent=" << stats_.pmtud_probes_sent << "\n"
+            << "pmtud_probes_ok=" << stats_.pmtud_probes_ok << "\n"
+            << "pmtud_probes_lost=" << stats_.pmtud_probes_lost << "\n";
+
+        output << "info_msg_enable=" << options_.info_msg_enable << "\n";
+        peer_info_.write_stats(output);
+        protocol_v5_.write_stats(output, now_steady);
+        output << "processing_sample_interval=" << ProcessingStats::sample_interval << "\n";
+        throughput_.write(output);
+        tx_processing_.write(output, "tx_processing");
+        rx_processing_.write(output, "rx_processing");
+        reassembly_span_.write(output, "reassembly_span");
+    }
+
+    void write_stats(bool snapshot = false) {
+        if (not stats_write_requested(not options_.stats_file.empty(),
+                                      options_.stats_disabled, snapshot)) return;
 
         const std::string temporary_file =
             options_.stats_file +
@@ -1207,68 +1679,15 @@ private:
                 std::ios::out | std::ios::trunc);
 
             if (not output) {
-                log_info("Unable to open stats file " + temporary_file);
+                log_info("Unable to open stats file ", temporary_file);
                 return;
             }
 
-            output
-                << "format=txt\n"
-                << "format_version=1\n"
-                << "pid=" << ::getpid() << "\n"
-                << "tunnel_id=" << tunnel_id_ << "\n"
-                << "mode=" << (server_mode_ ? "server" : "client") << "\n"
-                << "updated_unix=" << updated_unix << "\n"
-                << "uptime_seconds=" << uptime << "\n"
-                << "stats_enabled=" << (stats_enabled() ? 1 : 0) << "\n"
-                << "tun_rx_packets=" << stats_.tun_rx_packets << "\n"
-                << "tun_rx_bytes=" << stats_.tun_rx_bytes << "\n"
-                << "tun_tx_packets=" << stats_.tun_tx_packets << "\n"
-                << "tun_tx_bytes=" << stats_.tun_tx_bytes << "\n"
-                << "udp_rx_packets=" << stats_.udp_rx_packets << "\n"
-                << "udp_rx_bytes=" << stats_.udp_rx_bytes << "\n"
-                << "udp_tx_packets=" << stats_.udp_tx_packets << "\n"
-                << "udp_tx_bytes=" << stats_.udp_tx_bytes << "\n"
-                << "data_tx_packets=" << stats_.data_tx_packets << "\n"
-                << "data_rx_packets=" << stats_.data_rx_packets << "\n"
-                << "fragments_tx=" << stats_.fragments_tx << "\n"
-                << "fragments_rx=" << stats_.fragments_rx << "\n"
-                << "drops_protocol=" << stats_.drops_protocol << "\n"
-                << "drops_tunnel_id=" << stats_.drops_tunnel_id << "\n"
-                << "drops_replay=" << stats_.drops_replay << "\n"
-                << "init_timestamp_rejected=" << stats_.init_timestamp_rejected << "\n"
-                << "init_nonce_capacity_rejected=" << stats_.init_nonce_capacity_rejected << "\n"
-                << "drops_mtu=" << stats_.drops_mtu << "\n"
-                << "drops_process=" << stats_.drops_process << "\n"
-                << "udp_send_errors=" << stats_.udp_send_errors << "\n"
-                << "tun_write_errors=" << stats_.tun_write_errors << "\n"
-                << std::fixed << std::setprecision(3)
-                << "rtt_last_ms=" << stats_.rtt_last_ms << "\n"
-                << "rtt_min_ms=" << stats_.rtt_min_ms << "\n"
-                << "rtt_max_ms=" << stats_.rtt_max_ms << "\n"
-                << "rtt_avg_ms=" << stats_.rtt_avg_ms << "\n"
-                << "rtt_jitter_ms=" << stats_.rtt_jitter_ms << "\n"
-                << std::defaultfloat
-                << "rtt_samples=" << stats_.rtt_samples << "\n"
-                << "rtt_lost=" << stats_.rtt_lost << "\n"
-                << "pmtud=" << (options_.pmtud_auto ? "auto" : "off") << "\n"
-                << "transport_mtu_configured=" << options_.transport_mtu << "\n"
-                << "transport_mtu_active=" << active_transport_mtu_ << "\n"
-                << "pmtud_known_good=" << pmtud_known_good_ << "\n"
-                << "pmtud_known_bad=" << pmtud_known_bad_ << "\n"
-                << "pmtud_probes_sent=" << stats_.pmtud_probes_sent << "\n"
-                << "pmtud_probes_ok=" << stats_.pmtud_probes_ok << "\n"
-                << "pmtud_probes_lost=" << stats_.pmtud_probes_lost << "\n";
-
-            protocol_v5_.write_stats(output, now_steady);
-            output << "processing_sample_interval=" << ProcessingStats::sample_interval << "\n";
-            throughput_.write(output);
-            tx_processing_.write(output, "tx_processing");
-            rx_processing_.write(output, "rx_processing");
-            reassembly_span_.write(output, "reassembly_span");
+            format_stats(output);
             output.flush();
 
             if (not output) {
-                log_info("Unable to write stats file " + temporary_file);
+                log_info("Unable to write stats file ", temporary_file);
                 return;
             }
         }
@@ -1279,10 +1698,7 @@ private:
                 options_.stats_file.c_str()) != 0) {
 
             log_info(
-                "Unable to publish stats file " +
-                options_.stats_file +
-                ": " +
-                std::strerror(errno));
+                "Unable to publish stats file ", options_.stats_file, ": errno=", errno);
             std::remove(temporary_file.c_str());
         }
     }
@@ -1290,12 +1706,25 @@ private:
     std::uint16_t tunnel_id_ = 0;
     bool server_mode_ = false;
     Options options_;
+    std::unique_ptr<relay::Endpoint> relay_;
+    std::uint64_t relay_exchange_ = 0;
+    PacketClassifier classifier_;
 
-    TunDevice tun_;
+    std::unique_ptr<TunDevice> tun_;
     UdpEndpoint udp_;
+    std::unique_ptr<SwitchClient> switch_;
+    std::unique_ptr<ControlSocket> control_;
+    RuntimeRecovery recovery_;
+    static constexpr auto switch_reconnect_interval_ = std::chrono::seconds(1);
+    std::chrono::steady_clock::time_point next_switch_reconnect_ {};
+    int last_switch_connect_error_ = 0;
 
     const ascon::key_type master_key_;
     SessionProtocol protocol_v5_;
+    info::PeerSnapshot peer_info_;
+    std::unique_ptr<info::Worker> info_worker_;
+    UdpTxQueue udp_tx_queue_;
+    std::uint64_t udp_tx_generation_ = 0;
     SessionProtocol::Time init_warning_next_ {};
     std::uint64_t init_warning_suppressed_ = 0;
 
@@ -1306,6 +1735,7 @@ private:
     // changing Packet/process() semantics or the wire format.
     std::vector<std::uint8_t> tun_rx_buffer_;
     std::vector<std::uint8_t> udp_rx_buffer_;
+    std::vector<std::uint8_t> switch_rx_buffer_;
 
     Packet tx_logical_packet_;
     Packet tx_fragment_packet_;
@@ -1313,6 +1743,7 @@ private:
     Packet rx_logical_packet_;
 
     std::vector<std::uint8_t> tx_encoded_buffer_;
+    std::array<std::vector<std::uint8_t>, max_ipc_fragments_per_packet> tx_encoded_fragments_;
     std::vector<std::uint8_t> tx_mac_buffer_;
     std::vector<std::uint8_t> rx_mac_buffer_;
     std::vector<std::uint8_t> reassembled_packet_;
@@ -1326,6 +1757,10 @@ private:
     ProcessingStats::Clock::time_point tx_sample_start_ {};
     ProcessingStats::Clock::time_point rx_sample_start_ {};
     std::unordered_map<std::uint64_t, ProbeState> rtt_probes_;
+
+    AdaptivePolling adaptive_polling_;
+    std::uint64_t reassembly_reported_losses_ = 0;
+    unsigned next_data_source_ = 0;
 
     std::size_t active_transport_mtu_ = min_transport_mtu;
     bool pmtud_started_ = false;

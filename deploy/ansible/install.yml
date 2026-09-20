@@ -1,0 +1,21 @@
+- ansible.builtin.import_playbook: prepare.yml
+- name: Retire verified mk tunnel groups after both hosts are staged
+  hosts: localhost
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  tasks:
+    - name: Stop through the existing helper and its saved hooks
+      ansible.builtin.command:
+        argv: "{{ item }}"
+      loop: "{{ tt_adoptions | default([]) }}"
+- name: Activate newly prepared installations
+  hosts: all
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - ansible.builtin.include_tasks: tasks/install.yml
+      loop: "{{ tt_jobs }}"
+      loop_control:
+        loop_var: job
+        label: "{{ job.key }}"

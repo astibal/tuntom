@@ -1,0 +1,10 @@
+tuntom_instance:
+  schema: 1
+  host: local
+  interface: exit0
+  mtu: 9000
+  switch_socket: /run/tuntom/fabric.sock
+  port_id: exit0
+  options:
+    switch-ipc: auto
+    switch-ipc-batch: 8

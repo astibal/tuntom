@@ -1,0 +1,9 @@
+- name: Lock all selected hosts before changing any installation
+  hosts: all
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Acquire host operation lock
+      tuntom_node:
+        action: lock
+        payload: "{{ {'operation_id': tt_operation_id} }}"

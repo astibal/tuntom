@@ -19,10 +19,10 @@ class TunDevice {
 public:
     TunDevice(
         const std::string& interface_name,
-        std::size_t mtu)
-        : interface_name_(interface_name) {
+        std::size_t mtu, bool multiqueue = false)
+        : interface_name_(interface_name), multiqueue_(multiqueue) {
 
-        fd_ = ::open("/dev/net/tun", O_RDWR | O_CLOEXEC);
+        fd_ = ::open("/dev/net/tun", O_RDWR | O_CLOEXEC | O_NONBLOCK);
         if (fd_ < 0) {
             throw std::runtime_error(
                 "Cannot open /dev/net/tun: " +
@@ -31,6 +31,7 @@ public:
 
         ifreq request {};
         request.ifr_flags = IFF_TUN | IFF_NO_PI;
+        if (multiqueue_) request.ifr_flags |= IFF_MULTI_QUEUE;
         std::strncpy(
             request.ifr_name,
             interface_name.c_str(),
@@ -65,6 +66,38 @@ public:
         return ::write(fd_, buffer, size);
     }
 
+    void set_queue(bool active) {
+        if (!multiqueue_) throw std::runtime_error("TUN queue control requires multiqueue mode");
+        ifreq request{};
+        request.ifr_flags = static_cast<short>(active ? IFF_ATTACH_QUEUE : IFF_DETACH_QUEUE);
+        if (::ioctl(fd_, TUNSETQUEUE, &request) < 0)
+            throw std::runtime_error("TUNSETQUEUE failed: " + std::string(std::strerror(errno)));
+    }
+
+    void set_up() {
+        const int socket_fd = ::socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+        if (socket_fd < 0) {
+            throw std::runtime_error(
+                "Cannot create interface ioctl socket: " +
+                std::string(std::strerror(errno)));
+        }
+
+        ifreq request {};
+        std::strncpy(request.ifr_name, interface_name_.c_str(), IFNAMSIZ - 1);
+        if (::ioctl(socket_fd, SIOCGIFFLAGS, &request) < 0) {
+            const std::string error = std::strerror(errno);
+            ::close(socket_fd);
+            throw std::runtime_error("SIOCGIFFLAGS failed: " + error);
+        }
+        request.ifr_flags = static_cast<short>(request.ifr_flags | IFF_UP);
+        if (::ioctl(socket_fd, SIOCSIFFLAGS, &request) < 0) {
+            const std::string error = std::strerror(errno);
+            ::close(socket_fd);
+            throw std::runtime_error("SIOCSIFFLAGS failed: " + error);
+        }
+        ::close(socket_fd);
+    }
+
 private:
     void set_mtu(std::size_t mtu) {
         const int socket_fd = ::socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
@@ -92,6 +125,7 @@ private:
 
     int fd_ = -1;
     std::string interface_name_;
+    bool multiqueue_ = false;
 };
 
 } // namespace tuntom

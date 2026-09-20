@@ -1,14 +1,14 @@
 # tuntom
 
-**Linux IP tunneling over UDP, with authenticated sessions, optional encryption,
-and SSH deployment.**
+**Linux IP tunneling over UDP, with encrypted forward-secret sessions and SSH
+deployment.**
 
 `tuntom` connects two Linux TUN interfaces and carries IPv4 and IPv6 traffic
 between them. It combines a self-contained C++17 tunnel engine with a bootstrap
 script that builds, deploys, and configures both endpoints. Protocol v5 provides
 replay protection, automatic path-MTU discovery, and internal fragmentation;
-optional Ascon encryption and X25519 rekeying add confidentiality and forward
-secrecy.
+Ascon-AEAD128 encryption and X25519 rekeying provide confidentiality and forward
+secrecy by default; an explicit authentication-only mode is available.
 
 ```text
       local / client                         remote / server
@@ -20,7 +20,7 @@ secrecy.
              |                                      |
              +---------- UDP / port 40042 ----------+
                   authenticated v5 session
-                  optional encryption + PFS
+                  AEAD encryption + PFS
 ```
 
 Written by **Ales Stibal <astib@mag0.net>**.   
@@ -31,7 +31,8 @@ Contributors remain responsible for the changes they submit.
 
 [Quick start](#quick-start) · [Configuration](#configuration) ·
 [Security and compatibility](#security-and-compatibility) ·
-[Operations](#operations) · [Build and test](#build-and-test)
+[Operations](#operations) · [Build and test](#build-and-test) ·
+[Label switching](README_SWITCHING.md)
 
 ## At a glance
 
@@ -39,18 +40,42 @@ Contributors remain responsible for the changes they submit.
 | --- | --- |
 | Tunnel | IPv4/IPv6 TUN traffic over UDP, NAT-friendly client/server model |
 | Sessions | Authenticated v5 handshake, directional keys, replay protection |
-| Encryption | Optional Ascon-AEAD128; optional X25519 PFS with periodic rekey |
+| Encryption | Ascon-AEAD128 with X25519 PFS and periodic rekey by default |
 | MTU | Independent inner/outer MTUs, automatic PMTUD, balanced fragmentation |
 | Deployment | Local and remote compilation, staged restart, start/stop helper |
 | Networking | IPv4 policy routing, connection marks, MSS clamping, optional SNAT, lifecycle hooks |
+| Remote VIA adapters | [IPC relay over tuntom](docs/RELAY.md), optional multipath and [separate IN/OUT workers](docs/RELAY_SPLIT_SIDES.md), one hub IPC connection per tunnel, no remote switch |
 | Observability | Text statistics, signal-controlled snapshots, logs, Wireshark dissector |
 | Runtime | No external crypto libraries; drops privileges to `tuntom:tuntom` |
+| Switching | Optional [label switching](README_SWITCHING.md) to connect tunnel links and exit paths |
 
 The tunnel engine handles transport. Linux networking and the included
 `tuntom-net.sh` helper handle routing and firewall policy; custom routes and
 DNAT rules can be added through hooks.
 
+## Label switching
+
+`tuntom` also supports **optional label switching** to connect tunnel links
+through chosen relay and exit paths. Local `(port, label)` rules select the
+next link without creating a TUN or configuring kernel IP routes on each relay.
+We use this to make multi-link forwarding paths explicit while keeping
+encrypted UDP transport in tuntom and Linux routing at the chosen exits.
+
+**[The label-switching README](README_SWITCHING.md)** covers the architecture,
+`tuntom-switch`, exit adapters, tunnel attachment, flow rules, local deployment,
+socket permissions and lifecycle hooks.
+
 ## Quick start
+
+### Live process dashboard
+
+The optional [Fabric Observer](fabric/README.md) discovers running tuntom
+processes from `/proc` and shows their public startup parameters, local
+connections, health, counter deltas, MP ports/workers, logs and switch rules. It maintains no inventory or desired-state configuration; telemetry history uses a disposable SQLite cache. Run `python3 -B fabric/server.py` and open the printed URL. It listens on
+all IPv4 interfaces by default; use `--host 127.0.0.1` for local-only access.
+Optional Syspiper polling adds host CPU, RAM, disk and network charts for localhost
+and known Tuntom IPs; its API key stays in the collector. See its README for the
+separate privileged collector, SSH forwarding and optional runtime rule edits.
 
 ### Requirements
 
@@ -61,13 +86,15 @@ For the bootstrap workflow, both hosts need:
 - Standard system utilities, including `tar`, `mktemp`, `getent`, `useradd`, and `groupadd`.
 - Synchronized clocks for the v5 handshake.
 
-The caller also needs `ssh`, working SSH key authentication, and `flock`.
+The caller also needs `ssh` and working SSH key authentication. Both hosts need
+`flock`; the server also uses `ss` from iproute2 to check new member UDP ports.
 When started as a normal local user, the script uses `sudo` for privileged
 local operations, explicitly preserving only `TUNTOM_*` variables by name.
 This works with both classic `sudo` and `sudo-rs`; it does not use `sudo -E`.
 The remote SSH account must already have root privileges:
 remote commands do not use `sudo`. A bare hostname selects `root@host`.
-The server's UDP port (`40000 + tunnel ID`) must be reachable from the client.
+The server's UDP ports (`40000 + group ID + 256 * member index`) must be
+reachable from the client; a single tunnel uses index zero.
 
 To invoke the entire script through `sudo`, export the secret first and use
 `sudo --preserve-env=TUNTOM_SECRET ./mk_tunnel.sh ...`. Add other required
@@ -86,13 +113,14 @@ export TUNTOM_SECRET="$(openssl rand -hex 16)"
 From the repository directory, create tunnel `42` to `sx2`:
 
 ```bash
-./mk_tunnel.sh 42 sx2 --pfs
+./mk_tunnel.sh 42 sx2
 ```
 
 This builds both endpoints, passes the secret over SSH, creates the runtime
 account, configures networking, and starts the processes in the background.
-`--pfs` enables encryption and forward secrecy on both ends. Omitting it uses
-**authentication without encryption**; see the [mode table](#security-and-compatibility).
+Encryption and forward secrecy are enabled on both ends by default. Use
+`--crypto-auth-only` only when the payload must remain visible on the wire; see
+the [mode table](#security-and-compatibility).
 
 | Tunnel 42 | Local / client | Remote / server |
 | --- | --- | --- |
@@ -122,19 +150,82 @@ For a local smoke test, use `localhost` as the host (root SSH access is still re
 
 ## Configuration
 
-Tunnel IDs range from **1 to 255** and determine interface names, addresses,
-and the server UDP port.
+Group IDs range from **1 to 255**. Each group supports up to **64 simultaneous
+tunnels**, named `42`, `42_1`, `42_2`, and so on. A single-member group keeps the
+original interface names, addresses and UDP port.
 
 ### Bootstrap options
 
 | Option | Effect |
 | --- | --- |
-| `--pfs` | Require X25519 + AKDF + Ascon-AEAD128 on both endpoints |
-| `--encrypt-ascon` | Require Ascon-AEAD128 without PFS |
-| `--no-stats` | Disable automatic statistics writes and optional sampling |
+| `--count <1..64>` | Start/restart a group with this many members; omitted: saved count, or 1 for a new group |
+| `--crypto-auth-only` | Disable payload encryption and PFS; retain AMAC authentication |
+| `--no-stats` | Disable automatic stats file writes; keep live metrics and socket queries |
+| `--no-address` | Skip TUN IPv4/IPv6 address assignment, peer address routes and tunnel pings on both hosts |
 | `--snat` / `--no-snat` | Enable / disable IPv4 MASQUERADE; default: off |
 | `--mss-clamp` / `--no-mss-clamp` | Enable / disable TCP MSS clamping; default: on |
-| `--stop` | Stop and clean up the tunnel on both hosts |
+| `--stop` | Stop and clean up the entire saved group on both hosts |
+
+Switch attachment and companion-tool build options are documented in
+[label-switch bootstrap options](README_SWITCHING.md#connect-tunnel-endpoints).
+
+Use `./mk_tunnel.sh 42 sx2 --no-address` when routing directly to the TUN device
+or using label switching without endpoint IP addresses. Any retained TUN is
+still brought up with the configured MTU; network helpers and lifecycle hooks
+still run. The final check verifies both processes instead of pinging the peer;
+it does not verify end-to-end data delivery. `TUNTOM_PREFIX16` is ignored in this
+mode. Hooks receive `TUNTOM_NO_ADDRESS=1` and empty endpoint address variables
+(see [lifecycle hooks](docs/DETAILS.md#lifecycle-hooks)). Pass `--no-address` on
+restart as well; stop uses the saved configuration and hook snapshots.
+
+### Tunnel groups
+
+```bash
+./mk_tunnel.sh 42 sx2 --count 4 --no-address
+./mk_tunnel.sh 42 sx2 --count 2 --no-address  # Resize/restart the whole group
+./mk_tunnel.sh 42 sx2 --stop                 # Stop every saved member
+```
+
+Both hosts compile once per operation. Members run as separate processes, each
+with its own TUN (unless it is a pure switch port), session keys, UDP port,
+connection mark, policy table, firewall chains, log, stats and control socket.
+Startup and network configuration are sequential; all members remain running
+together. For member index `i`, the numeric instance key is `ID + 256*i`:
+
+| Instance | TUN client/server | IPv4 client/server | UDP port | Policy table |
+| --- | --- | --- | --- | --- |
+| `42` | `ut42c` / `ut42s` | `10.254.42.1` / `.2` | `40042` | `10042` |
+| `42_1` | `ut42_1c` / `ut42_1s` | `10.254.42.5` / `.6` | `40298` | `10298` |
+| `42_2` | `ut42_2c` / `ut42_2s` | `10.254.42.9` / `.10` | `40554` | `10554` |
+
+IPv4 endpoint host numbers are `4*i+1` and `4*i+2`. IPv6 uses the same host
+numbers in hexadecimal in the final hextet. Point-to-point address setup is
+unchanged. `--no-address` skips both families for every member.
+
+The bootstrap reserves mark bits `0xffff0000`, with `instance_key << 16`, and
+table `10000 + instance_key`. Existing legacy rules are cleaned with their old
+mask before replacement. Multi-member groups require automatic `TUNTOM_MARK`,
+`TUNTOM_MARK_MASK` and `TUNTOM_TABLE`; explicit overrides are rejected.
+`TUNTOM_CHAIN` supplies a common base (1..20 letters/digits/underscores), with
+the member suffix appended. Switch port IDs likewise gain `_1`, `_2`, etc.;
+their labels remain as supplied. Configure the switch routes for these ports,
+or use group hooks for shared routing policy. Starting several tunnels does
+not itself distribute traffic among them.
+
+Root-owned state and hook snapshots are saved under
+`/var/lib/tuntom-mk/client/ID` locally and `/var/lib/tuntom-mk/server/ID` remotely.
+The `active/manifest.tsv` lists endpoint resources, switch sockets and whether
+each side has a TUN; configuration excludes
+`TUNTOM_SECRET`. Locks cover both hosts, and a saved owner prevents another
+caller from taking over the same server group. A group stays bound to its
+recorded SSH target until stopped. Restart/resize tears down the old group
+using its saved hooks and settings, then starts the requested configuration.
+
+Build/preflight failures leave the old group running. If startup or a group
+up hook fails after teardown, the attempted new members and shared hook
+resources are cleaned up; the old processes are not restarted automatically.
+The saved state remains available for a retry or `--stop`. A failed stop also
+retains state for retry. There is no automatic runtime failover or supervisor.
 
 ### Environment
 
@@ -147,12 +238,14 @@ and the server UDP port.
 | `TUNTOM_STATS_FORMAT` | `txt` | Statistics format; currently only `txt` |
 | `TUNTOM_PRE_HOOK` | `/etc/tuntom/tuntom-pre.sh` | Local source for pre-action hooks |
 | `TUNTOM_POST_HOOK` | `/etc/tuntom/tuntom-post.sh` | Local source for post-action hooks |
+| `TUNTOM_GROUP_PRE_HOOK` | Unset | Local source for a hook run once per host before group up/down |
+| `TUNTOM_GROUP_POST_HOOK` | Unset | Local source for a hook run once per host after group up/down |
 
 For example:
 
 ```bash
 TUNTOM_PREFIX16=10.10 TUNTOM_MTU=9000 TUNTOM_TRANSPORT_MTU=1500 \
-    ./mk_tunnel.sh 42 sx2 --pfs
+    ./mk_tunnel.sh 42 sx2
 ```
 
 This uses `10.10.42.1` / `10.10.42.2` and
@@ -197,9 +290,12 @@ Both endpoints must select the same mode.
 
 | Mode | Suite | Payload encryption | Forward secrecy |
 | --- | --- | --- | --- |
-| Default | 0 | No; authentication only | No |
-| `--encrypt-ascon` | 1 | Ascon-AEAD128 | No |
-| `--pfs` | 2 | Ascon-AEAD128 | X25519 exchange, rekey every two minutes |
+| Default | 2 | Ascon-AEAD128 | X25519 exchange, rekey every two minutes |
+| `--crypto-auth-only` | 0 | No; AMAC authentication only | No |
+
+Suite 1 (Ascon-AEAD128 without PFS) remains a recognized wire suite for protocol
+compatibility and tests, but has no command-line selector. The former `--pfs`
+and `--encrypt-ascon` options are rejected.
 
 The authentication primitive is specified in [AMAC v1](docs/AMAC_V1.md).
 Suite 2 uses a **project-specific AMAC-based [AKDF v1](docs/AKDF_V1.md)**, not HKDF or a standardized
@@ -244,21 +340,128 @@ Statistics include traffic counters, throughput, sampled processing latency,
 PMTUD state, active suite, session readiness, and handshake/rekey counters.
 See [statistics field definitions](docs/DETAILS.md#session-suite-and-rekey-statistics).
 The standalone binary also accepts `--debug` and `--quiet` for logging.
+Runtime logging uses a bounded queue and a detached writer: unavailable output
+drops logs without waiting in the packet loop. Messages are limited to 1 KiB,
+with a 64-message burst and 20 messages/s thereafter, including debug output.
+An inherited regular-file log stops growing at 16 MiB; external `copytruncate`
+rotation permits writing to resume. Pipe/socket log collectors manage their own
+retention. Inspect the `log_*` control counters for suppressed logs and output
+errors; see [logging details](docs/DETAILS.md#runtime-logging).
 
-Start with `--no-stats` to pause automatic writes and optional latency/throughput
-sampling. Control each running process separately using its PID:
+Start with `--no-stats` to pause automatic file writes. Counters and sampled
+latency/throughput metrics continue updating in memory. Control each process
+separately using its PID:
 
 ```bash
-sudo kill -USR1 <pid>  # toggle automatic statistics
+sudo kill -USR1 <pid>  # toggle automatic stats file writes
 sudo kill -USR2 <pid>  # write one snapshot, even when disabled
 ```
 
 The bootstrap retains the stats destination when disabled. For direct binary
 use, supply `--stats-file <path>` even with `--no-stats` to allow later writes.
-Cumulative counters continue while paused; the last file stays unchanged, so
-check `updated_unix` for age. `stats_enabled` records the automatic mode.
-Throughput windows restart when enabled; snapshots while paused retain the
-last optional sampling history.
+The last file stays unchanged while paused, so check `updated_unix` for age.
+`stats_enabled` records automatic file export, not metric collection. Toggling
+export does not reset throughput or latency history. `tuntomctl <control-socket>
+show stats` returns current metrics directly from memory, even without a configured
+stats file, and never reads or writes that file.
+
+### Runtime statistics control
+
+`tuntom` exposes live statistics through an optional Unix control socket:
+
+```bash
+tuntomctl /run/tuntom/42c.control show stats
+tuntomctl /run/tuntom/42s.control show stats
+```
+
+For direct invocation, pass `--control-socket <path>` to `tuntom`.
+`mk_tunnel.sh` configures `<id>c.control` and `<id>s.control` automatically on
+the respective hosts. Sockets use mode `0660`; filesystem permissions control
+access. Both `show stats` and `show flows` are supported. Existing stats signals
+remain available for compatibility.
+
+### Peer access addresses
+
+Pass `--info-msg-enable` to the **tuntom binary** on a spoke to advertise all
+IPv4 addresses assigned to loopback interfaces except `127.0.0.0/8`. The option
+is off by default and controls sending only. A fresh `INFO` snapshot
+is sent after the initial handshake and every completed rekey, without any
+routing or reachability heuristic. A small collector thread prepares the text
+buffer after each confirmed session; the event loop sends it. Reception needs no flag.
+
+Add static administrator fields with repeatable `--info-field="key=value"`
+(or `--info-field "key=value"`), for example:
+
+```bash
+tuntom client 42 tun42 hub.example --info-msg-enable \
+  --info-field="site=Praha, centrum" --info-field="role=spoke"
+```
+
+These fields do not enable sending on their own. `access` is reserved for the
+automatic collector; duplicate keys, invalid syntax/control bytes and oversized
+configuration are rejected at startup. Values have their outer spaces/TABs
+trimmed; each non-ASCII value byte becomes `?` before transmission. Keys are never
+repaired. Quotes above belong to the shell, not the INFO wire format.
+
+On the receiving tunnel, `tuntomctl <control-socket> show stats` includes:
+
+```text
+info_msg_peer_received=1
+peer_info_access=10.10.0.1,192.0.2.10
+peer_info_role=spoke
+peer_info_site=Praha, centrum
+```
+
+The wire payload is ASCII `key=value` lines; all received keys, including custom
+keys, are exported as `peer_info_<key>`. `access=` clears the address list. Each
+valid INFO replaces the complete snapshot; any malformed INFO is dropped without
+changing it. `info_msg_peer_received=0` means no snapshot
+has arrived for the current confirmed session. Delivery is best-effort, with the
+next completed handshake refreshing lost updates. See [INFO wire format](docs/PROTOCOL_V5.md#info-13).
+
+### Flow and label snapshots
+
+Every component with a control socket accepts:
+
+```bash
+tuntomctl /run/tuntom/exit0.control show flows
+```
+
+The reply contains a text header, one `flow` row per retained entry, and a
+`flow_count` footer. IPv4/IPv6 addresses and TCP/UDP ports identify the direction;
+labels are ordered, lossless 64-bit hexadecimal values. `idle_ms` is elapsed time
+since the last cache refresh. Expired routes are omitted without changing LRU
+order, timestamps, or counters.
+
+- Exit adapters dump both `l3` address-pair and `l4` transport caches. Keys describe
+  the return direction, with the stack used for forwarding the reply.
+- Divert/VIA adapters dump forward keys, both `client_*` and `server_*` retained
+  label contexts, saved labels, VIA metadata and, for local routes, the path index.
+  These are the stored contexts before the codec changes direction/action for
+  output. Admission learning sets are separate rows with `labels=unknown` because
+  those sets do not retain labels; they are warmup history, not proof of a live
+  connection. A tuple may occur in several tables, so `flow_count` counts rows.
+- Shared divert tables use `tracking=shared_shards`: each shard is copied under its
+  process-shared mutex, then formatted after unlocking. Workers can update other
+  shards during the dump; this is not a globally atomic network snapshot.
+- Switches (including MP) and tunnels have no per-IP-flow table and return
+  `tracking=none` and `flow_count=0`. This does not mean there is no traffic.
+  Classifier and forwarding rules remain separate from observed flow state.
+
+Example exit-adapter row:
+
+```text
+flow table=l4 ip_version=4 src=10.0.0.2 dst=10.0.0.1 protocol=6 src_port=443 dst_port=12345 idle_ms=120 labels=[0x0000000000000011,0x000000000000002a]
+```
+
+The wire request is `show flows` (optional trailing newline), with no body. The
+response uses `OK LENGTH\n` or `ERROR LENGTH\n` followed by SOCK_SEQPACKET chunks
+of at most 16 KiB, like rules responses. Flow replies allow up to 256 MiB; larger
+snapshots fail explicitly rather than silently truncating. Rules retain their
+1 MiB limit. Snapshot generation runs on demand in the component's control loop,
+so very large tables can temporarily delay packet processing. No extra tracking
+is added to the packet path. Python callers can use
+`fabric.control.query(socket_path, "flows")`.
 
 ### Networking and hooks
 
@@ -267,8 +470,10 @@ marking, policy routing for replies, forwarding rules, MSS clamping, and optiona
 MASQUERADE. Configure the routes, forwarding sysctls, and application-specific
 policy needed by your topology; IPv6 forwarding/firewall policy is separate.
 
-Optional hook files exist on the caller only. Their content runs locally and
-is streamed over SSH for remote execution. Missing hooks are skipped.
+Optional hook source files live on the caller. Their content is snapshotted
+with the group configuration, runs locally and is streamed over SSH for remote
+execution. Missing hooks are skipped. Teardown uses the saved snapshots even
+if the original source files have changed or disappeared.
 
 ```text
 pre/down -> network cleanup -> post/down
@@ -278,6 +483,11 @@ pre/up   -> network setup   -> post/up
 Hooks receive `TUNTOM_SIDE=local|remote`, `TUNTOM_ACTION=up|down`,
 `TUNTOM_PHASE=pre|post`, plus tunnel addresses, interface names, and networking
 settings. Use `post/up` to add custom routes or DNAT rules.
+Per-member hooks also receive `TUNTOM_INSTANCE`, `TUNTOM_INSTANCE_KEY`,
+`TUNTOM_MEMBER_INDEX`, and `TUNTOM_MEMBER_COUNT`; `TUNTOM_ID` remains the group
+ID. Use the instance key for member-specific numeric priorities, and keep shared
+routes or service publication in the group hooks. Group `post/up` runs after
+all member checks; group `pre/down` runs before stopping any member.
 See [hook context](docs/DETAILS.md#lifecycle-hooks) and the
 [service ingress example](examples/tuntom-service-ingress-hook.example.sh).
 
@@ -286,7 +496,11 @@ See [hook context](docs/DETAILS.md#lifecycle-hooks) and the
 [tuntom.lua](tuntom.lua) dissects v1, v2, v3, v4, and v5 captures, including handshake
 fields, session hints, sequence counters, fragments, authentication tags, and
 PMTUD probes. It reassembles unencrypted v5 DATA and passes inner packets to the
-IPv4/IPv6 dissector. Encrypted payloads remain encrypted in the capture.
+IPv4/IPv6 dissector. Plaintext INFO exposes validated key/value entries via
+`tuntom.info.entry`, `tuntom.info.key` and `tuntom.info.value`; malformed snapshots
+are marked with `tuntom.info.malformed` and expose no partial fields. Values stay
+text (including comma-separated addresses). Encrypted payloads remain encrypted
+in the capture; the dissector does not verify session authentication tags.
 
 ### PMTUD black-hole test
 
@@ -315,7 +529,7 @@ ctest --test-dir /tmp/tuntom-build --output-on-failure
 Or compile directly:
 
 ```bash
-g++ -std=c++17 -O2 -Wall -Wextra -pedantic src/main.cpp -o /tmp/tuntom
+g++ -std=c++17 -pthread -O2 -Wall -Wextra -pedantic src/main.cpp -o /tmp/tuntom
 ```
 
 The regression runner also checks header self-containment and runs the dissector
@@ -341,6 +555,7 @@ deployment.
 | [src/](src/README.md) | C++17 engine, ordinary headers, and `main.cpp` |
 | [src/vendor/](src/vendor/README.md) | Vendored X25519 implementation and provenance |
 | [mk_tunnel.sh](mk_tunnel.sh) | Build, deploy, start, restart, and stop |
+| [README_SWITCHING.md](README_SWITCHING.md) | Label switching, exit adapters, flow rules and local lifecycle |
 | [tuntom-net.sh](tuntom-net.sh) | Linux routing and firewall helper |
 | [tuntom.lua](tuntom.lua) | Wireshark Lua dissector |
 | [examples/](examples/) | Lifecycle hook example |
@@ -349,3 +564,7 @@ deployment.
 | [docs/PROTOCOL_V5.md](docs/PROTOCOL_V5.md) | Wire format, handshake, and cryptographic constructions |
 | [CMakeLists.txt](CMakeLists.txt) | Local build and CTest targets |
 | [LICENSE.md](LICENSE.md) | BSD 3-Clause license |
+
+UDP buffer options and bounded local EAGAIN retries: [UDP transport](docs/UDP_TRANSPORT.md).
+
+IPC backpressure and bounded retries: [docs/IPC_RETRY.md](docs/IPC_RETRY.md).

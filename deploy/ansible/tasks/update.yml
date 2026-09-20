@@ -1,0 +1,42 @@
+- name: Inspect prepared binary fingerprints
+  ansible.builtin.stat:
+    path: "{{ job.stage }}/bin/{{ item.name }}"
+    checksum_algorithm: sha256
+  loop: "{{ job.builds }}"
+  register: built_binaries
+
+- name: Determine whether any binary changed
+  ansible.builtin.set_fact:
+    tt_binaries_changed: false
+
+- name: Compare with the actual installed files
+  ansible.builtin.set_fact:
+    tt_binaries_changed: true
+  when: item.stat.checksum != job.before.files.get('bin/' + item.item.name, '')
+  loop: "{{ built_binaries.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Replace changed binaries and restore only running daemons
+  when: tt_binaries_changed
+  block:
+    - name: Stop previously running endpoint services
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        state: stopped
+      loop: "{{ job.active_members }}"
+    - name: Install executables only
+      ansible.builtin.copy:
+        src: "{{ job.stage }}/bin/"
+        dest: "{{ job.root }}/bin/"
+        remote_src: true
+        mode: preserve
+    - name: Update binary metadata without accepting manual config drift as the baseline
+      tuntom_node:
+        action: metadata-binary
+        payload: "{{ job.spec }}"
+    - name: Restore previously running endpoint services
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        state: started
+      loop: "{{ job.active_members }}"

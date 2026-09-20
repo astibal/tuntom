@@ -1,0 +1,11 @@
+- ansible.builtin.import_playbook: prepare.yml
+- name: Update binaries without replacing configuration
+  hosts: all
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - ansible.builtin.include_tasks: tasks/update.yml
+      loop: "{{ tt_jobs }}"
+      loop_control:
+        loop_var: job
+        label: "{{ job.key }}"

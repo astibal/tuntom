@@ -55,14 +55,12 @@ temporary src/ -> remote g++ -> remove temporary src/
 1. compiles the client locally from `../src/main.cpp`
 2. sends `../src/` as a tar stream over SSH into a temporary directory
 3. compiles it remotely and cleans up the temporary source directory
-4. stops the previous instance
-5. starts the server
-6. creates/configures the server TUN interface
-7. starts the client
-8. creates/configures the client TUN interface
-9. configures optional per-tunnel Linux networking
-10. runs lifecycle hooks
-11. tests the tunnel with ping
+4. saves the new group configuration and tears down the previous group using its saved hooks
+5. runs group `pre/up` on both hosts
+6. starts each member's server and client
+7. configures retained TUNs and their per-member network helpers/hooks
+8. checks each member (ping with addresses, process checks otherwise)
+9. rechecks all processes and runs group `post/up` on both hosts
 
 For normal remote use, the remote login defaults to `root`.
 
@@ -85,7 +83,14 @@ remote/server IP: 10.254.X.2
 UDP port: 40000 + X
 ```
 
-The current script accepts IDs from 1 to 255.
+The script accepts group IDs from 1 to 255 and `--count 1..64`. Additional
+members use names `X_1`, `X_2`, etc., numeric key `X + 256*i`, UDP port
+`40000 + X + 256*i`, and IPv4 endpoint host numbers `4*i+1` / `4*i+2`.
+IPv6 uses these host numbers in hexadecimal in its last hextet. `--no-address`
+omits address assignment and peer address routes. The binary itself accepts
+the canonical member names, for example `tuntom server 42_1 ut42_1s`.
+The numeric key is also the protocol's implicit tunnel context and its
+`tunnel_id` statistics field. See [tunnel groups](../README.md#tunnel-groups).
 
 MTU is intentionally configured separately from tunnel identity.
 
@@ -260,8 +265,9 @@ complete handshake messages; see the wire specification.
 
 The exact layouts, domain labels and state transitions are specified in
 [PROTOCOL_V5.md](PROTOCOL_V5.md). V5 establishes fresh session keys through INIT
-/ RESPONSE / CONFIRM / CONFIRM_ACK before accepting DATA. Suite 0 authenticates
-plaintext; suites 1/2 encrypt the payload, and suite 2 adds PFS.
+/ RESPONSE / CONFIRM / CONFIRM_ACK before accepting DATA. Suite 2 with payload
+encryption and PFS is the default. `--crypto-auth-only` selects plaintext suite
+0; suite 1 remains wire-recognized but has no command-line selector.
 
 The 64-bit SEQ field consists of a 16-bit transcript-derived session hint and an
 independent 48-bit packet counter for each direction. Counter zero is reserved
@@ -269,7 +275,7 @@ for CONFIRM/ACK; ordinary traffic starts at one. The hint selects candidate
 keys; AMAC determines the actual session. A collision is supported.
 
 Every session has its own 64-value replay window and reassembly table. Only
-counter bits enter the replay window, after successful AMAC verification. The
+counter bits enter the replay window, after successful authentication. The
 first ordinary packet need not have counter one: reordering is allowed. Replayed
 confirmations never reset these structures. Old session receive keys remain
 valid for a three-second overlap; previous-session packets cannot change the
@@ -406,26 +412,67 @@ Each reassembly entry contains:
 - packet buffer
 - received byte ranges
 - received byte count
-- last update time
+- first arrival and last accepted fragment times
 
 The current implementation deliberately uses bounded state:
 
 ```text
 maximum packet size:          configured TUN MTU
-maximum incomplete messages:  64
-maximum reassembly memory:     4 MiB
+maximum incomplete messages: 512 per session
+maximum packet-buffer memory: 16 MiB per session (allocated on demand)
 maximum fragments per packet: 64
-reassembly timeout:            3 seconds
+idle reassembly timeout:       3 seconds
+discarded message IDs:        32768 per session, retained for 3 seconds
 ```
 
-Fragments with invalid metadata are rejected.
+Active and previous sessions have independent pools; during rekey they can
+together reserve up to 32 MiB of packet buffers, plus bounded metadata.
 
-Partial overlaps are rejected.
+When either pool limit is reached, the oldest incomplete message by first arrival
+is discarded to admit a new one. Accepted fragments do not refresh that eviction
+order. A separate activity queue orders idle expiration by last accepted fragment.
+Eviction takes the arrival queue head; cleanup visits only expired heads, never
+scans the live table (including at capacity). Removing many expired records costs
+time proportional to the number removed.
 
-Duplicate/overlapping byte ranges are not used to advance reassembly.
+Any fragment offset can open a message, preserving UDP reordering. Evicted,
+expired, or invalidated messages leave a bounded discarded-ID record so their
+late fragments cannot recreate entries and evict useful work. Late fragments do
+not refresh the record's lifetime. If the discarded-ID cache fills, its oldest
+record is forgotten; suppression is then best-effort for those older IDs.
+Whole, unfragmented DATA bypasses the pool and discarded-ID cache: its implicit
+sequence-based ID is independent of explicit fragmented-message IDs.
 
-A packet is released to the TUN side only when all bytes from offset zero
+Fragments with invalid metadata and overlapping byte ranges are rejected.
+Duplicate/overlapping ranges neither advance reassembly nor refresh idle expiry.
+
+A packet is released to the TUN/switch side only when all bytes from offset zero
 through `original_length` have been received.
+
+Reassembly does not log individual drops. At info level it emits a cumulative
+loss summary at most once per second, only when loss counters have changed.
+
+### Reassembly statistics
+
+The stats/control snapshot exports these `reassembly_` fields even with
+automatic statistics disabled. Gauges aggregate the live sessions; peaks and
+counters survive rekey and reset only on process restart. Entry counters and
+fragment counters describe different events and must not be summed as packet loss.
+
+| Suffix | Meaning |
+| --- | --- |
+| `limit_entries_per_session`, `limit_bytes_per_session` | Per-session pool limits. |
+| `active_entries`, `active_bytes` | Incomplete messages and reserved packet-buffer bytes (not metadata). |
+| `peak_entries`, `peak_bytes` | High-water marks of the combined live pools. |
+| `completed_packets` | Successfully reassembled fragmented packets; excludes whole DATA. |
+| `capacity_evictions` | Incomplete messages evicted to admit a new message. |
+| `expired_entries` | Incomplete messages removed after idle timeout. |
+| `session_discarded_entries` | Incomplete messages discarded when their session is destroyed. |
+| `late_fragment_drops` | Fragments matching a retained discarded ID, including offset zero. Not all nonzero-offset arrivals are drops. |
+| `invalid_fragments`, `overlap_drops` | Invalid metadata/fragment-count violations and overlapping fragments. |
+| `capacity_drops` | Incoming messages whose individual buffer cannot fit the byte limit; no useful entries are evicted for them. |
+| `discarded_ids` | Currently retained discarded-ID records. |
+| `discarded_id_evictions` | Records forgotten early because the discarded-ID cache filled. |
 
 ## TUN processing boundary
 
@@ -721,7 +768,8 @@ pre/up
 post/up
 ```
 
-Hook files are stored only on the local/caller host.
+Hook source files are supplied on the local/caller host. The bootstrap saves
+root-owned snapshots with the group state on both hosts for consistent teardown.
 
 Defaults:
 
@@ -742,7 +790,7 @@ The same hook file content is:
 - executed directly on the local side
 - streamed through SSH stdin and executed using `bash -s` on the remote side
 
-The remote machine therefore does not need a persistent copy of the hook file.
+The remote machine does not need a preinstalled copy of the source hook file.
 
 The side is exposed as:
 
@@ -755,14 +803,25 @@ Useful exported values include:
 
 ```text
 TUNTOM_ID
+TUNTOM_GROUP_ID
+TUNTOM_INSTANCE
+TUNTOM_INSTANCE_KEY
+TUNTOM_MEMBER_INDEX
+TUNTOM_MEMBER_COUNT
+TUNTOM_MEMBERS
+TUNTOM_SCOPE
+TUNTOM_GROUP_MANIFEST
 TUNTOM_ACTION
 TUNTOM_PHASE
 TUNTOM_SIDE
 TUNTOM_IF
+TUNTOM_NO_ADDRESS
 TUNTOM_LOCAL_IP
 TUNTOM_PEER_IP
 TUNTOM_CLIENT_IP
 TUNTOM_SERVER_IP
+TUNTOM_CLIENT_IPV6
+TUNTOM_SERVER_IPV6
 TUNTOM_UDP_PORT
 TUNTOM_MTU
 TUNTOM_TRANSPORT_MTU
@@ -777,6 +836,34 @@ TUNTOM_SNAT_CHAIN
 TUNTOM_MANGLE_CHAIN
 TUNTOM_FORWARD_CHAIN
 ```
+
+`TUNTOM_NO_ADDRESS` is `1` with `mk_tunnel.sh --no-address`, otherwise `0`.
+With `--no-address`, all six endpoint address variables above are empty on both
+sides. The script skips IPv4/IPv6 address assignment, peer address routes and
+tunnel pings, while retaining TUN MTU/up configuration, network helpers and
+hooks. Hooks can use `TUNTOM_IF` for device routes without a peer address.
+The final process checks do not establish data-path connectivity. Use the same
+`--no-address` option on restart; stop and restart teardown load saved context.
+
+`TUNTOM_ID` and `TUNTOM_GROUP_ID` identify the group. `TUNTOM_INSTANCE` is the
+canonical member name; `TUNTOM_INSTANCE_KEY` is `ID + 256*index`.
+`TUNTOM_MEMBERS` lists space-separated member names. `TUNTOM_SCOPE=member`
+identifies existing per-TUN hooks. They retain their original ordering:
+`pre/up` runs after TUN creation/address setup and before the network helper.
+Pure switch ports skip per-member TUN hooks and networking in both directions.
+
+Optional `TUNTOM_GROUP_PRE_HOOK` and `TUNTOM_GROUP_POST_HOOK` run once per host
+with `TUNTOM_SCOPE=group`. Group `pre/up` precedes all member starts; group
+`post/up` follows their checks. Group `pre/down` precedes member teardown,
+and group `post/down` follows it. Member-specific identity, interface, address,
+UDP port, mark, table and chain fields are empty for group hooks. The
+`TUNTOM_GROUP_MANIFEST` path points to that host's saved TSV manifest, including
+both endpoints, switch socket/port IDs and `client_has_tun`/`server_has_tun`
+flags for each member. Group hooks run even when
+both endpoints are pure switch ports. Shared service routes, DNAT publication
+and traffic distribution belong in group hooks rather than being repeated by
+each member. Up-hook failures abort startup and trigger down hooks for cleanup;
+down hooks should be idempotent, including after partial initialization.
 
 `post/up` is the natural point for custom routes, DNAT rules, forwarding policy,
 and other networking that depends on tuntom-created chains/tables.
@@ -1017,11 +1104,189 @@ Linux networking
 Transport complexity should stay inside that boundary. Routing and deployment
 policy should stay outside it.
 
+### Adaptive event polling
+
+All packet-forwarding components (`tuntom`, `tuntom-switch` and
+`tuntom-switch-adapter`) use the shared `AdaptivePolling` state machine. The
+normal event loop processes one packet from each ready data descriptor per
+`poll()` call. It enters overload batching only after eight consecutive polls
+return within 5 microseconds and a zero-timeout readiness check confirms that
+data remains queued.  Overload uses round-robin batches of 4, 8, then 16 rounds
+as the immediate-poll streak reaches 8, 32, and 128.  A processing slice ends
+after 150 microseconds even when its packet budget remains, so control traffic
+and timers cannot be held behind a long batch.
+
+A poll that blocks for at least 50 microseconds immediately restores the normal
+one-round mode.  Otherwise, overload also expires after 32 milliseconds without
+a confirmed backlog.  The stats file exposes:
+
+- `event_poll_overload`: whether overload batching is currently active;
+- `event_poll_busy_streak`: consecutive immediate polls;
+- `event_poll_batch`: the current number of round-robin rounds;
+- `event_poll_overload_entries`: overload transitions since process start;
+- `event_poll_backlog_confirmations`: positive post-service readiness checks;
+- `event_poll_slice_limit_hits`: processing slices stopped by the 150-us limit.
+
+TUN, UDP, and switch data descriptors are nonblocking. `EAGAIN` on input ends
+processing for that descriptor in the current slice. `EAGAIN` while writing to
+switch IPC counts as a backpressure drop, but does not disconnect the healthy
+socket and cause a reconnect blackout.
+
+### Runtime resource recovery
+
+Tuntom, the switch and the exit adapter catch runtime `std::bad_alloc` and
+record main-loop `poll()` errors instead of exiting. They defer data and
+maintenance work for 100 ms while keeping the control socket serviced through
+a fixed-size `pselect()` fallback. This avoids a busy loop even if the main
+poll repeatedly fails. The recovery path does not allocate C++ heap objects or
+log. An interrupted packet may be dropped. These counters appear on all three
+components: `runtime_poll_errors` (excluding `EINTR`),
+`runtime_last_poll_errno`, and `runtime_allocation_errors`.
+
+Handshake entropy uses nonblocking `getrandom`. Errors defer new key generation
+for one second, preserving an existing usable session and never substituting
+weaker entropy. `handshake_random_errors` records these failures. Handshake
+transitions prepare allocating work before publishing a new state; failed
+response construction rolls back its unpublished INIT nonce reservation.
+Expiration still retires unconfirmed candidates even if creating the next
+attempt fails. A failed DATA encoding never rolls back its TX nonce counter.
+
+Control clients are closed during exception unwinding. On allocation failure,
+the control handler attempts a static `error=out_of_memory` reply. Startup
+configuration/device errors still fail startup. Endpoint recovery, FD capacity,
+blocking log output and synchronous filesystem I/O are separate concerns.
+
+### Runtime logging
+
+All three daemons ignore SIGPIPE from startup and submit runtime messages to a
+single-producer queue of 64 records, each at most 1 KiB. Formatting uses bounded
+stack storage without heap allocation or iostream locks. One detached POSIX
+writer with a 64 KiB stack performs stderr I/O. It starts after any privilege
+drop, owns no session state and is never joined. The process-global queue has
+no destructor, so a stuck writer cannot access a destroyed owner at shutdown.
+Thread creation failure disables logging for this process lifetime. Missing
+inherited stderr is detected before packet sockets can reuse descriptor 2;
+logging stays disabled even if that number later belongs to another endpoint.
+Runtime never falls back to synchronous logging or creates replacement writers.
+
+A shared token bucket allows 64 messages initially and replenishes 20 per
+second, including `--debug`. Full queues and exhausted tokens drop the new
+message. Long messages end with ` [truncated]`. The writer sleeps for 100 ms
+when idle and one second after output errors; failed messages are discarded.
+Short writes get at most four attempts. A blocked syscall can occupy this one
+thread indefinitely, with the packet loop still running. Shutdown does not
+flush pending records.
+
+Regular files inherited on stderr are capped at 16 MiB. A message that would
+exceed the cap is discarded with `EFBIG`; the logger never deletes or truncates
+the file. Use external `copytruncate` rotation with a dedicated log per daemon.
+Seeking to the current end before each record resumes at the new end after
+truncation. A concurrent copytruncate can lose an in-flight record or race with
+its seek/write and leave a hole; this remains within the 16 MiB bound.
+Renaming the file alone does not change the inherited descriptor. For pipes,
+sockets and terminals, retention belongs to the receiver. Multiple independent
+writers to the same file are outside the file-size guarantee.
+
+| Counter | Meaning |
+| --- | --- |
+| `log_worker_started` | Writer creation succeeded (1); not a health/readiness check |
+| `log_start_errors` | Signal setup, inherited stderr or writer initialization failures |
+| `log_dropped` | Total records discarded by limiting, queue pressure, unavailable writer or output errors |
+| `log_rate_limited` | Drops due to the shared message rate limit; included in `log_dropped` |
+| `log_truncated` | Oversize messages shortened by the formatter; can also be dropped later |
+| `log_write_errors` | Output check/write failures, including the regular-file size limit |
+| `log_last_errno` | Most recent output failure; retained after recovery |
+| `log_file_limit_drops` | Records rejected by the 16 MiB file cap |
+
+Metrics are present on all three control sockets and in tuntom stats exports.
+A log flood can suppress unrelated diagnostics through the shared limit. CLI
+usage and configuration errors before writer startup remain synchronous;
+`tuntomctl` retains its usual one-shot CLI output behavior. Stats-file export
+is still synchronous and is handled separately from logging (audit PF-04).
+
+### Nonblocking switch connection
+
+`SwitchClient` creates its Unix `SOCK_SEQPACKET` socket with `SOCK_NONBLOCK`
+and `SOCK_CLOEXEC`. Both tuntom and the exit adapter advance connection and
+registration from their event loops. Pending sockets request `POLLOUT`;
+connected sockets request `POLLIN`. A pending connect is completed only after
+checking `SO_ERROR`. Linux AF_UNIX `EAGAIN` from a full accept queue closes the
+attempt immediately: it is not an `EINPROGRESS` connection to wait on.
+
+Connection and registration share a fixed five-second monotonic deadline.
+Registration is encoded once at construction and sent as one complete record
+with `MSG_DONTWAIT | MSG_NOSIGNAL`. Temporary registration errors wait for
+writability without extending the deadline. Failed or expired attempts close
+the socket; the event loop starts a fresh attempt after a one-second backoff.
+Poll timeouts account for the pending deadline. No DATA is sent or received
+through the client until the registration record has been sent in full.
+
+`switch_connected` and `switch_reconnects` indicate successful local submission
+of the registration, as before; the IPC protocol has no registration ACK.
+`switch_reconnect_attempts` counts fresh connection attempts, not readiness events. Tuntom
+records failed attempts in `switch_socket_errors` and the existing errno fields,
+including `ETIMEDOUT` for an expired pending attempt. Startup permission errors
+remain configuration errors; errors during reconnect remain recoverable.
+
+The switch listener itself is also nonblocking. A stale readiness indication
+therefore cannot leave `accept4()` waiting for a new connection. Nonblocking
+flags on the accepted socket alone would not provide this protection.
+
+### Switch admission and FD capacity
+
+The standalone switch bounds registered ports and unregistered clients
+separately. Defaults are 256 ports and 16 pending registrations; CLI options
+`--max-ports` and `--max-pending` also work through `mk_switch.sh`. Startup
+counts already open descriptors below the soft `RLIMIT_NOFILE` (including
+inherited descriptors, excluding the temporary enumeration FD), subtracts
+16 slots for control/operations, and assigns pending capacity first while
+preserving at least one port slot. Both kinds require at least one slot.
+The effective pool and poll-vector capacities are allocated before the loop.
+
+Pending clients have a fixed five-second monotonic deadline from accept,
+checked before dispatch and even during PF-02 recovery. Registered ports have
+no idle timeout. Registration of an existing ID prepares the replacement
+before closing the old connection; it remains possible at the port limit if
+a pending slot is available. Distinct IDs exceeding the port limit close.
+
+Data accept attempts consume a token bucket (16 burst, 32/s), including failed
+attempts. A full pending pool or empty bucket removes the listener from poll;
+timers and established ports remain active. Accept errors other than
+`EAGAIN`/`EWOULDBLOCK`/`EINTR` pause only that listener for one second. No
+sleep or global PF-02 recovery is started by such an accept error. Control
+accept has independent error backoff in all three daemons; its poll descriptor
+is also suppressed in the PF-02 fallback while paused. The existing control
+request read still has its 10ms bound; a fully asynchronous control protocol
+is a separate change.
+
+Switch control snapshots add the following fields (all counters are cumulative
+since process start; limits and connection counts are gauges):
+
+| Field | Meaning |
+| --- | --- |
+| `connections_current` | Existing field: live registered ports only. |
+| `connections_pending`, `connections_total` | Accepted unregistered clients; all live client connections. |
+| `connections_limit_ports_configured`, `connections_limit_pending_configured` | Requested limits before the FD budget clamp. |
+| `connections_limit_ports`, `connections_limit_pending` | Effective startup limits. |
+| `connections_fd_reserve` | Descriptor headroom excluded from client capacity (16). |
+| `registrations_timed_out` | Unregistered connections closed at their deadline. |
+| `registrations_capacity_rejected` | Valid new port IDs refused at the registered-port limit. |
+| `listener_accept_errors`, `control_accept_errors` | Accept errors causing backoff on each listener. |
+| `listener_accept_last_errno`, `control_accept_last_errno` | Last error causing backoff; initially zero. |
+| `listener_accept_backoff`, `control_accept_backoff` | Whether that listener is in error backoff at snapshot time. |
+| `listener_accept_rate_limit_hits` | Charged accept attempts leaving fewer than one token. |
+
+`connections_accepted` still counts accepted sockets, including those later
+rejected or expired. Pending/capacity deferrals do not count as accept errors.
+The FD budget protects against this switch's client flood. It does not reserve
+system-wide file-table entries or recalculate on runtime `prlimit` changes;
+unexpected shortages use bounded retry. In particular, during true `ENFILE`
+new control connections cannot be guaranteed. No IPC or UDP wire format changes.
 
 ### Processing latency statistics
 
-When `--stats-file` is enabled, tuntom samples the first and then every 1024th
-TUN packet / UDP datagram using `std::chrono::steady_clock`. The stats file adds
+Tuntom samples the first and then every 1024th TUN packet / UDP datagram using
+`std::chrono::steady_clock`, independently of file export. Stats snapshots add
 `processing_sample_interval=1024` and these prefixes:
 
 - `tx_processing`: elapsed microseconds from after a successful TUN read through
@@ -1053,19 +1318,22 @@ the results. For unfragmented traffic, TX on A plus RX on B estimates one-way
 application processing; sum both directions for RTT processing. For fragmented
 traffic RX work is spread over multiple datagrams, so this simple sum no longer
 applies. Processing statistics do not add fields to the V5 wire format, and no
-processing samples are collected without a stats file.
+stats file is required to collect processing samples or read them over the socket.
 
 
-### Tunnel throughput statistics
+### Packet and throughput rate statistics
 
-With `--stats-file`, the following rates are exported in bits per second:
+File and control-socket snapshots expose byte rates in bits per second and packet
+rates in packets per second:
 
 ```text
-tun_rx_bps_5s / tun_rx_bps_1m
-tun_tx_bps_5s / tun_tx_bps_1m
-udp_rx_bps_5s / udp_rx_bps_1m
-udp_tx_bps_5s / udp_tx_bps_1m
+<direction>_bps_5s / <direction>_bps_1m
+<direction>_pps_5s / <direction>_pps_1m
 ```
+
+The tunnel reports `tun_rx`, `tun_tx`, `udp_rx`, `udp_tx`, `switch_rx` and
+`switch_tx`. The standalone switch reports `switch_rx` and `switch_tx`; the exit
+adapter reports `tun_rx`, `tun_tx`, `switch_rx` and `switch_tx`.
 
 Directions match the existing byte counters: `tun_rx` reads local IP packets for
 transmission through the tunnel; `tun_tx` writes received IP packets to TUN.
@@ -1079,7 +1347,8 @@ clock reading. Deltas are assigned to the observation's fixed five-second
 bucket. A delayed observation belongs to its current bucket; historical arrival
 times cannot be recovered from counters. `_5s` reports the last completed bucket
 (bytes times 8 divided by 5); `_1m` averages the last twelve completed buckets.
-The current partial bucket is excluded. Idle buckets count as zero. During
+PPS uses packet-counter deltas over the same buckets. The current partial bucket
+is excluded. Idle buckets count as zero. During
 startup, only available completed buckets are averaged, with zero rates before
 the first bucket completes. `throughput_bucket_seconds=5` and
 `throughput_window_buckets` (0–12) expose the interval and available history.
@@ -1104,14 +1373,15 @@ messages, not successful UDP sends.
 | `session_age_seconds` | Age of the current candidate/session since key derivation; -1 if absent. |
 | `session_tx_counter` | Last ordinary sequence counter allocated for encoding, excluding the session hint; 0 before any DATA/control encoding. Resets on each new session, and does not assert successful sending. |
 | `handshake_state` | `idle`, `wait_response` (client), `wait_confirm` (server), or `wait_ack` (client). `idle` can mean either connected or not yet started: inspect session gauges too. |
-| `handshake_started` | Client INIT attempts generated, or server pending sessions created after validation. Fresh client INIT retries count as new attempts; INITs ignored by a busy server do not. |
+| `handshake_started` | Client INIT attempts generated, or server pending sessions created after validation. Retransmitting a live INIT does not start a new attempt; expiry followed by a fresh INIT does. INITs ignored by a busy server do not count. |
 | `handshake_completed` | Local completions: valid CONFIRM activates server, valid ACK completes client. Duplicate confirmations/ACKs do not increment this. |
-| `handshake_retries` | Client fresh INIT retries, timer/duplicate-RESPONSE CONFIRM retries, or server ACK replies to duplicate active CONFIRMs. These are generated messages, not successful sends. |
-| `handshake_timeouts` | Server pending candidate expiration, or client five-second flight expiration. Each is counted once. Normal one-second fresh INIT retries supersede attempts without counting a five-second timeout. |
+| `handshake_retries` | Client exact INIT retries, timer/duplicate-RESPONSE CONFIRM retries, server cached RESPONSE replies to duplicate pending INITs, or ACK replies to duplicate active CONFIRMs. These are generated messages, not successful sends. |
+| `handshake_timeouts` | Server pending candidate expiration, or client five-second flight expiration. Each is counted once; retransmissions do not refresh these deadlines. |
 | `handshake_suite_mismatch` | Authenticated, structurally valid INIT/RESPONSE packets with a supported suite different from local configuration. Unknown suites and invalid lengths remain protocol drops. |
 | `handshake_dh_rejected` | Authenticated suite-2 exchanges that reach DH validation and yield an all-zero X25519 result. |
+| `handshake_random_errors` | Failed attempts to obtain handshake entropy, including a zero exchange ID; new attempts back off for one second. |
 | `handshake_last_age_seconds` | Seconds since most recent local completion; -1 before the first. |
-| `rekey_started` | Subset of handshake attempts started after at least one successful local handshake in this process. Includes retries and idle recovery, not only periodic PFS. |
+| `rekey_started` | Subset of handshake attempts started after at least one successful local handshake in this process. Includes fresh attempts after timeout and idle recovery, not only periodic PFS. Retransmissions within a live flight do not count. |
 | `rekey_completed` | Successful local handshakes after the first; includes idle recovery. For uninterrupted PFS traffic this directly counts completed periodic key rotations. |
 | `rekey_interval_seconds` | Configured periodic client DH interval: 120 with PFS, 0 otherwise. Server shows the same suite policy but does not initiate rotations. |
 
@@ -1122,15 +1392,21 @@ ACK is outstanding. Counters disclose no private keys or DH/KDF secrets.
 
 ### Disabling and controlling statistics
 
-`--no-stats` disables periodic file creation/replacement, processing-latency
-sampling, reassembly-span sampling and throughput bucket updates. It preserves
+`--no-stats` disables only periodic file creation/replacement. Processing-latency
+sampling, reassembly-span sampling and throughput bucket updates continue, even
+without a stats file. The option preserves
 `--stats-file`, regardless of argument order. Basic packet/byte/drop counters,
-session/rekey counters and operational RTT/PMTUD control remain active.
+session/rekey counters, reassembly counters/gauges and operational RTT/PMTUD
+control remain active.
 `mk_tunnel.sh ... --no-stats` passes the option to both processes, retaining
 their normal stats paths for later activation.
 
-The standalone binary installs SIGUSR1 (toggle automatic statistics) and SIGUSR2
-(one immediate snapshot, even while disabled) handlers. They only update
+`tuntomctl <control-socket> show stats` formats an up-to-date in-memory snapshot
+directly into the socket response. It needs no `--stats-file`, never reads or
+writes a stats file, and works even if a configured export path is unusable.
+
+The standalone binary installs SIGUSR1 (toggle automatic file export) and SIGUSR2
+(one immediate file snapshot, even while disabled) handlers. They only update
 `sig_atomic_t` flags; I/O and state updates happen in the normal event loop.
 Both signals are blocked briefly when consuming flags to avoid losing requests.
 Two delivered USR1 signals cancel each other; multiple USR2 requests before
@@ -1139,15 +1415,12 @@ so do not use rapid repeated signals as a reliable queue. An already running
 iteration/write may finish before a disable request takes effect. No output path
 means enabling has no output effect. Existing files remain untouched while
 disabled unless USR2 requests a snapshot. Snapshotting does not toggle automatic
-mode or resume sampling. The snapshot includes `stats_enabled=0/1`; cumulative
-counters are current, while optional latency and throughput fields retain their
-last collected history when disabled. No SIGHUP handler is installed; periodic
+file export. The snapshot includes `stats_enabled=0/1`, describing periodic file
+export, not metric collection. Counters, latency samples and throughput buckets
+continue updating while export is disabled. No SIGHUP handler is installed; periodic
 rekey remains unchanged.
 
-On re-enable, writing resumes immediately in the loop. Throughput windows are
-reset and baseline byte counters are captured, so disabled traffic is never
-reported as a burst. Processing sample counts/windows resume their old history;
-they contain only samples collected while enabled (a completed fragmented packet
-may have started during the pause). Lifetime counters are never reset by these
+On re-enable, writing resumes immediately in the loop. Throughput and processing
+windows retain their continuously collected history. Counters are never reset by these
 signals. Signal handlers are installed only by `main`, so embedding `Tunnel`
 does not install process-global handlers automatically.

@@ -30,6 +30,7 @@ public:
     using Time = Clock::time_point;
     static constexpr std::uint64_t counter_mask = 0x0000ffffffffffffULL;
     static constexpr auto retry_interval = std::chrono::seconds(1);
+    static constexpr auto response_resend_interval = std::chrono::milliseconds(200);
     static constexpr auto pending_lifetime = std::chrono::seconds(5);
     static constexpr auto old_lifetime = std::chrono::seconds(3);
     static constexpr auto rekey_interval = std::chrono::minutes(2);
@@ -46,16 +47,19 @@ public:
         std::vector<std::uint8_t> init, response;
         Session(std::uint16_t id, const ascon::key_type& tx,
                 const ascon::key_type& rx, std::uint16_t h,
-                std::uint64_t ex, std::size_t mtu, bool encrypt)
-            : codec(id, tx, rx, encrypt), reassembly(mtu), hint(h), exchange(ex) {}
+                std::uint64_t ex, std::size_t mtu, bool encrypt,
+                ReassemblyMetrics* metrics = nullptr)
+            : codec(id, tx, rx, encrypt), reassembly(mtu, metrics), hint(h), exchange(ex) {}
     };
     struct Counters {
         std::uint64_t handshake_started = 0, handshake_completed = 0;
         std::uint64_t rekey_started = 0, rekey_completed = 0;
         std::uint64_t handshake_retries = 0, handshake_timeouts = 0;
         std::uint64_t handshake_suite_mismatch = 0, handshake_dh_rejected = 0;
+        std::uint64_t handshake_random_errors = 0;
     };
     const Counters& counters() const { return counters_; }
+    const ReassemblyMetrics& reassembly_metrics() const { return reassembly_metrics_; }
 
     // Gauges describe local state; counters count protocol events, not UDP sends.
     void write_stats(std::ostream& out, Time now) const {
@@ -76,11 +80,13 @@ public:
             << "handshake_timeouts=" << counters_.handshake_timeouts << "\n"
             << "handshake_suite_mismatch=" << counters_.handshake_suite_mismatch << "\n"
             << "handshake_dh_rejected=" << counters_.handshake_dh_rejected << "\n"
+            << "handshake_random_errors=" << counters_.handshake_random_errors << "\n"
             << "handshake_last_age_seconds="
             << (counters_.handshake_completed ? age(now, last_completed_) : -1) << "\n"
             << "rekey_started=" << counters_.rekey_started << "\n"
             << "rekey_completed=" << counters_.rekey_completed << "\n"
             << "rekey_interval_seconds=" << (pfs_ ? std::chrono::duration_cast<std::chrono::seconds>(rekey_interval).count() : 0) << "\n";
+        reassembly_metrics_.write(out);
     }
 
     struct Received {
@@ -113,6 +119,9 @@ public:
             std::chrono::system_clock::now().time_since_epoch()).count();
     }
 
+    // Invalidates queued ciphertext when TX keys change, including rollback.
+    std::uint64_t transmit_generation() const { return transmit_generation_; }
+
     // Bound encrypted-suite key use independently of the 48-bit wire counter.
     // At UDP packet sizes this stays below 2^48 bytes per directional key.
     bool ready() const {
@@ -135,28 +144,39 @@ public:
 
     std::vector<std::uint8_t> begin(Time now, std::int64_t wall = wall_seconds()) {
         if (server_) return {};
-        previous_.reset();
-        pending_.reset();
-        waiting_ack_ = false;
+        begin_retry_ = true;
+        if (now < random_retry_after_) return {};
         Packet init = control(PacketType::init, random_id());
-        client_secret_.clear();
+        if (init.message_id == 0) { random_failed(now); return {}; }
+        Secret<32> secret;
         init.payload.resize(pfs_ ? 76 : 44);
-        random_bytes(init.payload.data(), 32);
+        if (not random_bytes(init.payload.data(), 32)) { random_failed(now); return {}; }
         store_be64(init.payload.data() + 32, static_cast<std::uint64_t>(std::max<std::int64_t>(0, wall)));
         store_be16(init.payload.data() + 40, suite());
         if (pfs_) {
-            random_bytes(client_secret_.bytes.data(), 32);
+            if (not random_bytes(secret.bytes.data(), 32)) { random_failed(now); return {}; }
             x25519::Bytes pub {};
-            x25519::public_key(pub, client_secret_.bytes);
+            x25519::public_key(pub, secret.bytes);
             store_be16(init.payload.data() + 42, 32);
             std::copy(pub.begin(), pub.end(), init.payload.begin() + 44);
         }
-        client_init_ = handshake_.encode(init);
+        // Prepare every allocating step before publishing a new transcript or
+        // discarding the old PFS secret. Failure leaves the old flight usable.
+        auto encoded = handshake_.encode(init);
+        auto flight = encoded;
+        auto reply = encoded;
+        previous_.reset();
+        pending_.reset();
+        waiting_ack_ = false;
+        client_secret_.clear();
+        client_secret_.bytes = secret.bytes;
+        client_init_ = std::move(encoded);
         client_exchange_ = init.message_id;
-        flight_ = client_init_;
+        flight_ = std::move(flight);
         flight_started_ = last_retry_ = now;
+        begin_retry_ = false;
         started();
-        return flight_;
+        return reply;
     }
 
     std::vector<std::uint8_t> tick(Time now, std::int64_t wall = wall_seconds()) {
@@ -167,18 +187,23 @@ public:
             if (now - flight_started_ >= pending_lifetime) {
                 ++counters_.handshake_timeouts;
                 // An unconfirmed candidate must not remain usable forever.
-                if (waiting_ack_) active_ = std::move(previous_);
+                if (waiting_ack_) { active_ = std::move(previous_); ++transmit_generation_; }
+                waiting_ack_ = false;
+                flight_.clear();
+                client_init_.clear();
+                client_secret_.clear();
                 return begin(now, wall);
             }
             if (now - last_retry_ >= retry_interval) {
                 ++counters_.handshake_retries;
-                if (not waiting_ack_) return begin(now, wall);
+                // Keep the INIT transcript and PFS secret until the flight
+                // deadline so a RESPONSE arriving after a retry still matches.
                 last_retry_ = now;
                 return flight_;
             }
             return {};
         }
-        if (not ready() or now - last_received_ >= idle_restart or
+        if (begin_retry_ or not ready() or now - last_received_ >= idle_restart or
             (pfs_ and now - active_->created >= rekey_interval)) return begin(now, wall);
         return {};
     }
@@ -242,28 +267,70 @@ public:
                 Nonce nonce {};
                 std::copy_n(packet.payload.begin(), nonce.size(), nonce.begin());
                 if (seen_nonces_.count(nonce)) {
-                    result.replay_drop = true;
+                    // Only an exact retry of the still-pending INIT may obtain
+                    // its cached RESPONSE. Never extend the deadline, derive
+                    // new keys, reset replay state, or change the active peer.
+                    if (pending_ and pending_->init == encoded) {
+                        // DoS/reflection protection: allow one immediate resend
+                        // to recover a lost RESPONSE, then space cached replies
+                        // by 200 ms. This bounds replies to replayed valid INITs,
+                        // not incoming traffic or MAC verification work.
+                        // Suppressed retries must not postpone the next reply
+                        // or extend the pending lifetime; never wait here.
+                        if (now < response_resend_after_) return result;
+                        result.reply = pending_->response;
+                        response_resend_after_ = now + response_resend_interval;
+                        ++counters_.handshake_retries;
+                    } else {
+                        result.replay_drop = true;
+                    }
                     return result;
                 }
                 if (seen_nonces_.size() >= nonce_capacity) {
                     result.nonce_capacity = true;
                     return result;
                 }
-                seen_nonces_.insert(nonce);
-                nonce_expiry_.emplace(stamp + half, nonce);
-                // Fresh retries cannot evict an exchange awaiting CONFIRM.
-                if (pending_) return result;
+                if (not pending_ and now < random_retry_after_) return result;
+                const auto inserted = seen_nonces_.insert(nonce).first;
+                decltype(nonce_expiry_)::iterator expiry;
+                try {
+                    expiry = nonce_expiry_.emplace(stamp + half, nonce);
+                } catch (...) {
+                    seen_nonces_.erase(inserted);
+                    throw;
+                }
+                struct NonceReservation {
+                    decltype(seen_nonces_)& seen;
+                    decltype(nonce_expiry_)& expiries;
+                    decltype(seen_nonces_)::iterator entry;
+                    decltype(nonce_expiry_)::iterator expiry;
+                    bool keep = false;
+                    ~NonceReservation() {
+                        if (not keep) { seen.erase(entry); expiries.erase(expiry); }
+                    }
+                } reservation {seen_nonces_, nonce_expiry_, inserted, expiry};
+                // Failed response construction has emitted nothing. Roll back
+                // both nonce indexes so the same INIT can retry after recovery.
+                // A different INIT cannot evict an exchange awaiting CONFIRM.
+                if (pending_) { reservation.keep = true; return result; }
                 Packet response = control(PacketType::response, packet.message_id);
                 response.payload = commitment(master_, id_, encoded);
                 response.payload.resize(pfs_ ? 100 : 68);
-                random_bytes(response.payload.data() + 32, 32);
+                if (not random_bytes(response.payload.data() + 32, 32)) {
+                    random_failed(now);
+                    return result;
+                }
                 store_be16(response.payload.data() + 64, suite());
                 Secret<32> secret, dh;
                 if (pfs_) {
-                    random_bytes(secret.bytes.data(), 32);
+                    if (not random_bytes(secret.bytes.data(), 32)) {
+                        random_failed(now);
+                        return result;
+                    }
                     x25519::Bytes peer {}, pub {};
                     std::copy_n(packet.payload.begin() + 44, 32, peer.begin());
                     if (not x25519::shared(dh.bytes, secret.bytes, peer)) {
+                        reservation.keep = true;
                         ++counters_.handshake_dh_rejected;
                         return result;
                     }
@@ -272,11 +339,14 @@ public:
                     std::copy(pub.begin(), pub.end(), response.payload.begin() + 68);
                 }
                 auto response_wire = handshake_.encode(response);
+                auto candidate = derive(encoded, response_wire, packet.message_id, dh.bytes, now);
                 previous_.reset(); // At most two candidate session keys.
-                pending_ = derive(encoded, response_wire, packet.message_id, dh.bytes, now);
+                pending_ = std::move(candidate);
                 pending_until_ = now + pending_lifetime;
+                response_resend_after_ = now; // First cached resend has no waiting window.
                 started();
                 result.reply = std::move(response_wire);
+                reservation.keep = true;
                 return result;
             }
             if (client_init_.empty() or packet.message_id != client_exchange_) return result;
@@ -301,14 +371,16 @@ public:
                 }
             }
             auto candidate = derive(client_init_, encoded, client_exchange_, dh.bytes, now);
+            auto flight = confirmation(*candidate, PacketType::confirm);
+            result.reply = flight;
             client_secret_.clear();
             previous_ = std::move(active_);
             previous_until_ = now + old_lifetime;
             active_ = std::move(candidate);
+            ++transmit_generation_;
             waiting_ack_ = true;
-            flight_ = confirmation(*active_, PacketType::confirm);
+            flight_ = std::move(flight);
             flight_started_ = last_retry_ = now;
-            result.reply = flight_;
             return result;
         }
 
@@ -325,16 +397,20 @@ public:
         if (type == PacketType::confirm) {
             if (not server_ or packet.message_id != matched->exchange) return result;
             result.control = true;
+            // ACK encoding may allocate. Do it before activation so a failed
+            // operation cannot consume the peer-update/activation notification.
+            if (matched == pending_.get() or matched == active_.get())
+                result.reply = confirmation(*matched, PacketType::confirm_ack);
             if (matched == pending_.get()) {
                 previous_ = std::move(active_);
                 previous_until_ = now + old_lifetime;
                 active_ = std::move(pending_);
+                ++transmit_generation_;
                 completed(now);
                 result.activated = result.update_peer = true;
             }
             if (matched == active_.get()) {
                 if (not result.activated) ++counters_.handshake_retries;
-                result.reply = confirmation(*matched, PacketType::confirm_ack);
             }
             return result;
         }
@@ -354,6 +430,8 @@ public:
         // No DATA before server-side CONFIRM. Counter zero belongs exclusively
         // to CONFIRM/ACK and is never inserted into the DATA replay window.
         if (matched == pending_.get()) return result;
+        // Metadata belongs only to the current session, never the rekey grace period.
+        if (type == PacketType::info && matched != active_.get()) return result;
         if (not matched->replay.accept(packet.sequence & counter_mask)) {
             result.replay_drop = true;
             return result;
@@ -367,9 +445,9 @@ public:
         return result;
     }
 
-    void cleanup() {
-        if (active_) active_->reassembly.cleanup_expired();
-        if (previous_) previous_->reassembly.cleanup_expired();
+    void cleanup(Time now = Clock::now()) {
+        if (active_) active_->reassembly.cleanup_expired(now);
+        if (previous_) previous_->reassembly.cleanup_expired(now);
     }
 
 private:
@@ -406,7 +484,7 @@ private:
 
     std::unique_ptr<Session> derive(const std::vector<std::uint8_t>& init,
                                     const std::vector<std::uint8_t>& response,
-                                    std::uint64_t exchange, const x25519::Bytes& dh, Time now) const {
+                                    std::uint64_t exchange, const x25519::Bytes& dh, Time now) {
         auto transcript = init;
         transcript.insert(transcript.end(), response.begin(), response.end());
         Secret<16> c2s, s2c, hint;
@@ -422,7 +500,8 @@ private:
             hint.bytes = expand(master_, id_, "V4-SESSION-HINT", transcript);
         }
         auto result = std::make_unique<Session>(id_, server_ ? s2c.bytes : c2s.bytes,
-            server_ ? c2s.bytes : s2c.bytes, load_be16(hint.bytes.data()), exchange, mtu_, encrypt_);
+            server_ ? c2s.bytes : s2c.bytes, load_be16(hint.bytes.data()), exchange, mtu_, encrypt_,
+            &reassembly_metrics_);
         result->created = now;
         result->init = init;
         result->response = response;
@@ -441,25 +520,29 @@ private:
         packet.sequence = std::uint64_t(session.hint) << 48;
         return session.codec.encode(packet);
     }
-    static void random_bytes(std::uint8_t* output, std::size_t size) {
+    void random_failed(Time now) {
+        ++counters_.handshake_random_errors;
+        random_retry_after_ = now + retry_interval;
+    }
+    static bool random_bytes(std::uint8_t* output, std::size_t size) {
         while (size != 0) {
-            const auto n = ::getrandom(output, size, 0);
-            if (n < 0 and errno == EINTR) continue;
-            if (n <= 0) throw std::runtime_error("getrandom failed");
+            const auto n = ::getrandom(output, size, GRND_NONBLOCK);
+            // No fallback entropy and no unbounded EINTR retry in the packet
+            // loop. The next handshake attempt waits for the retry interval.
+            if (n <= 0) return false;
             output += n;
             size -= static_cast<std::size_t>(n);
         }
+        return true;
     }
     static std::uint64_t random_id() {
         std::array<std::uint8_t, 8> bytes {};
-        std::uint64_t value = 0;
-        while (value == 0) {
-            random_bytes(bytes.data(), bytes.size());
-            value = load_be64(bytes.data());
-        }
-        return value;
+        if (not random_bytes(bytes.data(), bytes.size())) return 0;
+        return load_be64(bytes.data()); // Zero also defers the attempt.
     }
 
+    // Declared before session owners so their destructors can update gauges.
+    ReassemblyMetrics reassembly_metrics_;
     Counters counters_;
     Time last_completed_ {};
     std::uint16_t id_;
@@ -470,10 +553,14 @@ private:
     bool pfs_;
     Secret<32> client_secret_;
     ProtocolV5 handshake_;
+    std::uint64_t transmit_generation_ = 0;
     std::unique_ptr<Session> active_, previous_, pending_;
     Time previous_until_ {}, pending_until_ {}, last_received_ {};
+    Time response_resend_after_ {};
+    Time random_retry_after_ {};
     Time flight_started_ {}, last_retry_ {};
     bool waiting_ack_ = false;
+    bool begin_retry_ = false;
     std::uint64_t client_exchange_ = 0;
     std::vector<std::uint8_t> client_init_, flight_;
     using Nonce = std::array<std::uint8_t, 32>;

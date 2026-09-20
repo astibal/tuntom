@@ -1,0 +1,11 @@
+- name: Operate selected units without changing installed files
+  hosts: all
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Operate deployment selection
+      ansible.builtin.include_tasks: tasks/service.yml
+      loop: "{{ tt_jobs }}"
+      loop_control:
+        loop_var: job
+        label: "{{ job.key }}"

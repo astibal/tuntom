@@ -18,16 +18,38 @@ from multiple translation units.
 | `udp_endpoint.hpp` | UDP sockets and peer handling |
 | `reassembly.hpp` | Fragment reassembly |
 | `session.hpp` | V5 handshake and session lifecycle |
+| `info_message.hpp` | ASCII INFO codec, loopback access selection and peer snapshots |
+| `info_worker.hpp` | Background INFO collection and bounded text-buffer handoff |
 | `ip.hpp` | IP checksums and hop compensation |
 | `fragmentation.hpp` | Fragment sizing and probe state |
 | `tunnel.hpp` | Event loop, forwarding, RTT, PMTUD and stats |
 | `cli.hpp` | Usage and argument parsing |
+| `switch_client.hpp` | Tuntom-side Unix switch connection |
+| `ipc/switch_protocol.hpp` | Shared `SWITCH` / `EXIT` frame codec |
+| `control_socket.hpp` | Shared local `show stats` control server |
+| `adaptive_polling.hpp` | Shared overload detection, batching policy and event-loop metrics |
+| `control/main.cpp` | `tuntomctl` client executable |
+| `switch/main.cpp` | Standalone label-switch executable |
+| `ip_flow.hpp` | Shared IPv4/IPv6 L3 and TCP/UDP tuple parsing for reverse routes, ECMP and classification |
+| `packet_classifier.hpp` | Stateless ordered L3/L4 matching and initial label-stack assignment |
+| `adapter/lru_cache.hpp` | Capacity and idle-time bounded LRU cache |
+| `adapter/exit_adapter.hpp` | Reverse L3/L4 label learning and lookup |
+| `adapter/main.cpp` | Standalone TUN exit-adapter executable |
 
 `../mk_tunnel.sh` sends this directory as a tar stream over SSH, compiles
 `main.cpp` remotely and removes the temporary sources on exit. No generated
 source file or custom include processing is needed.
 
+Packet-forwarding components must use nonblocking descriptors and the shared
+`AdaptivePolling` policy: one fair round normally, confirmed-backlog batching,
+round-robin source selection and a bounded processing slice with control traffic
+handled first. New I/O loops should reuse this class and expose its standard
+metrics rather than introducing an unbounded drain loop or one-packet-per-poll
+bottleneck. Output backpressure is a drop/queueing condition, not a reason to
+disconnect an otherwise healthy socket.
+
 PFS implementation: `x25519.hpp` wraps the pinned `vendor/x25519.hpp` extraction;
 `akdf.hpp` implements [AKDF v1](../docs/AKDF_V1.md) extract/expand; `secret.hpp` owns wiping
-helpers. `--pfs` selects suite 2, implies Ascon encryption and enables periodic DH
-rekey. See `docs/PROTOCOL_V5.md` for exact derivation and security assumptions.
+helpers. Suite 2 with Ascon encryption, X25519 PFS and periodic DH rekey is the
+default. `--crypto-auth-only` selects plaintext suite 0. See
+`docs/PROTOCOL_V5.md` for exact derivation and security assumptions.

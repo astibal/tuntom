@@ -1,0 +1,28 @@
+- name: Recheck all hosts before any destructive operation
+  hosts: all
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Require the controller's interactive confirmation
+      ansible.builtin.assert:
+        that: tt_confirmed | bool
+        fail_msg: Run tt_deploy.sh --wipe interactively; there is no unattended wipe.
+    - name: Recheck every selected installation's ownership
+      tuntom_node:
+        action: recheck
+        payload: "{{ item }}"
+      loop: "{{ tt_jobs }}"
+      loop_control:
+        label: "{{ item.key }}"
+      changed_when: false
+
+- name: Wipe only the selected deployments after the all-host barrier
+  hosts: all
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - ansible.builtin.include_tasks: tasks/wipe.yml
+      loop: "{{ tt_jobs }}"
+      loop_control:
+        loop_var: job
+        label: "{{ job.key }}"

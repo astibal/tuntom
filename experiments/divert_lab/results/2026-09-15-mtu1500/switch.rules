@@ -1,0 +1,4 @@
+format 2
+serial 1
+exit exit
+switch edge, [17, 42] to exit, [99, 42] allow bidir

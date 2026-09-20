@@ -1,0 +1,411 @@
+#include "../common.hpp"
+#include "../runtime_recovery.hpp"
+#include "exit_adapter.hpp"
+#include "../packet_classifier.hpp"
+#include "../adaptive_polling.hpp"
+#include "../ipc/switch_protocol.hpp"
+#include "../switch_client.hpp"
+#include "../tun_device.hpp"
+#include "../control_socket.hpp"
+#include "../throughput_stats.hpp"
+#include <cerrno>
+#include <chrono>
+#include <csignal>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <iostream>
+#include <limits>
+#include <memory>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <vector>
+#include <poll.h>
+#include <sys/prctl.h>
+
+namespace {
+
+volatile std::sig_atomic_t stop_requested = 0;
+void request_stop(int) { stop_requested = 1; }
+
+struct AdapterStats {
+    std::uint64_t tun_rx_packets = 0, tun_rx_bytes = 0;
+    std::uint64_t tun_tx_packets = 0, tun_tx_bytes = 0;
+    std::uint64_t switch_rx_packets = 0, switch_rx_bytes = 0;
+    std::uint64_t switch_tx_packets = 0, switch_tx_bytes = 0;
+    std::uint64_t cache_miss_drops = 0, switch_disconnected_drops = 0, opcode_drops = 0;
+    std::uint64_t tun_read_errors = 0, tun_write_errors = 0;
+    std::uint64_t switch_send_errors = 0, switch_disconnects = 0;
+    std::uint64_t switch_backpressure_drops = 0;
+    std::uint64_t switch_reconnect_attempts = 0, switch_reconnects = 0;
+};
+
+std::size_t parse_size(
+    const std::string& option, const char* value,
+    std::size_t minimum, std::size_t maximum) {
+    if (value[0] == '-') throw std::runtime_error("Invalid " + option);
+    std::size_t used = 0;
+    const auto parsed = std::stoull(value, &used, 10);
+    if (value[used] != '\0' or parsed < minimum or parsed > maximum)
+        throw std::runtime_error("Invalid " + option);
+    return static_cast<std::size_t>(parsed);
+}
+
+void usage(const char* program) {
+    std::cerr
+        << "Usage: " << program << " <ifname> --switch-socket <path>"
+        << " --switch-port-id <name> [options]\n"
+        << "  --control-socket <path>  Local tuntomctl socket\n"
+        << "  --switch-ipc <mode>   auto (default), v1, inline (V2 without mmap)\n"
+        << "  --switch-ipc-batch <n> Maximum references per record, 1..16 (default 8)\n"
+        << "  --mtu <n>             TUN MTU (default 1500)\n"
+        << "  --classifier-file <path> L3/L4 rules for TUN packets missing reverse cache\n"
+        << "  --l4-capacity <n>     L4 LRU entries (default 1000000)\n"
+        << "  --l3-capacity <n>     L3 LRU entries (default 250000)\n"
+        << "  --l4-timeout <s>      L4 idle timeout (default 120)\n"
+        << "  --l4-sport-key-bits <n> Keep high 0..16 source-port bits (default 16)\n"
+        << "                         Source port in switch -> TUN direction\n"
+        << "  --l4-only             Use only L4 cache; disable IP-pair fallback\n"
+        << "  --l3-timeout <s>      L3 idle timeout (default 30)\n";
+}
+
+} // namespace
+
+int main(int argc, char** argv) {
+    // Linux comm allows 15 characters; the installed filename is just "main".
+    // This is cosmetic, so failure must not prevent startup.
+    (void)::prctl(PR_SET_NAME, "tuntom-adapter", 0UL, 0UL, 0UL);
+    tuntom::logger.ignore_sigpipe();
+    using namespace tuntom;
+    try {
+        if (argc < 2) {
+            usage(argv[0]);
+            return 1;
+        }
+        const std::string interface_name = argv[1];
+        ipc::Options ipc_options;
+        std::string socket_path;
+        std::string port_id;
+        std::string control_path;
+        std::string classifier_file;
+        std::size_t mtu = 1500;
+        std::size_t l4_capacity = 1000000;
+        std::size_t l3_capacity = 250000;
+        std::size_t l4_timeout = 120;
+        std::size_t l3_timeout = 30;
+        unsigned l4_sport_key_bits = 16;
+        bool l4_only = false;
+        for (int index = 2; index < argc; ++index) {
+            const std::string option = argv[index];
+            if (option == "--help" or option == "-h") {
+                usage(argv[0]);
+                return 0;
+            }
+            if (option == "--l4-only") { l4_only = true; continue; }
+            if (++index >= argc) throw std::runtime_error(option + " requires a value");
+            if (option == "--switch-ipc") ipc_options.mode = ipc::parse_mode(argv[index]);
+            else if (option == "--switch-ipc-batch")
+                ipc_options.batch = static_cast<std::uint32_t>(parse_size(option, argv[index], 1, ipc::max_batch));
+            else if (option == "--switch-socket") socket_path = argv[index];
+            else if (option == "--switch-port-id") port_id = argv[index];
+            else if (option == "--control-socket") control_path = argv[index];
+            else if (option == "--classifier-file") {
+                classifier_file = argv[index];
+                if (classifier_file.empty()) throw std::runtime_error("--classifier-file must not be empty");
+            }
+            else if (option == "--mtu") mtu = parse_size(option, argv[index], 576, 65535);
+            else if (option == "--l4-sport-key-bits")
+                l4_sport_key_bits = static_cast<unsigned>(parse_size(option, argv[index], 0, 16));
+            else if (option == "--l4-capacity")
+                l4_capacity = parse_size(option, argv[index], 1, 100000000);
+            else if (option == "--l3-capacity")
+                l3_capacity = parse_size(option, argv[index], 1, 100000000);
+            else if (option == "--l4-timeout")
+                l4_timeout = parse_size(option, argv[index], 1, 86400);
+            else if (option == "--l3-timeout")
+                l3_timeout = parse_size(option, argv[index], 1, 86400);
+            else throw std::runtime_error("Unknown option: " + option);
+        }
+        if (socket_path.empty() or port_id.empty())
+            throw std::runtime_error("--switch-socket and --switch-port-id are required");
+
+        auto classifier = PacketClassifier::from_file(classifier_file);
+        TunDevice tun(interface_name, mtu);
+        tun.set_up();
+        SwitchClient switch_client(socket_path, port_id, ipc_options);
+        ExitAdapterRoutes routes(
+            l3_capacity, l4_capacity,
+            std::chrono::seconds(l3_timeout),
+            std::chrono::seconds(l4_timeout), l4_only, l4_sport_key_bits);
+        AdapterStats stats;
+        ThroughputStats throughput({"tun_rx", "tun_tx", "switch_rx", "switch_tx"});
+        const auto started_at = std::chrono::steady_clock::now();
+        throughput.update(started_at, {
+            {stats.tun_rx_packets, stats.tun_rx_bytes},
+            {stats.tun_tx_packets, stats.tun_tx_bytes},
+            {stats.switch_rx_packets, stats.switch_rx_bytes},
+            {stats.switch_tx_packets, stats.switch_tx_bytes}});
+        std::unique_ptr<ControlSocket> control;
+        if (not control_path.empty())
+            control = std::make_unique<ControlSocket>(control_path);
+
+        struct sigaction action {};
+        action.sa_handler = request_stop;
+        ::sigemptyset(&action.sa_mask);
+        ::sigaction(SIGINT, &action, nullptr);
+        ::sigaction(SIGTERM, &action, nullptr);
+
+        std::vector<std::uint8_t> packet(65535);
+        std::vector<std::uint8_t> frame_buffer(
+            switch_base_header_size + switch_max_labels * switch_label_size +
+            std::numeric_limits<std::uint16_t>::max());
+        std::vector<std::uint64_t> tx_labels, rx_labels;
+        tx_labels.reserve(switch_max_labels);
+        rx_labels.reserve(switch_max_labels);
+        auto next_connect = std::chrono::steady_clock::now();
+        AdaptivePolling adaptive_polling;
+        unsigned next_data_source = 0;
+
+        const auto disconnect_switch = [&] {
+            ++stats.switch_disconnects;
+            stats.switch_disconnected_drops += switch_client.discard_staged().drops;
+            switch_client.disconnect();
+            next_connect = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        };
+
+        const auto account_switch_output = [&](const SwitchClient::Outcome &out) {
+            stats.switch_tx_packets += out.frames; stats.switch_tx_bytes += out.bytes;
+            stats.switch_backpressure_drops += out.backpressure;
+            stats.switch_send_errors += out.drops - out.backpressure;
+            if (out.error) disconnect_switch();
+        };
+
+        const auto try_switch_reconnect = [&](SwitchClient::Time now, short revents = 0) {
+            if (switch_client.connected()) return;
+            if (switch_client.connecting()) {
+                switch_client.advance_connect(now, revents);
+            } else {
+                if (now < next_connect) return;
+                ++stats.switch_reconnect_attempts;
+                switch_client.start_connect(now);
+            }
+            if (switch_client.connecting()) return;
+            if (switch_client.connected()) ++stats.switch_reconnects;
+            else next_connect = now + std::chrono::seconds(1);
+        };
+
+        const auto try_handle_tun_packet = [&] {
+            const ssize_t size = tun.read_packet(packet.data(), packet.size());
+            if (size < 0) {
+                if (errno == EAGAIN or errno == EWOULDBLOCK or errno == EINTR)
+                    return false;
+                ++stats.tun_read_errors;
+                return true;
+            }
+            if (size == 0) return false;
+
+            ++stats.tun_rx_packets;
+            stats.tun_rx_bytes += static_cast<std::uint64_t>(size);
+            if (not switch_client.connected()) {
+                ++stats.switch_disconnected_drops;
+            } else {
+                ParsedIpFlow flow;
+                if (not parse_ip_flow(packet.data(), static_cast<std::size_t>(size), flow)) {
+                    routes.record_parse_error();
+                    classifier.record_parse_error();
+                    ++stats.cache_miss_drops;
+                    return true;
+                }
+                const auto* labels = routes.lookup(flow, tx_labels) ? &tx_labels : classifier.classify(flow);
+                if (labels) {
+                    account_switch_output(switch_client.append_frame(
+                        SwitchOpcode::switch_packet, labels->data(), labels->size(), packet.data(),
+                        static_cast<std::size_t>(size)));
+                } else ++stats.cache_miss_drops;
+            }
+            return true;
+        };
+
+        const auto try_handle_switch_packet = [&] {
+            if (not switch_client.connected()) return false;
+            const ssize_t size = switch_client.receive(
+                frame_buffer.data(), frame_buffer.size());
+            if (size < 0) {
+                if (errno == EAGAIN or errno == EWOULDBLOCK or errno == EINTR)
+                    return false;
+                disconnect_switch();
+                return true;
+            }
+            if (size == 0 or static_cast<std::size_t>(size) > frame_buffer.size()) {
+                disconnect_switch();
+                return true;
+            }
+
+            SwitchFrameView frame;
+            if (decode_switch_frame(
+                    frame_buffer.data(), static_cast<std::size_t>(size), frame) and
+                frame.opcode == SwitchOpcode::exit_packet) {
+                ++stats.switch_rx_packets;
+                stats.switch_rx_bytes += static_cast<std::uint64_t>(size);
+                rx_labels.clear();
+                for (std::size_t index = 0; index < frame.label_count; ++index)
+                    rx_labels.push_back(frame.label(index));
+                if (routes.learn(frame.payload, frame.payload_size, rx_labels)) {
+                    if (tun.write_packet(frame.payload, frame.payload_size) !=
+                        static_cast<ssize_t>(frame.payload_size)) {
+                        ++stats.tun_write_errors;
+                    } else {
+                        ++stats.tun_tx_packets;
+                        stats.tun_tx_bytes += frame.payload_size;
+                    }
+                }
+            } else {
+                ++stats.opcode_drops;
+            }
+            return true;
+        };
+
+        const auto data_backlog_ready = [&] {
+            if (switch_client.receive_pending()) return true;
+            pollfd pending[2] {
+                {tun.fd(), POLLIN, 0},
+                {switch_client.connected() ? switch_client.fd() : -1, POLLIN, 0},
+            };
+            const int ready = ::poll(pending, 2, 0);
+            return ready > 0 and
+                (((pending[0].revents | pending[1].revents) & POLLIN) != 0);
+        };
+
+        tuntom::RuntimeRecovery recovery;
+        const auto handle_control = [&] {
+            if (not control) return;
+            control->handle([&] {
+                const auto snapshot_at = std::chrono::steady_clock::now();
+                throughput.update(snapshot_at, {
+                    {stats.tun_rx_packets, stats.tun_rx_bytes},
+                    {stats.tun_tx_packets, stats.tun_tx_bytes},
+                    {stats.switch_rx_packets, stats.switch_rx_bytes},
+                    {stats.switch_tx_packets, stats.switch_tx_bytes}});
+                const auto uptime = std::chrono::duration_cast<std::chrono::seconds>(
+                    snapshot_at - started_at).count();
+                std::ostringstream out;
+                out.exceptions(std::ios::badbit);
+                out << "format=txt\nformat_version=1\ncomponent=adapter\n"
+                    << "pid=" << ::getpid() << "\nuptime_seconds=" << uptime << "\n"
+                    << "switch_connected=" << (switch_client.connected() ? 1 : 0) << "\n"
+                    << "tun_rx_packets=" << stats.tun_rx_packets << "\ntun_rx_bytes=" << stats.tun_rx_bytes << "\n"
+                    << "tun_tx_packets=" << stats.tun_tx_packets << "\ntun_tx_bytes=" << stats.tun_tx_bytes << "\n"
+                    << "switch_rx_packets=" << stats.switch_rx_packets << "\nswitch_rx_bytes=" << stats.switch_rx_bytes << "\n"
+                    << "switch_tx_packets=" << stats.switch_tx_packets << "\nswitch_tx_bytes=" << stats.switch_tx_bytes << "\n"
+                    << "l3_entries=" << routes.l3_size() << "\nl4_entries=" << routes.l4_size() << "\n"
+                    << "learned_packets=" << routes.learned_packets() << "\nip_parse_errors=" << routes.parse_errors() << "\n"
+                    << "l3_hits=" << routes.l3_hits() << "\nl3_misses=" << routes.l3_misses() << "\n"
+                    << "l4_hits=" << routes.l4_hits() << "\nl4_misses=" << routes.l4_misses() << "\n"
+                    << "l3_evictions=" << routes.l3_evictions() << "\nl4_evictions=" << routes.l4_evictions() << "\n"
+                    << "l3_expirations=" << routes.l3_expirations() << "\nl4_expirations=" << routes.l4_expirations() << "\n"
+                    << "cache_miss_drops=" << stats.cache_miss_drops << "\n"
+                    << "switch_disconnected_drops=" << stats.switch_disconnected_drops << "\n"
+                    << "opcode_drops=" << stats.opcode_drops << "\n"
+                    << "tun_read_errors=" << stats.tun_read_errors << "\ntun_write_errors=" << stats.tun_write_errors << "\n"
+                    << "switch_send_errors=" << stats.switch_send_errors << "\nswitch_disconnects=" << stats.switch_disconnects << "\n"
+                    << "switch_backpressure_drops=" << stats.switch_backpressure_drops << "\n"
+                    << "switch_reconnect_attempts=" << stats.switch_reconnect_attempts << "\n"
+                    << "switch_reconnects=" << stats.switch_reconnects << "\n";
+                switch_client.write_stats(out);
+                classifier.write_stats(out);
+                recovery.write_stats(out);
+                tuntom::logger.write_stats(out);
+                adaptive_polling.write_stats(out);
+                throughput.write(out);
+                return out.str();
+            }, [](const std::string&, const std::string&) -> std::string {
+                throw std::runtime_error("rules commands are supported only by switches");
+            }, [&] { return routes.dump_flows(); });
+        };
+
+        tuntom::logger.start();
+        tuntom::log_info("tuntom-switch-adapter ready");
+
+        while (not stop_requested) {
+            try {
+                if (recovery.wait_for_retry(control ? control->poll_fd() : -1)) {
+                    handle_control();
+                    continue;
+                }
+                const auto now = std::chrono::steady_clock::now();
+                try_switch_reconnect(now);
+
+                pollfd descriptors[3] {
+                    {tun.fd(), POLLIN, 0},
+                    {switch_client.fd(), switch_client.poll_events(), 0},
+                    {control ? control->poll_fd() : -1, POLLIN, 0},
+                };
+                const auto timeout_at = AdaptivePolling::Clock::now();
+                int timeout = switch_client.poll_timeout_ms(timeout_at, 1000);
+                if (control) timeout = control->poll_timeout_ms(timeout_at, timeout);
+                const auto poll_started = AdaptivePolling::Clock::now();
+                const int ready = ::poll(descriptors, 3, timeout);
+                const auto poll_finished = AdaptivePolling::Clock::now();
+                if (ready < 0) {
+                    if (errno != EINTR) recovery.poll_failed(errno);
+                    continue;
+                }
+                adaptive_polling.observe_poll(poll_finished - poll_started);
+
+                if (switch_client.connected() and
+                    (descriptors[1].revents & (POLLHUP | POLLERR | POLLNVAL))) {
+                    disconnect_switch();
+                }
+                if (switch_client.connecting())
+                    try_switch_reconnect(poll_finished, descriptors[1].revents);
+
+                // Control requests stay ahead of overload data batches.
+                if (control and (descriptors[2].revents & POLLIN)) handle_control();
+
+                const bool initially_ready[2] {
+                    (descriptors[0].revents & POLLIN) != 0,
+                    switch_client.connected() and
+                        ((descriptors[1].revents & POLLIN) != 0 || switch_client.receive_pending()),
+                };
+                const unsigned rounds = adaptive_polling.batch_size();
+                const auto slice_started = AdaptivePolling::Clock::now();
+                for (unsigned round = 0; round < rounds; ++round) {
+                    bool progress = false;
+                    for (unsigned offset = 0; offset < 2; ++offset) {
+                        const unsigned source = (next_data_source + offset) % 2;
+                        if (round == 0 and not initially_ready[source]) continue;
+                        if (source == 0) progress |= try_handle_tun_packet();
+                        else progress |= try_handle_switch_packet();
+                    }
+                    next_data_source = (next_data_source + 1) % 2;
+                    if (not progress) break;
+                    if (AdaptivePolling::Clock::now() - slice_started >=
+                        AdaptivePolling::processing_slice) {
+                        adaptive_polling.note_slice_limit();
+                        break;
+                    }
+                }
+
+                if (switch_client.connected()) account_switch_output(switch_client.flush());
+
+                if (adaptive_polling.should_check_backlog())
+                    adaptive_polling.observe_backlog(
+                        data_backlog_ready(), AdaptivePolling::Clock::now());
+
+                throughput.update(std::chrono::steady_clock::now(), {
+                    {stats.tun_rx_packets, stats.tun_rx_bytes},
+                    {stats.tun_tx_packets, stats.tun_tx_bytes},
+                    {stats.switch_rx_packets, stats.switch_rx_bytes},
+                    {stats.switch_tx_packets, stats.switch_tx_bytes}});
+            } catch (const std::bad_alloc&) {
+                stats.switch_send_errors += switch_client.discard_staged().drops;
+                recovery.allocation_failed();
+            }
+        }
+        return 0;
+    } catch (const std::exception& error) {
+        tuntom::log_fatal(error.what());
+        return 1;
+    }
+}

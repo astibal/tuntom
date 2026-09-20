@@ -1,12 +1,14 @@
 #pragma once
 
 #include "common.hpp"
+#include <array>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <vector>
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <sys/socket.h>
@@ -23,7 +25,10 @@ public:
     }
 
     void open_server(std::uint16_t port) {
-        fd_ = ::socket(AF_INET6, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+        fd_ = ::socket(
+            AF_INET6,
+            SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK,
+            0);
         if (fd_ < 0) {
             throw std::runtime_error(
                 "socket() failed: " +
@@ -104,7 +109,7 @@ public:
             const int candidate =
                 ::socket(
                     item->ai_family,
-                    SOCK_DGRAM | SOCK_CLOEXEC,
+                    SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK,
                     0);
 
             if (candidate < 0) {
@@ -132,6 +137,28 @@ public:
             throw std::runtime_error("Cannot create UDP client socket");
         }
     }
+
+    // Effective Linux accounting limits, matching getsockopt/ss values.
+    // Linux doubles SO_*BUF requests; the caller supplies the effective size.
+    void configure_buffers(std::size_t send_bytes, std::size_t receive_bytes) {
+        const auto set = [&](int option, std::size_t bytes) {
+            if (bytes == 0) return; // Keep the OS default.
+            if (bytes > 64 * 1024 * 1024) throw std::runtime_error("UDP buffer exceeds 64 MiB");
+            const int request = static_cast<int>((bytes + 1) / 2);
+            if (::setsockopt(fd_, SOL_SOCKET, option, &request, sizeof(request)) < 0)
+                throw std::runtime_error("setsockopt UDP buffer: " + std::string(std::strerror(errno)));
+        };
+        set(SO_SNDBUF, send_bytes);
+        set(SO_RCVBUF, receive_bytes);
+        socklen_t length = sizeof(send_buffer_);
+        if (::getsockopt(fd_, SOL_SOCKET, SO_SNDBUF, &send_buffer_, &length) < 0)
+            throw std::runtime_error("getsockopt SO_SNDBUF failed");
+        length = sizeof(receive_buffer_);
+        if (::getsockopt(fd_, SOL_SOCKET, SO_RCVBUF, &receive_buffer_, &length) < 0)
+            throw std::runtime_error("getsockopt SO_RCVBUF failed");
+    }
+    int send_buffer() const { return send_buffer_; }
+    int receive_buffer() const { return receive_buffer_; }
 
     int fd() const {
         return fd_;
@@ -202,11 +229,58 @@ public:
             peer_length_);
     }
 
+    struct BatchResult {
+        std::size_t packets = 0;
+        std::size_t bytes = 0;
+        int error = 0;
+    };
+
+    BatchResult send_batch(
+        const std::vector<std::uint8_t>* buffers, std::size_t count) {
+        if (count == 0) return {};
+        if (count > max_fragments_per_packet) return {0, 0, EINVAL};
+        if (not peer_valid_) return {0, 0, EDESTADDRREQ};
+        if (count == 1) {
+            const ssize_t sent = send(buffers[0].data(), buffers[0].size());
+            if (sent < 0) return {0, 0, errno};
+            return {1, static_cast<std::size_t>(sent), 0};
+        }
+
+        std::array<iovec, max_fragments_per_packet> vectors;
+        std::array<mmsghdr, max_fragments_per_packet> messages;
+        for (std::size_t i = 0; i < count; ++i) {
+            vectors[i] = {const_cast<std::uint8_t*>(buffers[i].data()), buffers[i].size()};
+            messages[i] = {};
+            messages[i].msg_hdr.msg_name = &peer_;
+            messages[i].msg_hdr.msg_namelen = peer_length_;
+            messages[i].msg_hdr.msg_iov = &vectors[i];
+            messages[i].msg_hdr.msg_iovlen = 1;
+        }
+
+        BatchResult result;
+        while (result.packets < count) {
+            const int sent = ::sendmmsg(
+                fd_, messages.data() + result.packets,
+                static_cast<unsigned>(count - result.packets), MSG_DONTWAIT);
+            if (sent <= 0) {
+                result.error = sent < 0 ? errno : EIO;
+                break;
+            }
+            // A short batch hides the later error. Retry only the unsent
+            // suffix, preserving both the wire bytes and successful counters.
+            const std::size_t end = result.packets + static_cast<std::size_t>(sent);
+            for (; result.packets < end; ++result.packets)
+                result.bytes += messages[result.packets].msg_len;
+        }
+        return result;
+    }
+
     std::size_t outer_ip_header_size() const {
         return outer_ip_header_size_;
     }
 
 private:
+    int send_buffer_ = 0, receive_buffer_ = 0;
     bool peer_matches(
         const sockaddr_storage& peer,
         socklen_t peer_length) const {

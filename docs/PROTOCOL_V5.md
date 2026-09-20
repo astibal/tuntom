@@ -1,4 +1,4 @@
-# tuntom V5: compact AMAC sessions and optional Ascon-AEAD128
+# tuntom V5: compact forward-secret Ascon-AEAD128 sessions
 
 V5 is the only supported wire protocol. Upgrade both endpoints together; V1–V4
 packets are rejected and there is no automatic downgrade. The Wireshark
@@ -22,7 +22,7 @@ existing key derivations. Version 5 is transmitted only in INIT/RESPONSE.
 | Type | Extension at offset 9 | Total header |
 |---|---|---:|
 | DATA (3), no fragment flag | none | 25 B |
-| HELLO (1), KEEPALIVE (2) | none | 25 B |
+| HELLO (1), KEEPALIVE (2), INFO (13) | none | 25 B |
 | DATA (3), fragment flag set | message_id[8], offset[2], original_length[2] | 37 B |
 | PING (4), PONG (5) | probe_id[8] | 33 B |
 | MTU_PROBE (6), MTU_REPLY (7) | probe_id[8], outer_mtu[2] | 35 B |
@@ -44,6 +44,81 @@ fragment extensions are rejected. Fragment IDs remain 64 bits. HELLO, KEEPALIVE,
 PING, PONG, MTU_REPLY and confirmations have no payload. MTU_PROBE carries
 padding.
 
+## INFO (13)
+
+`--info-msg-enable` enables outgoing INFO (default off); reception is always
+supported. Send one fresh snapshot after the initial confirmed handshake and
+after each completed rekey, using the new session keys and ordinary nonzero
+sequence counter. INFO uses the 25-byte header, no fragment flag, and the
+session's authentication/encryption and replay protection. It is best-effort
+UDP: there is no acknowledgement or retry; a lost snapshot waits for the next
+completed handshake. Authentication-only mode has no periodic PFS rekey.
+
+The payload is 1..4096 bytes of ASCII text with at least one `key=value` pair.
+Each pair occupies one LF-delimited line; the final LF is optional. There is no
+version marker, BOM, quoting or escaping inside the payload.
+
+- Only printable ASCII (`0x20..0x7e`), TAB (`0x09`) and LF (`0x0a`) are allowed.
+  CR (including CRLF), NUL, DEL and all bytes `0x80..0xff` are invalid.
+- Keys match `[a-z][a-z0-9_]*`, without whitespace or normalization.
+- Split each line at the first `=`. Additional `=` bytes belong to the value.
+- Trim only leading/trailing spaces and TABs from values. An empty value is valid.
+- Values remain opaque text. Commas, including `, `, are preserved verbatim;
+  the receiver does not guess lists, numbers, addresses or booleans.
+- Empty lines, duplicate keys, missing `=`, invalid keys/bytes and oversized
+  payloads reject the entire message. No partial state is applied. A rejected
+  INFO leaves the previous snapshot unchanged.
+- All valid keys are retained, including unknown/custom keys. Each accepted INFO
+  replaces the complete snapshot: keys omitted from it disappear.
+
+When constructing INFO, the sender replaces each non-ASCII byte in a **value**
+with ASCII `?`, without decoding UTF-8 (a multibyte character produces multiple
+question marks). Keys are never repaired. Other invalid input fails the entire
+message; LF/CR in a value cannot inject extra fields. The receiver never repairs
+non-ASCII bytes received on the wire.
+
+The collector merges automatic `access` with static administrator fields from
+repeatable `--info-field="key=value"` (also accepted as two arguments).
+The first `=` separates key/value within the argument. The option alone does
+not enable sending. Duplicate keys, reserved `access`, invalid input and an
+oversized static configuration fail startup. Dynamic enumeration plus static
+fields must also fit the payload limit or the entire snapshot is dropped.
+
+The initial producer sends:
+
+```text
+access=10.0.0.1,10.0.0.2
+```
+
+With the feature enabled, a dedicated collector thread (128 KiB stack) sleeps
+until a confirmed handshake requests a fresh snapshot. It enumerates addresses
+with `getifaddrs()`, builds the text off the packet-processing thread, then
+publishes a complete bounded buffer (4096 bytes plus length and TX generation).
+An eventfd wakes the event loop, which alone owns session encryption and UDP
+transmission. A result from a superseded TX generation is discarded. Collection
+failure drops that snapshot; it never substitutes cached data. With the feature
+disabled, there is no collector thread.
+
+Only `AF_INET` addresses on interfaces flagged `IFF_LOOPBACK` are included, excluding the entire
+`127.0.0.0/8` range. All matches are sorted and deduplicated; there is no
+interface-name, scope, routing, reachability or other heuristic. Addresses use
+comma separators with no spaces. `access=` explicitly advertises no matching
+addresses. Enumeration/size failure sends no snapshot, never a partial list.
+INFO does not use tunnel fragmentation; packets exceeding the path MTU can fail
+UDP transmission even when within the INFO payload limit.
+
+The receiver exports every field as `peer_info_<key>=<value>` in `show stats`
+and stats files, e.g. `peer_info_access=10.0.0.1,10.0.0.2`. The operational
+`info_msg_peer_received` flag is outside that namespace to avoid collisions
+with custom keys; 0 means no INFO received for the confirmed session.
+A new confirmed session clears old metadata unless its INFO arrived before
+CONFIRM_ACK. Old-session INFO is rejected even during the rekey grace period;
+reordered older snapshots cannot replace newer ones within a session. Metadata
+does not modify routing or prove service availability.
+
+Older V5 binaries reject type 13 while ordinary tunnel traffic continues;
+upgrade the receiving binary to expose `peer_info_*`.
+
 ## Handshake messages
 
 | Type | Direction | SEQ | Payload | Total UDP payload |
@@ -57,17 +132,20 @@ padding.
 All four messages share the client's nonzero random 64-bit exchange ID in
 `message_id`; fragment offset and original length are absent. Nonces are 32
 fresh random bytes from Linux `getrandom`, with errors failing closed.
+Key generation uses `GRND_NONBLOCK`: errors defer a new exchange for one
+second while an existing usable session can continue. Failed preparation
+does not publish partial handshake state or substitute weaker entropy.
 Retransmissions preserve the exact original bytes, nonces and exchange ID.
 
-Suite **0** (default) authenticates plaintext using AMAC. Suite **1** requires
-`--encrypt-ascon` on both endpoints and uses standard NIST SP 800-232
-Ascon-AEAD128. Both require `dh_length = 0`; neither has forward secrecy. Suite
-**2** requires `--pfs` on both endpoints and implies encryption. It uses
-Ascon-AEAD128 with ephemeral X25519 and [AKDF v1](AKDF_V1.md). Its `dh_length`
-must be 32, giving exact payload sizes of 76/100 bytes for INIT/RESPONSE. All
-suites require exact lengths and matching local configuration. Unknown suites,
-wrong DH lengths and zero DH shared results are rejected. There is no
-negotiation or timeout fallback.
+Suite **2** is the default. It uses Ascon-AEAD128 with ephemeral X25519 and
+[AKDF v1](AKDF_V1.md); `dh_length` must be 32, giving exact payload sizes of
+76/100 bytes for INIT/RESPONSE. `--crypto-auth-only` selects suite **0**, which
+authenticates plaintext using AMAC, has no forward secrecy, and requires
+`dh_length = 0`. Suite **1** (Ascon-AEAD128 without PFS) remains recognized for
+wire compatibility and tests but has no command-line selector. The former
+`--pfs` and `--encrypt-ascon` options are rejected. All suites require exact
+lengths and matching local configuration. Unknown suites, wrong DH lengths and
+zero DH shared results are rejected. There is no negotiation or timeout fallback.
 
 INIT/RESPONSE remain plaintext AMAC packets with bit 7 clear. Their
 authenticated suite fields are also bound into the session-key transcript. All
@@ -223,16 +301,31 @@ seconds at payload offset 32. This layout is incompatible with the earlier
 must be even, 2..86400. The receiving server enforces its own setting; settings
 are not negotiated.
 
-The client retries INIT every second with fresh nonce, timestamp and exchange
-ID; responses to superseded attempts are ignored. CONFIRM retries retain their
-bytes and have a five-second flight deadline. The server has one pending
-exchange with a fixed five-second deadline. No INIT can evict it or the active
-session. Losing a RESPONSE can therefore delay recovery until the pending
-deadline.
+The client retries the exact INIT bytes every second, retaining its nonce,
+timestamp, exchange ID and ephemeral PFS secret until the five-second flight
+deadline. A delayed RESPONSE still matches after a retry. Flight expiry starts
+a new attempt with fresh nonce, timestamp, exchange ID and PFS key material;
+responses to superseded attempts are ignored. CONFIRM retries also retain their
+bytes and have a five-second flight deadline, starting when RESPONSE arrives.
+The server has one pending exchange with a fixed five-second deadline. An
+exact duplicate of that pending INIT resends its cached RESPONSE, without
+deriving new keys, extending the deadline, activating a session or changing the
+peer address. A different INIT cannot evict the pending or active session.
+For DoS/reflection protection, the first cached RESPONSE resend is immediate;
+later resends are spaced by at least 200 ms using the monotonic clock. Excess
+duplicates are ignored without moving the resend deadline or waiting in the
+event loop. The initial RESPONSE and one resend may therefore form a two-packet
+burst. The limit resets for a new pending exchange and counts generated replies,
+even if UDP transmission fails; it does not limit incoming traffic or MAC work.
+This supports RTTs above the one-second retry interval; flights must still
+complete within their five-second deadlines.
 
 After authentication and time validation, the server records each nonce,
 including INITs ignored while pending. Repeated nonces are silently dropped,
-even if their timestamp or exchange ID differs. An exact set avoids Bloom-filter
+except for the exact, still-time-valid pending INIT retransmission described
+above. A nonce reused with different timestamp, exchange ID or DH bytes is
+rejected, as is a replay after pending expiry or activation. Retransmission
+does not refresh nonce history. An exact set avoids Bloom-filter
 false positives. Entries remain through timestamp + half-window, including that
 final second. The per-process, per-tunnel set holds up to 65536 nonces;
 saturation rejects new INITs instead of evicting live entries. Expired entries

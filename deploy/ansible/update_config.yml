@@ -1,0 +1,11 @@
+- ansible.builtin.import_playbook: prepare.yml
+- name: Update binaries and centrally managed configuration
+  hosts: all
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - ansible.builtin.include_tasks: tasks/update_config.yml
+      loop: "{{ tt_jobs }}"
+      loop_control:
+        loop_var: job
+        label: "{{ job.key }}"

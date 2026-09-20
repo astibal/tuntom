@@ -50,12 +50,16 @@ void test_handshake_reordering_retransmission() {
     auto init = client.begin(start);
     require(client.tick(start + std::chrono::milliseconds(999)).empty(), "early retry");
     auto retry_init = client.tick(start + std::chrono::seconds(1));
-    require(retry_init != init, "INIT retry reused nonce");
+    require(retry_init == init, "INIT retry changed live exchange");
     init = retry_init;
     auto response = receive(server, init).reply;
-    require(receive(server, init).reply.empty(), "INIT duplicate answered");
+    require(receive(server, init).reply == response, "INIT duplicate changed RESPONSE");
+    auto generation = client.transmit_generation();
     auto confirm = receive(client, response).reply;
+    require(client.transmit_generation() != generation, "new TX keys must change queue generation");
+    generation = client.transmit_generation();
     require(receive(client, response).reply == confirm, "RESPONSE duplicate changed CONFIRM");
+    require(client.transmit_generation() == generation, "duplicate handshake must preserve queue generation");
     auto early = data(client);
     require(not receive(server, early).data, "DATA accepted before CONFIRM");
     auto activation = receive(server, confirm);
@@ -136,7 +140,9 @@ void test_restart_and_timeouts() {
     const auto lost_confirm = receive(ack_client, ack_response).reply;
     require(ack_client.tick(start + std::chrono::seconds(4)) == lost_confirm,
             "CONFIRM retry stopped before five seconds");
+    const auto candidate_generation = ack_client.transmit_generation();
     const auto new_attempt = ack_client.tick(start + std::chrono::seconds(5));
+    require(ack_client.transmit_generation() != candidate_generation, "candidate rollback must invalidate queued ciphertext");
     require(not new_attempt.empty() and new_attempt != lost_confirm and new_attempt != ack_init,
             "CONFIRM deadline did not restart at five seconds");
 }
@@ -302,21 +308,17 @@ void test_init_time_and_nonce() {
     SessionProtocol custom(42, key, true, default_tun_mtu, false, 600);
     require(!deliver(custom, init, start, epoch + 250).reply.empty(), "custom window ignored");
 
-    // Lost RESPONSE: new INIT retries wait for the protected pending deadline.
+    // Lost RESPONSE: the same INIT retrieves the bounded pending RESPONSE.
     SessionProtocol c(42, key, false), s(42, key, true);
     auto first = c.begin(start, epoch);
     auto response = deliver(s, first, start, epoch).reply;
     auto retry = c.tick(start + std::chrono::seconds(1), epoch + 1);
-    require(retry != first, "retry nonce unchanged");
-    require(deliver(c, response, start + std::chrono::seconds(1), epoch + 1).reply.empty(),
-            "obsolete RESPONSE accepted");
-    require(deliver(s, retry, start + std::chrono::seconds(1), epoch + 1).reply.empty(),
-            "retry evicted pending");
-    retry = c.tick(start + std::chrono::seconds(5), epoch + 5);
-    response = deliver(s, retry, start + std::chrono::seconds(5), epoch + 5).reply;
-    auto confirm = deliver(c, response, start + std::chrono::seconds(5), epoch + 5).reply;
-    auto ack = deliver(s, confirm, start + std::chrono::seconds(5), epoch + 5).reply;
-    require(deliver(c, ack, start + std::chrono::seconds(5), epoch + 5).activated,
+    require(retry == first, "retry changed live INIT");
+    require(deliver(s, retry, start + std::chrono::seconds(1), epoch + 1).reply == response,
+            "retry did not return cached RESPONSE");
+    auto confirm = deliver(c, response, start + std::chrono::seconds(1), epoch + 1).reply;
+    auto ack = deliver(s, confirm, start + std::chrono::seconds(1), epoch + 1).reply;
+    require(deliver(c, ack, start + std::chrono::seconds(1), epoch + 1).activated,
             "lost RESPONSE recovery failed");
 }
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "logging.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
@@ -26,14 +27,18 @@ inline constexpr std::size_t min_transport_mtu = 500;
 inline constexpr std::size_t pmtud_upper_mtu = 1500;
 inline constexpr int pmtud_probe_timeout_seconds = 2;
 inline constexpr std::size_t max_ip_packet_size = 65535;
+// Largest canonical switch frame (8 labels) plus the relay envelope.
+inline constexpr std::size_t max_ipc_packet_size = max_ip_packet_size + 72 + 32;
 
 inline constexpr int keepalive_seconds = 20;
 inline constexpr int rtt_probe_interval_seconds = 15;
 inline constexpr int rtt_probe_timeout_seconds = 5;
 inline constexpr int reassembly_timeout_seconds = 3;
-inline constexpr std::size_t max_reassembly_entries = 64;
-inline constexpr std::size_t max_reassembly_bytes = 4 * 1024 * 1024;
+inline constexpr std::size_t max_reassembly_entries = 512;
+inline constexpr std::size_t max_reassembly_bytes = 16 * 1024 * 1024;
+inline constexpr std::size_t max_reassembly_discarded = 32768;
 inline constexpr std::size_t max_fragments_per_packet = 64;
+inline constexpr std::size_t max_ipc_fragments_per_packet = 256;
 
 inline constexpr const char* runtime_user = "tuntom";
 inline constexpr const char* runtime_group = "tuntom";
@@ -50,16 +55,21 @@ inline LogLevel log_level = LogLevel::info;
     return static_cast<int>(log_level) >= static_cast<int>(level);
 }
 
-[[maybe_unused]] inline void log_info(const std::string& message) {
-    if (log_enabled(LogLevel::info)) {
-        std::cerr << message << "\n";
-    }
+template<class... Parts>
+inline void log_info(const Parts&... parts) noexcept {
+    if (log_enabled(LogLevel::info)) (LogLine() << ... << parts);
 }
 
-[[maybe_unused]] inline void log_debug(const std::string& message) {
-    if (log_enabled(LogLevel::debug)) {
-        std::cerr << message << "\n";
-    }
+template<class... Parts>
+inline void log_debug(const Parts&... parts) noexcept {
+    if (log_enabled(LogLevel::debug)) (LogLine() << ... << parts);
+}
+
+// CLI/configuration diagnostics remain synchronous before the writer starts.
+// Runtime errors must use the same fail-open path even if thread creation failed.
+inline void log_fatal(const char* message) {
+    if (logger.attempted() or not logger.sink_available()) LogLine() << "ERROR: " << message;
+    else std::cerr << "ERROR: " << message << "\n";
 }
 
 } // namespace tuntom

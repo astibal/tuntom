@@ -1,0 +1,6 @@
+PASS: build/config/planning failures preserve the single-thread switch
+PASS: single -> MP handoff, shared lock, legacy lock and forwarding
+PASS: MP -> single handoff, cross-helper stop, saved sockets and name isolation
+PASS: legacy MP migration, duplicate retirement, stale PID and saved legacy hooks
+PASS: format-1 rules survive staging and single/MP helper replacement
+PASS: one managed switch per name across both helpers

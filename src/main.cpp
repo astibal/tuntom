@@ -3,6 +3,7 @@
 #include "stats_control.hpp"
 
 int main(int argc, char** argv) {
+    tuntom::logger.ignore_sigpipe();
     using namespace tuntom;
     try {
         if (argc < 4) {
@@ -63,10 +64,7 @@ int main(int argc, char** argv) {
         usage(argv[0]);
         return 1;
     } catch (const std::exception& error) {
-        std::cerr
-            << "ERROR: "
-            << error.what()
-            << "\n";
+        log_fatal(error.what());
 
         return 1;
     }

@@ -106,24 +106,23 @@ int main() {
         }
         require(!recv(q.c, response).reply.empty(), "valid after tampering");
     }
-    // Lost RESPONSE: fresh INIT every second, only one bounded server candidate.
+    // Lost RESPONSE: retain the client's DH share and the server's candidate.
     {
         Pair q;
         auto init = q.c.begin(start, wall);
         auto lost = recv(q.s, init).reply;
         auto retry = q.c.tick(start + std::chrono::seconds(1), wall);
-        require(!retry.empty() && !std::equal(init.begin()+78, init.end(), retry.begin()+78), "fresh retry DH");
-        require(recv(q.c, lost, start + std::chrono::seconds(1)).reply.empty(), "stale RESPONSE accepted");
-        require(recv(q.s, retry, start + std::chrono::seconds(1)).reply.empty(), "pending eviction");
-        q.s.tick(start + SP::pending_lifetime, wall);
-        retry = q.c.tick(start + SP::pending_lifetime, wall);
-        auto response = recv(q.s, retry, start + SP::pending_lifetime).reply;
-        auto confirm = recv(q.c, response, start + SP::pending_lifetime).reply;
-        auto ack = recv(q.s, confirm, start + SP::pending_lifetime).reply;
+        require(retry == init, "retry changed DH/transcript");
+        const auto retried = start + std::chrono::seconds(1);
+        auto response = recv(q.s, retry, retried).reply;
+        require(response == lost, "retry changed server RESPONSE/DH");
+        auto confirm = recv(q.c, response, retried).reply;
+        auto ack = recv(q.s, confirm, retried).reply;
         require(!ack.empty(), "lost response recovery");
-        require(q.c.tick(start + SP::pending_lifetime + std::chrono::seconds(1), wall) == confirm, "CONFIRM retry bytes");
-        require(recv(q.s, confirm, start + SP::pending_lifetime + std::chrono::seconds(1)).reply == ack, "ACK retry bytes");
-        require(recv(q.c, ack, start + SP::pending_lifetime + std::chrono::seconds(1)).activated, "ACK recovery");
+        const auto ack_retry = retried + std::chrono::seconds(1);
+        require(q.c.tick(ack_retry, wall) == confirm, "CONFIRM retry bytes");
+        require(recv(q.s, confirm, ack_retry).reply == ack, "ACK retry bytes");
+        require(recv(q.c, ack, ack_retry).activated, "ACK recovery");
     }
     // Rekey despite continuous traffic, preserving the old receive window.
     const auto rekey = start + SP::rekey_interval;
@@ -149,14 +148,23 @@ int main() {
     current->next_counter = 0xffffffffULL;
     require(!data(p.s).empty() && data(p.s).empty(), "PFS counter cap");
     for (const char* legacy_flag : {"--allow-v1", "--allow-v2"}) {
-        Options options; const char* args[] = {"tuntom", "--pfs", legacy_flag};
+        Options options; const char* args[] = {"tuntom", legacy_flag};
         bool rejected = false;
-        try { parse_options(3, const_cast<char**>(args), 1, options); }
+        try { parse_options(2, const_cast<char**>(args), 1, options); }
         catch (const std::runtime_error&) { rejected = true; }
         require(rejected, "PFS legacy CLI");
     }
-    Options options; const char* args[] = {"tuntom", "--pfs"};
-    parse_options(2, const_cast<char**>(args), 1, options);
-    require(options.pfs && options.encrypt_ascon, "PFS implies encryption");
+    Options options;
+    require(options.pfs && options.encrypt_ascon, "PFS+AEAD is not default");
+    const char* auth_args[] = {"tuntom", "--crypto-auth-only"};
+    parse_options(2, const_cast<char**>(auth_args), 1, options);
+    require(!options.pfs && !options.encrypt_ascon, "auth-only CLI mode");
+    for (const char* removed : {"--pfs", "--encrypt-ascon"}) {
+        Options removed_options; const char* args[] = {"tuntom", removed};
+        bool rejected = false;
+        try { parse_options(2, const_cast<char**>(args), 1, removed_options); }
+        catch (const std::runtime_error&) { rejected = true; }
+        require(rejected, "removed crypto CLI option accepted");
+    }
     std::cout << "PASS: PFS handshake, DH validation, suite isolation, retransmission, periodic rekey, expiry, counter cap and CLI\n";
 }

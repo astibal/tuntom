@@ -7,24 +7,106 @@ trap 'rm -rf -- "$build_dir"' EXIT
 
 if command -v python3 >/dev/null 2>&1; then
     python3 "${tests_dir}/mk_sudo_test.py"
+    python3 "${tests_dir}/mk_switch_mp_test.py"
 else
     echo "SKIP: sudo environment tests require python3"
 fi
 
 echo "Checking self-contained headers"
-for header in "${tests_dir}/../src/"*.hpp; do
+while IFS= read -r relative_header; do
+    header="${tests_dir}/../${relative_header}"
     printf '#include "%s"\n' "$header" | \
-        "${CXX:-g++}" -x c++ -std=c++17 -Wall -Wextra -pedantic -fsyntax-only -
-done
+        "${CXX:-g++}" -x c++ -std=c++17 -pthread -Wall -Wextra -pedantic -fsyntax-only -
+done < <(cd "${tests_dir}/.." && rg --files src -g '*.hpp' | sort)
 
 echo "Building application"
-"${CXX:-g++}" -std=c++17 -O2 -Wall -Wextra -Wconversion -pedantic \
+"${CXX:-g++}" -std=c++17 -pthread -O2 -Wall -Wextra -Wconversion -pedantic \
     "${tests_dir}/../src/main.cpp" -o "${build_dir}/tuntom"
+"${CXX:-g++}" -std=c++17 -pthread -O2 -Wall -Wextra -Wconversion -pedantic \
+    "${tests_dir}/../src/switch/main.cpp" -o "${build_dir}/tuntom-switch"
+"${CXX:-g++}" -std=c++17 -pthread -O2 -Wall -Wextra -Wconversion -pedantic \
+    "${tests_dir}/../src/switch_mp/main.cpp" -o "${build_dir}/tomtom-switch-mp"
+"${CXX:-g++}" -std=c++17 -pthread -O2 -Wall -Wextra -Wconversion -pedantic \
+    "${tests_dir}/../src/adapter/main.cpp" -o "${build_dir}/tuntom-switch-adapter"
+"${CXX:-g++}" -std=c++17 -pthread -O2 -Wall -Wextra -Wconversion -pedantic \
+    "${tests_dir}/../src/control/main.cpp" -o "${build_dir}/tuntomctl"
 
-for name in compact_protocol_test stats_control_test session_stats_test x25519_test akdf_test pfs_session_test replay_test mac_test aead_test encrypted_session_test session_test; do
+if command -v python3 >/dev/null 2>&1; then
+    "${CXX:-g++}" -std=c++17 -pthread -O2 -Wall -Wextra -Wconversion -pedantic \
+        "${tests_dir}/../src/main.cpp" "${tests_dir}/info_addresses_fixture.cpp" \
+        -Wl,--wrap=getifaddrs -Wl,--wrap=freeifaddrs -o "${build_dir}/info_addresses_fixture"
+    python3 "${tests_dir}/info_integration_test.py" "${build_dir}/info_addresses_fixture" "${build_dir}/tuntomctl"
+    "${CXX:-g++}" -std=c++17 -pthread -O2 -Wall -Wextra -Wconversion -pedantic \
+        "${tests_dir}/../src/adapter/main.cpp" "${tests_dir}/adapter_tun_fixture.cpp" \
+        -Wl,--wrap=open -Wl,--wrap=ioctl -o "${build_dir}/adapter_reconnect_fixture"
+    "${CXX:-g++}" -std=c++17 -pthread -shared -fPIC -O2 -Wall -Wextra -Wconversion -pedantic \
+        "${tests_dir}/switch_v2_faults.cpp" -ldl -o "${build_dir}/switch_v2_faults.so"
+    python3 "${tests_dir}/switch_v2_integration_test.py" "${build_dir}/tomtom-switch-mp" "${build_dir}/switch_v2_faults.so"
+    python3 "${tests_dir}/switch_v2_path_test.py" "${build_dir}/tuntom" "${build_dir}/tomtom-switch-mp" \
+        "${build_dir}/adapter_reconnect_fixture" "${build_dir}/switch_v2_faults.so"
+    python3 "${tests_dir}/packet_classifier_integration_test.py" \
+        "${build_dir}/tuntom" "${build_dir}/tuntom-switch" "${build_dir}/tomtom-switch-mp" \
+        "${build_dir}/adapter_reconnect_fixture" "${build_dir}/tuntomctl"
+    python3 "${tests_dir}/switch_mp_integration_test.py" "${build_dir}/tomtom-switch-mp"
+    python3 "${tests_dir}/switch_ruleset_integration_test.py" \
+        "${build_dir}/tuntom-switch" "${build_dir}/tomtom-switch-mp" "${build_dir}/tuntomctl" "${build_dir}/switch_v2_faults.so"
+    python3 "${tests_dir}/switch_ruleset_v2_integration_test.py" \
+        "${build_dir}/tuntom-switch" "${build_dir}/tomtom-switch-mp" "${build_dir}/tuntomctl"
+    python3 "${tests_dir}/switch_ecmp_integration_test.py" \
+        "${build_dir}/tuntom-switch" "${build_dir}/tomtom-switch-mp"
+    python3 "${tests_dir}/switch_tunnel_test.py" \
+        "${build_dir}/tuntom" "${build_dir}/tomtom-switch-mp" "${build_dir}/tuntomctl"
+    "${CXX:-g++}" -std=c++17 -pthread -shared -fPIC -O2 -Wall -Wextra -Wconversion -pedantic \
+        "${tests_dir}/runtime_faults.cpp" -ldl -o "${build_dir}/runtime_faults.so"
+    "${CXX:-g++}" -std=c++17 -pthread -shared -fPIC -O2 -Wall -Wextra -Wconversion -pedantic \
+        "${tests_dir}/logging_faults.cpp" -ldl -o "${build_dir}/logging_faults.so"
+    "${CXX:-g++}" -std=c++17 -pthread -shared -fPIC -O2 -Wall -Wextra -Wconversion -pedantic \
+        "${tests_dir}/accept_faults.cpp" -ldl -o "${build_dir}/accept_faults.so"
+    python3 "${tests_dir}/switch_capacity_test.py" \
+        "${build_dir}/tuntom-switch" "${build_dir}/accept_faults.so"
+    python3 "${tests_dir}/logging_recovery_test.py" \
+        "${build_dir}/tuntom" "${build_dir}/tuntom-switch" \
+        "${build_dir}/adapter_reconnect_fixture" "${build_dir}/logging_faults.so"
+    python3 "${tests_dir}/runtime_recovery_test.py" \
+        "${build_dir}/tuntom" "${build_dir}/tuntom-switch" \
+        "${build_dir}/adapter_reconnect_fixture" "${build_dir}/runtime_faults.so"
+    for script in mk_switch.sh mk_switch_mp.sh mk_adapter.sh tools/mk_local.sh; do
+        bash -n "${tests_dir}/../${script}"
+    done
+    python3 "${tests_dir}/mk_local_test.py" "${build_dir}/tuntom-switch" \
+        "${build_dir}/adapter_reconnect_fixture" "${build_dir}/tuntomctl"
+    python3 "${tests_dir}/mk_local_test.py" "${build_dir}/tomtom-switch-mp" \
+        "${build_dir}/adapter_reconnect_fixture" "${build_dir}/tuntomctl" mp
+    "${CXX:-g++}" -std=c++17 -pthread -O2 -Wall -Wextra -Wconversion -pedantic \
+        "${tests_dir}/../tools/switch_mp_plan.cpp" -o "${build_dir}/switch_mp_plan"
+    python3 "${tests_dir}/mk_switch_replacement_test.py" "${build_dir}/tuntom-switch" \
+        "${build_dir}/tomtom-switch-mp" "${build_dir}/tuntomctl" "${build_dir}/switch_mp_plan"
+    python3 "${tests_dir}/switch_reconnect_test.py" \
+        "${build_dir}/tuntom" "${build_dir}/adapter_reconnect_fixture" "${build_dir}/tuntom-switch"
+    python3 "${tests_dir}/switch_test.py" \
+        "${build_dir}/tuntom-switch" "${build_dir}/tuntomctl"
+    python3 "${tests_dir}/switch_tunnel_test.py" \
+        "${build_dir}/tuntom" "${build_dir}/tuntom-switch" "${build_dir}/tuntomctl"
+    python3 "${tests_dir}/stats_socket_test.py" \
+        "${build_dir}/tuntom" "${build_dir}/tuntom-switch" "${build_dir}/tuntomctl"
+else
+    echo "SKIP: tuntom-switch process test requires python3"
+fi
+
+for name in info_message_test packet_classifier_test switch_ruleset_test switch_ruleset_v2_test switch_mp_plan_test switch_mp_test switch_ecmp_test udp_batch_test compact_protocol_test switch_protocol_test switch_v2_test switch_options_test switch_client_test switch_admission_test runtime_state_test logging_test exit_adapter_test stats_control_test session_stats_test session_latency_test x25519_test akdf_test pfs_session_test replay_test mac_test aead_test encrypted_session_test session_test adaptive_polling_test reassembly_test; do
     echo "Building ${name}"
-    "${CXX:-g++}" -std=c++17 -O2 -Wall -Wextra -Wconversion -pedantic \
-        "${tests_dir}/${name}.cpp" -o "${build_dir}/${name}"
+    link_flags=()
+    if [[ "$name" == udp_batch_test ]]; then
+        link_flags=(-Wl,--wrap=sendmmsg -Wl,--wrap=sendto)
+    elif [[ "$name" == switch_client_test ]]; then
+        link_flags=(-Wl,--wrap=connect -Wl,--wrap=send -Wl,--wrap=sendmsg -Wl,--wrap=getsockopt)
+    elif [[ "$name" == runtime_state_test ]]; then
+        link_flags=(-Wl,--wrap=getrandom)
+    elif [[ "$name" == logging_test ]]; then
+        link_flags=(-Wl,--wrap=write -Wl,--wrap=pthread_create)
+    fi
+    "${CXX:-g++}" -std=c++17 -pthread -O2 -Wall -Wextra -Wconversion -pedantic \
+        "${tests_dir}/${name}.cpp" "${link_flags[@]}" -o "${build_dir}/${name}"
     "${build_dir}/${name}"
 done
 
@@ -36,6 +118,9 @@ fi
 
 if command -v python3 >/dev/null 2>&1 && command -v cc >/dev/null 2>&1; then
     python3 "${tests_dir}/mk_stop_test.py"
+    python3 "${tests_dir}/mk_switch_args_test.py"
+    python3 "${tests_dir}/mk_no_address_test.py"
+    python3 "${tests_dir}/mk_group_test.py"
 else
     echo "SKIP: process cleanup tests require python3 and cc"
 fi

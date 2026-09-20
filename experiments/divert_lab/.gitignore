@@ -1,0 +1,3 @@
+__pycache__/
+results/*/*.jsonl
+results/*/*.log

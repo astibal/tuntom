@@ -1,10 +1,12 @@
 #pragma once
 
 #include "common.hpp"
+#include "ipc/switch_v2.hpp"
 #include <algorithm>
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -22,6 +24,8 @@ enum class PacketType : std::uint8_t {
     response = 9,
     confirm = 10,
     confirm_ack = 11,
+    ipc = 12,
+    info = 13,
 };
 
 enum class Direction {
@@ -48,16 +52,31 @@ enum class StatsFormat {
 };
 
 struct Options {
-    bool encrypt_ascon = false;
-    bool pfs = false;
+    bool encrypt_ascon = true;
+    bool pfs = true;
+    bool info_msg_enable = false;
+    std::map<std::string, std::string> info_fields;
     std::size_t init_window = 300;
     bool ttl_compensate = true;
     bool pmtud_auto = true;
     std::size_t tun_mtu = default_tun_mtu;
     std::size_t transport_mtu = default_transport_mtu;
+    std::size_t udp_send_buffer = 2 * 1024 * 1024;
+    std::size_t udp_receive_buffer = 2 * 1024 * 1024;
     bool stats_disabled = false;
     std::string stats_file;
+    std::string control_socket;
     StatsFormat stats_format = StatsFormat::txt;
+    std::string relay_connect, relay_listen, relay_port_id;
+    bool relay_mode() const { return !relay_connect.empty() || !relay_listen.empty(); }
+    std::size_t logical_limit() const { return relay_mode() ? max_ipc_packet_size : tun_mtu; }
+    std::string switch_socket;
+    ipc::Options switch_ipc;
+    std::string switch_port_id;
+    std::string classifier_file;
+    std::uint64_t switch_label = 0;
+    bool switch_label_set = false;
+    bool switch_exit_node = false;
 };
 
 struct Stats {
@@ -82,6 +101,23 @@ struct Stats {
     std::uint64_t drops_process = 0;
     std::uint64_t udp_send_errors = 0;
     std::uint64_t tun_write_errors = 0;
+    std::uint64_t switch_rx_packets = 0;
+    std::uint64_t switch_rx_bytes = 0;
+    std::uint64_t switch_tx_packets = 0;
+    std::uint64_t switch_tx_bytes = 0;
+    std::uint64_t switch_drops = 0;
+    std::uint64_t switch_send_errors = 0;
+    std::uint64_t switch_backpressure_drops = 0;
+    std::uint64_t switch_disconnects = 0;
+    std::uint64_t switch_reconnect_attempts = 0;
+    std::uint64_t switch_reconnects = 0;
+    std::uint64_t switch_socket_errors = 0;
+    std::uint64_t switch_socket_eacces = 0;
+    std::uint64_t switch_socket_enoent = 0;
+    std::uint64_t switch_socket_econnrefused = 0;
+    std::uint64_t switch_socket_other_errors = 0;
+    std::uint64_t switch_last_error_ts = 0;
+    int switch_last_error_no = 0;
 
     double rtt_last_ms = 0.0;
     double rtt_min_ms = 0.0;
@@ -97,7 +133,7 @@ struct Stats {
 };
 
 inline void dump_bytes(
-    const std::string& prefix,
+    std::string_view prefix,
     const std::uint8_t* data,
     std::size_t size,
     std::size_t max_bytes = 28) {
@@ -106,14 +142,13 @@ inline void dump_bytes(
         return;
     }
 
-    std::cerr << prefix << " " << size << " bytes:";
+    LogLine line;
+    line << prefix << " " << size << " bytes:";
 
-    const std::size_t count = std::min(size, max_bytes);
+    const std::size_t count = std::min({size, max_bytes, (AsyncLogger::record_size - 1) / 3});
     for (std::size_t i = 0; i < count; ++i) {
-        std::cerr << " " << std::hex << static_cast<unsigned>(data[i]);
+        line.hex_byte(data[i]);
     }
-
-    std::cerr << std::dec << "\n";
 }
 
 } // namespace tuntom

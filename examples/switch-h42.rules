@@ -1,0 +1,6 @@
+format 2
+serial 2026091403
+
+exit exit0
+
+switch H42*, [17, ...] to exit0, [99, ...] allow bidir
