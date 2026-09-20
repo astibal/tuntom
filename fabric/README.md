@@ -458,3 +458,16 @@ These are declared policy selectors, not a computed effective reachability set:
 ordered drops, rewrites, service availability and connected destinations still
 determine forwarding. Unknown rules are shown explicitly; editor drafts are never
 used. Lists scroll independently and retain their scroll position on refresh.
+
+### VIA tunnel distribution
+
+The collapsible panel above the topology groups verified local IPC tunnel
+attachments by active service `client-relay` (IN) and `server-relay` (OUT)
+selectors. Legacy `relay` selectors have one combined IN / OUT group. It shows
+5-second UDP RX + TX rates in b/s or pps, including transport overhead and any
+other services sharing that tunnel. These are tunnel totals, not per-service
+traffic attribution or flow counts. Bars share a scale within each service;
+percentages are computed per side only when all displayed members have current
+measurements. Missing/stale values show a dash. Clicking a row reveals its tunnel
+in the map. Active rules are read while the map is open, even with label overlays
+hidden, because VIA membership also depends on them.

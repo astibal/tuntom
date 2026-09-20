@@ -8,6 +8,9 @@ const messages = {
   workspace:["Pracovní prostor","Workspace","Espace de travail"],
   views:["Zobrazení","Views","Vues"],
   language:["Jazyk rozhraní","Interface language","Langue de l’interface"],
+  viaTitle:["VIA · rozložení provozu","VIA · traffic distribution","VIA · répartition du trafic"],
+  viaHint:["IN = client-relay, OUT = server-relay. Celkový provoz tunelu RX + TX za 5 s, včetně režie a sdílených služeb. Podíly v rámci sloupce; při chybějících datech —. Společné měřítko barů pro službu.","IN = client-relay, OUT = server-relay. Total tunnel RX + TX over 5 s, including overhead and shared services. Shares within each column; missing data —. Shared bar scale per service.","IN = client-relay, OUT = server-relay. Total RX + TX du tunnel sur 5 s, incluant surcharge et services partagés. Parts par colonne ; données manquantes —. Échelle commune par service."],
+  viaNoMembers:["Žádné doložené VIA relay tunely","No verified VIA relay tunnels","Aucun tunnel relais VIA vérifié"],
   mapShowLabels:["Label stacky","Label stacks","Piles de labels"],
   mapPolicy:["Stacky podle pravidel","Rule label stacks","Piles de labels des règles"],
   mapPolicyHint:["Deklarovaná pravidla v pořadí switche. Drop, přepisy a dostupnost cíle mohou průchod omezit. * = bez omezení / beze změny.","Declared rules in switch order. Drops, rewrites and destination availability may restrict forwarding. * = unrestricted / unchanged.","Règles déclarées dans l’ordre du switch. Rejets, réécritures et disponibilité peuvent limiter le transfert. * = sans restriction / inchangé."],
@@ -203,7 +206,7 @@ const messages = {
   apiUnavailable:["API není dostupné: {error}","API unavailable: {error}","API inaccessible : {error}"],
   disconnected:["Spojení s API přerušeno","API connection lost","Connexion à l’API interrompue"],
   scanTime:["Scan {time} · {interval} s","Scan {time} · {interval} s","Analyse {time} · {interval} s"],
-  kindCount:["Tunely: {tunnels} · switche: {switches}","Tunnels: {tunnels} · switches: {switches}","Tunnels : {tunnels} · switches : {switches}"],
+  kindCount:["Tunely: {tunnels} ({endpoints} endpointů) · switche: {switches}","Tunnels: {tunnels} ({endpoints} endpoints) · switches: {switches}","Tunnels : {tunnels} ({endpoints} points de terminaison) · switches : {switches}"],
   unknownSessions:["Tunely s neověřenou session: {count}","Tunnels with unverified sessions: {count}","Tunnels avec une session non vérifiée : {count}"],
   day:["d","d","j"], hour:["h","h","h"], minute:["m","m","min"],
   binary:["Binárka","Executable","Exécutable"],
@@ -684,7 +687,7 @@ function render() {
   $("last-update").textContent = state.failure ? t("disconnected") : data.discovery.scanned_at ? t("scanTime",{time:new Date(data.discovery.scanned_at).toLocaleTimeString(locale()),interval:data.poll_interval_seconds}) : t("waitingScan");
   const endpoints = data.endpoints, tunnels = endpoints.filter(e => e.kind === "tunnel");
   $("count-processes").textContent = endpoints.length;
-  $("count-kinds").textContent = t("kindCount",{tunnels:tunnels.length,switches:endpoints.filter(e => e.kind === "switch").length});
+  $("count-kinds").textContent = t("kindCount",{tunnels:tunnels.length,endpoints:observedGroups(tunnels).length,switches:endpoints.filter(e => e.kind === "switch").length});
   $("count-metrics").textContent = `${endpoints.filter(e => e.status === "reachable").length} / ${endpoints.length}`;
   const knownSessions = tunnels.filter(e => ["0","1"].includes(e.metrics.session_ready));
   $("count-sessions").textContent = `${knownSessions.length ? tunnels.filter(e => e.metrics.session_ready === "1").length : "—"} / ${tunnels.length}`;
@@ -1126,7 +1129,7 @@ function topologyRules(text, port) {
 const mapRules=new Map();
 let mapRulesBusy=false;
 async function refreshMapRules() {
-  if(state.view!=="observed" || !$("map-show-labels").checked || mapRulesBusy)return;
+  if(state.view!=="observed" || mapRulesBusy)return;
   mapRulesBusy=true;
   try {
     const switches=(state.data?.endpoints || []).filter(e=>e.kind==="switch");
@@ -1139,6 +1142,62 @@ async function refreshMapRules() {
     renderObserved();
   } finally {mapRulesBusy=false;}
 }
+function viaServices(text) {
+  return [...text.matchAll(/^service\s+(\S+)\s*\{\s*\n([\s\S]*?)^\}/gm)].map(match=>{
+    const fields=Object.fromEntries([...match[2].matchAll(/^\s*(relay|client-relay|server-relay)\s+(\S+)\s*$/gm)].map(m=>[m[1],m[2]]));
+    return {name:match[1],sides:fields.relay?[{name:'IN / OUT',pattern:fields.relay}]:[
+      {name:'IN',pattern:fields['client-relay']},{name:'OUT',pattern:fields['server-relay']}].filter(side=>side.pattern)};
+  }).filter(service=>service.sides.length);
+}
+function viaRate(endpoint,unit) {
+  if(endpoint.status!=='reachable' || outdated(endpoint))return null;
+  const values=['rx','tx'].map(dir=>endpoint.metrics?.[`udp_${dir}_${unit}_5s`]);
+  if(values.some(v=>v===undefined || v===null || v===''))return null;
+  const numbers=values.map(Number);
+  return numbers.every(n=>Number.isFinite(n) && n>=0)?numbers[0]+numbers[1]:null;
+}
+function viaShares(values) {
+  const complete=values.length>0 && values.every(v=>v!==null);
+  const total=complete?values.reduce((a,b)=>a+b,0):null;
+  return values.map(v=>total===null?null:total===0?0:100*v/total);
+}
+function renderViaBars() {
+  const panel=$('via-bars'),unit=$('via-unit').value;
+  const switches=(state.data?.endpoints || []).filter(e=>e.kind==='switch');
+  const sections=[];let unavailable=false;
+  for(const sw of switches) {
+    const rules=mapRules.get(sw.id);
+    if(!rules || rules.error){unavailable=true;continue;}
+    for(const service of viaServices(rules.text)) {
+      const sides=service.sides.map(side=>{
+        const links=(state.data.links || []).filter(link=>link.target===sw.id && link.namespace_verified && link.port_id &&
+          (side.pattern.endsWith('*')?link.port_id.startsWith(side.pattern.slice(0,-1)):link.port_id===side.pattern));
+        const ids=new Set(links.map(link=>link.source));
+        const members=state.data.endpoints.filter(e=>ids.has(e.id) && tunnelPayload(e)==='IPC');
+        const values=members.map(e=>viaRate(e,unit));
+        return {...side,members,values,shares:viaShares(values)};
+      });
+      const max=Math.max(1,...sides.flatMap(side=>side.values).filter(v=>v!==null));
+      sections.push(`<article class="via-service"><h3>${esc(service.name)} <small>${esc(sw.name)} · PID ${sw.pid}</small></h3><div class="via-sides">${sides.map(side=>`<section><h4>${side.name} <small>${esc(side.pattern)}</small></h4>${side.members.map((e,i)=>{
+        const value=side.values[i],share=side.shares[i];
+        return `<button class="via-bar-row" data-via-node="${esc(e.id)}"><span>${esc(e.name)}</span><meter min="0" max="${max}" value="${value??0}" ${value===null?'hidden':''} aria-label="${esc(e.name+' · '+side.name+' · RX + TX')}"></meter><strong>${value===null?'—':esc(unit==='bps'?bps(value):value.toLocaleString(locale(),{maximumFractionDigits:1})+' pps')}</strong><small>${share===null?'—':share.toLocaleString(locale(),{maximumFractionDigits:1})+' %'}</small></button>`;
+      }).join('') || `<p>${esc(t('viaNoMembers'))}</p>`}</section>`).join('')}</div></article>`);
+    }
+  }
+  const scroll=panel.scrollTop;
+  panel.innerHTML=(unavailable?`<p>${esc(t('mapPolicyUnknown'))}</p>`:'')+(sections.join('') || (!unavailable?`<p>${esc(t('viaNoMembers'))}</p>`:''));
+  panel.scrollTop=scroll;
+}
+$('via-unit').addEventListener('change',renderViaBars);
+$('via-bars').addEventListener('click',event=>{
+  const button=event.target.closest('[data-via-node]');if(!button)return;
+  const id=button.dataset.viaNode;
+  const group=observedGroups(state.data.endpoints).find(g=>g.members.some(e=>e.id===id));
+  if(group)mapPinned.add(group.key);
+  mapLarge.add(id);selectProcess(id);
+  [...$('observed-canvas').querySelectorAll('[data-map-node]')].find(el=>el.dataset.mapNode===id)?.scrollIntoView({block:'nearest',inline:'nearest'});
+});
+
 function mapPolicyRows(members) {
   const rows=new Map();let unknown=false;
   for(const e of members) {
@@ -1184,6 +1243,7 @@ $("map-show-labels").addEventListener("change",()=>{renderObserved();refreshMapR
 function renderObserved() {
   const canvas=$("observed-canvas");
   if(!canvas || !state.data) return;
+  renderViaBars();
   const endpoints=state.data.endpoints, groups=observedGroups(endpoints);
   const keys=new Set(groups.map(g=>g.key)), ids=new Set(endpoints.map(e=>e.id));
   for(const key of mapOrder.keys()) if(!keys.has(key)) {mapOrder.delete(key);mapPinned.delete(key);}
@@ -1467,16 +1527,37 @@ function renderSwitch() {
   }).join("") : `<p class="muted">${esc(t("noWorkerStats"))}</p>`;
 }
 // Keep label integers as strings/BigInt throughout filtering and presentation.
-function flowLabel(value, format) { return format === "hex" ? value : BigInt(value).toString(); }
+function flowLabel(value, format) {
+  // VIA magic: HEX 0x5649410000, DEC 370596184064 (src/via/codec.hpp).
+  const n=BigInt(value), magic=0x5649410000n;
+  const cookie=[40n,48n,56n].map(shift=>Number((n>>shift)&255n));
+  const header=(n&0xffffff0000n)===magic && ((n>>8n)&255n)===1n &&
+    (n&255n)>=4n && (n&255n)<=7n && n>=0n && n<=0xffffffffffffffffn &&
+    cookie.every(c=>(c>=65 && c<=90)||(c>=97 && c<=122));
+  if(n===magic || header)return "VIA";
+  return format === "hex" ? value : n.toString();
+}
 function flowMatches(row, query) {
-  const values=Object.values(row).flatMap(value=>Array.isArray(value) ? value.flatMap(label=>[label,BigInt(label).toString()]) : [value ?? "unknown"]);
+  const values=Object.values(row).flatMap(value=>Array.isArray(value) ? value.flatMap(label=>[label,BigInt(label).toString(),flowLabel(label,"dec")]) : [value ?? "unknown"]);
   return query.toLowerCase().split(/\s+/).filter(Boolean).every(part=>values.join(" ").toLowerCase().includes(part));
 }
-function flowStack(values) {
+function viaSavedPositions(values, internal=false) {
+  const positions=new Set();
+  for(let i=0;i<values.length;i++) {
+    const header=BigInt(values[i]);
+    if(header===0x5649410000n || flowLabel(values[i],"dec")!=="VIA" || i+3>=values.length)continue;
+    const count=Number(header&255n),ctx=BigInt(values[i+1]),saved=Number((ctx>>8n)&255n),flags=ctx&255n;
+    if(i+count>values.length || count!==saved+3 || !(ctx>>32n) || !BigInt(values[i+2]) || (flags&0xf0n) || ((flags>>1n)&7n)>3n)continue;
+    for(let j=internal?i:i+3;j<(internal?i+3:i+count);j++)positions.add(j);
+    i+=count-1;
+  }
+  return positions;
+}
+function flowStack(values, savedVia=false) {
   if (values === null) return `<span class="muted">${esc(t("flowUnknownLabels"))}</span>`;
   if (!values.length) return `<span class="muted">${esc(t("flowEmptyStack"))}</span>`;
-  const format=$("flow-label-format").value;
-  return values.slice(0,8).map((label,index)=>`<span class="flow-label" title="${esc(label+" · "+BigInt(label).toString())}"><small>${index+1}</small>${esc(flowLabel(label,format))}</span>`).join('<span class="flow-arrow">→</span>')+(values.length>8 ? `<span>+${values.length-8}</span>` : "");
+  const format=$("flow-label-format").value, saved=viaSavedPositions(values), internal=viaSavedPositions(values,true);
+  return values.slice(0,8).map((label,index)=>`<span class="flow-label ${savedVia || saved.has(index) || flowLabel(label,format)==="VIA"?"flow-label-via":internal.has(index)?"flow-label-internal":""}" title="${esc((savedVia || saved.has(index)?"VIA · ":"")+label+" · "+BigInt(label).toString())}"><small>${index+1}</small>${esc(flowLabel(label,format))}</span>`).join('<span class="flow-arrow">→</span>')+(values.length>8 ? `<span>+${values.length-8}</span>` : "");
 }
 function flowContext(row) {
   return ["client","server"].map(side=>{
@@ -1526,7 +1607,7 @@ function renderFlows() {
     const stackKeys=["labels","client_labels","server_labels","client_saved_labels","server_saved_labels"];
     const rowKey=JSON.stringify(row);
     const protocol=row.protocol===undefined ? "L3" : ({6:"TCP",17:"UDP",1:"ICMP",58:"ICMPv6"}[row.protocol] || "IP "+row.protocol);
-    return `<tr><td><span class="tag">${esc(row.table)}</span><small class="cell-note">IPv${row.ip_version} · ${esc(protocol)}</small></td><td class="flow-tuple"><code>${esc(address(row.src,row.src_port))}</code><span class="flow-arrow">↓</span><code>${esc(address(row.dst,row.dst_port))}</code></td><td class="flow-idle">${row.idle_ms===undefined ? "—" : esc(BigInt(row.idle_ms).toLocaleString(locale()))+" ms"}</td><td>${stackKeys.filter(key=>Object.hasOwn(row,key)).map(key=>`<div class="flow-stack"><small>${esc(key)}</small><div>${flowStack(row[key])}</div></div>`).join("") || "—"}</td><td>${row.path!==undefined ? `<span class="tag">path ${esc(row.path)}</span>` : ""}${flowContext(row)}<details data-flow-row="${esc(rowKey)}" ${open.has(rowKey) ? "open" : ""}><summary>${esc(t("flowExact"))}</summary><pre>${esc(JSON.stringify(row,null,2))}</pre></details></td></tr>`;
+    return `<tr><td><span class="tag">${esc(row.table)}</span><small class="cell-note">IPv${row.ip_version} · ${esc(protocol)}</small></td><td class="flow-tuple"><code>${esc(address(row.src,row.src_port))}</code><span class="flow-arrow">↓</span><code>${esc(address(row.dst,row.dst_port))}</code></td><td class="flow-idle">${row.idle_ms===undefined ? "—" : esc(BigInt(row.idle_ms).toLocaleString(locale()))+" ms"}</td><td>${stackKeys.filter(key=>Object.hasOwn(row,key)).map(key=>`<div class="flow-stack"><small>${esc(key)}</small><div>${flowStack(row[key],key.endsWith("_saved_labels") && row[key.replace("_saved_labels","_chain")]!==undefined)}</div></div>`).join("") || "—"}</td><td>${row.path!==undefined ? `<span class="tag">path ${esc(row.path)}</span>` : ""}${flowContext(row)}<details data-flow-row="${esc(rowKey)}" ${open.has(rowKey) ? "open" : ""}><summary>${esc(t("flowExact"))}</summary><pre>${esc(JSON.stringify(row,null,2))}</pre></details></td></tr>`;
   }).join("") || `<tr><td colspan="5">${esc(t("flowNoRows"))}</td></tr>`;
   $("flows-page").textContent=t("flowPage",{from:rows.length ? start+1 : 0,to:Math.min(start+50,rows.length),count:rows.length});
   $("flows-prev").disabled=state.flowPage===0;
