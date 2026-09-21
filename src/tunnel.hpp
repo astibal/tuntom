@@ -530,10 +530,7 @@ private:
         peer_info_.activated(relay_exchange_);
         if (info_worker_) info_worker_->request(protocol_v5_.transmit_generation());
         prepare_remote_control();
-        // Synchronize the generation before advertising; a later TX flush must
-        // not immediately invalidate the just-created challenge.
         sync_udp_tx_session();
-        if(options_.control_auth.enabled())remote_control_.offer_challenge(RemoteControl::Clock::now());
         if (relay_) relay_->session();
         rtt_probes_.clear();
         send_rtt_probe();

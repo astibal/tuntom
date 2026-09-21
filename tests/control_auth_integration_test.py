@@ -91,5 +91,11 @@ for binary in (st, mp):
             result = routed('switch', 'target', 'show', 'stats')
             assert result.returncode == 0, result.stderr
         discovery = routed('switch', 'target', 'discover')
-        assert discovery.returncode != 0, 'legacy discovery bypassed node pinning'
+        assert discovery.returncode == 0 and '\tFOUND\t' in discovery.stdout, discovery.stderr
+        wrong_discovery = routed('switch', 'wrong', 'discover')
+        assert '\tFOUND\t' not in wrong_discovery.stdout, 'discovery bypassed node pinning'
+        fanout = subprocess.run([ctl, 'switch', str(root/'switch.ctl'), '---', 'discover'],
+                                capture_output=True, text=True, timeout=5)
+        assert fanout.returncode == 0 and 'port:target\tFOUND\t' in fanout.stdout, fanout
+        assert 'port:wrong\tFOUND\t' not in fanout.stdout, 'untrusted branch disclosed node'
         print('PASS authenticated switch/adapter CONTROL, pinning, caps, keygen and session reclamation:', Path(binary).name)

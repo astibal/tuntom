@@ -21,6 +21,8 @@ live tunnel, or network access are needed.
 
 - `control_auth_test.cpp`: key selection, capability/level policy, proof tampering,
   origin/request binding, replay, entropy failure, challenge expiry and rekey,
+  per-node authenticated discovery with concurrent branches, cycles, tampered
+  proofs/results, read-grant enforcement and no unsolicited handshake challenges,
   lost replies/confirmations and end-to-end routing through a relay.
 - `control_auth_integration_test.py`: real ST/MP switches and adapter processes,
   key generation/no overwrite, untrusted-key and capability rejection, local

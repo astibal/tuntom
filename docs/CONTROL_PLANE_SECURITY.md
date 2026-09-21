@@ -80,8 +80,9 @@ routed API exposes only reads and discovery, not writes.
 
 Local periodic diagnostics do not need network CONTROL enabled. Routed jobs use
 the daemon's routed submission path, including jobs with an empty route, and are
-subject to its enablement checks. Legacy remote DISCOVER is not supported in
-trusted mode; displaying a topology does not establish cryptographic target trust.
+subject to its enablement checks. Remote DISCOVER in trusted mode uses a separate
+challenge at every visited node; displaying a topology still does not establish
+independent cryptographic target identity.
 Collector job IDs and cached results are application bookkeeping, not authority
 identities or durable protocol transaction state.
 
@@ -152,12 +153,20 @@ probabilistic, not a persistent global guarantee; active collisions fail closed.
 Entropy failure suppresses the challenge. The first accepted proof retires sibling
 challenges for the same request.
 
-Every enabled tunnel automatically offers a new challenge after a confirmed
-initial handshake or rekey and clears direct-peer authentication state. This uses
-a zero request ID and can save the initial round trip. It needs no separate flag.
-Lost or unsuitable offers fall back to a command-specific challenge. Offers are
-direct-peer only; routed targets challenge on demand. Old-transport-session
-challenges are rejected even during the DATA rekey grace period.
+There are no automatic challenges after handshake or rekey. A new transport
+session clears direct-peer authentication state; the next request obtains its own
+challenge. Zero request IDs are rejected. Old-session challenges remain rejected
+during the DATA rekey grace period.
+
+DISCOVER uses one request ID across the traversal, with a separate fresh challenge
+and proof for every visited remote node. Each node checks read access before
+returning a MAC-protected FOUND/ALT_PATH or forwarding unsigned DISCOVER to its
+neighbors, which repeat that exchange. The origin retains multiple N-keyed contexts
+for the same request ID. The initial local root uses local socket authorization.
+The node preserves the original ingress and routing context while awaiting proof;
+MACs bind discovery kind, origin, request, trace and result body in a separate
+`TUNTOM-DISCOVERY-v1` domain. Mutable routing stacks and hop budget remain outside
+that MAC. No global proof or transitive grant is forwarded to the next node.
 
 ## Authorization: capabilities and levels
 
@@ -202,9 +211,12 @@ recovery from retained transaction history without re-executing the command.
 
 Relays carry the proof without needing its key. Mutable routing stacks are outside
 the end-to-end MAC; the origin ID and issuing node's challenge bind the proof's
-context. Legacy remote DISCOVER fanout is rejected in trusted mode because it
-has no per-target authentication handshake. Authenticated fanout is not currently
-implemented.
+context. Discovery requires authorization at every node that expands a branch;
+trust-free relaying of explicit routes does not grant the right to enumerate that
+relay. Discovery retains a two-second best-effort collection window. Per router,
+128 incoming and 128 outgoing discovery contexts expire after 30 seconds; new
+challenges are limited to 32 per one-second window. Loss, authorization failures
+and exhausted limits can make a snapshot incomplete.
 
 ## Security limits
 

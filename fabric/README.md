@@ -568,7 +568,10 @@ staré daemony bez podpory vrátí chybu. Vzdálené čtecí příkazy v trusted
 vyžadují `--allow-control-trusted` na výchozím daemonu, relays i cíli,
 privátní authority klíč na výchozím daemonu a odpovídající veřejný pin s granty
 na cíli. Fabric ani collector CONTROL klíče nenačítají; autentizaci provádí daemon.
-Legacy vzdálený DISCOVER v trusted režimu podporovaný není.
+DISCOVER v trusted režimu provede vlastní challenge na každém navštíveném nodu;
+ten potřebuje pin autority s právem read, než odpoví a rozšíří průzkum dál.
+Odpovědi FOUND/ALT_PATH mají MAC. Výchozí daemon obsluhuje všechny challenge,
+collector ani web nepotřebují klíč. Nejde o nezávislé ověření identity cílových nodů.
 `--allow-control-all` je pouze debug / at own risk a obchází kontrolu autority.
 Současné rozdělení rolí se ještě může měnit; viz
 [CONTROL trust model](../docs/CONTROL_PLANE_SECURITY.md#fabric-and-collector-current-integration)

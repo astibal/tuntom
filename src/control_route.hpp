@@ -70,8 +70,8 @@ inline Path parse_path(const std::string& text) {
 inline bool fields_valid(const Frame& f) {
     const auto kind = static_cast<unsigned>(f.kind);
     if (kind < 1 || kind > 10 || !f.remaining || f.remaining > max_hops || f.request == Id{} || f.origin == Id{} || f.command.size() > 256) return false;
-    if (!f.auth.empty() && (kind>5 || f.auth.size()!=control_auth::proof_size))return false;
-    if (f.kind==Kind::challenge)return f.state==0 && !f.offset && !f.total && f.command.empty() && f.data.size()==control_auth::challenge_size;
+    if (!f.auth.empty() && (kind>8 || f.auth.size()!=control_auth::proof_size))return false;
+    if (f.kind==Kind::challenge)return f.state==0 && !f.offset && !f.total && f.data.size()==control_auth::challenge_size;
     if (kind <= 5) {
         if (f.state < 1 || f.state > 8) return false;
         if (f.kind != Kind::put && !f.command.empty()) return false;
@@ -101,6 +101,16 @@ inline std::vector<std::uint8_t> encode(const Frame& f) {
     at=std::copy(destination.begin(),destination.end(),at); at=std::copy(reply.begin(),reply.end(),at);
     at=std::copy(f.command.begin(),f.command.end(),at); std::copy(f.data.begin(),f.data.end(),at);
     return out;
+}
+// Discovery has its own MAC domain. Mutable transport paths and hop budget
+// are excluded; the challenged node retains the original forwarding context.
+inline std::vector<std::uint8_t> discovery_canonical(Frame frame) {
+    frame.auth.clear(); frame.destination.clear(); frame.reply_path.clear();
+    frame.remaining=max_hops;
+    auto bytes=encode(frame);
+    const char domain[]="TUNTOM-DISCOVERY-v1";
+    bytes.insert(bytes.begin(),domain,domain+sizeof(domain));
+    return bytes;
 }
 inline bool decode(const std::uint8_t* p, std::size_t n, Frame& output) {
     if (n < header_size || n > max_frame || p[0] != 2) return false;

@@ -85,7 +85,7 @@ inline bool decode(const std::vector<std::uint8_t>& b, Frame& f) {
     f.offset = load_be32(b.data() + 20); f.total = load_be32(b.data() + 24);
     f.auth.assign(b.begin()+32,b.begin()+32+auth);
     f.command.assign(b.begin() + 32 + auth, b.begin() + 32 + auth + n); f.data.assign(b.begin() + 32 + auth + n, b.end());
-    if(f.kind==Kind::challenge) return b[0]==3 && f.auth.empty() && f.command.empty() &&
+    if(f.kind==Kind::challenge) return f.id!=Id{} && b[0]==3 && f.auth.empty() && f.command.empty() &&
         f.state==State::receiving && !f.offset && !f.total && f.data.size()==control_auth::challenge_size;
     if (f.kind != Kind::put && !f.command.empty()) return false;
     if ((f.kind == Kind::status || f.kind == Kind::finish || f.kind == Kind::confirmed) && !f.data.empty()) return false;
@@ -231,11 +231,6 @@ public:
     void set_enabled(bool enabled){enabled_=enabled;}
     void set_admission(std::function<bool(const Id&,const ControlRequest&)> f){admission_=std::move(f);}
     bool auth_required()const {return auth_.required();}
-    void offer_challenge(Time now) {
-        if(!enabled_)return;
-        const auto bytes=auth_.challenge({},0,now);if(bytes.empty())return;
-        Frame f;f.kind=Kind::challenge;f.data.assign(bytes.begin(),bytes.end());emit(std::move(f));
-    }
     void configure(ControlAccess access, Sender sender, Executor executor) {
         access_ = access;enabled_=access.permissions!=0 || auth_.enabled(); send_ = std::move(sender); execute_ = std::move(executor);
     }
@@ -269,7 +264,7 @@ public:
         auth_.tick(now);
         if(f.kind==Kind::challenge) {
             auto outgoing=outgoing_.find(f.id);
-            if(f.id!=Id{} && (outgoing==outgoing_.end() || outgoing->second.result))return;
+            if(f.id==Id{} || outgoing==outgoing_.end() || outgoing->second.result)return;
             if(auth_.accept_challenge(f.id,{f.data.begin(),f.data.end()},now)) {
                 if(accepted)accepted();
                 if(outgoing!=outgoing_.end())emit(outgoing->second.last);

@@ -930,7 +930,7 @@ dissect_control = function(buffer, header, pinfo, tree)
         local auth_length = payload(50,2):uint()
         local start = 52 + auth_length + destination_length + reply_length
         local data_length = length - start - command_length
-        if not control_kinds[kind] or hops < 1 or hops > 16 or (auth_length ~= 0 and (auth_length ~= 88 or kind > 5)) or
+        if not control_kinds[kind] or hops < 1 or hops > 16 or (auth_length ~= 0 and (auth_length ~= 88 or kind > 8)) or
            payload(4,16):raw() == string.rep("\0",16) or payload(20,16):raw() == string.rep("\0",16) or
            command_length > 256 or destination_length > 1024 or reply_length > 1024 or data_length < 0 then
             bad("Invalid CONTROL v2 metadata or lengths"); return
@@ -969,8 +969,7 @@ dissect_control = function(buffer, header, pinfo, tree)
         tree:add(f_control_command_length,payload(44,2))
         if auth_length>0 then tree:add(f_control_auth,payload(52,auth_length)) end
         if kind==10 then
-            if command_length~=0 then bad("Challenge has command"); return end
-            challenge(start)
+            challenge(start+command_length)
         end
         if command_length>0 then tree:add(f_control_command,payload(start,command_length)) end
         if data_length>0 then tree:add(f_control_data,payload(start+command_length,data_length)) end
@@ -981,7 +980,8 @@ dissect_control = function(buffer, header, pinfo, tree)
     local auth_length = payload(30,2):uint()
     local start = 32 + auth_length
     if version==3 and kind==6 then
-        if state~=1 or offset~=0 or total~=0 or command_length~=0 or auth_length~=0 or payload(3,1):uint()~=0 then
+        if state~=1 or offset~=0 or total~=0 or command_length~=0 or auth_length~=0 or payload(3,1):uint()~=0 or
+           payload(4,16):raw()==string.rep("\0",16) then
             bad("Invalid CONTROL_CHALLENGE metadata"); return
         end
         tree:add(f_control_version,payload(0,1)); tree:add(f_control_id,payload(4,16))

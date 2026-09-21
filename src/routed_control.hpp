@@ -34,7 +34,13 @@ private:
                     "; request was acknowledged earlier; query status before retrying\n":"\n"),!uncertain};
                 return;
             }
+            if(p->second.discovery && frame.kind==Kind::challenge) {
+                if(now<=p->second.deadline)router_.answer_discovery_challenge(frame,now);
+                return;
+            }
             if(frame.kind==Kind::found || frame.kind==Kind::alt_path) {
+                const bool local=frame.reply_path.empty() && frame.command.empty() && p->second.path.empty();
+                if(!local && !router_.verify_discovery_answer(frame,now))return;
                 const auto cost=frame.data.size()+frame.command.size()+80;
                 if(p->second.discovery && now<=p->second.deadline && p->second.answers.size()<1024 &&
                    cost<=control_max_body-p->second.answer_bytes) {
@@ -123,6 +129,7 @@ public:
     }
     void configure_auth(const control_auth::Config& config) {
         auth_config_=config;
+        router_.configure_auth(config);
         client_.configure_auth(config,(!config.enabled() || config.signing.empty())?Id{}:router_.instance());
     }
     void configure(bool allowed,ControlDispatcher dispatcher) {
@@ -142,7 +149,7 @@ public:
             else ++i;
         }
         for(auto i=pending_.begin();i!=pending_.end();) {
-            if(now>i->second.deadline+std::chrono::minutes(5)){client_.release(i->first);i=pending_.erase(i);}else ++i;
+            if(now>i->second.deadline+std::chrono::minutes(5)){client_.release(i->first);router_.release_discovery(i->first);i=pending_.erase(i);}else ++i;
         }
     }
     bool active()const {
@@ -154,6 +161,8 @@ public:
         if(!allowed_)throw std::runtime_error("network CONTROL is disabled; use --allow-control-trusted or --allow-control-all");
         if(pending_.size()>=8)throw std::runtime_error("routed control busy");
         const auto now=Clock::now();const bool discovery=request.command=="discover";
+        if(discovery && auth_config_.required() && auth_config_.signing.empty())
+            throw std::runtime_error("outgoing trusted DISCOVER requires --control-authority-key");
         const bool status=request.command.compare(0,15,"request status ")==0;
         const Id id=status?remote_control::parse_id(request.command.substr(15)):remote_control::new_id();
         if (pending_.count(id)) throw std::runtime_error("request already pending");
@@ -176,7 +185,7 @@ public:
             if(i->second.error)result=i->second.error;
             else if(i->second.discovery) {if(Clock::now()>=i->second.deadline)result=ControlResponse{true,discovery_text(i->second)};}
             else {auto r=client_.result(id);if(r)result=ControlResponse{r->exit==0,r->body,r->exit==255};}
-            if(result){client_.release(id);pending_.erase(i);}return result;
+            if(result){client_.release(id);router_.release_discovery(id);pending_.erase(i);}return result;
         }};
     }
 };

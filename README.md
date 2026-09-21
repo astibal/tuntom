@@ -433,8 +433,8 @@ network CONTROL is completely disabled, including outgoing requests and transit;
 loading keys alone does not enable it. Local Unix-socket diagnostics remain available.
 Trusted mode checks pinned authorities and capabilities; debug mode also accepts
 unsigned commands without authority checks. The two modes are mutually exclusive.
-Enabled tunnels automatically advertise a fresh challenge after every confirmed
-handshake/rekey. See [CONTROL_AUTH.md](docs/CONTROL_AUTH.md) for key provisioning.
+Challenges are request-driven, including a separate challenge at every visited
+DISCOVER node; none is advertised automatically after handshake/rekey. See [CONTROL_AUTH.md](docs/CONTROL_AUTH.md) for key provisioning.
 
 ```bash
 # Existing local syntax is unchanged.
@@ -694,5 +694,5 @@ UDP buffer options and bounded local EAGAIN retries: [UDP transport](docs/UDP_TR
 
 IPC backpressure and bounded retries: [docs/IPC_RETRY.md](docs/IPC_RETRY.md).
 
-Authority-authenticated CONTROL (X25519 pinning, capabilities, challenge/rekey):
+Authority-authenticated CONTROL (X25519 pinning, capabilities, per-node discovery challenges):
 [CONTROL_AUTH.md](docs/CONTROL_AUTH.md).

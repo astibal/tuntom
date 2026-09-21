@@ -31,7 +31,19 @@ private:
     };
     Id instance_{};
     std::string component_;
-    bool allowed_=false, discovery_allowed_=false;
+    bool allowed_=false, discovery_required_=false;
+    control_auth::Config auth_config_;
+    struct DiscoverySession {
+        control_auth::Auth auth;
+        Frame request;
+        std::string ingress;
+        Time expires;
+    };
+    // A single discovery ID fans out to many independent challenges.
+    std::map<control_auth::Key,std::unique_ptr<DiscoverySession>> discovery_in_, discovery_out_;
+    Time discovery_rate_epoch_{};
+    unsigned discovery_challenges_=0;
+    static constexpr std::size_t discovery_sessions=128;
     std::map<std::string,Edge> edges_;
     std::map<Key,Time> seen_;
     std::map<Key,std::pair<Time,std::size_t>> alternatives_;
@@ -73,7 +85,36 @@ private:
         return out;
     }
     void discover(Frame frame, const std::string& ingress, Time now, bool local) {
-        if (!local && !discovery_allowed_) {reject(frame,"control_discovery_denied",now);return;}
+        DiscoverySession* session=nullptr;
+        if (!local && (discovery_required_ || !frame.auth.empty())) {
+            if(frame.auth.empty()) {
+                // Rate and memory bounds apply across origins and request IDs.
+                if(now>=discovery_rate_epoch_) {discovery_rate_epoch_=now+std::chrono::seconds(1);discovery_challenges_=0;}
+                if(discovery_challenges_>=32 || discovery_in_.size()>=discovery_sessions)return;
+                ++discovery_challenges_;
+                auto entry=std::make_unique<DiscoverySession>();
+                entry->auth.configure(auth_config_,frame.origin);
+                auto bytes=entry->auth.challenge(frame.request,1,now); // read capability
+                if(bytes.empty())return;
+                control_auth::Challenge c;
+                if(!control_auth::Challenge::decode(bytes,c) || discovery_in_.count(c.n))return;
+                entry->request=frame;entry->ingress=ingress;entry->expires=now+std::chrono::seconds(30);
+                discovery_in_.emplace(c.n,std::move(entry));
+                auto challenge=control_route::response(frame,Kind::challenge,{bytes.begin(),bytes.end()});
+                route(std::move(challenge),now);
+                return; // No seen entry, disclosure or fanout before proof.
+            }
+            control_auth::Key n{},principal{};
+            std::copy_n(frame.auth.begin(),32,n.begin());
+            auto i=discovery_in_.find(n);
+            if(i==discovery_in_.end())return;
+            session=i->second.get();
+            const auto& original=session->request;
+            if(frame.origin!=original.origin || frame.request!=original.request || frame.command!=original.command ||
+               !session->auth.verify(frame.request,control_route::discovery_canonical(frame),frame.auth,1,principal))return;
+            // Continue the original branch, not a proof packet's mutable routing fields.
+            frame=original;
+        }
         const Key key{frame.origin,frame.request};
         const bool duplicate=seen_.count(key)!=0;
         if (!duplicate) {
@@ -86,13 +127,15 @@ private:
         }
         const auto body=remote_control::hex(instance())+"\t"+component_+"\t"+(allowed_?"control,discover":"local")+"\n";
         auto answer=control_route::response(frame,duplicate?Kind::alt_path:Kind::found,body);
+        if(session)answer.auth=session->auth.protect(frame.request,control_route::discovery_canonical(answer),true);
         route(std::move(answer),now);
         if (duplicate) return;
         // Each branch retains its own return stack; replies are not broadcast.
         for (const auto& item:edges_) {
             const auto& e=item.second;
-            if (item.first==ingress) continue;
+            if (item.first==(session?session->ingress:ingress)) continue;
             Frame next=frame;
+            next.auth.clear(); // Every next node must issue its own challenge.
             next.destination={e.peer?Hop::peer():Hop::port(e.name)};
             next.command+=(next.command.empty()?"":"/")+std::string(e.peer?"peer":"port:"+escape(e.name));
             if (next.command.size()>256) { reject(frame,"discovery_path_limit",now); continue; }
@@ -102,7 +145,41 @@ private:
 public:
     explicit ControlRouter(std::string component):component_(std::move(component)) {}
     const Id& instance() { if(instance_==Id{}) instance_=remote_control::new_id(); return instance_; }
-    void configure(bool allowed, Deliver deliver, bool authenticated=false) { allowed_=allowed; discovery_allowed_=allowed && !authenticated; deliver_=std::move(deliver); }
+    void configure(bool allowed, Deliver deliver, bool authenticated=false) { allowed_=allowed; discovery_required_=authenticated; deliver_=std::move(deliver); }
+    void configure_auth(const control_auth::Config& config) { auth_config_=config; }
+    bool answer_discovery_challenge(const Frame& challenge, Time now) {
+        tick(now);
+        if(!allowed_ || auth_config_.signing.empty() || challenge.origin!=instance() ||
+           challenge.kind!=Kind::challenge || discovery_out_.size()>=discovery_sessions)return false;
+        control_auth::Challenge c;
+        if(!control_auth::Challenge::decode({challenge.data.begin(),challenge.data.end()},c) || discovery_out_.count(c.n))return false;
+        auto entry=std::make_unique<DiscoverySession>();
+        entry->auth.configure(auth_config_,challenge.origin);
+        if(!entry->auth.accept_challenge(challenge.request,{challenge.data.begin(),challenge.data.end()},now))return false;
+        Frame proof;proof.kind=Kind::discover;proof.origin=challenge.origin;proof.request=challenge.request;
+        proof.command=challenge.command;proof.destination=challenge.reply_path;
+        proof.auth=entry->auth.protect(proof.request,control_route::discovery_canonical(proof),false);
+        entry->request=proof;entry->expires=now+std::chrono::seconds(30);
+        discovery_out_.emplace(c.n,std::move(entry));
+        route(std::move(proof),now);
+        return true;
+    }
+    bool verify_discovery_answer(const Frame& frame, Time now) {
+        tick(now);
+        if(!allowed_ || (frame.kind!=Kind::found && frame.kind!=Kind::alt_path))return false;
+        if(frame.auth.empty())return !discovery_required_ && auth_config_.signing.empty();
+        if(frame.auth.size()!=control_auth::proof_size)return false;
+        control_auth::Key n{};std::copy_n(frame.auth.begin(),32,n.begin());
+        auto i=discovery_out_.find(n);if(i==discovery_out_.end())return false;
+        const auto& request=i->second->request;
+        return frame.origin==request.origin && frame.request==request.request && frame.command==request.command &&
+            i->second->auth.verify_reply(frame.request,control_route::discovery_canonical(frame),frame.auth);
+    }
+    void release_discovery(const Id& request) {
+        for(auto i=discovery_out_.begin();i!=discovery_out_.end();) {
+            if(i->second->request.request==request)i=discovery_out_.erase(i);else ++i;
+        }
+    }
     void edge(const std::string& name, std::uint64_t generation, bool peer, std::size_t limit, Sender send) {
         if (!generation) { edges_.erase(name); return; }
         auto i=edges_.find(name);
@@ -117,6 +194,11 @@ public:
         for (auto i=edges_.begin();i!=edges_.end();) if (!names.count(i->first)) i=edges_.erase(i); else ++i;
     }
     void tick(Time now) {
+        for(auto* sessions:{&discovery_in_,&discovery_out_}) {
+            for(auto i=sessions->begin();i!=sessions->end();) {
+                if(now>=i->second->expires)i=sessions->erase(i);else ++i;
+            }
+        }
         for (auto i=seen_.begin();i!=seen_.end();) {
             if (now>=i->second) { alternatives_.erase(i->first); i=seen_.erase(i); } else ++i;
         }

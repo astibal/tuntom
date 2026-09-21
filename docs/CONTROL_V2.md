@@ -53,7 +53,7 @@ DISCOVER into those views and arbitrary N-hop CLI addressing is a later phase.
 
 ## Wire format
 
-UDP uses authenticated V5 packet type 14. IPC carries the same logical CONTROL
+UDP uses authenticated V5 packet type 14 (CONTROL), or 15 for CONTROL_CHALLENGE. IPC carries the same logical CONTROL
 payload directly, including over negotiated inline/mmap IPC. Integers are big
 endian. No C++ structure layout is serialized.
 
@@ -70,12 +70,14 @@ offset bytes field
 44       2   command length
 46       2   destination stack byte length
 48       2   reply stack byte length
-50       2   reserved = 0
-52       *   destination stack, reply stack, command, body block
+50       2   proof length (0 or 88)
+52       *   proof, destination stack, reply stack, command, body block
 ```
 
 Kinds: 1 PUT, 2 STATUS, 3 REPLY, 4 FINISH, 5 CONFIRMED, 6 DISCOVER,
-7 FOUND, 8 ALT_PATH, 9 ROUTE_ERROR. Transaction states retain v1 values:
+7 FOUND, 8 ALT_PATH, 9 ROUTE_ERROR, 10 CONTROL_CHALLENGE. Proofs are allowed
+for kinds 1..8. Challenges carry an 80-byte body and no proof; discovery challenges
+also carry the traversal trace in command. Transaction states retain v1 values:
 1 RECEIVING, 2 READY, 3 RUNNING, 4 SUCCEEDED, 5 FAILED, 6 REJECTED,
 7 EXPIRED, 8 NOT_FOUND. The request namespace is `(origin, request ID)`.
 
@@ -100,7 +102,15 @@ blocks for routed transactions). Long paths/commands can still exceed path MTU.
 
 ## Discovery and limits
 
-An allowed node records `(origin, request ID)` before replying FOUND and sending
+In trusted mode, each visited remote node first issues a fresh request-specific
+CONTROL_CHALLENGE. The authority returns DISCOVER with a proof along that node's
+return path. Read capability and local policy must pass before any result or
+fanout; FOUND/ALT_PATH are MAC-protected. A new branch starts without the previous
+node's proof. Challenges for one request coexist, indexed by N. See
+[CONTROL_AUTH.md](CONTROL_AUTH.md#authenticated-discovery) for encoding and bounds.
+Debug mode retains unsigned discovery; the initial local root uses socket access.
+
+An authorized node records `(origin, request ID)` before replying FOUND and sending
 DISCOVER to every other active connection. Duplicate requests produce ALT_PATH
 without forwarding. FOUND/ALT_PATH body is a TSV line:
 `instance-ID<TAB>component<TAB>capabilities<LF>`; command carries the traversal

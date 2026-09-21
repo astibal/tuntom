@@ -82,9 +82,10 @@ It can also complete a MAC exchange with any authority, without checking grants.
 
 A sender configured with an authority key rejects unsigned results, even before
 its first successful handshake; response authentication never silently downgrades.
-Legacy remote DISCOVER fanout has no per-target auth handshake and is rejected
-in trusted mode. Local discovery and transit require an enabled stack. Authenticated
-fanout discovery is not part of this version. Debug mode retains legacy discovery.
+DISCOVER authenticates separately at each visited node before disclosing results
+or expanding that branch. Local discovery and transit require an enabled stack.
+Debug mode retains unsigned legacy discovery; an authority never accepts unsigned
+remote discovery results.
 
 ## Exchange
 
@@ -126,20 +127,56 @@ Every direction has a monotonically increasing nonzero u64 counter and a 64-fram
 replay window. Invalid MACs do not advance the window. Expiration, restart, and
 local transaction-history eviction remove the associated key/counter state.
 
-### Automatic challenge after rekey
+### Request-only challenges
 
-Every tunnel with either allow flag enabled clears direct-peer auth state and
-sends a fresh challenge after each confirmed initial handshake/rekey. There is
-no separate `--control-challenge-after-rekey` option. The offer is a
-CONTROL_CHALLENGE with zero request ID. Debug mode sends an unrestricted offer
-even without pinned keys. With CONTROL disabled, no offer is generated or
-processed. The authority caches the offer and uses
-it for its next direct request; the node binds it to that request on the first
-valid proof. If the selected key cannot authorize that command, the node issues
-a command-specific challenge. In trusted mode, loss is harmless: the normal
-request-driven path works without the offer. Offers are not automatically rebroadcast or routed;
-routed targets challenge on demand. CONTROL_CHALLENGE from an old transport
-session is rejected even during DATA's rekey grace period.
+No challenge is advertised after handshake or rekey. Direct-peer authentication
+state is reset on a new transport session; the next command obtains a new
+request-specific challenge. Zero request IDs are rejected. CONTROL_CHALLENGE
+from an old transport session is rejected even during DATA's rekey grace period.
+
+### Authenticated discovery
+
+One nonzero `(origin, request ID)` identifies the whole discovery. Every visited
+trusted node issues its own fresh CONTROL_CHALLENGE, including for a repeated
+unproven DISCOVER. The authority keeps separate contexts keyed by N, so challenges
+from different branches do not replace each other.
+
+```text
+authority                         node
+    | --- DISCOVER(id, trace) ----> |
+    | <--- CHALLENGE(id, trace, N)  |
+    | --- DISCOVER(id, trace, proof)|
+    | <--- FOUND/ALT_PATH + proof  |
+                                   +--- unproven DISCOVER(id) to other neighbors
+```
+
+The challenge follows the accumulated return stack. The authority sends the
+proof along the reverse path accumulated by the returning challenge. The node
+retains the original ingress, return stack and hop budget; proof packets cannot
+replace that forwarding context. No discovery cache entry, result disclosure or
+fanout occurs before successful authorization with the read capability (plus
+local required capabilities and levels). Only the first authorized visit expands
+that node. Alternate visits require their own challenge before returning ALT_PATH.
+The initial local root is authorized through its UNIX socket rather than a network
+challenge; all remote visits are challenged. Nodes without suitable pins stop
+that discovery branch, although they can still relay explicitly routed commands.
+
+DISCOVER, FOUND and ALT_PATH support the usual 88-byte proof. Their MAC message is
+`"TUNTOM-DISCOVERY-v1\0"` followed by the encoded v2 frame with auth and both routing
+stacks empty and `remaining=16`. Thus kind, origin, request ID, trace and result body
+are authenticated, independently of transaction MACs. Mutable paths and hop budget
+are excluded. The challenge carries the original trace in its command field;
+ordinary transaction challenges leave that field empty. Replies use direction 1,
+requests direction 0. The same proof replay is rejected; an unsigned remote answer
+cannot downgrade a trusted origin.
+
+Each router permits 128 incoming and 128 outgoing discovery challenge contexts,
+expiring after 30 seconds, and at most 32 new challenges per one-second window.
+Outgoing contexts are released when the discovery job completes. Discovery keeps
+its two-second best-effort collection window: lost frames, exhausted limits,
+unauthorized nodes or slow paths can produce incomplete results. There is no
+per-branch delivery guarantee. These MACs still do not independently certify the
+remote node's identity or the completeness of the topology.
 
 ## Wire encoding
 
@@ -157,13 +194,14 @@ total and command length, no proof, and exactly 80 body bytes:
 N[32] | authority_id[32] | req_caps:u64 | req_level:u64
 ```
 
-Only an unsolicited direct challenge may have zero request ID.
+Every challenge requires a nonzero request ID.
 
 Routed CONTROL retains version 2 and its 52-byte header. Bytes 50..51 now carry
 proof length (0 or 88). Proof bytes precede the destination stack, reply stack,
 command and body. Routed CONTROL_CHALLENGE uses kind 10, zero state/offset/total,
-no command or proof and the same 80-byte body. Existing kinds 1..9 retain their
-meaning. Older decoders reject auth extensions; there is no automatic downgrade.
+no proof and the same 80-byte body. Discovery challenges also carry the traversal
+trace in command; transaction challenges have no command. Kinds 6..8 now support
+proofs as described above. Older decoders reject auth extensions; there is no automatic downgrade.
 The mutable routing stacks are outside the end-to-end MAC. The original request
 origin ID is bound by the KDF, and the challenge secret binds proof acceptance
 to the issuing node. Relays need no authority keys.

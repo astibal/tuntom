@@ -68,8 +68,10 @@ static void primitives() {
     auto zero=challenge;std::fill_n(zero.begin(),32,0);require(!a.accept_challenge(id,zero,now),"zero public key");
     std::fill_n(zero.begin(),32,0);zero[0]=1;require(!a.accept_challenge(id,zero,now),"low order public key");
     n.reset();n.configure(k.node);a.reset();a.configure(k.authority);
-    auto offer=n.challenge({},0,now);require(a.accept_challenge({},offer,now),"unsolicited challenge cached");
-    require(n.verify(id,message,a.protect(id,message,false),1,principal),"unsolicited challenge bound on first request");
+    require(n.challenge({},0,now).empty(),"unsolicited challenges removed");
+    challenge=n.challenge(id,1,now);require(a.accept_challenge(id,challenge,now),"request challenge accepted");
+    require(!a.accept_challenge({},challenge,now),"zero request challenge rejected");
+    require(n.verify(id,message,a.protect(id,message,false),1,principal),"request-specific challenge");
     n.reset();require(!n.verify(id,message,a.protect(id,message,false),1,principal),"rekey clears challenges");
     fail_random=true;const auto failed_challenge=n.challenge(id,1,now);
     fail_random=false;require(failed_challenge.empty(),"entropy failure fails closed without killing the daemon");
@@ -106,7 +108,6 @@ static void access_modes() {
     RemoteControl remote;unsigned sent=0,executed=0;
     remote.configure_auth(disabled);
     remote.configure({},[&](const auto&){++sent;},[&](const auto&){++executed;return ControlResponse{};});
-    remote.offer_challenge(now);
     rc::Frame command;command.id=id;command.kind=rc::Kind::put;command.command="show stats";
     remote.receive(rc::encode(command),now);
     rc::Frame offer;offer.kind=rc::Kind::challenge;offer.id=id;offer.data.assign(challenge.begin(),challenge.end());
@@ -124,12 +125,12 @@ static void access_modes() {
     debug.authority=debug.trusted.begin()->first;debug.caps=UINT64_MAX;debug.level=UINT64_MAX;
     debug.trusted.begin()->second.caps=0;ca::validate(debug);
     ca::Auth n,a;n.configure(debug);a.configure(k.authority);
-    challenge=n.challenge({},0,now);ca::Challenge c;
-    require(ca::Challenge::decode(challenge,c)&&c.authority==ca::Key{}&&!c.caps&&!c.level,"debug proactive challenge has no trust requirements");
-    require(a.accept_challenge({},challenge,now),"debug offer usable by authority");
+    challenge=n.challenge(id,0,now);ca::Challenge c;
+    require(ca::Challenge::decode(challenge,c)&&c.authority==ca::Key{}&&!c.caps&&!c.level,"debug challenge has no trust requirements");
+    require(a.accept_challenge(id,challenge,now),"debug challenge usable by authority");
     ca::Key principal{};require(n.verify(id,{1},a.protect(id,{1},false),UINT64_MAX,principal),"debug deliberately bypasses capability grants");
     ca::Config no_pins;no_pins.allow_all=true;n.reset();n.configure(no_pins);a.reset();
-    challenge=n.challenge({},0,now);require(!challenge.empty()&&a.accept_challenge({},challenge,now),"debug offer without trust keys");
+    challenge=n.challenge(id,0,now);require(!challenge.empty()&&a.accept_challenge(id,challenge,now),"debug challenge without trust keys");
     require(n.verify(id,{1},a.protect(id,{1},false),1,principal),"debug accepts unpinned authority proof");
     remote.configure_auth(debug);remote.configure(ControlAccess::all(),[&](const auto&){++sent;},[&](const auto&){++executed;return ControlResponse{};});
     remote.receive(rc::encode(command),now);require(executed==1,"debug explicitly accepts unsigned command despite configured pins");
@@ -195,4 +196,109 @@ static void routed() {
     auto result=pending.poll();
     require(result && result->success && result->body==std::string(1700,'s') && calls==1,"end-to-end auth through non-executing relay");
 }
-int main(){primitives();access_modes();transactions();routed();std::cout<<"CONTROL authentication passed\n";}
+static void discovery() {
+    namespace cr=control_route;
+    Keys k;
+    ControlRouter a("authority"), b("node-b"), c("node-c"), denied("denied");
+    auto now=ControlRouter::Clock::now();
+    auto origin_config=k.authority;origin_config.trusted=k.node.trusted;
+    a.configure_auth(origin_config);b.configure_auth(k.node);c.configure_auth(k.node);
+    auto no_read=k.node;no_read.trusted.begin()->second.caps=2;denied.configure_auth(no_read);
+    struct Delivery {ControlRouter* node;std::string ingress;ca::Bytes bytes;};
+    std::deque<Delivery> queue;
+    std::vector<cr::Frame> answers,challenges;
+    std::vector<Delivery> proofs;
+    a.configure(true,[&](const cr::Frame& f) {
+        if(f.kind==cr::Kind::challenge) {
+            challenges.push_back(f);
+            require(a.answer_discovery_challenge(f,now),"each branch accepts its own challenge");
+            require(!a.answer_discovery_challenge(f,now),"duplicate challenge cannot reset sequence state");
+        } else if(f.kind==cr::Kind::found || f.kind==cr::Kind::alt_path) {
+            if(f.reply_path.empty())return; // Local root is already authorized by the socket.
+            auto bad=f;bad.data+="tampered";
+            require(!a.verify_discovery_answer(bad,now),"discovery result body authenticated");
+            bad=f;bad.command+="/peer";
+            require(!a.verify_discovery_answer(bad,now),"discovery path text authenticated");
+            bad=f;bad.auth.clear();
+            require(!a.verify_discovery_answer(bad,now),"unsigned discovery result cannot downgrade authority");
+            require(a.verify_discovery_answer(f,now),"FOUND and ALT_PATH authenticated");
+            require(!a.verify_discovery_answer(f,now),"discovery answer replay rejected");
+            answers.push_back(f);
+        }
+    },true);
+    for(auto* node:{&b,&c,&denied})node->configure(true,[](const auto&){throw std::runtime_error("unexpected discovery delivery");},true);
+    auto connect=[&](ControlRouter& left,const char* lp,ControlRouter& right,const char* rp) {
+        left.edge(lp,1,false,4096,[&,r=&right,rp](const auto& bytes){queue.push_back({r,rp,bytes});return true;});
+        right.edge(rp,1,false,4096,[&,l=&left,lp](const auto& bytes){queue.push_back({l,lp,bytes});return true;});
+    };
+    connect(a,"b",b,"a");connect(a,"c",c,"a");connect(b,"c",c,"b");connect(b,"denied",denied,"b");
+    const auto request=a.begin_discovery(now);
+    // Both independent branches must challenge before returning anything or fanning out.
+    for(int i=0;i<2;++i) {
+        auto d=queue.front();queue.pop_front();d.node->receive(d.ingress,d.bytes.data(),d.bytes.size(),now);
+    }
+    require(queue.size()==2 && answers.empty(),"unsigned discovery only challenges, no disclosure or fanout");
+    for(const auto& d:queue) {cr::Frame f;require(cr::decode(d.bytes.data(),d.bytes.size(),f)&&f.kind==cr::Kind::challenge,"only challenges emitted");}
+    unsigned budget=500;
+    while(!queue.empty()) {
+        require(budget--!=0,"authenticated fanout cycle bounded");
+        auto d=queue.front();queue.pop_front();cr::Frame f;
+        require(cr::decode(d.bytes.data(),d.bytes.size(),f),"authenticated discovery codec");
+        if(f.kind==cr::Kind::discover && !f.auth.empty() && f.destination.empty()) {
+            auto bad=f;bad.auth.back()^=1;auto bytes=cr::encode(bad);
+            const auto before=queue.size();d.node->receive(d.ingress,bytes.data(),bytes.size(),now);
+            require(queue.size()==before,"bad discovery proof cannot disclose or fan out");
+            proofs.push_back(d);
+        }
+        d.node->receive(d.ingress,d.bytes.data(),d.bytes.size(),now);
+    }
+    unsigned found=0,alt=0;
+    for(const auto& f:answers) {
+        require(f.request==request,"one request ID across fanout");
+        require(f.data.find("denied")==std::string::npos,"read capability required on every node");
+        found+=f.kind==cr::Kind::found;alt+=f.kind==cr::Kind::alt_path;
+    }
+    require(found==2 && alt==2,"diamond/cycle branches independently authenticated and deduplicated");
+    require(challenges.size()>=4 && challenges[0].data.substr(0,32)!=challenges[1].data.substr(0,32),"same request has distinct node challenges");
+    for(const auto& d:proofs)d.node->receive(d.ingress,d.bytes.data(),d.bytes.size(),now);
+    require(queue.empty(),"proof replay never replies or repeats fanout");
+    // An explicit unproven retransmission gets a new challenge, not cached N.
+    cr::Frame retry;retry.kind=cr::Kind::discover;retry.origin=a.instance();retry.request=request;
+    retry.command="port:b";auto bytes=cr::encode(retry);
+    now+=std::chrono::seconds(1);b.receive("a",bytes.data(),bytes.size(),now);
+    require(queue.size()==1,"unproven retransmission challenged again");
+    cr::Frame fresh;require(cr::decode(queue.front().bytes.data(),queue.front().bytes.size(),fresh),"fresh challenge decode");
+    for(const auto& old:challenges)require(fresh.data.substr(0,32)!=old.data.substr(0,32),"retransmission never reuses N");
+    queue.clear();now+=std::chrono::seconds(31);b.tick(now);c.tick(now);a.tick(now);
+    for(const auto& d:proofs)d.node->receive(d.ingress,d.bytes.data(),d.bytes.size(),now);
+    require(queue.empty(),"expired discovery proofs rejected");
+    a.release_discovery(request);
+}
+static void discovery_limits() {
+    namespace cr=control_route;
+    Keys k;ControlRouter node("node");node.configure_auth(k.node);
+    node.configure(true,[](const auto&){throw std::runtime_error("unauthenticated discovery delivered");},true);
+    std::vector<cr::Frame> replies;
+    node.edge("ingress",1,false,4096,[&](const auto& bytes) {
+        cr::Frame f;require(cr::decode(bytes.data(),bytes.size(),f),"bounded discovery response");
+        replies.push_back(f);return true;
+    });
+    cr::Frame f;f.kind=cr::Kind::discover;f.request=rc::new_id();f.origin=rc::new_id();
+    const auto bytes=cr::encode(f);auto now=ControlRouter::Clock::now();
+    auto receive=[&]{node.receive("ingress",bytes.data(),bytes.size(),now);};
+    for(unsigned epoch=0;epoch<4;++epoch) {
+        for(unsigned i=0;i<40;++i)receive();
+        require(replies.size()==(epoch+1)*32,"discovery challenge rate bound");
+        now+=std::chrono::seconds(1);
+    }
+    receive();require(replies.size()==128,"discovery challenge memory bound");
+    now+=std::chrono::seconds(31);node.tick(now);
+    fail_random=true;receive();fail_random=false;
+    require(replies.size()==128,"discovery entropy failure emits nothing");
+    receive();require(replies.size()==129,"expired discovery contexts reclaimed");
+    for(const auto& reply:replies)require(reply.kind==cr::Kind::challenge,"resource pressure cannot bypass authorization");
+    RoutedControl origin("origin");origin.configure_auth(k.node);origin.configure(false,{});
+    bool threw=false;try{origin.submit({"discover",{}},1,20,{});}catch(const std::runtime_error&){threw=true;}
+    require(threw,"trusted discovery requires an origin authority key");
+}
+int main(){primitives();access_modes();transactions();routed();discovery();discovery_limits();std::cout<<"CONTROL authentication passed\n";}

@@ -50,8 +50,8 @@ CONTROL supports legacy direct/routed transactions and optional X25519 authority
 authentication. CONTROL_CHALLENGE carries a fresh node ephemeral key, optional
 authority ID and capability/level requirements. Both are restricted to the active
 transport session. See [CONTROL_AUTH.md](CONTROL_AUTH.md) for encoding,
-provisioning, replay handling and automatic advertisement after rekey whenever
-network CONTROL is enabled. Without an `--allow-control*` flag, CONTROL reception,
+provisioning, replay handling and per-node discovery challenges. Challenges are
+request-driven, with no automatic advertisement after handshake/rekey. Without an `--allow-control*` flag, CONTROL reception,
 transit and transmission are disabled; local Unix-socket diagnostics remain available.
 
 ## INFO (13)

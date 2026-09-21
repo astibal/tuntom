@@ -220,7 +220,6 @@ class Auth {
     std::map<Key,std::unique_ptr<Session>> incoming_;
     std::map<Id,std::unique_ptr<Session>> outgoing_;
     std::map<Id,Key> responding_;
-    std::unique_ptr<Session> offer_;
     Time next_challenge_{};
     static constexpr auto lifetime=std::chrono::minutes(2);
     static bool check(Session& s,const Bytes& message,const Bytes& proof,bool reply) {
@@ -243,7 +242,7 @@ public:
     bool debug_all()const{return config_.allow_all;}
     bool signing()const{return !config_.signing.empty();}
     bool outgoing(const Id& id)const{return outgoing_.count(id)!=0;}
-    void reset(){incoming_.clear();outgoing_.clear();responding_.clear();offer_.reset();next_challenge_=Time{};}
+    void reset(){incoming_.clear();outgoing_.clear();responding_.clear();next_challenge_=Time{};}
     void release_outgoing(const Id& id){outgoing_.erase(id);}
     void retire(const Id& id) {
         responding_.erase(id);
@@ -254,13 +253,12 @@ public:
         for(auto i=incoming_.begin();i!=incoming_.end();)if(now>=i->second->expires)i=incoming_.erase(i);else ++i;
         for(auto i=outgoing_.begin();i!=outgoing_.end();)if(now>=i->second->expires)i=outgoing_.erase(i);else ++i;
         for(auto i=responding_.begin();i!=responding_.end();)if(!incoming_.count(i->second))i=responding_.erase(i);else ++i;
-        if(offer_ && now>=offer_->expires)offer_.reset();
     }
     Bytes challenge(const Id& request,std::uint64_t caps,Time now) {
         tick(now);
         // Bound unauthenticated DH work and memory; never evict a live challenge
         // merely because another request/retransmission arrived.
-        if(!config_.enabled() || now<next_challenge_ || incoming_.size()>=32)return {};
+        if(request==Id{} || !config_.enabled() || now<next_challenge_ || incoming_.size()>=32)return {};
         next_challenge_=now+std::chrono::milliseconds(20);
         auto s=std::make_unique<Session>();
         try{random(s->secret.bytes);}catch(const EntropyError&){return {};}
@@ -274,18 +272,17 @@ public:
         auto bytes=s->challenge.encode();const auto n=s->challenge.n;incoming_.emplace(n,std::move(s));return bytes;
     }
     bool accept_challenge(const Id& request,const Bytes& bytes,Time now) {
-        if(!enabled())return false;
+        if(!enabled() || request==Id{})return false;
         tick(now);Challenge challenge;if(!Challenge::decode(bytes,challenge))return false;
         // Duplicated challenges must not reset counters and enable replay.
         const auto old=outgoing_.find(request);
         if(old!=outgoing_.end() && old->second->challenge.n==challenge.n)return false;
-        if(offer_ && offer_->challenge.n==challenge.n)return false;
         for(const auto& key:config_.signing) {
             if(challenge.authority!=Key{} ? key->grant.pub!=challenge.authority : !key->grant.allows(challenge.caps,challenge.level))continue;
             auto s=std::make_unique<Session>();s->challenge=challenge;s->authority=key->grant.pub;s->request=request;s->expires=now+lifetime;
             if(!derive(s->key.bytes,key->secret.bytes,challenge.n,challenge,s->authority,origin_))return false;
-            if(request==Id{})offer_=std::move(s);
-            else {if(outgoing_.size()>=16 && !outgoing_.count(request))return false;outgoing_[request]=std::move(s);}
+            if(outgoing_.size()>=16 && !outgoing_.count(request))return false;
+            outgoing_[request]=std::move(s);
             return true;
         }
         return false;
@@ -297,7 +294,6 @@ public:
             const auto s=incoming_.find(r->second);return s==incoming_.end()?Bytes{}:sign(*s->second,message,true);
         }
         auto i=outgoing_.find(request);
-        if(i==outgoing_.end() && offer_){offer_->request=request;i=outgoing_.emplace(request,std::move(offer_)).first;}
         return i==outgoing_.end()?Bytes{}:sign(*i->second,message,false);
     }
     bool verify_reply(const Id& request,const Bytes& message,const Bytes& proof) {

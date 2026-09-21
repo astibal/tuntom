@@ -76,7 +76,7 @@ def run(enabled, authenticated=False):
             raise AssertionError('session not ready')
 
         fields = dict(line.split('=', 1) for line in local('server', 'show', 'stats').stdout.splitlines() if '=' in line)
-        assert int(fields['control_challenges_tx']) >= 1 if enabled else int(fields['control_challenges_tx']) == 0
+        assert int(fields['control_challenges_tx']) == 0, 'handshake must not emit an unsolicited challenge'
         if not enabled:
             outgoing = subprocess.run([ctl, 'remote', '--socket', str(root/'server.ctl'), '---', 'show', 'stats'],
                                       capture_output=True, text=True, timeout=3)

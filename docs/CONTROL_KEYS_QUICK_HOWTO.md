@@ -85,8 +85,8 @@ tuntomctl switch /run/tuntom/switch.control --port tunnel42 --peer --- show stat
 ```
 
 Use the socket of the daemon holding the private authority key. Challenges,
-proofs and retries are automatic. An enabled tunnel also sends a challenge after
-initial handshake/rekey; there is no separate challenge-after-rekey option.
+proofs and command retries are automatic. Challenges are request-driven; none is
+sent automatically after initial handshake or rekey.
 More routing examples are in [CONTROL v2](CONTROL_V2.md).
 
 Local diagnostics do not require network CONTROL enablement:
@@ -120,9 +120,12 @@ The current asynchronous API accepts `stats`, `flows`, `show` (rules show) and
 `discover`, with a route relative to a discovered local process. The web UI uses
 this API for DISCOVER; explicit routed reads are available through the API.
 Even an empty route in this API uses routed submission and its enablement checks;
-it is not the same path as ordinary local telemetry. Trusted mode rejects legacy
-remote DISCOVER, so its current UI action is not a way to discover authenticated
-remote targets. Do not switch to debug mode just to make discovery work.
+it is not the same path as ordinary local telemetry. Trusted-mode DISCOVER obtains a
+separate challenge from every remote node before that node reports itself and
+expands the branch. Pin the authority with read access on every node to be
+traversed; a transit-only relay without pins cannot expand discovery. No additional
+Fabric key configuration is needed. Discovery authenticates authority access and
+protects responses, but does not independently certify target identities.
 
 Current Fabric rule writes use the synchronous local socket API and require
 `--allow-write` on the web and, when separate, the collector. That flag does not
@@ -216,7 +219,7 @@ revocation service.
 | Requested authority cannot be used | `--control-require-authority` names a pinned public key whose private key is loaded at the origin |
 | Edited key file has no effect | Restart the daemon that loads it |
 | Key generation refuses a path | Choose new filenames; existing files are never overwritten |
-| Remote DISCOVER rejected in trusted mode | Authenticated fanout discovery is not implemented; use an explicit target route |
+| Missing DISCOVER branches | Check read grants and pins on every traversed node; the two-second snapshot may also be incomplete due to loss, latency or resource limits |
 
 Do not use `--allow-control-all` to fix authentication: it is **DEBUG / AT OWN
 RISK**, accepts unsigned commands and bypasses configured trust/grant restrictions.
