@@ -48,10 +48,10 @@ def run(enabled):
         def local(role, *command):
             return subprocess.run([ctl, str(root / (role + '.ctl')), *command], capture_output=True, text=True, timeout=5)
 
-        def remote(*command, integrated=False):
+        def remote(*command, integrated=False, routed=False):
             prefix = [binary, 'ctl'] if integrated else [ctl]
             return subprocess.run(prefix + ['remote', '--socket', str(root / 'client.ctl'),
-                                 '--remote-wait', '100ms', '--remote-retries', '10', '---', *command],
+                                 '--remote-wait', '100ms', '--remote-retries', '10', *(['--peer'] if routed else []), '---', *command],
                                  capture_output=True, text=True, timeout=15)
 
         deadline = time.monotonic() + 8
@@ -67,6 +67,10 @@ def run(enabled):
         else:
             raise AssertionError('session not ready')
 
+        routed_stats = remote('show', 'stats', routed=True)
+        assert routed_stats.returncode == (0 if enabled else 255), (routed_stats.stdout, routed_stats.stderr)
+        if enabled:
+            assert 'session_confirmed=1' in routed_stats.stdout and len(routed_stats.stdout)>600
         stats = remote('show', 'stats', integrated=True)
         if not enabled:
             assert stats.returncode == 255, (stats.returncode, stats.stdout, stats.stderr)
@@ -88,7 +92,9 @@ def run(enabled):
             loaded = upload.result()
         assert loaded.returncode == 0 and 'classifier_generation=1' in loaded.stdout, loaded.stderr
         assert all(s.returncode == 0 and 'session_confirmed=1' in s.stdout for s in snapshots)
-        shown = remote('classifier', 'show')
+        routed_loaded = remote('classifier', 'load', str(source), routed=True)
+        assert routed_loaded.returncode == 0, routed_loaded.stderr
+        shown = remote('classifier', 'show', routed=True)
         assert shown.returncode == 0 and shown.stdout == body, shown.stderr
         # A handler error differs from authorization/admission rejection.
         bad = root / 'bad'; bad.write_text('not a classifier\n')

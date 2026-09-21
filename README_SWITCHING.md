@@ -497,3 +497,7 @@ Permanent and ad hoc service chains share the VIA label envelope, rendezvous flo
 hashing, ordered failover, and unavailable pass/drop policies. The switch keeps no
 per-flow VIA state. See [VIA configuration, label diagrams and lab commands](docs/VIA.md).
 Existing formats 1/2, legacy DVRT, CLI defaults, and the eight-label limit are unchanged.
+
+Routed commands and bounded topology discovery are described in
+[CONTROL v2](docs/CONTROL_V2.md), including `--port`, `--peer`,
+`--peer-port` and per-process `--allow-control-all`.

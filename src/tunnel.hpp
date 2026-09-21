@@ -18,6 +18,7 @@
 #include "stats_control.hpp"
 #include "control_socket.hpp"
 #include "remote_control.hpp"
+#include "routed_control.hpp"
 #include "runtime_recovery.hpp"
 #include <algorithm>
 #include <array>
@@ -174,6 +175,8 @@ public:
                 update_stats_control();
                 prepare_remote_control();
                 remote_control_.tick(RemoteControl::Clock::now());
+                routed_control_.tick();
+                if (control_ && routed_control_.active()) handle_control_request();
                 if (control_ && remote_control_.pending_results()) handle_control_request();
                 descriptors.resize(5);
                 descriptors[0].fd = tun_ ? tun_->fd() : -1;
@@ -196,7 +199,7 @@ public:
                 if (switch_ && switch_->connected()) timeout = switch_->transport().retry_timeout(timeout_at, timeout);
                 if (control_) timeout = control_->poll_timeout_ms(timeout_at, timeout);
                 if (relay_) { relay_->descriptors(descriptors); timeout = relay_->poll_timeout(timeout_at, std::min(timeout, 100)); }
-                if (remote_control_.active()) timeout = std::min(timeout, 10);
+                if (remote_control_.active() || routed_control_.active()) timeout = std::min(timeout, 10);
                 timeout = udp_tx_queue_.poll_timeout(timeout_at, timeout);
                 const auto poll_started = AdaptivePolling::Clock::now();
                 const int rc = ::poll(descriptors.data(), descriptors.size(), timeout);
@@ -388,6 +391,25 @@ private:
         return dispatcher;
     }
     void prepare_remote_control() {
+        routed_control_.configure(options_.allow_control_all, control_dispatcher());
+        if (control_) control_->set_routed(routed_control_.local_submit());
+        auto& router = routed_control_.router();
+        router.edge("peer", protocol_v5_.ready() ? protocol_v5_.transmit_generation() : 0,
+            true, maximum_fragment_payload(), [this](const auto& bytes) {
+                Packet packet; packet.type = PacketType::control; packet.payload = bytes;
+                if (!protocol_v5_.encode_into(packet, tx_encoded_buffer_, tx_mac_buffer_)) return false;
+                if (udp_.send(tx_encoded_buffer_.data(), tx_encoded_buffer_.size()) < 0) {
+                    ++stats_.udp_send_errors; return false;
+                }
+                ++stats_.udp_tx_packets; stats_.udp_tx_bytes += tx_encoded_buffer_.size();
+                return true;
+            });
+        if (relay_) { relay_->control_router(router); }
+        const auto cookie = switch_ && switch_->connected() ? control_socket_generation(switch_->fd()) : 0;
+        if (!relay_) router.edge("switch", cookie, false, control_route::max_frame, [this,cookie](const auto& bytes) {
+            return switch_ && control_socket_generation(switch_->fd()) == cookie &&
+                switch_->send(bytes.data(), bytes.size()) == static_cast<ssize_t>(bytes.size());
+        });
         remote_control_.payload_limit(maximum_fragment_payload());
         remote_control_.configure(options_.allow_control_all ? ControlAccess::all() : ControlAccess{},
             [this](const std::vector<std::uint8_t>& bytes) {
@@ -779,7 +801,9 @@ private:
 
         if (packet.type == PacketType::control) {
             prepare_remote_control();
-            remote_control_.receive(packet.payload, RemoteControl::Clock::now());
+            if (control_route::marked(packet.payload.data(), packet.payload.size()))
+                routed_control_.router().receive("peer", packet.payload.data(), packet.payload.size(), ControlRouter::Clock::now());
+            else remote_control_.receive(packet.payload, RemoteControl::Clock::now());
             return;
         }
 
@@ -970,6 +994,12 @@ private:
         }
         if (static_cast<std::size_t>(received) > switch_rx_buffer_.size()) {
             ++stats_.switch_drops;
+            return true;
+        }
+
+        if (control_route::marked(switch_rx_buffer_.data(), static_cast<std::size_t>(received))) {
+            prepare_remote_control();
+            routed_control_.router().receive("switch", switch_rx_buffer_.data(), static_cast<std::size_t>(received), ControlRouter::Clock::now());
             return true;
         }
 
@@ -1763,6 +1793,7 @@ private:
     std::unique_ptr<SwitchClient> switch_;
     std::unique_ptr<ControlSocket> control_;
     RemoteControl remote_control_;
+    RoutedControl routed_control_{"tunnel"};
     RuntimeRecovery recovery_;
     static constexpr auto switch_reconnect_interval_ = std::chrono::seconds(1);
     std::chrono::steady_clock::time_point next_switch_reconnect_ {};

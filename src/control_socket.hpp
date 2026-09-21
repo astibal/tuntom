@@ -24,11 +24,20 @@ namespace tuntom {
 // One epoll FD integrates listener and bounded, nonblocking transactions into
 // existing daemon loops. Slow clients never wait on the packet-processing thread.
 class ControlSocket {
+public:
+    struct RemotePending {
+        std::string id;
+        std::function<std::optional<ControlResponse>()> poll;
+    };
+    using RemoteSubmit = std::function<RemotePending(ControlRequest, unsigned, unsigned)>;
+    void set_routed(RemoteSubmit submit) { routed_submit_ = std::move(submit); }
+private:
+    RemoteSubmit routed_submit_;
     struct Client {
-        std::string command, body, response;
+        std::string command, body, response, route;
         std::size_t expected = 0, sent = 0;
         bool header = false, responding = false, framed = false, response_header = false;
-        bool success = true, rejected = false, remote = false;
+        bool success = true, rejected = false, remote = false, routed = false;
         unsigned retries = 5, wait_ms = 250;
         std::function<std::optional<ControlResponse>()> pending;
         AcceptBackoff::Time deadline;
@@ -148,11 +157,6 @@ class ControlSocket {
         dispatcher.rules = rules; dispatcher.classifier = classifier; dispatcher.ports = ports;
         handle_dispatch(dispatcher);
     }
-    struct RemotePending {
-        std::string id;
-        std::function<std::optional<ControlResponse>()> poll;
-    };
-    using RemoteSubmit = std::function<RemotePending(ControlRequest, unsigned, unsigned)>;
     void handle_dispatch(const ControlDispatcher& dispatcher, RemoteSubmit remote = {}) {
         maintain();
         for (auto& entry : clients_) {
@@ -196,7 +200,8 @@ class ControlSocket {
                         std::string command(bytes.data(), static_cast<std::size_t>(size));
                         while (!command.empty() && (command.back() == '\n' || command.back() == '\r')) command.pop_back();
                         c.header = true;
-                        if (command.compare(0, 7, "remote ") == 0) {
+                        if (command.compare(0, 7, "remote ") == 0 || command.compare(0, 7, "routed ") == 0) {
+                            c.routed = command.compare(0, 7, "routed ") == 0;
                             c.remote = c.framed = true;
                             const auto a = command.find(' ', 7), b = a == std::string::npos ? a : command.find(' ', a + 1);
                             if (b == std::string::npos) throw std::runtime_error("expected remote RETRIES WAIT_MS COMMAND");
@@ -204,6 +209,11 @@ class ControlSocket {
                             c.wait_ms = static_cast<unsigned>(control_length(command.substr(a + 1, b - a - 1), 60000));
                             if (c.wait_ms < 10) throw std::runtime_error("remote wait must be at least 10 ms");
                             command = command.substr(b + 1);
+                            if(c.routed) {
+                                const auto space=command.find(' ');
+                                if(space==std::string::npos)throw std::runtime_error("missing routed command");
+                                c.route=command.substr(0,space);command=command.substr(space+1);
+                            }
                         }
                         // Preserve the legacy framing even for malformed local commands.
                         if (!c.remote) {
@@ -213,7 +223,7 @@ class ControlSocket {
                                 respond(fd, c, "error=unknown_command\n"); break;
                             }
                         }
-                        const auto operation = c.remote && command.compare(0, 15, "request status ") == 0
+                        const auto operation = (c.routed && command=="discover") || (c.remote && command.compare(0, 15, "request status ") == 0)
                             ? ControlOperation{} : ControlDispatcher::parse(command);
                         c.command = command; c.expected = operation.length;
                         c.framed = c.remote || operation.framed;
@@ -224,8 +234,9 @@ class ControlSocket {
                     }
                     if (c.body.size() == c.expected) {
                         if (c.remote) {
-                            if (!remote) throw std::runtime_error("remote control unsupported by this component");
-                            auto pending = remote({c.command, std::move(c.body)}, c.retries, c.wait_ms);
+                            const auto& submit=c.routed?routed_submit_:remote;
+                            if (!submit) throw std::runtime_error("remote control unsupported by this component");
+                            auto pending = submit({c.routed?c.route+" "+c.command:c.command, std::move(c.body)}, c.retries, c.wait_ms);
                             c.pending = std::move(pending.poll);
                             const auto accepted = "REQUEST " + pending.id + "\n";
                             if (::send(fd, accepted.data(), accepted.size(), MSG_DONTWAIT | MSG_NOSIGNAL) != static_cast<ssize_t>(accepted.size())) {

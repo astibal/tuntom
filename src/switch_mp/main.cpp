@@ -1,3 +1,4 @@
+#include "../routed_control.hpp"
 #include "../control_ports.hpp"
 #include "../common.hpp"
 #include "../control_socket.hpp"
@@ -118,10 +119,9 @@ int main(int argc, char **argv) {
             throughput.update(Clock::now(), {{engine.frames_rx(), engine.bytes_rx()},
                                              {engine.frames_tx(), engine.bytes_tx()}});
         };
-        const auto handle_control = [&] {
-            if (!control)
-                return;
-            control->handle([&] {
+        tuntom::RoutedControl routed_control("switch");
+        tuntom::ControlDispatcher control_dispatcher;
+        control_dispatcher.stats = [&] {
                 update_throughput();
                 const auto now = Clock::now();
                 std::ostringstream out;
@@ -161,11 +161,12 @@ int main(int argc, char **argv) {
                 if (config.ruleset) out << "ruleset_format=" << config.ruleset->format << "\nruleset_serial=" << config.ruleset->serial << '\n';
                 recovery.write_stats(out);
                 admission.write_stats(out, now);
-                control->write_stats(out);
+                if (control) control->write_stats(out);
                 tuntom::logger.write_stats(out);
                 throughput.write(out);
                 return out.str();
-            }, [&](const std::string &operation, const std::string &body) {
+            };
+        control_dispatcher.rules = [&](const std::string &operation, const std::string &body) {
                 if (operation.compare(0, 7, "divert.") == 0) {
                     if (!config.divert_config) throw std::runtime_error("divert is not configured");
                     if (operation == "divert.enable" && !config.divert_config->via) {
@@ -194,7 +195,9 @@ int main(int argc, char **argv) {
                     }
                 }
                 return response;
-            }, [] { return tuntom::FlowDump("none").finish(); }, {}, [&] {
+            };
+        control_dispatcher.flows = [] { return tuntom::FlowDump("none").finish(); };
+        control_dispatcher.ports = [&] {
                 tuntom::ControlPorts ports;
                 for (const auto& port : engine.plan().ports) {
                     if (port->disconnected.load(std::memory_order_relaxed)) continue;
@@ -204,7 +207,27 @@ int main(int argc, char **argv) {
                             ports.relayed(channel.second.name, port->name);
                 }
                 return ports.finish();
-            });
+            };
+        routed_control.configure(config.allow_control_all,control_dispatcher);
+        const auto refresh_control_edges = [&] {
+            std::set<std::string> names;
+            for (const auto& port:engine.plan().ports) if(!port->disconnected.load()) {
+                names.insert(port->name);
+                routed_control.router().edge(port->name,port->generation,false,tuntom::control_route::max_frame,
+                    [&,name=port->name,generation=port->generation](const auto& bytes) { return engine.control_send(name,generation,bytes); });
+            }
+            routed_control.router().retain(names);
+        };
+        engine.control_receive = [&](const auto& name,const auto* data,std::size_t size) {
+            refresh_control_edges();
+            routed_control.router().receive(name,data,size,tuntom::ControlRouter::Clock::now());
+        };
+        if (control) control->set_routed([&](tuntom::ControlRequest request,unsigned retries,unsigned wait) {
+            refresh_control_edges();
+            return routed_control.local_submit()(std::move(request),retries,wait);
+        });
+        const auto handle_control = [&] {
+            if (control) control->handle_dispatch(control_dispatcher);
         };
 
         while (!stop_requested) {
@@ -246,7 +269,9 @@ int main(int argc, char **argv) {
                 // HUP monitoring also retires a closed ingress whose pool is full.
                 for (const auto &port : engine.plan().ports)
                     descriptors.push_back({port->fd.get(), static_cast<short>(port->relay_ack_retry.writable(now) ? POLLOUT : 0), 0});
-                auto timeout = admission.poll_timeout_ms(now, 100);
+                if (routed_control.active()) refresh_control_edges();
+                routed_control.tick();
+                auto timeout = admission.poll_timeout_ms(now, routed_control.active() ? 10 : 100);
                 for (const auto& port : engine.plan().ports) timeout = port->relay_ack_retry.timeout(now,timeout);
                 if (control)
                     timeout = control->poll_timeout_ms(now, timeout);

@@ -1,4 +1,5 @@
 #pragma once
+#include "control_route.hpp"
 #include "control_protocol.hpp"
 #include "control_ports.hpp"
 #include "switch_ruleset.hpp"
@@ -78,7 +79,8 @@ inline int tuntom_control_main(int argc, char **argv) {
         if (remote || switch_mode) ++first;
         bool explicit_socket = false;
         bool port_list = false, port_tree = false;
-        bool separator = false;
+        bool separator = false, peer = false, remote_options = false;
+        std::string target_port, peer_port;
         unsigned remote_retries = 5, remote_wait = 250;
         while (first < argc) {
             const std::string arg = argv[first];
@@ -86,11 +88,18 @@ inline int tuntom_control_main(int argc, char **argv) {
                 if (port_list) throw std::runtime_error("choose exactly one of --port-list and --port-tree");
                 port_list = true; port_tree = arg == "--port-tree"; ++first; continue;
             }
+            if ((remote || switch_mode) && arg == "--peer") { peer = true; ++first; continue; }
+            if ((remote || switch_mode) && (arg == "--port" || arg == "--peer-port")) {
+                if (++first >= argc) throw std::runtime_error(arg + " requires a value");
+                if (arg == "--port") target_port = argv[first++];
+                else { peer_port = argv[first++]; peer = true; }
+                continue;
+            }
             if ((remote || switch_mode) && arg == "---") { separator = true; ++first; break; }
             if (arg == "--socket" || arg == "--remote-retries" || arg == "--remote-wait") {
-                if (switch_mode && arg != "--socket") throw std::runtime_error("switch port listing accepts only local socket options");
                 if (++first >= argc) throw std::runtime_error(arg + " requires a value");
                 std::string value = argv[first++];
+                if (arg != "--socket") remote_options = true;
                 if (arg == "--socket") { path = value; explicit_socket = true; }
                 else if (arg == "--remote-retries") remote_retries = static_cast<unsigned>(tuntom::control_length(value, 100));
                 else {
@@ -105,10 +114,19 @@ inline int tuntom_control_main(int argc, char **argv) {
             else { path = arg; explicit_socket = true; ++first; }
         }
         if (remote && !separator) throw std::runtime_error("remote requires --- before the command");
-        if (switch_mode && (!port_list || first != argc)) throw std::runtime_error("expected switch [--socket PATH | PATH] --port-list|--port-tree");
+        if (port_list && (remote_options || first != argc || peer || !target_port.empty())) throw std::runtime_error("port listing accepts only local socket options");
+        if (switch_mode && !port_list && !separator) throw std::runtime_error("switch commands require ---");
+        if (remote && !target_port.empty()) throw std::runtime_error("--port requires switch mode");
+        const bool discovery = (remote || switch_mode) && argc == first + 1 && std::string(argv[first]) == "discover";
+        const bool routed = discovery || peer || !target_port.empty();
+        const bool asynchronous = remote || routed;
+        tuntom::control_route::Path route;
+        if (!target_port.empty()) route.push_back(tuntom::control_route::Hop::port(target_port));
+        if (remote || peer) route.push_back(tuntom::control_route::Hop::peer());
+        if (!peer_port.empty()) route.push_back(tuntom::control_route::Hop::port(peer_port));
         const bool stats = argc == first + 2 && std::string(argv[first]) == "show" && std::string(argv[first + 1]) == "stats";
         const bool flows = argc == first + 2 && std::string(argv[first]) == "show" && std::string(argv[first + 1]) == "flows";
-        const bool status = remote && argc == first + 3 && std::string(argv[first]) == "request" && std::string(argv[first + 1]) == "status";
+        const bool status = asynchronous && argc == first + 3 && std::string(argv[first]) == "request" && std::string(argv[first + 1]) == "status";
         std::string operation, body;
         const bool classifier = argc >= first + 2 && std::string(argv[first]) == "classifier";
         const bool divert = argc == first + 2 && std::string(argv[first]) == "divert";
@@ -128,8 +146,9 @@ inline int tuntom_control_main(int argc, char **argv) {
                 } else body = tuntom::read_rules_file(argv[first + 2]);
             } else if ((operation != "show" && !(classifier && operation == "disable")) || argc != first + 2) operation.clear();
         }
-        if (!port_list && !stats && !flows && !status && operation.empty()) {
+        if (!discovery && !port_list && !stats && !flows && !status && operation.empty()) {
             std::cerr << "Switch: tuntomctl switch [--socket PATH | PATH] --port-list|--port-tree\n";
+            std::cerr << "Routed: tuntomctl switch [SOCKET] [--port NAME] [--peer | --peer-port NAME] --- COMMAND|discover\n";
             std::cerr << "Remote: tuntomctl remote [--socket PATH] [--remote-retries N] [--remote-wait N[ms|s]] --- COMMAND\n";
             std::cerr << "Usage: " << argv[0] << " <control-socket> show stats|flows\n"
                       << "       " << argv[0] << " [control-socket] rules show\n"
@@ -148,18 +167,19 @@ inline int tuntom_control_main(int argc, char **argv) {
             if (snapshot.find("\ncomponent=switch\n") == std::string::npos)
                 throw std::runtime_error("control socket is not a switch: " + path);
         }
-        Socket socket{connect_control(path, remote)};
-        std::string command = port_list ? "show ports" : status ? "request status " + std::string(argv[first + 2]) : stats ? "show stats" : flows ? "show flows" : std::string(classifier ? "classifier " : divert ? "divert " : "rules ") + operation + " " + std::to_string(body.size());
-        if (remote) command = "remote " + std::to_string(remote_retries) + " " + std::to_string(remote_wait) + " " + command;
+        Socket socket{connect_control(path, asynchronous)};
+        std::string command = discovery ? "discover" : port_list ? "show ports" : status ? "request status " + std::string(argv[first + 2]) : stats ? "show stats" : flows ? "show flows" : std::string(classifier ? "classifier " : divert ? "divert " : "rules ") + operation + " " + std::to_string(body.size());
+        if (routed) command = "routed " + std::to_string(remote_retries) + " " + std::to_string(remote_wait) + " " + tuntom::control_route::path_text(route) + " " + command;
+        else if (remote) command = "remote " + std::to_string(remote_retries) + " " + std::to_string(remote_wait) + " " + command;
         send_record(socket.fd, command.data(), command.size());
         for (std::size_t offset = 0; offset < body.size(); offset += tuntom::control_chunk_size)
             send_record(socket.fd, body.data() + offset, std::min(tuntom::control_chunk_size, body.size() - offset));
-        if (remote) {
+        if (asynchronous) {
             const auto accepted = receive(socket.fd, 256);
             if (accepted.compare(0, 8, "REQUEST ") != 0) throw std::runtime_error("remote request was not accepted locally: " + accepted);
             std::cerr << "request_id=" << accepted.substr(8);
         }
-        if (stats && !remote) {
+        if (stats && !asynchronous) {
             const auto response = receive(socket.fd, 65536);
             if (response.compare(0, 6, "error=") == 0) throw std::runtime_error(response);
             std::cout << response;
@@ -179,7 +199,7 @@ inline int tuntom_control_main(int argc, char **argv) {
             }
             if (!success) {
                 std::cerr << "ERROR: " << response;
-                return remote && header.substr(0, space) == "REJECTED" ? 255 : 1;
+                return asynchronous && header.substr(0, space) == "REJECTED" ? 255 : 1;
             }
             std::cout << (port_tree ? tuntom::ControlPorts::tree(response) : response);
         }

@@ -1,3 +1,4 @@
+#include "../routed_control.hpp"
 #include "../control_ports.hpp"
 #include "../ipc/retry_queue.hpp"
 #include "../common.hpp"
@@ -86,6 +87,7 @@ void usage(const char* program) {
         << "      [--route <in-port>:<label>=<out-port>:<label> ...]\n"
         << "      [--exit-port <port-id> ...]\n"
         << "      [--control-socket <unix-path>]\n"
+        << "  --allow-control-all      Allow incoming routed CONTROL and discovery\n"
         << "      [--rules-file <format-1-or-2-config>]\n"
         << "      [--divert-file <config>]  Opt-in local divert, initially disabled\n"
         << "      [--max-ports <1..65535>] [--max-pending <1..65535>]\n"
@@ -188,10 +190,14 @@ int main(int argc, char** argv) {
             {stats.frames_tx, stats.bytes_tx}});
         bool default_back = false;
         tuntom::SwitchCapacity configured_capacity;
+        bool allow_control_all = false;
+        tuntom::RoutedControl routed_control("switch");
 
         for (int index = 1; index < argc; ++index) {
             const std::string option = argv[index];
-            if (option == "--socket") {
+            if (option == "--allow-control-all") {
+                allow_control_all = true;
+            } else if (option == "--socket") {
                 if (++index >= argc) throw std::runtime_error("--socket requires a value");
                 if (not socket_path.empty()) throw std::runtime_error("Duplicate --socket");
                 socket_path = argv[index];
@@ -330,6 +336,22 @@ int main(int argc, char** argv) {
             }
         };
 
+        const auto refresh_control_edges = [&] {
+            std::set<std::string> names;
+            for (const auto& c : connections) {
+                if (c.fd < 0 || c.port.empty()) continue;
+                names.insert(c.port);
+                const auto cookie = tuntom::control_socket_generation(c.fd);
+                routed_control.router().edge(c.port, cookie, false, tuntom::control_route::max_frame,
+                    [&,name=c.port,cookie](const auto& bytes) {
+                        auto* target = find_connection(connections,name);
+                        return target && tuntom::control_socket_generation(target->fd)==cookie &&
+                            send_frame(*target,bytes.data(),bytes.size(),stats);
+                    });
+            }
+            routed_control.router().retain(names);
+        };
+
         const auto try_handle_connection = [&](Connection& connection) {
             // A ready record does not extend the registration's fixed lifetime.
             if (connection.port.empty() and std::chrono::steady_clock::now() >=
@@ -408,6 +430,11 @@ int main(int argc, char** argv) {
                 }
             }
 
+            if (tuntom::control_route::marked(buffer.data(),size)) {
+                refresh_control_edges();
+                routed_control.router().receive(connection.port,buffer.data(),size,tuntom::ControlRouter::Clock::now());
+                return true;
+            }
             const std::string* ingress = &connection.port;
             if (tuntom::relay::marked(buffer.data(),size)) {
                 tuntom::relay::View record;
@@ -576,9 +603,8 @@ int main(int argc, char** argv) {
         };
 
         tuntom::RuntimeRecovery recovery;
-        const auto handle_control = [&] {
-            if (not control) return;
-            control->handle([&] {
+        tuntom::ControlDispatcher control_dispatcher;
+        control_dispatcher.stats = [&] {
                 const auto snapshot_at = std::chrono::steady_clock::now();
                 throughput.update(snapshot_at, {
                     {stats.frames_rx, stats.bytes_rx},
@@ -623,12 +649,13 @@ int main(int argc, char** argv) {
                     << "\ndivert_overflow_drops=" << stats.divert_overflow_drops << '\n';
                 recovery.write_stats(out);
                 admission.write_stats(out, snapshot_at);
-                control->write_stats(out);
+                if (control) control->write_stats(out);
                 tuntom::logger.write_stats(out);
                 adaptive_polling.write_stats(out);
                 throughput.write(out);
                 return out.str();
-            }, [&](const std::string &operation, const std::string &body) {
+            };
+        control_dispatcher.rules = [&](const std::string &operation, const std::string &body) {
                 if (operation.compare(0, 7, "divert.") == 0) {
                     if (!divert_config) throw std::runtime_error("divert is not configured");
                     if (operation == "divert.enable" && !divert_config->via &&
@@ -667,7 +694,9 @@ int main(int argc, char** argv) {
                     routes.clear(); exit_ports.clear(); default_back = false;
                 }
                 return response;
-            }, [] { return tuntom::FlowDump("none").finish(); }, {}, [&] {
+            };
+        control_dispatcher.flows = [] { return tuntom::FlowDump("none").finish(); };
+        control_dispatcher.ports = [&] {
                 tuntom::ControlPorts ports;
                 for (const auto& connection : connections) {
                     if (connection.fd < 0 || connection.port.empty()) continue;
@@ -677,7 +706,14 @@ int main(int argc, char** argv) {
                             ports.relayed(channel.second.name, connection.port);
                 }
                 return ports.finish();
-            });
+            };
+        routed_control.configure(allow_control_all,control_dispatcher);
+        if (control) control->set_routed([&](tuntom::ControlRequest request,unsigned retries,unsigned wait) {
+            refresh_control_edges();
+            return routed_control.local_submit()(std::move(request),retries,wait);
+        });
+        const auto handle_control = [&] {
+            if (control) control->handle_dispatch(control_dispatcher);
         };
 
         tuntom::logger.start();
@@ -697,6 +733,9 @@ int main(int argc, char** argv) {
                     [](const Connection& connection) { return connection.fd < 0; }), connections.end());
                 if (connections.empty()) next_connection = 0;
                 else next_connection %= connections.size();
+                if (routed_control.active()) refresh_control_edges();
+                routed_control.tick();
+                if (routed_control.active()) handle_control();
                 const auto now = std::chrono::steady_clock::now();
                 const bool pending_space = connection_counts().second < capacity.pending;
                 descriptors.clear();
@@ -708,6 +747,7 @@ int main(int argc, char** argv) {
 
                 int timeout = pending_space ? admission.poll_timeout_ms(now, 1000) : 1000;
                 if (control) timeout = control->poll_timeout_ms(now, timeout);
+                if (routed_control.active()) timeout = std::min(timeout,10);
                 for (const auto& connection : connections) {
                     timeout = connection.retry.timeout(now, timeout);
                     if (connection.port.empty()) timeout = tuntom::deadline_timeout_ms(

@@ -202,16 +202,25 @@ public:
         access_ = access; send_ = std::move(sender); execute_ = std::move(executor);
     }
     void payload_limit(std::size_t bytes) { chunk_ = bytes > 288 ? bytes - 288 : 1; }
-    Id submit(ControlRequest request, unsigned retries, std::chrono::milliseconds wait, Time now) {
+    Id submit(ControlRequest request, unsigned retries, std::chrono::milliseconds wait, Time now, Id requested_id = {}) {
         admit_outgoing();
         auto op = ControlDispatcher::parse(request.command);
         if (request.command.size() > 256 || request.body.size() != op.length) throw std::runtime_error("invalid remote request");
-        Id id; do { id = remote_control::new_id(); } while (outgoing_.count(id));
+        Id id = requested_id;
+        if (id == Id{}) do { id = remote_control::new_id(); } while (outgoing_.count(id));
+        else if (outgoing_.count(id)) throw std::runtime_error("duplicate outgoing control ID");
         Outgoing r; r.request = std::move(request); r.retries = retries; r.wait = wait;
         auto i = outgoing_.emplace(id, std::move(r)).first; send_next(id, i->second, now); return id;
     }
     std::optional<Result> result(const Id& id) const {
         auto i = outgoing_.find(id); return i == outgoing_.end() ? std::optional<Result>(Result{1, "request no longer available\n"}) : i->second.result;
+    }
+    std::optional<State> received_state(const Id& id) const {
+        const auto i=incoming_.find(id); return i==incoming_.end()?std::optional<State>{}:i->second.state;
+    }
+    bool has_unconfirmed() const {
+        for(const auto& p:incoming_) if(!p.second.acknowledged)return true;
+        return false;
     }
     void release(const Id& id) { outgoing_.erase(id); }
     void receive(const std::vector<std::uint8_t>& bytes, Time now) {

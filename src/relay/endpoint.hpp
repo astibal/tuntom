@@ -1,5 +1,6 @@
 #pragma once
 #include "protocol.hpp"
+#include "../control_router.hpp"
 #include "../ipc/switch_handshake.hpp"
 #include "../via/registration.hpp"
 #include <sys/un.h>
@@ -23,6 +24,8 @@ class Endpoint {
         ~Client() { if (fd >= 0) ::close(fd); }
     };
     std::string path_, port_;
+    ControlRouter* control_router_ = nullptr;
+    std::set<std::string> control_edges_;
     int listener_ = -1, upstream_ = -1;
     bool registered_ = false;
     std::uint64_t epoch_ = 0, ipc_epoch_ = 0, next_owner_ = 0;
@@ -50,6 +53,29 @@ class Endpoint {
     }
     void close_upstream() { account(upstream_queue_.discard()); if (upstream_ >= 0) ::close(upstream_); upstream_ = -1; registered_ = false; }
 public:
+    void control_router(ControlRouter& router) {
+        control_router_ = &router;
+        std::set<std::string> names;
+        if (registered_) {
+            names.insert("switch");
+            const auto cookie = control_socket_generation(upstream_);
+            router.edge("switch",cookie,false,control_route::max_frame,[this,cookie](const auto& bytes) {
+                return registered_ && control_socket_generation(upstream_)==cookie &&
+                    raw_send(upstream_,bytes.data(),bytes.size())==static_cast<ssize_t>(bytes.size());
+            });
+        }
+        for (const auto& c:clients_) if(c->active) {
+            const auto name=c->handshake.id; names.insert(name);
+            const auto cookie=control_socket_generation(c->fd);
+            router.edge(name,cookie,false,control_route::max_frame,[this,name,cookie](const auto& bytes) {
+                for(const auto& client:clients_) if(client->active && client->handshake.id==name && control_socket_generation(client->fd)==cookie)
+                    return client->handshake.transport->send(client->fd,{bytes.data(),bytes.size()})==static_cast<ssize_t>(bytes.size());
+                return false;
+            });
+        }
+        for(const auto& name:control_edges_) if(!names.count(name))router.remove(name);
+        control_edges_=std::move(names);
+    }
     using Send = std::function<void(const std::uint8_t*, std::size_t)>;
     Endpoint(const std::string& connect, const std::string& listen, const std::string& port)
         : path_(connect.empty() ? listen : connect), port_(port) {
@@ -143,6 +169,10 @@ public:
                 const auto n = ::recv(upstream_,buffer_.data(),buffer_.size(),MSG_DONTWAIT|MSG_TRUNC);
                 if (n < 0 && ipc::retry_error()) break;
                 if (n <= 0 || static_cast<std::size_t>(n)>buffer_.size()) { close_upstream(); break; }
+                if (control_router_ && control_route::marked(buffer_.data(),n)) {
+                    control_router(*control_router_);
+                    control_router_->receive("switch",buffer_.data(),n,now); continue;
+                }
                 View v; if (decode(buffer_.data(),n,v) && (v.type==Type::acknowledged || v.type==Type::data)) send(buffer_.data(),n);
             }
             return;
@@ -179,6 +209,10 @@ public:
                 const auto n=c.handshake.transport->receive(c.fd,buffer_.data()+header_size,frame_limit);
                 if(n<0 && ipc::retry_error()) break;
                 if(n<=0 || static_cast<std::size_t>(n)>frame_limit) { dead=true; break; }
+                if (control_router_ && control_route::marked(buffer_.data()+header_size,n)) {
+                    control_router(*control_router_);
+                    control_router_->receive(c.handshake.id,buffer_.data()+header_size,n,now); continue;
+                }
                 SwitchFrameView frame;
                 if(!decode_switch_frame(buffer_.data()+header_size,n,frame) || frame.payload_size > 65535) {dead=true;break;}
                 if(acknowledged_==revision_ && now<ack_deadline_) {

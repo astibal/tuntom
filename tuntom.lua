@@ -214,12 +214,18 @@ local e_info = ProtoExpert.new("tuntom.info.malformed", "Malformed INFO",
     expert.group.MALFORMED, expert.severity.ERROR)
 
 -- CONTROL v1 envelope; this is separate from DATA fragmentation.
-local control_kinds = {[1]="PUT", [2]="STATUS", [3]="REPLY", [4]="FINISH", [5]="CONFIRMED"}
+local control_kinds = {[1]="PUT", [2]="STATUS", [3]="REPLY", [4]="FINISH", [5]="CONFIRMED", [6]="DISCOVER", [7]="FOUND", [8]="ALT_PATH", [9]="ROUTE_ERROR"}
 local control_states = {[1]="RECEIVING", [2]="READY", [3]="RUNNING", [4]="SUCCEEDED",
     [5]="FAILED", [6]="REJECTED", [7]="EXPIRED", [8]="NOT_FOUND"}
 local f_control_version = ProtoField.uint8("tuntom.control.version", "CONTROL Version", base.DEC)
 local f_control_kind = ProtoField.uint8("tuntom.control.kind", "CONTROL Kind", base.DEC, control_kinds)
 local f_control_state = ProtoField.uint8("tuntom.control.state", "Request State", base.DEC, control_states)
+local f_control_origin = ProtoField.bytes("tuntom.control.origin", "Origin Instance ID")
+local f_control_hops = ProtoField.uint8("tuntom.control.hops", "Remaining Hops", base.DEC)
+local f_control_destination = ProtoField.bytes("tuntom.control.destination", "Destination Stack")
+local f_control_reply_path = ProtoField.bytes("tuntom.control.reply_path", "Reply Stack")
+local f_control_hop_type = ProtoField.uint8("tuntom.control.hop.type", "Hop Type", base.DEC, {[1]="PEER",[2]="PORT",[3]="LINK"})
+local f_control_hop_value = ProtoField.bytes("tuntom.control.hop.value", "Hop Value")
 local f_control_id = ProtoField.bytes("tuntom.control.request_id", "Request ID")
 local f_control_offset = ProtoField.uint32("tuntom.control.offset", "Block / Acknowledged Offset", base.DEC)
 local f_control_total = ProtoField.uint32("tuntom.control.total", "Total Body Length", base.DEC)
@@ -242,6 +248,7 @@ local e_handshake = ProtoExpert.new("tuntom.handshake_error", "Invalid/unsupport
 tuntom.experts = {e_handshake, e_info, e_control}
 
 tuntom.fields = {
+    f_control_origin, f_control_hops, f_control_destination, f_control_reply_path, f_control_hop_type, f_control_hop_value,
     f_control_version, f_control_kind, f_control_state, f_control_id,
     f_control_offset, f_control_total, f_control_command_length, f_control_command, f_control_data,
     f_info_entry, f_info_key, f_info_value,
@@ -777,7 +784,12 @@ for _, f in pairs(ipc_fields) do field_list[#field_list+1] = f end
 ipc_proto.fields = field_list
 local ipc_error = ProtoExpert.new("tuntom.ipc.malformed", "Malformed IPC", expert.group.MALFORMED, expert.severity.ERROR)
 ipc_proto.experts = {ipc_error}
+local dissect_control
 local function dissect_ipc(buffer, pinfo, tree)
+    if buffer:len()>0 and buffer(0,1):uint()==2 then
+        dissect_control(buffer,0,pinfo,tree:add(tuntom,buffer()))
+        return buffer:len()
+    end
     local t = tree:add(ipc_proto, buffer())
     local function bad(message) t:add_proto_expert_info(ipc_error, message); return buffer:len() end
     local at, n = 0, buffer:len()
@@ -892,14 +904,63 @@ end
 -- V5: no magic or tunnel ID on wire. Version occurs only in INIT/RESPONSE.
 -- Base = type/flags(1), sequence(8), type extension, tag(16), payload.
 -- Extensions: fragments(12), ping/confirm(8), PMTUD(10), handshake(9).
-local function dissect_control(buffer, header, pinfo, tree)
+dissect_control = function(buffer, header, pinfo, tree)
     local length = buffer:len() - header
     local function bad(reason) tree:add_proto_expert_info(e_control, reason) end
     if length < 32 then bad("Truncated CONTROL header (expected 32 bytes)"); return end
     local payload = buffer(header):tvb()
     local version, kind, state = payload(0,1):uint(), payload(1,1):uint(), payload(2,1):uint()
+    if version == 2 then
+        if length < 52 then bad("Truncated CONTROL v2 header"); return end
+        local hops = payload(3,1):uint()
+        local offset, total, command_length = payload(36,4):uint(), payload(40,4):uint(), payload(44,2):uint()
+        local destination_length, reply_length = payload(46,2):uint(), payload(48,2):uint()
+        local start = 52 + destination_length + reply_length
+        local data_length = length - start - command_length
+        if not control_kinds[kind] or hops < 1 or hops > 16 or payload(50,2):uint() ~= 0 or
+           payload(4,16):raw() == string.rep("\0",16) or payload(20,16):raw() == string.rep("\0",16) or
+           command_length > 256 or destination_length > 1024 or reply_length > 1024 or data_length < 0 then
+            bad("Invalid CONTROL v2 metadata or lengths"); return
+        end
+        if (kind <= 5 and (not control_states[state] or (kind ~= 1 and command_length ~= 0))) or
+           (kind >= 6 and (state ~= 0 or offset ~= 0 or total ~= 0)) or
+           ((kind == 2 or kind == 4 or kind == 5 or kind == 6) and data_length ~= 0) then
+            bad("Invalid CONTROL v2 kind/state/body combination"); return
+        end
+        if (kind == 1 or (kind == 3 and state >= 4 and state <= 7)) and
+           (total > 1048576 or offset > total or data_length > total-offset) then
+            bad("CONTROL v2 block exceeds declared length"); return
+        end
+        local function path(at, size, field)
+            if size == 0 then return true end
+            local subtree, finish, count = tree:add(field,payload(at,size)), at+size, 0
+            while at < finish do
+                count = count + 1
+                if finish-at < 2 or count > 16 then return false end
+                local tag, n = payload(at,1):uint(), payload(at+1,1):uint()
+                if at+2+n > finish or not ((tag==1 and n==0) or (tag==2 and n>0 and n<=63) or (tag==3 and n==16)) then return false end
+                if tag==2 and payload(at+2,n):string():find("[^!-~]") then return false end
+                if tag==3 and payload(at+2,n):raw()==string.rep("\0",16) then return false end
+                subtree:add(f_control_hop_type,payload(at,1))
+                if n>0 then subtree:add(f_control_hop_value,payload(at+2,n)) end
+                at=at+2+n
+            end
+            return true
+        end
+        if not path(52,destination_length,f_control_destination) or
+           not path(52+destination_length,reply_length,f_control_reply_path) then bad("Invalid CONTROL routing stack"); return end
+        tree:add(f_control_version,payload(0,1)); tree:add(f_control_kind,payload(1,1))
+        tree:add(f_control_state,payload(2,1)); tree:add(f_control_hops,payload(3,1))
+        tree:add(f_control_id,payload(4,16)); tree:add(f_control_origin,payload(20,16))
+        tree:add(f_control_offset,payload(36,4)); tree:add(f_control_total,payload(40,4))
+        tree:add(f_control_command_length,payload(44,2))
+        if command_length>0 then tree:add(f_control_command,payload(start,command_length)) end
+        if data_length>0 then tree:add(f_control_data,payload(start+command_length,data_length)) end
+        pinfo.cols.info:append(string.format(", v2 %s, hops=%d, offset=%d, total=%d",control_kinds[kind],hops,offset,total))
+        return
+    end
     local offset, total, command_length = payload(20,4):uint(), payload(24,4):uint(), payload(28,2):uint()
-    if version ~= 1 or not control_kinds[kind] or not control_states[state] then
+    if version ~= 1 or kind > 5 or not control_kinds[kind] or not control_states[state] then
         bad("Unsupported CONTROL version, kind or state"); return
     end
     if payload(3,1):uint() ~= 0 or payload(30,2):uint() ~= 0 then

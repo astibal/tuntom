@@ -224,7 +224,9 @@ public:
             if (!result.size) return 0;
             const auto n = static_cast<std::size_t>(result.size);
             TransportStats::add(rx.records);
-            if (record[0] == switch_protocol_version) {
+            // Logical inline records include routed CONTROL v2 as well as DATA v1.
+            // Their codecs validate the body after transport framing is removed.
+            if (record[0] == switch_protocol_version || record[0] == 2) {
                 if (n > parameters_.frame_limit) return bad_reference();
                 if (record != buffer) std::memcpy(buffer, record, std::min(n, capacity));
                 TransportStats::add(rx.inline_frames);

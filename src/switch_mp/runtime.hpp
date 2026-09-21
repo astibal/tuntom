@@ -1,4 +1,5 @@
 #pragma once
+#include "../control_route.hpp"
 
 #include "config.hpp"
 #include "../switch_ecmp.hpp"
@@ -292,6 +293,11 @@ class Engine {
             return true;
         }
         buffer->size = static_cast<std::size_t>(received);
+        if (control_route::marked(buffer->data,buffer->size)) {
+            if (!port.relay_control.push(buffer)) buffer->release();
+            else control_wake_.poke();
+            return true;
+        }
         const std::string* ingress = &port.name;
         if (relay::marked(buffer->data,buffer->size)) {
             relay::View record;
@@ -876,6 +882,18 @@ class Engine {
     }
     int event_fd() const { return control_wake_.fd(); }
     void drain_events() { control_wake_.drain(); }
+    std::function<void(const std::string&,const std::uint8_t*,std::size_t)> control_receive;
+    bool control_send(const std::string& name,std::uint64_t generation,const std::vector<std::uint8_t>& bytes) {
+        for (const auto& port:plan_->ports) if(port->name==name && port->generation==generation && !port->disconnected.load()) {
+            pause();
+            try {
+                const auto sent = port->transport ? port->transport->send(port->fd.get(),{bytes.data(),bytes.size()}) :
+                    ::send(port->fd.get(),bytes.data(),bytes.size(),MSG_DONTWAIT|MSG_NOSIGNAL);
+                resume(); return sent==static_cast<ssize_t>(bytes.size());
+            } catch (...) { resume(); throw; }
+        }
+        return false;
+    }
     void relay_maintenance() {
         const auto ports = plan_->ports;
         for (const auto& port : ports) {
@@ -888,6 +906,10 @@ class Engine {
         for (const auto& port : ports) for (unsigned i=0;i<16 && !port->disconnected.load();++i) {
             auto* buffer = port->relay_control.pop(); if (!buffer) break;
             struct Release { Buffer* p; ~Release() { p->release(); } } release{buffer};
+            if (control_route::marked(buffer->data,buffer->size)) {
+                if(control_receive)control_receive(port->name,buffer->data,buffer->size);
+                continue;
+            }
             relay::View record;
             if (!config_.ruleset || !relay::decode(buffer->data,buffer->size,record)) continue;
             std::vector<std::string> occupied;

@@ -1,3 +1,4 @@
+#include "../routed_control.hpp"
 #include "flows.hpp"
 #include "paths.hpp"
 #include "shared_flows.hpp"
@@ -38,6 +39,7 @@ void usage(const char* program) {
         << "  --divert-in-port NAME      default divert-in\n"
         << "  --divert-out-port NAME     default divert-out\n"
         << "  --control-socket PATH     tuntomctl PATH show stats\n"
+        << "  --allow-control-all      Allow incoming routed CONTROL and discovery\n"
         << "  --switch-ipc auto|v1|inline  default auto\n"
         << "  --switch-ipc-batch N      1..16, default 8\n"
         << "  --mtu N                   576..65535, default 1500\n"
@@ -78,9 +80,12 @@ int main(int argc, char** argv) {
         std::vector<std::string> relay_paths;
         std::size_t mtu = 1500, capacity = 100000, admission_capacity = 100000, idle = 86400;
         ipc::Options options;
+        bool allow_control_all = false;
+        RoutedControl routed_control("divert-adapter");
         for (int i = 3; i < argc; ++i) {
             const std::string option = argv[i];
             if (option == "--help" || option == "-h") { usage(argv[0]); return 0; }
+            if (option == "--allow-control-all") { allow_control_all = true; continue; }
             if (++i >= argc) throw std::runtime_error(option + " requires a value");
             const std::string value = argv[i];
             if (option == "--switch-socket") socket = value;
@@ -227,6 +232,17 @@ int main(int argc, char** argv) {
                 }
                 return dump.finish();
         };
+        routed_control.configure(allow_control_all,control_dispatcher);
+        if (control) control->set_routed(routed_control.local_submit());
+        const auto refresh_control_edges = [&] {
+            for (std::size_t i=0;i<clients.size();++i) {
+                const auto cookie = connected(i) ? control_socket_generation(clients[i]->fd()) : 0;
+                routed_control.router().edge("ipc:"+std::to_string(i),cookie,false,control_route::max_frame,[&,i,cookie](const auto& bytes) {
+                    return connected(i) && control_socket_generation(clients[i]->fd())==cookie &&
+                        clients[i]->send(bytes.data(),bytes.size())==static_cast<ssize_t>(bytes.size());
+                });
+            }
+        };
         const auto control_step = [&] {
             if (control) control->handle_dispatch(control_dispatcher);
         };
@@ -246,6 +262,11 @@ int main(int argc, char** argv) {
                 return true;
             }
             const auto now = Clock::now();
+            if (from_switch && control_route::marked(buffer.data(),static_cast<std::size_t>(n))) {
+                refresh_control_edges();
+                routed_control.router().receive("ipc:"+std::to_string(index),buffer.data(),static_cast<std::size_t>(n),now);
+                return true;
+            }
             PacketInfo packet;
             via::AdapterContext env;
             if (from_switch) {
@@ -310,7 +331,10 @@ int main(int argc, char** argv) {
                 for (unsigned side = 0; side < 2; ++side)
                     fds[clients.size() + side] = {queues_active && tuns[side] ? tuns[side]->fd() : -1, POLLIN, 0};
                 fds.back() = {control ? control->poll_fd() : -1, POLLIN, 0};
-                int timeout = 1000;
+                refresh_control_edges();
+                routed_control.tick();
+                if (routed_control.active()) control_step();
+                int timeout = routed_control.active() ? 10 : 1000;
                 for (const auto& client : clients) if (client) timeout = client->poll_timeout_ms(now, timeout);
                 if (control) timeout = control->poll_timeout_ms(now, timeout);
                 const auto ready = ::poll(fds.data(), fds.size(), timeout);
