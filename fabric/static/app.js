@@ -8,6 +8,10 @@ const messages = {
   workspace:["Pracovní prostor","Workspace","Espace de travail"],
   views:["Zobrazení","Views","Vues"],
   language:["Jazyk rozhraní","Interface language","Langue de l’interface"],
+  noFlowComponents:["Žádný adaptér ani divert","No adapter or divert","Aucun adaptateur ni divert"],
+  noSwitchComponents:["Žádný switch","No switch","Aucun switch"],
+  startFlowComponents:["Flow snapshoty poskytují exit adaptéry a diverty. Žádný teď neběží.","Flow snapshots are provided by exit adapters and diverts. None are running.","Les instantanés de flux sont fournis par les adaptateurs de sortie et les diverts. Aucun ne tourne."],
+  startSwitchComponents:["Pravidla jsou dostupná pro switche. Žádný teď neběží.","Rules are available for switches. None are running.","Les règles sont disponibles pour les switches. Aucun ne tourne."],
   filterRegex:["Regulární výraz","Regular expression","Expression régulière"],
   filterHelp:["Prefix + mezera nebo dvojtečka: port/sport/dport, addr/src/dst/saddr/daddr, ip/ip6/addr6, net/snet/dnet a varianty 4/6. Sítě: CIDR, bez masky /32 nebo /128. Neúplné adresy se hledají textově. Porty podporují rozsahy 8000-8999. Regex hledá v jednotlivých hodnotách; úplné net adresy používají CIDR.","Prefix + space or colon: port/sport/dport, addr/src/dst/saddr/daddr, ip/ip6/addr6, net/snet/dnet and 4/6 variants. Networks: CIDR, default /32 or /128. Incomplete addresses use text matching. Ports accept ranges such as 8000-8999. Regex matches individual values; complete net addresses use CIDR.","Préfixe + espace ou deux-points : port/sport/dport, addr/src/dst/saddr/daddr, ip/ip6/addr6, net/snet/dnet et variantes 4/6. Réseaux : CIDR, /32 ou /128 par défaut. Adresses incomplètes : recherche textuelle. Ports : plages comme 8000-8999. Regex par valeur ; adresses net complètes : CIDR."],
   filterError_missing:["Za kategorií zadej hledanou hodnotu.","Enter a value after the category.","Saisis une valeur après la catégorie."],
@@ -771,10 +775,24 @@ function peerSecuritySummary(e, nodes) {
     return `<div class="peer-system ${level}" title="${esc(node.ip)}"><span>${esc(node.values?.hostname || node.ip)} · CPU ${esc(percent(node.values?.cpu))} · steal ${esc(percent(node.values?.steal))}${fresh ? "" : " · "+esc(t("stale"))}</span><span class="peer-updates">${esc(known ? t("securityUpdates",{count}) : t("securityUpdatesUnknown"))}</span></div>`;
   }).join("");
 }
+function supportsProcessView(e, view) {
+  return view === "flows" ? ["adapter","divert"].includes(e.kind) : view === "rules" ? e.kind === "switch" : true;
+}
+function processViewSelection(endpoints, view, id) {
+  const eligible=endpoints.filter(e=>supportsProcessView(e,view));
+  return eligible.find(e=>e.id===id)?.id || eligible[0]?.id || null;
+}
 function renderProcesses() {
   if (!state.data) return;
-  const query = $("search").value.toLowerCase(), kind = $("kind-filter").value;
-  const rows = state.data.endpoints.filter(e => (!kind || e.kind === kind) &&
+  const eligible=state.data.endpoints.filter(e=>supportsProcessView(e,state.view));
+  const next=processViewSelection(state.data.endpoints,state.view,state.selected);
+  if(next!==state.selected){state.selected=next;state.flowPage=0;}
+  const kindSelect=$("kind-filter");
+  for(const option of kindSelect.options) option.disabled=!!option.value && !supportsProcessView({kind:option.value},state.view);
+  if(kindSelect.selectedOptions[0]?.disabled)kindSelect.value="";
+  kindSelect.disabled=state.view==="rules";
+  const query = $("search").value.toLowerCase(), kind = kindSelect.value;
+  const rows = eligible.filter(e => (!kind || e.kind === kind) &&
     [e.name,e.pid,e.interface,e.executable,e.port_id].join(" ").toLowerCase().includes(query));
   $("process-total").textContent = rows.length;
   $("processes").innerHTML = groupPeerRows(rows,state.data.syspiper?.nodes || []).map(({e,peers,first,last,count}) => {
@@ -784,8 +802,8 @@ function renderProcesses() {
     return `<tr data-process-row="${esc(e.id)}" class="${e.id === state.selected ? "selected" : ""} ${count>1 ? "peer-group"+(first ? " peer-group-first" : "")+(last ? " peer-group-last" : "") : ""}"><td><button class="process-name" data-id="${esc(e.id)}" aria-pressed="${e.id === state.selected}">${esc(e.name)}<small>PID ${e.pid}${e.interface && e.interface !== "-" ? " · " + esc(e.interface) : ""}</small></button>${first ? peerSecuritySummary(e,peers) : ""}</td><td><span class="kind ${payloadClass(e)}">${payloadMark(e)}${esc(endpointType(e))}</span></td><td>${indicator}</td><td>${bps(rate(e,"rx"))}<small>↑ ${bps(rate(e,"tx"))}</small></td><td class="rtt-value" title="${esc(metricHelp("rtt_last_ms"))}">${esc(lastRTT(e))}</td><td>${duration(e.uptime_seconds)}</td></tr>`;
   }).join("");
   $("empty").hidden = rows.length > 0;
-  $("empty").querySelector("h3").textContent = t(state.data.endpoints.length ? "noMatches" : "noProcesses");
-  $("empty").querySelector("p").textContent = t(state.data.endpoints.length ? "changeFilter" : "startProcesses");
+  $("empty").querySelector("h3").textContent = t(eligible.length ? "noMatches" : state.view==="flows" ? "noFlowComponents" : state.view==="rules" ? "noSwitchComponents" : "noProcesses");
+  $("empty").querySelector("p").textContent = t(eligible.length ? "changeFilter" : state.view==="flows" ? "startFlowComponents" : state.view==="rules" ? "startSwitchComponents" : "startProcesses");
 }
 function renderDetail() {
   const e = selected();
@@ -1413,6 +1431,7 @@ async function ruleAction(operation) {
 }
 function showView(view) {
   state.view=view;
+  render();
   document.querySelectorAll("[data-view]").forEach(b=>b.classList.toggle("active",b.dataset.view === state.view));
   for (const name of ["overview","metrics","rules","switch","diagnostics","syspiper","flows","observed"]) $("view-"+name).hidden = view !== name;
   document.querySelector(".process-panel").hidden=view === "observed";
@@ -1423,7 +1442,7 @@ function showView(view) {
 }
 function selectProcess(id, view) {
   if (state.selected!==id) state.flowPage=0;
-  state.selected=id; render(); loadHistory(id);
+  state.selected=id; if(view)state.view=view; render(); loadHistory(state.selected);
   if (view) showView(view);
   else if (state.view === "diagnostics" && !state.logs.has(id)) readLogs();
 }
