@@ -422,6 +422,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(200, result)
             raise APIError(404, "unknown API route")
         assets = {"/": ("index.html", "text/html; charset=utf-8"),
+                  "/flow-filter.js": ("flow-filter.js", "text/javascript; charset=utf-8"),
                   "/app.js": ("app.js", "text/javascript; charset=utf-8"),
                   "/style.css": ("style.css", "text/css; charset=utf-8"),
                   "/favicon.svg": ("favicon.svg", "image/svg+xml")}

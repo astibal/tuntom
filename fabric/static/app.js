@@ -8,6 +8,27 @@ const messages = {
   workspace:["Pracovní prostor","Workspace","Espace de travail"],
   views:["Zobrazení","Views","Vues"],
   language:["Jazyk rozhraní","Interface language","Langue de l’interface"],
+  filterRegex:["Regulární výraz","Regular expression","Expression régulière"],
+  filterHelp:["Prefix + mezera nebo dvojtečka: port/sport/dport, addr/src/dst/saddr/daddr, ip/ip6/addr6, net/snet/dnet a varianty 4/6. Sítě: CIDR, bez masky /32 nebo /128. Neúplné adresy se hledají textově. Porty podporují rozsahy 8000-8999. Regex hledá v jednotlivých hodnotách; úplné net adresy používají CIDR.","Prefix + space or colon: port/sport/dport, addr/src/dst/saddr/daddr, ip/ip6/addr6, net/snet/dnet and 4/6 variants. Networks: CIDR, default /32 or /128. Incomplete addresses use text matching. Ports accept ranges such as 8000-8999. Regex matches individual values; complete net addresses use CIDR.","Préfixe + espace ou deux-points : port/sport/dport, addr/src/dst/saddr/daddr, ip/ip6/addr6, net/snet/dnet et variantes 4/6. Réseaux : CIDR, /32 ou /128 par défaut. Adresses incomplètes : recherche textuelle. Ports : plages comme 8000-8999. Regex par valeur ; adresses net complètes : CIDR."],
+  filterError_missing:["Za kategorií zadej hledanou hodnotu.","Enter a value after the category.","Saisis une valeur après la catégorie."],
+  filterError_long:["Filtr je příliš dlouhý (max. 512 znaků).","Filter too long (max. 512 characters).","Filtre trop long (512 caractères maximum)."],
+  filterError_network:["Neplatná síť nebo jiná IP rodina.","Invalid network or wrong IP family.","Réseau invalide ou mauvaise famille IP."],
+  filterError_regex:["Neplatný regulární výraz.","Invalid regular expression.","Expression régulière invalide."],
+  filterError_timeout:["Filtr překročil časový limit. Zjednoduš výraz.","Filter timed out. Simplify the expression.","Délai dépassé. Simplifie l’expression."],
+  filterError_worker:["Filtr se nepodařilo spustit.","Could not run the filter.","Impossible d’exécuter le filtre."],
+  cascadeRaw:["Nepřepočítávat","Bypass grouping","Sans regroupement"],
+  cascadeLevel:["{n}. kaskáda","Level {n}","Niveau {n}"],
+  cascadeNone:["Žádná","None","Aucun"],
+  cascadeSkip:["Bez sloučení","Skip grouping","Sans regroupement"],
+  cascadeAll:["Všechny","All","Tous"],
+  cascadeVariants:["{count} variant","{count} variants","{count} variantes"],
+  cascadeStacks:["{count} label stacků","{count} label stacks","{count} piles de labels"],
+  cascadeContexts:["{count} kontextů","{count} contexts","{count} contextes"],
+  cascadeFlows:["{count} flows","{count} flows","{count} flows"],
+  cascadeCount:["{count} flows · {sources} SRC IP · {ports} SRC portů","{count} flows · {sources} SRC IPs · {ports} SRC ports","{count} flows · {sources} IP SRC · {ports} ports SRC"],
+  cascadeMore:["Zobrazit další (zbývá {count})","Show more ({count} remaining)","Afficher plus ({count} restants)"],
+  cascadePage:["{from}–{to} / {count} kořenových položek","{from}–{to} / {count} root entries","{from}–{to} / {count} éléments racines"],
+  cascadeSnapshot:["Kořenové položky · {count} flows ve filtrovaném vzorku","Root entries · {count} flows in filtered snapshot","Éléments racines · {count} flows dans l’échantillon filtré"],
   viaTitle:["VIA · rozložení provozu","VIA · traffic distribution","VIA · répartition du trafic"],
   viaHint:["IN = client-relay, OUT = server-relay. Celkový provoz tunelu RX + TX za 5 s, včetně režie a sdílených služeb. Podíly v rámci sloupce; při chybějících datech —. Společné měřítko barů pro službu.","IN = client-relay, OUT = server-relay. Total tunnel RX + TX over 5 s, including overhead and shared services. Shares within each column; missing data —. Shared bar scale per service.","IN = client-relay, OUT = server-relay. Total RX + TX du tunnel sur 5 s, incluant surcharge et services partagés. Parts par colonne ; données manquantes —. Échelle commune par service."],
   viaNoMembers:["Žádné doložené VIA relay tunely","No verified VIA relay tunnels","Aucun tunnel relais VIA vérifié"],
@@ -1537,9 +1558,8 @@ function flowLabel(value, format) {
   if(n===magic || header)return "VIA";
   return format === "hex" ? value : n.toString();
 }
-function flowMatches(row, query) {
-  const values=Object.values(row).flatMap(value=>Array.isArray(value) ? value.flatMap(label=>[label,BigInt(label).toString(),flowLabel(label,"dec")]) : [value ?? "unknown"]);
-  return query.toLowerCase().split(/\s+/).filter(Boolean).every(part=>values.join(" ").toLowerCase().includes(part));
+function flowMatches(row, query, regex=false) {
+  return FlowFilter.matches(row,FlowFilter.parse(query,regex));
 }
 function viaSavedPositions(values, internal=false) {
   const positions=new Set();
@@ -1567,6 +1587,137 @@ function flowContext(row) {
     return `<div class="flow-context"><strong>${side} · ${body ? "DIVERT" : "VIA"}</strong>${fields.map(key=>`<span>${key} <code>${esc(key==="action" ? (({0:"offer",1:"onward",2:"bypass",3:"complete"}[row[side+"_"+key]] || "?")+" ("+row[side+"_"+key]+")") : row[side+"_"+key])}</code></span>`).join("")}${body ? `<span>body <code>${esc(body.join(", ") || "[]")}</code></span>` : ""}</div>`;
   }).join("");
 }
+// Pure snapshot grouping: numeric addresses avoid textual IPv6 alias groups.
+function flowIPBucket(value, prefix4, prefix6) {
+  if(prefix4==="none" && prefix6==="none")return null;
+  if(typeof value!=="string")return {key:"missing",label:"—"};
+  const v4=ip=>{const parts=ip.split('.');return parts.length===4 && parts.every(p=>/^\d{1,3}$/.test(p) && Number(p)<=255)?parts.reduce((n,p)=>(n<<8n)|BigInt(p),0n):null;};
+  let bits=32,n=v4(value),prefix=prefix4;
+  if(value.includes(':')) {
+    bits=128;prefix=prefix6;let ip=value.toLowerCase();
+    if(ip.includes('.')) {
+      const last=ip.lastIndexOf(':'),tail=v4(ip.slice(last+1));
+      if(tail===null)return {key:'invalid:'+value,label:value};
+      ip=ip.slice(0,last+1)+(tail>>16n).toString(16)+':'+(tail&65535n).toString(16);
+    }
+    const halves=ip.split('::'),left=halves[0]?halves[0].split(':'):[],right=halves[1]?halves[1].split(':'):[];
+    if(halves.length>2 || ![...left,...right].every(p=>/^[0-9a-f]{1,4}$/.test(p)) ||
+      (halves.length===1?left.length!==8:left.length+right.length>=8))return {key:'invalid:'+value,label:value};
+    const words=halves.length===1?left:[...left,...Array(8-left.length-right.length).fill('0'),...right];
+    n=words.reduce((acc,p)=>(acc<<16n)|BigInt('0x'+p),0n);
+  }
+  if(n===null)return {key:'invalid:'+value,label:value};
+  if(prefix==="none")return null;
+  const length=Number(prefix),shift=BigInt(bits-length),network=(n>>shift)<<shift;
+  let address;
+  if(bits===32)address=[24n,16n,8n,0n].map(s=>Number((network>>s)&255n)).join('.');
+  else {
+    const words=Array.from({length:8},(_,i)=>((network>>BigInt((7-i)*16))&65535n).toString(16));
+    let best=-1,size=1;
+    for(let i=0;i<8;) {if(words[i]!=='0'){i++;continue;}let j=i;while(j<8 && words[j]==='0')j++;if(j-i>size){best=i;size=j-i;}i=j;}
+    address=best<0?words.join(':'):words.slice(0,best).join(':')+'::'+words.slice(best+size).join(':');
+  }
+  return {key:`${bits}:${network}/${length}`,label:address+'/'+length};
+}
+function flowCascadeBucket(row, field, settings) {
+  if(field==='SRC' || field==='DST') {
+    const key=field==='SRC'?'src':'dst';
+    return flowIPBucket(row[key],settings[key+'4'],settings[key+'6']);
+  }
+  const key=field==='SPORT'?'src_port':'dst_port',value=row[key];
+  if(value===undefined || value===null)return {key:'missing',label:'—'};
+  const port=Number(value),step=Number(settings[field]);
+  if(!Number.isInteger(port) || port<0 || port>65535)return {key:'invalid:'+value,label:String(value)};
+  const start=Math.floor(port/step)*step,end=Math.min(65535,start+step-1);
+  return {key:start+'-'+end,label:start===end?String(start):start+'–'+end};
+}
+function buildFlowCascade(rows, levels, settings) {
+  const root={children:new Map(),rows:[],count:0,key:'root'};
+  for(const row of rows) {
+    const labelKeys=['labels','client_labels','server_labels','client_saved_labels','server_saved_labels'];
+    const summary={...Object.fromEntries(['src','dst','src_port','dst_port','protocol','table','ip_version'].map(k=>[k,row[k]??null])),
+      stacks:JSON.stringify(labelKeys.filter(k=>Object.hasOwn(row,k)).map(k=>[k,row[k]])),
+      context:JSON.stringify(Object.keys(row).filter(k=>k==='path' || /^(client|server)_/.test(k) && !labelKeys.includes(k)).sort().map(k=>[k,row[k]]))};
+    let parent=root;parent.count++;
+    for(const field of levels.filter(Boolean)) {
+      const bucket=flowCascadeBucket(row,field,settings);if(!bucket)continue;
+      const token=JSON.stringify([field,bucket.key]);
+      if(!parent.children.has(token))parent.children.set(token,{field,label:bucket.label,key:parent.key+'/'+token,children:new Map(),rows:[],count:0,ports:new Set(),sources:new Set(),summary:Object.fromEntries(Object.keys(summary).map(k=>[k,new Set()])),sample:row});
+      parent=parent.children.get(token);parent.count++;
+      for(const [key,value] of Object.entries(summary))parent.summary[key].add(value);
+      if(row.src_port!==undefined)parent.ports.add(String(row.src_port));
+      if(row.src!==undefined)parent.sources.add(row.src);
+    }
+    parent.rows.push(row);
+  }
+  return root;
+}
+function compactFlowGroup(node) {
+  const ranges={};let branch=node;
+  ranges[branch.field]=branch.label;
+  while(branch.rows.length===0 && branch.children.size===1) {
+    branch=branch.children.values().next().value;
+    ranges[branch.field]=branch.label;
+  }
+  return {ranges,children:[...branch.children.values(),...branch.rows]};
+}
+function flowCascadeChoices(values,index,value) {
+  const next=values.slice();next[index]=value;
+  for(let i=index+1;i<next.length;i++)if(value && next[i]===value)next[i]='';
+  return next;
+}
+
+const flowEmptyRows=[];
+let flowFilterJob=null;
+function filteredFlowRows(rows,query,regex) {
+  if(!query.trim()) {
+    flowFilterJob?.worker?.terminate();clearTimeout(flowFilterJob?.timer);clearTimeout(flowFilterJob?.debounce);flowFilterJob=null;
+    $('flow-filter-status').textContent='';$('flow-search').removeAttribute('aria-invalid');
+    return rows;
+  }
+  if(!flowFilterJob || flowFilterJob.rows!==rows || flowFilterJob.query!==query || flowFilterJob.regex!==regex) {
+    flowFilterJob?.worker?.terminate();clearTimeout(flowFilterJob?.timer);clearTimeout(flowFilterJob?.debounce);
+    const job={rows,query,regex,result:[],pending:true,error:null};flowFilterJob=job;
+    const finish=(result,error)=>{
+      if(flowFilterJob!==job)return;
+      clearTimeout(job.timer);job.worker?.terminate();job.pending=false;job.result=result;job.error=error;flowCascadeCache=null;renderFlows();
+    };
+    job.debounce=setTimeout(()=>{
+      try {
+        job.worker=new Worker('/flow-filter.js');
+        job.timer=setTimeout(()=>finish([],'timeout'),1500);
+        job.worker.onmessage=event=>finish(event.data.indices?.map(i=>rows[i]) || [],event.data.error);
+        job.worker.onerror=()=>finish([],'worker');
+        job.worker.postMessage({rows,query,regex});
+      }catch{finish([],'worker');}
+    },150);
+  }
+  const job=flowFilterJob;
+  $('flow-filter-status').textContent=job.pending?t('working'):job.error?t('filterError_'+(['missing','long','network','regex','timeout'].includes(job.error)?job.error:'worker')):'';
+  $('flow-search').setAttribute('aria-invalid',String(!!job.error));
+  return job.result;
+}
+const flowCascadeOpen=new Set(),flowCascadeLimits=new Map();
+let flowCascadeCache=null;
+function cascadeSettings() {
+  return Object.fromEntries(['src4','src6','dst4','dst6','SPORT','DPORT'].map(key=>[key,$('cascade-'+key).value]));
+}
+function syncCascadeChoices(index=-1) {
+  const selects=[0,1,2,3].map(i=>$('cascade-'+i));
+  const values=selects.map(el=>el.value),next=index<0?values:flowCascadeChoices(values,index,values[index]);
+  selects.forEach((el,i)=>{el.value=next[i];for(const option of el.options)option.disabled=!!option.value && next.slice(0,i).includes(option.value);});
+  const raw=$('flow-raw').checked;
+  for(const el of document.querySelectorAll('.flow-cascade select'))el.disabled=raw;
+  $('flow-order').disabled=raw;
+}
+for(let i=0;i<4;i++)$('cascade-'+i).addEventListener('change',()=>{syncCascadeChoices(i);state.flowPage=0;renderFlows();});
+for(const id of ['flow-raw','cascade-src4','cascade-src6','cascade-dst4','cascade-dst6','cascade-SPORT','cascade-DPORT'])$(id).addEventListener('change',()=>{syncCascadeChoices();state.flowPage=0;renderFlows();});
+syncCascadeChoices();
+$('flows-rows').addEventListener('click',event=>{
+  const toggle=event.target.closest('[data-cascade-toggle]'),more=event.target.closest('[data-cascade-more]');
+  if(toggle){const key=toggle.dataset.cascadeToggle;flowCascadeOpen.has(key)?flowCascadeOpen.delete(key):flowCascadeOpen.add(key);renderFlows();}
+  if(more){const key=more.dataset.cascadeMore;flowCascadeLimits.set(key,(flowCascadeLimits.get(key)||50)+50);renderFlows();}
+});
 async function readFlows() {
   const e=selected(); if (!e?.control || state.flowBusy) return;
   state.flowBusy=true; renderFlows();
@@ -1580,6 +1731,7 @@ async function readFlows() {
   } finally { state.flowBusy=false; renderFlows(); }
 }
 function renderFlows() {
+  for(let i=0;i<4;i++)$("cascade-title-"+i).textContent=t("cascadeLevel",{n:i+1});
   const e=selected(), entry=state.flows.get(e?.id), data=entry?.data;
   $("flows-title").textContent=e ? `${t("flowsTitle")} · ${e.name}` : t("flowsTitle");
   $("flows-read").disabled=!e?.control || state.flowBusy;
@@ -1595,27 +1747,65 @@ function renderFlows() {
   const options=`<option value="">${esc(t("flowAll"))}</option>`+Object.keys(data?.table_counts || {}).map(key=>`<option value="${esc(key)}">${esc(key)} (${data.table_counts[key]})</option>`).join("");
   if ($("flow-table").innerHTML!==options) { $("flow-table").innerHTML=options; $("flow-table").value=Object.hasOwn(data?.table_counts || {},table) ? table : ""; }
   const proto=$("flow-protocol").value, query=$("flow-search").value;
-  const rows=(data?.rows || []).filter(row=>(!$("flow-table").value || row.table===$("flow-table").value) &&
-    (!proto || (proto==="l3" ? row.protocol===undefined : proto==="other" ? row.protocol!==undefined && !["6","17"].includes(row.protocol) : row.protocol===proto)) && flowMatches(row,query));
-  if ($("flow-order").value==="idle") rows.sort((a,b)=>a.idle_ms===undefined ? (b.idle_ms===undefined ? 0 : 1) : b.idle_ms===undefined ? -1 : BigInt(a.idle_ms)<BigInt(b.idle_ms) ? -1 : BigInt(a.idle_ms)>BigInt(b.idle_ms) ? 1 : 0);
-  if ($("flow-order").value==="source") rows.sort((a,b)=>a.src.localeCompare(b.src));
-  state.flowPage=Math.min(state.flowPage,Math.max(0,Math.ceil(rows.length/50)-1));
-  const start=state.flowPage*50, page=rows.slice(start,start+50);
+  const searched=filteredFlowRows(data?.rows || flowEmptyRows,query,$("flow-regex").checked);
+  const rows=searched.filter(row=>(!$("flow-table").value || row.table===$("flow-table").value) &&
+    (!proto || (proto==="l3" ? row.protocol===undefined : proto==="other" ? row.protocol!==undefined && !["6","17"].includes(row.protocol) : row.protocol===proto)));
+  if (!$("flow-raw").checked && $("flow-order").value==="idle") rows.sort((a,b)=>a.idle_ms===undefined ? (b.idle_ms===undefined ? 0 : 1) : b.idle_ms===undefined ? -1 : BigInt(a.idle_ms)<BigInt(b.idle_ms) ? -1 : BigInt(a.idle_ms)>BigInt(b.idle_ms) ? 1 : 0);
+  if (!$("flow-raw").checked && $("flow-order").value==="source") rows.sort((a,b)=>a.src.localeCompare(b.src));
+  const levels=[0,1,2,3].map(i=>$('cascade-'+i).value), settings=cascadeSettings();
+  const grouped=!$('flow-raw').checked && levels.some(Boolean);
+  const cacheKey=JSON.stringify([e?.id,levels,settings,proto,query,$('flow-regex').checked,$('flow-table').value,$('flow-order').value,grouped]);
+  if(!flowCascadeCache || flowCascadeCache.rows!==data?.rows || flowCascadeCache.key!==cacheKey) {
+    const tree=grouped?buildFlowCascade(rows,levels,settings):null;
+    flowCascadeCache={rows:data?.rows,key:cacheKey,tree};
+  }
+  const tree=flowCascadeCache.tree,items=tree?[...tree.children.values(),...tree.rows]:rows;
+  state.flowPage=Math.min(state.flowPage,Math.max(0,Math.ceil(items.length/50)-1));
+  const start=state.flowPage*50,page=items.slice(start,start+50);
+  const namespace=JSON.stringify([e?.id,levels,settings]);
   const open=new Set([...$("flows-rows").querySelectorAll('details[open]')].map(el=>el.dataset.flowRow));
-  const address=(ip,port)=>port===undefined ? ip : (ip.includes(":") ? `[${ip}]` : ip)+":"+port;
-  $("flows-rows").innerHTML=page.map(row=>{
-    const stackKeys=["labels","client_labels","server_labels","client_saved_labels","server_saved_labels"];
+  const stackKeys=['labels','client_labels','server_labels','client_saved_labels','server_saved_labels'];
+  const stackHTML=row=>stackKeys.filter(key=>Object.hasOwn(row,key)).map(key=>`<div class="flow-stack"><small>${esc(key)}</small><div>${flowStack(row[key],key.endsWith('_saved_labels') && row[key.replace('_saved_labels','_chain')]!==undefined)}</div></div>`).join('') || '—';
+  const protocolName=value=>value===null || value===undefined?'L3':({6:'TCP',17:'UDP',1:'ICMP',58:'ICMPv6'}[value] || 'IP '+value);
+  const contextHTML=row=>(row.path!==undefined?`<span class="tag">path ${esc(row.path)}</span>`:'')+flowContext(row);
+  const renderRow=(row,depth=0)=>{
     const rowKey=JSON.stringify(row);
-    const protocol=row.protocol===undefined ? "L3" : ({6:"TCP",17:"UDP",1:"ICMP",58:"ICMPv6"}[row.protocol] || "IP "+row.protocol);
-    return `<tr><td><span class="tag">${esc(row.table)}</span><small class="cell-note">IPv${row.ip_version} · ${esc(protocol)}</small></td><td class="flow-tuple"><code>${esc(address(row.src,row.src_port))}</code><span class="flow-arrow">↓</span><code>${esc(address(row.dst,row.dst_port))}</code></td><td class="flow-idle">${row.idle_ms===undefined ? "—" : esc(BigInt(row.idle_ms).toLocaleString(locale()))+" ms"}</td><td>${stackKeys.filter(key=>Object.hasOwn(row,key)).map(key=>`<div class="flow-stack"><small>${esc(key)}</small><div>${flowStack(row[key],key.endsWith("_saved_labels") && row[key.replace("_saved_labels","_chain")]!==undefined)}</div></div>`).join("") || "—"}</td><td>${row.path!==undefined ? `<span class="tag">path ${esc(row.path)}</span>` : ""}${flowContext(row)}<details data-flow-row="${esc(rowKey)}" ${open.has(rowKey) ? "open" : ""}><summary>${esc(t("flowExact"))}</summary><pre>${esc(JSON.stringify(row,null,2))}</pre></details></td></tr>`;
-  }).join("") || `<tr><td colspan="5">${esc(t("flowNoRows"))}</td></tr>`;
-  $("flows-page").textContent=t("flowPage",{from:rows.length ? start+1 : 0,to:Math.min(start+50,rows.length),count:rows.length});
+    return `<tr class="flow-leaf"><td data-depth="${depth}"><span class="tag">${esc(row.table)}</span><small class="cell-note">IPv${row.ip_version} · ${esc(protocolName(row.protocol))}</small></td>${['src','src_port','dst','dst_port'].map(key=>`<td class="flow-address"><code>${esc(row[key]??'—')}</code></td>`).join('')}<td class="flow-idle">${row.idle_ms===undefined?'—':esc(BigInt(row.idle_ms).toLocaleString(locale()))+' ms'}</td><td>${stackHTML(row)}</td><td>${contextHTML(row)}<details data-flow-row="${esc(rowKey)}" ${open.has(rowKey)?'open':''}><summary>${esc(t('flowExact'))}</summary><pre>${esc(JSON.stringify(row,null,2))}</pre></details></td></tr>`;
+  };
+  const focused=document.activeElement?.closest('[data-cascade-toggle],[data-cascade-more]');
+  const focusKey=focused?.dataset.cascadeToggle || focused?.dataset.cascadeMore;
+  const renderItem=(item,depth=0,inherited={})=>{
+    if(!item.children)return renderRow(item,depth);
+    if(item.count===1) {
+      const only=compactFlowGroup(item).children[0];
+      return renderItem(only,depth,inherited);
+    }
+    const key=namespace+item.key,expanded=flowCascadeOpen.has(key);
+    const compact=compactFlowGroup(item),ranges={...inherited,...compact.ranges};
+    const common=(field,format=value=>value??'—')=>item.summary[field].size===1?format(item.summary[field].values().next().value):t('cascadeVariants',{count:item.summary[field].size});
+    const cells=[['src','SRC'],['src_port','SPORT'],['dst','DST'],['dst_port','DPORT']].map(([field,dim])=>{
+      const values=item.summary[field],value=values.size===1?common(field):ranges[dim] || t('cascadeVariants',{count:values.size});
+      return `<td class="flow-address"><code>${esc(value)}</code>${values.size>1 && ranges[dim]?`<small class="cell-note">${esc(t('cascadeVariants',{count:values.size}))}</small>`:''}</td>`;
+    }).join('');
+    let html=`<tr class="flow-group"><td data-depth="${depth}"><button data-cascade-toggle="${esc(key)}" aria-expanded="${expanded}">${expanded?'▾':'▸'} <strong>${esc(t('cascadeFlows',{count:item.count}))}</strong></button><small class="cell-note">${esc(common('table'))} · ${esc(common('protocol',protocolName))}</small></td>${cells}<td class="flow-idle">—</td><td>${item.summary.stacks.size===1?stackHTML(item.sample):esc(t('cascadeStacks',{count:item.summary.stacks.size}))}</td><td>${item.summary.context.size===1?contextHTML(item.sample) || '—':esc(t('cascadeContexts',{count:item.summary.context.size}))}</td></tr>`;
+    if(expanded) {
+      const children=compact.children,limit=flowCascadeLimits.get(key)||50;
+      html+=children.slice(0,limit).map(child=>renderItem(child,depth+1,ranges)).join('');
+      if(children.length>limit)html+=`<tr><td colspan="8"><button class="quiet-button" data-cascade-more="${esc(key)}">${esc(t('cascadeMore',{count:children.length-limit}))}</button></td></tr>`;
+    }
+    return html;
+  };
+  $('flows-rows').innerHTML=page.map(item=>renderItem(item)).join('') || `<tr><td colspan="8">${esc(t("flowNoRows"))}</td></tr>`;
+  for(const button of $('flows-rows').querySelectorAll('[data-depth]'))button.style.paddingLeft=(10+Number(button.dataset.depth)*18)+'px';
+  if(focusKey)[...$('flows-rows').querySelectorAll('[data-cascade-toggle],[data-cascade-more]')].find(el=>(el.dataset.cascadeToggle || el.dataset.cascadeMore)===focusKey)?.focus({preventScroll:true});
+  $("flows-page").textContent=t(grouped?"cascadePage":"flowPage",{from:items.length ? start+1 : 0,to:Math.min(start+50,items.length),count:items.length});
+  if(grouped)$("flows-page").textContent+=" · "+t("cascadeSnapshot",{count:rows.length});
   $("flows-prev").disabled=state.flowPage===0;
-  $("flows-next").disabled=start+50>=rows.length;
+  $("flows-next").disabled=start+50>=items.length;
 }
 $("flows-read").addEventListener("click",readFlows);
 $("flows-export").addEventListener("click",()=>{const data=state.flows.get(state.selected)?.data;if(data)download(JSON.stringify(data,null,2),`tuntom-flows-${selected().pid}.json`);});
-for (const id of ["flow-search","flow-table","flow-protocol","flow-order","flow-label-format"]) $(id).addEventListener(id==="flow-search" ? "input" : "change",()=>{state.flowPage=0;renderFlows();});
+for (const id of ["flow-search","flow-regex","flow-table","flow-protocol","flow-order","flow-label-format"]) $(id).addEventListener(id==="flow-search" ? "input" : "change",()=>{state.flowPage=0;renderFlows();});
 $("flows-prev").addEventListener("click",()=>{state.flowPage--;renderFlows();});
 $("flows-next").addEventListener("click",()=>{state.flowPage++;renderFlows();});
 $("flows-labels").addEventListener("click",event=>{const button=event.target.closest("[data-flow-label]");if(button){$("flow-search").value=button.dataset.flowLabel;state.flowPage=0;renderFlows();}});

@@ -191,3 +191,22 @@ input,select,textarea{background:#151b12;border-color:#424c35}button:hover:not(:
 .flow-label.flow-label-via{color:#bdd2db;border-color:#6b8a96;background:#213039}.flow-label.flow-label-via small{color:#9ebcc9}
 
 .flow-label.flow-label-internal{color:#a5aaa5;border-color:#515751;background:#272c28}.flow-label.flow-label-internal small{color:#899189}
+
+.flow-cascade{display:flex;flex-wrap:wrap;gap:12px;align-items:end;padding:12px 23px;border-bottom:1px solid var(--line);background:#20291b}.flow-cascade label{display:grid;gap:5px;color:var(--muted);font:10px var(--mono)}.flow-cascade select{font-size:11px;padding:6px 9px;min-width:100px}.flow-cascade .cascade-raw{display:flex;align-items:center;align-self:center;margin-right:8px;cursor:pointer;color:var(--accent)}.cascade-raw input{accent-color:var(--accent)}.cascade-ranges{background:transparent;padding-top:8px;padding-bottom:8px}.flow-cascade select:disabled{opacity:.4}.flow-group td{padding:0;background:#26321d;border-bottom:1px solid #414b37}.flow-group button{display:flex;align-items:center;gap:14px;width:100%;border:0;border-radius:0;padding:10px;text-align:left;font:11px var(--mono)}.flow-group button span{color:var(--muted);font-size:10px}.flow-group button strong{color:var(--accent)}
+
+/* Flow groups keep the same columns as their detail rows. */
+.flow-table{min-width:1050px}.flow-table .flow-group td{padding:10px 12px;vertical-align:top;background:#26321d}.flow-group button{width:auto;padding:0;gap:7px;white-space:nowrap}.flow-group .cell-note{margin-top:5px}.flow-address{font:11px var(--mono)}.flow-address code{overflow-wrap:anywhere;white-space:normal}.flow-leaf td:first-child{border-left:2px solid #414b37}.flow-group .flow-stack{margin-bottom:3px}.flow-group .flow-label{font-size:11px;padding:3px 5px}
+
+/* Two compact address rows, with port buckets centered alongside. */
+.cascade-ranges{display:grid;grid-template-columns:repeat(4,minmax(95px,135px));grid-template-rows:auto auto;gap:6px 14px;align-items:center;padding:8px 20px}
+.cascade-ranges label{display:flex;align-items:center;gap:5px;font-size:9px;white-space:nowrap}
+.cascade-ranges select{min-width:0;flex:1;width:auto;padding:3px 5px;font-size:10px}
+.cascade-ranges label:nth-child(1){grid-column:1;grid-row:1}
+.cascade-ranges label:nth-child(2){grid-column:1;grid-row:2}
+.cascade-ranges label:nth-child(3){grid-column:3;grid-row:1}
+.cascade-ranges label:nth-child(4){grid-column:3;grid-row:2}
+.cascade-ranges label:nth-child(5){grid-column:2;grid-row:1/3}
+.cascade-ranges label:nth-child(6){grid-column:4;grid-row:1/3}
+@media(max-width:600px){.cascade-ranges{grid-template-columns:minmax(80px,1fr) minmax(80px,1fr);gap:6px 12px}.cascade-ranges label:nth-child(3){grid-column:1;grid-row:3}.cascade-ranges label:nth-child(4){grid-column:1;grid-row:4}.cascade-ranges label:nth-child(6){grid-column:2;grid-row:3/5}}
+
+.flow-filter-status{font-size:11px;color:var(--accent);padding:0 20px}.flow-filter-status:empty{display:none}.flow-filter-help{padding:5px 20px;font-size:10px;color:var(--muted)}.flow-filter-help summary{cursor:pointer}.flow-regex-control input{accent-color:var(--accent)}.flow-regex-control b{font:15px var(--mono)}#flow-search[aria-invalid="true"]{border-color:var(--red)}

@@ -471,3 +471,43 @@ percentages are computed per side only when all displayed members have current
 measurements. Missing/stale values show a dash. Clicking a row reveals its tunnel
 in the map. Active rules are read while the map is open, even with label overlays
 hidden, because VIA membership also depends on them.
+
+### Flow snapshot cascade
+
+Flow tables default to SRC → SPORT → DST → DPORT grouping. Four selectors set
+the order; selecting a dimension clears duplicates to its right, and dimensions
+already used to the left are disabled. None skips a level. SRC and DST each
+have independent IPv4/IPv6 prefixes (defaults /24 and /64); skip grouping omits
+that address-family level, while /32 and /128 group exact addresses. SPORT and
+DPORT independently use ranges of 1, 100, 1000 (default), 10000 or all ports.
+IPv4 and IPv6 groups are distinct. Missing ports are distinct from port zero.
+
+Filters apply before grouping. Group counts describe the filtered snapshot,
+not a complete flow inventory when the daemon truncated its dump. Leaf rows
+preserve original protocol, labels and VIA context; groups are summaries, not
+merged flow identities. Pagination covers 50 root entries. Open branches render
+50 children at a time with a Show more control. Open paths persist across new
+snapshots and are scoped to the process identity and grouping configuration.
+
+Bypass grouping disables cascade/range controls and local sorting, preserving
+their choices. It shows snapshot order with explicit filters and pagination
+still applied; it does not pause snapshot loading. Grouping is cached per loaded
+snapshot and view settings and does not require daemon or protocol changes.
+
+Cascade summaries use the same SRC / SPORT / DST / DPORT columns as individual
+flows. Shared addresses, ports, protocol, label stacks and VIA context are shown
+immediately; differing values show variant counts. Single-child group chains are
+collapsed into one summary and single-flow groups render directly as flow rows.
+Expanding reveals the next real branching point or original rows, keeping the
+parent summary visible. Label/context differences remain intact at the leaves.
+
+### Scoped flow filters and regular expressions
+
+Flow search accepts a category followed by a space or colon:
+
+- `port 8000-8999`, `sport 32000-32999`, `dport:443`: either/source/destination port; ranges include both bounds.
+- `addr 10.20.`, `src 10.20.`, `dst 2001:db8`: either/source/destination address, both IP families. `saddr` and `daddr` are aliases.
+- `ip` / `ip4` restrict to IPv4; `ip6` / `addr6` restrict to IPv6. Address and side aliases also accept `4`/`6` suffixes.
+- `net`, `snet`, `dnet` match CIDR networks; `4`/`6` suffixes restrict family. Complete hosts default to `/32` (IPv4) or `/128` (IPv6). Incomplete addresses without a mask use text matching, e.g. `snet 10.20.`. Explicit malformed CIDR reports an error.
+
+Enable Regex for expressions such as `sport ^32[0-9]{3}$`. Expressions match individual values, respect category scopes and run in a disposable worker with a time limit. Invalid or excessively expensive expressions report an error without blocking the UI. In Regex mode port patterns are regular expressions; use normal mode for numeric port ranges. Network categories retain CIDR or incomplete-address text semantics. Filters run before cascade grouping and also apply in raw mode.
