@@ -511,3 +511,85 @@ Flow search accepts a category followed by a space or colon:
 - `net`, `snet`, `dnet` match CIDR networks; `4`/`6` suffixes restrict family. Complete hosts default to `/32` (IPv4) or `/128` (IPv6). Incomplete addresses without a mask use text matching, e.g. `snet 10.20.`. Explicit malformed CIDR reports an error.
 
 Enable Regex for expressions such as `sport ^32[0-9]{3}$`. Expressions match individual values, respect category scopes and run in a disposable worker with a time limit. Invalid or excessively expensive expressions report an error without blocking the UI. In Regex mode port patterns are regular expressions; use normal mode for numeric port ranges. Network categories retain CIDR or incomplete-address text semantics. Filters run before cascade grouping and also apply in raw mode.
+
+
+## Asynchronní čtecí požadavky collectoru (CONTROL v2)
+
+Při `server.py --collector SOCKET` všechny provozní operace webu procházejí
+collectorem. Prohlížeč komunikuje pouze s HTTP webem. Samostatný collector
+poslouchá jen na lokálním Unix socketu s kontrolou UID, nemá síťové HTTP API.
+Bez `--collector` běží stejná sběrná vrstva uvnitř webu.
+
+Unix RPC operace:
+
+- `request_submit`: `id` je identita místního objeveného procesu;
+  `body` obsahuje `operation` (`stats`, `flows`, `show` = rules show, `discover`)
+  a volitelnou `route` (výchozí prázdná = místní cíl).
+- `request_status`: `id` je ID úlohy collectoru vrácené při zadání.
+
+Python klient z adresáře `fabric/`:
+
+```python
+from collector import RemoteFabric
+client = RemoteFabric("/run/tuntom-fabric-1000.sock")
+job = client.submit_request(endpoint_id, {
+    "operation": "stats",
+    "route": [{"port": "tunnel42"}, {"peer": True}],
+})
+state = client.request_status(job["id"])
+```
+
+Zadání vrací ihned `id`, `state=running`, `request_id=null`. Po potvrzení
+od daemonu obsahuje `request_id` jeho CONTROL ID (odlišné od ID úlohy).
+Stav přejde na `succeeded` s `result.text`, nebo `failed` s `status` a `error`.
+Výsledek lze opakovaně číst; polling nic znovu nespouští. Čtení stavu není
+CONTROL `request status` a neobnovuje úlohy po restartu collectoru.
+
+Úlohy běží mimo periodický sběr a RPC obsluhu. Pro jeden cíl smí běžet
+jen jeden požadavek, bez čekací fronty; další ihned dostane 429. Cíl je zatím
+identifikován dvojicí (ID místního výchozího procesu, zakódovaná cesta).
+Různé cesty ke stejnému vzdálenému uzlu zatím nejsou sloučené podle instance ID.
+Pomalý cíl tak zabere nejvýše jeden z celkových 16 souběžných slotů.
+
+Cache má nejvýše 64 záznamů, z toho nejvýše 8 pro jeden cíl. Při zaplnění
+se nejstarší dokončený výsledek uvolní pro nový požadavek; běžící úlohy
+se nevyhazují. Při vyčerpání běžících slotů odpověď 429. Hotové výsledky
+expirují nejpozději za 60 sekund; neznámé/expirující/vytlačené ID vrací 404.
+Data žijí pouze v paměti. Timeout celé control komunikace je 30 sekund,
+odpověď nejvýše 1 MiB (i pro flows, větší dump je odmítnut, nikoli potichu zkrácen).
+Ukončení collectoru čeká na dokončení rozběhnutých úloh v rámci timeoutu.
+
+Cesta má nejvýše 16 hopů typu `{"port": "jméno"}` nebo `{"peer": true}`.
+Collector nepřijímá libovolný příkaz ani cestu k socketu. Před připojením znovu
+ověřuje místní proces a jeho socket. Identita vzdáleného cíle zatím není
+svázaná s DISCOVER instance ID: cesta označuje aktuálního příjemce.
+Všechny tyto úlohy používají routed CONTROL v2 včetně prázdné cesty;
+staré daemony bez podpory vrátí chybu. Vzdálené čtecí příkazy v trusted režimu
+vyžadují `--allow-control-trusted` na výchozím daemonu, relays i cíli,
+privátní authority klíč na výchozím daemonu a odpovídající veřejný pin s granty
+na cíli. Fabric ani collector CONTROL klíče nenačítají; autentizaci provádí daemon.
+Legacy vzdálený DISCOVER v trusted režimu podporovaný není.
+`--allow-control-all` je pouze debug / at own risk a obchází kontrolu autority.
+Současné rozdělení rolí se ještě může měnit; viz
+[CONTROL trust model](../docs/CONTROL_PLANE_SECURITY.md#fabric-and-collector-current-integration)
+a [návod ke klíčům](../docs/CONTROL_KEYS_QUICK_HOWTO.md).
+DISCOVER vrací původní TSV, stále jde jen
+o časově omezený průzkum, nikoli důkaz úplnosti topologie.
+
+Zápisové operace tímto rozhraním zatím nejsou povolené. Dosavadní synchronní
+API a kontroly `--allow-write` zůstávají platné.
+
+
+### DISCOVER v diagnostice
+
+V Diagnostics vyber proces s control socketem a klikni **Prozkoumat síť**.
+UI odešle jeden async DISCOVER a čte jeho stav, bez opakovaného zadávání.
+Zobrazí cesty, FOUND / ALT_PATH / NO_RESPONSE, komponenty,
+capabilities, počet odpovědí a unikátních instancí a čas dokončení.
+Výsledek patří vybranému výchozímu procesu, změna výběru jej nepřepíše jinému.
+Průzkum se nespouští automaticky; prázdný výsledek neprokazuje starou verzi uzlů.
+
+Autorizované HTTP API: `POST /api/v1/endpoints/{id}/requests` s JSON tělem
+stejným jako RPC `body` vrací 202 a úlohu; `GET /api/v1/requests/{job_id}`
+vrací její stav. Stav `failed` je výsledek úlohy v HTTP 200, neznámé ID HTTP 404.
+UI používá pouze DISCOVER; ostatní čtecí operace jsou dostupné přes API.

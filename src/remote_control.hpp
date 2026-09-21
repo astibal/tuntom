@@ -1,6 +1,7 @@
 #pragma once
 #include "control_dispatcher.hpp"
 #include "wire.hpp"
+#include "control_auth.hpp"
 #include <array>
 #include <chrono>
 #include <map>
@@ -16,7 +17,7 @@ namespace tuntom {
 // total:u32, command_length:u16, reserved:u16, command, opaque body bytes.
 namespace remote_control {
 using Id = std::array<std::uint8_t, 16>;
-enum class Kind : std::uint8_t { put = 1, status = 2, reply = 3, finish = 4, confirmed = 5 };
+enum class Kind : std::uint8_t { put = 1, status = 2, reply = 3, finish = 4, confirmed = 5, challenge = 6 };
 enum class State : std::uint8_t { receiving = 1, ready = 2, running = 3, succeeded = 4, failed = 5, rejected = 6, expired = 7, not_found = 8 };
 inline bool terminal(State s) { return s >= State::succeeded && s <= State::expired; }
 inline const char* name(State s) {
@@ -57,26 +58,35 @@ struct Frame {
     Id id{};
     std::uint32_t offset = 0, total = 0;
     std::string command, data;
+    std::vector<std::uint8_t> auth;
 };
 inline std::vector<std::uint8_t> encode(const Frame& f) {
     if (f.command.size() > 256) throw std::runtime_error("control command too long");
-    std::vector<std::uint8_t> bytes(32 + f.command.size() + f.data.size());
-    bytes[0] = 1; bytes[1] = static_cast<std::uint8_t>(f.kind); bytes[2] = static_cast<std::uint8_t>(f.state);
+    if (!f.auth.empty() && f.auth.size()!=control_auth::proof_size) throw std::runtime_error("invalid control proof length");
+    std::vector<std::uint8_t> bytes(32 + f.auth.size() + f.command.size() + f.data.size());
+    bytes[0] = (!f.auth.empty() || f.kind==Kind::challenge) ? 3 : 1; bytes[1] = static_cast<std::uint8_t>(f.kind); bytes[2] = static_cast<std::uint8_t>(f.state);
     std::copy(f.id.begin(), f.id.end(), bytes.begin() + 4);
     store_be32(bytes.data() + 20, f.offset); store_be32(bytes.data() + 24, f.total);
     store_be16(bytes.data() + 28, static_cast<std::uint16_t>(f.command.size()));
-    std::copy(f.command.begin(), f.command.end(), bytes.begin() + 32);
-    std::copy(f.data.begin(), f.data.end(), bytes.begin() + 32 + static_cast<std::ptrdiff_t>(f.command.size()));
+    store_be16(bytes.data()+30,static_cast<std::uint16_t>(f.auth.size()));
+    std::copy(f.auth.begin(),f.auth.end(),bytes.begin()+32);
+    std::copy(f.command.begin(), f.command.end(), bytes.begin() + 32 + f.auth.size());
+    std::copy(f.data.begin(), f.data.end(), bytes.begin() + 32 + f.auth.size() + static_cast<std::ptrdiff_t>(f.command.size()));
     return bytes;
 }
 inline bool decode(const std::vector<std::uint8_t>& b, Frame& f) {
-    if (b.size() < 32 || b[0] != 1 || b[1] < 1 || b[1] > 5 || b[2] < 1 || b[2] > 8 || b[3] || b[30] || b[31]) return false;
+    if (b.size() < 32 || (b[0] != 1 && b[0] != 3) || b[1] < 1 || b[1] > 6 || b[2] < 1 || b[2] > 8 || b[3]) return false;
     auto n = load_be16(b.data() + 28);
-    if (n > 256 || b.size() < 32u + n) return false;
+    const auto auth=load_be16(b.data()+30);
+    if ((b[0]==1 && (auth || b[1]>5)) || (auth && auth!=control_auth::proof_size)) return false;
+    if (n > 256 || b.size() < 32u + n + auth) return false;
     f.kind = static_cast<Kind>(b[1]); f.state = static_cast<State>(b[2]);
     std::copy_n(b.begin() + 4, 16, f.id.begin());
     f.offset = load_be32(b.data() + 20); f.total = load_be32(b.data() + 24);
-    f.command.assign(b.begin() + 32, b.begin() + 32 + n); f.data.assign(b.begin() + 32 + n, b.end());
+    f.auth.assign(b.begin()+32,b.begin()+32+auth);
+    f.command.assign(b.begin() + 32 + auth, b.begin() + 32 + auth + n); f.data.assign(b.begin() + 32 + auth + n, b.end());
+    if(f.kind==Kind::challenge) return b[0]==3 && f.auth.empty() && f.command.empty() &&
+        f.state==State::receiving && !f.offset && !f.total && f.data.size()==control_auth::challenge_size;
     if (f.kind != Kind::put && !f.command.empty()) return false;
     if ((f.kind == Kind::status || f.kind == Kind::finish || f.kind == Kind::confirmed) && !f.data.empty()) return false;
     return f.id != Id{};
@@ -103,9 +113,11 @@ private:
         Time started{}, progress{};
         bool acknowledged = false, cheap = false;
         std::uint64_t order = 0;
+        control_auth::Key principal{};
     };
     struct Outgoing {
         ControlRequest request;
+        Frame last;
         std::size_t sent = 0, total = 0;
         std::string response;
         State state = State::receiving;
@@ -124,6 +136,10 @@ private:
     static constexpr std::size_t memory_limit = 16 * control_max_body;
     std::size_t chunk_ = 512;
     ControlAccess access_;
+    control_auth::Auth auth_;
+    bool enabled_=false;
+    std::uint64_t challenges_tx_=0;
+    std::function<bool(const Id&,const ControlRequest&)> admission_;
     Sender send_;
     Executor execute_;
     bool slot_busy() const {
@@ -160,11 +176,22 @@ private:
                 if (i->second.acknowledged && (oldest == incoming_.end() || i->second.order < oldest->second.order)) oldest = i;
             if (oldest == incoming_.end()) return false;
             reserved -= oldest->second.response.size() + oldest->second.request.body.size();
+            auth_.forget(oldest->first);
             incoming_.erase(oldest);
         }
         return true;
     }
-    void emit(Frame f) { send_(remote_control::encode(f)); }
+    void emit(Frame f) {
+        if(!enabled_)return;
+        const bool reply=f.kind==Kind::reply || f.kind==Kind::confirmed;
+        if(f.kind!=Kind::challenge) {
+            auto outgoing=outgoing_.find(f.id);
+            if(!reply && outgoing!=outgoing_.end())outgoing->second.last=f;
+            f.auth=auth_.protect(f.id,remote_control::encode(f),reply);
+        }
+        if(f.kind==Kind::challenge)++challenges_tx_;
+        send_(remote_control::encode(f));
+    }
     void respond(const Id& id, const Incoming& r, std::size_t offset = 0, Kind kind = Kind::reply) {
         Frame f; f.kind = kind; f.id = id; f.state = r.state;
         if (!remote_control::terminal(r.state)) f.offset = static_cast<std::uint32_t>(r.request.body.size());
@@ -198,11 +225,24 @@ private:
     }
 public:
     RemoteControl() = default;
-    void configure(ControlAccess access, Sender sender, Executor executor) {
-        access_ = access; send_ = std::move(sender); execute_ = std::move(executor);
+    void configure_auth(const control_auth::Config& config,const Id& origin={}) {
+        auth_.configure(config,origin);enabled_=access_.permissions!=0 || config.enabled();
     }
-    void payload_limit(std::size_t bytes) { chunk_ = bytes > 288 ? bytes - 288 : 1; }
+    void set_enabled(bool enabled){enabled_=enabled;}
+    void set_admission(std::function<bool(const Id&,const ControlRequest&)> f){admission_=std::move(f);}
+    bool auth_required()const {return auth_.required();}
+    void offer_challenge(Time now) {
+        if(!enabled_)return;
+        const auto bytes=auth_.challenge({},0,now);if(bytes.empty())return;
+        Frame f;f.kind=Kind::challenge;f.data.assign(bytes.begin(),bytes.end());emit(std::move(f));
+    }
+    void configure(ControlAccess access, Sender sender, Executor executor) {
+        access_ = access;enabled_=access.permissions!=0 || auth_.enabled(); send_ = std::move(sender); execute_ = std::move(executor);
+    }
+    void payload_limit(std::size_t bytes) { chunk_ = bytes > 288 + control_auth::proof_size ? bytes - 288 - control_auth::proof_size : 1; }
     Id submit(ControlRequest request, unsigned retries, std::chrono::milliseconds wait, Time now, Id requested_id = {}) {
+        if(!enabled_)throw std::runtime_error("network CONTROL is disabled; use --allow-control-trusted or --allow-control-all");
+        if(auth_.required() && !auth_.signing())throw std::runtime_error("outgoing trusted CONTROL requires --control-authority-key");
         admit_outgoing();
         auto op = ControlDispatcher::parse(request.command);
         if (request.command.size() > 256 || request.body.size() != op.length) throw std::runtime_error("invalid remote request");
@@ -222,16 +262,49 @@ public:
         for(const auto& p:incoming_) if(!p.second.acknowledged)return true;
         return false;
     }
-    void release(const Id& id) { outgoing_.erase(id); }
-    void receive(const std::vector<std::uint8_t>& bytes, Time now) {
+    void release(const Id& id) { outgoing_.erase(id); auth_.forget(id); }
+    void receive(const std::vector<std::uint8_t>& bytes, Time now, const std::function<void()>& accepted={}) {
+        if(!enabled_)return;
         Frame f; if (!remote_control::decode(bytes, f)) return;
+        auth_.tick(now);
+        if(f.kind==Kind::challenge) {
+            auto outgoing=outgoing_.find(f.id);
+            if(f.id!=Id{} && (outgoing==outgoing_.end() || outgoing->second.result))return;
+            if(auth_.accept_challenge(f.id,{f.data.begin(),f.data.end()},now)) {
+                if(accepted)accepted();
+                if(outgoing!=outgoing_.end())emit(outgoing->second.last);
+            }
+            return;
+        }
+        const auto proof=std::move(f.auth);f.auth.clear();
+        const auto canonical=remote_control::encode(f);
+        control_auth::Key principal{};
+        const bool reply=f.kind==Kind::reply || f.kind==Kind::confirmed;
+        if(reply) {
+            // An authority configured for end-to-end control never silently
+            // accepts a legacy, hop-authenticated response (downgrade).
+            if((auth_.signing() || !proof.empty()) && !auth_.verify_reply(f.id,canonical,proof))return;
+        } else if(auth_.required() || (auth_.debug_all() && !proof.empty())) {
+            std::uint64_t caps=static_cast<unsigned>(ControlPermission::read);
+            const auto previous=incoming_.find(f.id);
+            const auto command=f.kind==Kind::put?f.command:previous!=incoming_.end()?previous->second.request.command:std::string{};
+            try{caps=static_cast<unsigned>(ControlDispatcher::parse(command).permission);}catch(const std::runtime_error&){}
+            if(!auth_.verify(f.id,canonical,proof,caps,principal)) {
+                const auto challenge=auth_.challenge(f.id,caps,now);
+                if(!challenge.empty()){Frame c;c.kind=Kind::challenge;c.id=f.id;c.data.assign(challenge.begin(),challenge.end());emit(std::move(c));}
+                return;
+            }
+            const auto existing=incoming_.find(f.id);
+            if(existing!=incoming_.end() && existing->second.principal!=principal)return;
+        } else if(!proof.empty())return;
+        if(accepted)accepted();
         if (f.kind == Kind::reply || f.kind == Kind::confirmed) {
             auto i = outgoing_.find(f.id); if (i == outgoing_.end() || i->second.result) return;
             auto& r = i->second;
             if (f.kind == Kind::confirmed) {
                 if (!r.finishing || f.state != r.state || f.total != r.response.size()) return;
                 r.result = Result{r.state == State::succeeded ? 0 : r.state == State::rejected ? 255 : 1, std::move(r.response)};
-                r.completed = now; std::string{}.swap(r.request.body); return;
+                r.completed = now; auth_.release_outgoing(f.id); std::string{}.swap(r.request.body); return;
             }
             if (r.finishing) return;
             if (f.state == State::not_found) {
@@ -273,20 +346,21 @@ public:
             }
             auto& r = i->second;
             if (f.kind == Kind::finish && remote_control::terminal(r.state) && f.state == r.state && f.total == r.response.size()) {
-                r.acknowledged = true; respond(f.id, r, 0, Kind::confirmed);
+                r.acknowledged = true; respond(f.id, r, 0, Kind::confirmed); auth_.retire(f.id);
             } else respond(f.id, r, f.offset);
             return;
         }
         if (i == incoming_.end()) {
             if (f.offset != 0) { Frame answer; answer.id=f.id; answer.kind=Kind::reply; answer.state=State::not_found; emit(answer); return; }
             if (!admit()) { refuse(f.id, "remote control busy"); return; }
-            Incoming r; r.request.command = f.command; r.total = f.total; r.started = r.progress = now;
+            Incoming r; r.principal=principal; r.request.command = f.command; r.total = f.total; r.started = r.progress = now;
             i = incoming_.emplace(f.id, std::move(r)).first;
             try {
                 auto op = ControlDispatcher::parse(f.command);
                 i->second.cheap = op.cheap;
                 if (f.total != op.length || f.total > control_max_body) throw std::runtime_error("invalid request length");
-                if (!access_.allows(op.permission)) throw std::runtime_error("control access denied");
+                if (!auth_.required() && !access_.allows(op.permission)) throw std::runtime_error("control access denied");
+                if(admission_ && !admission_(f.id,i->second.request))throw std::runtime_error("remote control busy");
                 // Ignore our newly inserted entry when testing the exclusive slot.
                 i->second.state = State::rejected;
                 const bool busy = !op.cheap && slot_busy();
@@ -321,6 +395,7 @@ public:
         respond(f.id, r);
     }
     void tick(Time now) {
+        auth_.tick(now);
         for (auto& p : incoming_) {
             auto& r = p.second;
             if (r.state == State::receiving && (now - r.progress >= std::chrono::seconds(2) || now - r.started >= std::chrono::seconds(10))) {
@@ -330,7 +405,7 @@ public:
         }
         for (auto i = outgoing_.begin(); i != outgoing_.end();) {
             auto& r = i->second;
-            if (r.result) { if (now - r.completed > std::chrono::minutes(5)) { i = outgoing_.erase(i); continue; } }
+            if (r.result) { auth_.release_outgoing(i->first); if (now - r.completed > std::chrono::minutes(5)) { i = outgoing_.erase(i); continue; } }
             else if (now >= r.next) {
                 if (r.attempts++ >= r.retries) {
                     r.result = Result{1, "request " + remote_control::hex(i->first) + " timed out; last state=" + remote_control::name(r.state) + "; operation may still complete\n"}; r.completed = now;
@@ -340,6 +415,8 @@ public:
         }
     }
     Id query(const Id& id, unsigned retries, std::chrono::milliseconds wait, Time now) {
+        if(!enabled_)throw std::runtime_error("network CONTROL is disabled; use --allow-control-trusted or --allow-control-all");
+        if(auth_.required() && !auth_.signing())throw std::runtime_error("outgoing trusted CONTROL requires --control-authority-key");
         auto existing = outgoing_.find(id);
         if (existing != outgoing_.end()) {
             if (!existing->second.result || existing->second.result->exit != 1) return id;
@@ -351,6 +428,7 @@ public:
         send_next(id, i->second, now, true); return id;
     }
     void session_changed(Time now) {
+        auth_.reset();
         for (auto& p : outgoing_) if (!p.second.result) {
             p.second.result = Result{1, "request " + remote_control::hex(p.first) + " interrupted by session change; query status before retrying\n"};
             p.second.completed = now;
@@ -370,6 +448,7 @@ public:
             if (remote_control::terminal(p.second.state) && !p.second.acknowledged) ++unconfirmed;
         }
         for (const auto& p : outgoing_) if (!p.second.result) ++outgoing;
+        out << "control_challenges_tx=" << challenges_tx_ << "\n";
         out << "control_remote_receiving=" << receiving << "\n"
             << "control_remote_outgoing=" << outgoing << "\n"
             << "control_remote_history=" << incoming_.size() << "\n"

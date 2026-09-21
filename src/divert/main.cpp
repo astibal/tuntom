@@ -39,7 +39,7 @@ void usage(const char* program) {
         << "  --divert-in-port NAME      default divert-in\n"
         << "  --divert-out-port NAME     default divert-out\n"
         << "  --control-socket PATH     tuntomctl PATH show stats\n"
-        << "  --allow-control-all      Allow incoming routed CONTROL and discovery\n"
+        << tuntom::control_auth::help
         << "  --switch-ipc auto|v1|inline  default auto\n"
         << "  --switch-ipc-batch N      1..16, default 8\n"
         << "  --mtu N                   576..65535, default 1500\n"
@@ -80,12 +80,12 @@ int main(int argc, char** argv) {
         std::vector<std::string> relay_paths;
         std::size_t mtu = 1500, capacity = 100000, admission_capacity = 100000, idle = 86400;
         ipc::Options options;
-        bool allow_control_all = false;
+        tuntom::control_auth::Config control_auth_config;
         RoutedControl routed_control("divert-adapter");
         for (int i = 3; i < argc; ++i) {
             const std::string option = argv[i];
             if (option == "--help" || option == "-h") { usage(argv[0]); return 0; }
-            if (option == "--allow-control-all") { allow_control_all = true; continue; }
+            if(tuntom::control_auth::option(control_auth_config,option,i,argc,argv))continue;
             if (++i >= argc) throw std::runtime_error(option + " requires a value");
             const std::string value = argv[i];
             if (option == "--switch-socket") socket = value;
@@ -232,7 +232,9 @@ int main(int argc, char** argv) {
                 }
                 return dump.finish();
         };
-        routed_control.configure(allow_control_all,control_dispatcher);
+        tuntom::control_auth::validate(control_auth_config);
+        routed_control.configure_auth(control_auth_config);
+        routed_control.configure(control_auth_config.allow_all,control_dispatcher);
         if (control) control->set_routed(routed_control.local_submit());
         const auto refresh_control_edges = [&] {
             for (std::size_t i=0;i<clients.size();++i) {

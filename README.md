@@ -408,7 +408,7 @@ CONTROL capabilities or process types, which registration does not yet advertise
 The response is bounded to 1 MiB; exceeding the limit returns an explicit error.
 
 This is a local query to the switch control socket and needs no `---` separator
-or `--allow-control-all`. It does not yet forward commands to the listed ports.
+or an `--allow-control*` flag. It does not yet forward commands to the listed ports.
 `--port-tree` renders exactly the same local snapshot as an ASCII tree, with
 known relay ports beneath their parent connection. The two display options are
 mutually exclusive. Neither option sends DISCOVER or queries remote processes.
@@ -427,11 +427,14 @@ The integrated spelling `tuntom ctl switch ... --port-list` is also supported.
 
 ### Remote control (`CONTROL`)
 
-The receiving **tuntom process** must explicitly enable `--allow-control-all`.
-This delegates its control operations to its authenticated tunnel peer; it is
-independent of whether the receiver exposes a local control socket. The default
-is deny. Local clients still require access to the sender's Unix socket.
-Orchestration is responsible for setting the policy consistently across processes.
+Every origin, relay and receiver must explicitly enable `--allow-control-trusted`
+(or `--allow-control-all` for **debugging, at your own risk**). Without either flag,
+network CONTROL is completely disabled, including outgoing requests and transit;
+loading keys alone does not enable it. Local Unix-socket diagnostics remain available.
+Trusted mode checks pinned authorities and capabilities; debug mode also accepts
+unsigned commands without authority checks. The two modes are mutually exclusive.
+Enabled tunnels automatically advertise a fresh challenge after every confirmed
+handshake/rekey. See [CONTROL_AUTH.md](docs/CONTROL_AUTH.md) for key provisioning.
 
 ```bash
 # Existing local syntax is unchanged.
@@ -690,3 +693,6 @@ deployment.
 UDP buffer options and bounded local EAGAIN retries: [UDP transport](docs/UDP_TRANSPORT.md).
 
 IPC backpressure and bounded retries: [docs/IPC_RETRY.md](docs/IPC_RETRY.md).
+
+Authority-authenticated CONTROL (X25519 pinning, capabilities, challenge/rekey):
+[CONTROL_AUTH.md](docs/CONTROL_AUTH.md).

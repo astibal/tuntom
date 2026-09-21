@@ -44,6 +44,8 @@ if command -v python3 >/dev/null 2>&1; then
     python3 "${tests_dir}/switch_v2_integration_test.py" "${build_dir}/tomtom-switch-mp" "${build_dir}/switch_v2_faults.so"
     python3 "${tests_dir}/switch_v2_path_test.py" "${build_dir}/tuntom" "${build_dir}/tomtom-switch-mp" \
         "${build_dir}/adapter_reconnect_fixture" "${build_dir}/switch_v2_faults.so"
+    python3 "${tests_dir}/control_auth_integration_test.py" \
+        "${build_dir}/tuntom-switch" "${build_dir}/tomtom-switch-mp" "${build_dir}/tuntomctl" "${build_dir}/adapter_reconnect_fixture"
     python3 "${tests_dir}/packet_classifier_integration_test.py" \
         "${build_dir}/tuntom" "${build_dir}/tuntom-switch" "${build_dir}/tomtom-switch-mp" \
         "${build_dir}/adapter_reconnect_fixture" "${build_dir}/tuntomctl"
@@ -93,14 +95,14 @@ else
     echo "SKIP: tuntom-switch process test requires python3"
 fi
 
-for name in info_message_test packet_classifier_test switch_ruleset_test switch_ruleset_v2_test switch_mp_plan_test switch_mp_test switch_ecmp_test udp_batch_test compact_protocol_test switch_protocol_test switch_v2_test switch_options_test switch_client_test switch_admission_test runtime_state_test logging_test exit_adapter_test stats_control_test session_stats_test session_latency_test x25519_test akdf_test pfs_session_test replay_test mac_test aead_test encrypted_session_test session_test adaptive_polling_test reassembly_test; do
+for name in control_auth_test info_message_test packet_classifier_test switch_ruleset_test switch_ruleset_v2_test switch_mp_plan_test switch_mp_test switch_ecmp_test udp_batch_test compact_protocol_test switch_protocol_test switch_v2_test switch_options_test switch_client_test switch_admission_test runtime_state_test logging_test exit_adapter_test stats_control_test session_stats_test session_latency_test x25519_test akdf_test pfs_session_test replay_test mac_test aead_test encrypted_session_test session_test adaptive_polling_test reassembly_test; do
     echo "Building ${name}"
     link_flags=()
     if [[ "$name" == udp_batch_test ]]; then
         link_flags=(-Wl,--wrap=sendmmsg -Wl,--wrap=sendto)
     elif [[ "$name" == switch_client_test ]]; then
         link_flags=(-Wl,--wrap=connect -Wl,--wrap=send -Wl,--wrap=sendmsg -Wl,--wrap=getsockopt)
-    elif [[ "$name" == runtime_state_test ]]; then
+    elif [[ "$name" == runtime_state_test || "$name" == control_auth_test ]]; then
         link_flags=(-Wl,--wrap=getrandom)
     elif [[ "$name" == logging_test ]]; then
         link_flags=(-Wl,--wrap=write -Wl,--wrap=pthread_create)

@@ -277,6 +277,19 @@ Object.assign(messages, {
   health:["Zdraví","Health","État"], healthReason:["Zdraví a důvody","Health and reasons","État et explications"],
   fieldStatus:["RUNTIME / STAV","RUNTIME / STATUS","RUNTIME / ÉTAT"], fieldNotes:["RUNTIME / DIAGNOSTIKA","RUNTIME / DIAGNOSTICS","RUNTIME / DIAGNOSTIC"],
   switchRuntime:["Porty a workery","Ports and workers","Ports et workers"],
+  networkDiscovery:["Průzkum sítě","Network discovery","Découverte du réseau"],
+  discoverNetwork:["Prozkoumat síť","Discover network","Explorer le réseau"],
+  discoveryHint:["DISCOVER z vybraného procesu. Chybějící odpověď nerozlišuje nedostupný, starý nebo nepovolený uzel.","DISCOVER from the selected process. No reply cannot distinguish an unavailable, old or disabled node.","DISCOVER depuis le processus sélectionné. Une absence de réponse ne distingue pas un nœud indisponible, ancien ou désactivé."],
+  discoveryIdle:["Průzkum dosud nebyl spuštěn.","Discovery has not run yet.","La découverte n’a pas encore été lancée."],
+  discoveryRunning:["Čekám na odpovědi…","Waiting for replies…","En attente des réponses…"],
+  discoveryDone:["Odpovědi: {count} · unikátní instance: {nodes} · {time}. Časově omezený průzkum, nikoli úplný inventář.","Replies: {count} · unique instances: {nodes} · {time}. Time-bounded discovery, not a complete inventory.","Réponses : {count} · instances uniques : {nodes} · {time}. Découverte limitée dans le temps, pas un inventaire complet."],
+  discoveryFailed:["Průzkum selhal: {error}","Discovery failed: {error}","Échec de la découverte : {error}"],
+  discoveryInvalid:["Neplatná odpověď DISCOVER.","Invalid DISCOVER response.","Réponse DISCOVER invalide."],
+  discoveryTimeout:["Vypršel čas čekání. Požadavek nebyl znovu odeslán.","Waiting timed out. The request was not resubmitted.","Délai d’attente dépassé. La requête n’a pas été renvoyée."],
+  discoveryPath:["Cesta","Path","Chemin"],
+  discoveryState:["Odpověď","Reply","Réponse"],
+  discoveryComponent:["Komponenta","Component","Composant"],
+  discoveryCapabilities:["Schopnosti","Capabilities","Capacités"],
   diagnostics:["Diagnostika","Diagnostics","Diagnostic"], openDiagnostics:["Otevřít diagnostiku ↗","Open diagnostics ↗","Ouvrir le diagnostic ↗"],
   openRules:["Otevřít pravidla ↗","Open rules ↗","Ouvrir les règles ↗"],
   recentChanges:["Od posledního vzorku","Since the last sample","Depuis le dernier relevé"],
@@ -483,7 +496,7 @@ class WarningHistory {
 const $ = id => document.getElementById(id);
 const state = {data: null, selected: null, view: "overview", paused: false, busy: false,
   flows: new Map(), flowBusy: false, flowPage: 0,
-  history: new Map(), historyLoads: new Map(), chartRange: 300000, chartNow: Date.now(), drafts: new Map(), logs: new Map(), reports: new Map(), diagnosticBusy: false,
+  history: new Map(), historyLoads: new Map(), chartRange: 300000, chartNow: Date.now(), drafts: new Map(), logs: new Map(), reports: new Map(), discoveries: new Map(), diagnosticBusy: false,
   warnings: new WarningHistory(), warningsLayout: "", chartDialog: null,
   token: "", failure: "", loginError: "", ruleBusy: false};
 const types = {tunnel:"typeTunnel", switch:"typeSwitch", adapter:"typeAdapter", divert:"typeDivert", process:"typeProcess"};
@@ -1828,7 +1841,46 @@ for (const id of ["flow-search","flow-regex","flow-table","flow-protocol","flow-
 $("flows-prev").addEventListener("click",()=>{state.flowPage--;renderFlows();});
 $("flows-next").addEventListener("click",()=>{state.flowPage++;renderFlows();});
 $("flows-labels").addEventListener("click",event=>{const button=event.target.closest("[data-flow-label]");if(button){$("flow-search").value=button.dataset.flowLabel;state.flowPage=0;renderFlows();}});
+function parseDiscovery(text) {
+  if (typeof text !== "string" || text.length > 1048576) throw new Error(t("discoveryInvalid"));
+  const lines=text.trimEnd().split("\n");
+  if (lines.shift() !== "path\tstate\tinstance\tcomponent\tcapabilities" || lines.length > 1024) throw new Error(t("discoveryInvalid"));
+  return lines.map(line=>{
+    const fields=line.split("\t");
+    if (fields.length !== 5 || !["FOUND","ALT_PATH","NO_RESPONSE"].includes(fields[1]) ||
+        (fields[1] !== "NO_RESPONSE" && !/^[0-9a-f]{32}$/.test(fields[2]))) throw new Error(t("discoveryInvalid"));
+    return {path:fields[0],state:fields[1],instance:fields[2],component:fields[3],capabilities:fields[4]};
+  });
+}
+function renderDiscovery() {
+  const e=selected(), entry=state.discoveries.get(e?.id);
+  $("discovery-read").disabled=!e?.control || !!entry?.busy;
+  $("discovery-status").textContent=!entry ? t("discoveryIdle") : entry.busy ? t("discoveryRunning") : entry.error ?
+    t("discoveryFailed",{error:diagnostic(entry.error)}) : t("discoveryDone",{
+      count:entry.rows.filter(row=>row.state!=="NO_RESPONSE").length,
+      nodes:new Set(entry.rows.filter(row=>row.state!=="NO_RESPONSE").map(row=>row.instance)).size,
+      time:new Date(entry.time).toLocaleString(locale())});
+  const rows=entry?.rows || [];
+  $("discovery-results").innerHTML=rows.length ? `<table><thead><tr>${["discoveryPath","discoveryState","discoveryComponent","discoveryCapabilities"].map(key=>`<th>${esc(t(key))}</th>`).join("")}</tr></thead><tbody>${rows.map(row=>`<tr>${[row.path,row.state,row.component,row.capabilities].map(value=>`<td>${esc(value)}</td>`).join("")}</tr>`).join("")}</tbody></table>` : "";
+}
+async function discoverNetwork() {
+  const e=selected(); if (!e?.control || state.discoveries.get(e.id)?.busy) return;
+  const entry={busy:true,rows:[]}; state.discoveries.set(e.id,entry); renderDiscovery();
+  try {
+    let job=await api(`/api/v1/endpoints/${encodeURIComponent(e.id)}/requests`,"POST",{operation:"discover"});
+    const deadline=Date.now()+45000;
+    while (job.state==="running") {
+      if (Date.now()>=deadline) throw new Error(t("discoveryTimeout"));
+      await new Promise(resolve=>setTimeout(resolve,500));
+      job=await api(`/api/v1/requests/${encodeURIComponent(job.id)}`);
+    }
+    if (job.state!=="succeeded") throw new Error(job.error || t("discoveryInvalid"));
+    entry.rows=parseDiscovery(job.result?.text); entry.time=Date.now();
+  } catch(error) { entry.error=error.message; }
+  finally { entry.busy=false; renderDiscovery(); }
+}
 function renderDiagnostics() {
+  renderDiscovery();
   const e=selected(), logs=state.logs.get(e?.id), report=state.reports.get(e?.id);
   $("diagnostic-title").textContent=e ? `${e.name} · PID ${e.pid}` : t("diagnostics");
   for (const id of ["logs-read","diagnostics-copy","diagnostics-save"]) $(id).disabled=!e || state.diagnosticBusy;
@@ -1888,6 +1940,7 @@ $("health-checks").addEventListener("click",event=>{
   if (button) { $("metric-search").value=button.dataset.problemMetric; renderMetrics(); showView("metrics"); }
 });
 $("logs-read").addEventListener("click",readLogs);
+$("discovery-read").addEventListener("click",discoverNetwork);
 $("diagnostics-copy").addEventListener("click",()=>diagnosticAction(true));
 $("diagnostics-save").addEventListener("click",()=>diagnosticAction(false));
 

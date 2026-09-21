@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common.hpp"
+#include "control_auth.hpp"
 #include "ipc/switch_v2.hpp"
 #include <algorithm>
 #include <cstdint>
@@ -27,6 +28,7 @@ enum class PacketType : std::uint8_t {
     ipc = 12,
     info = 13,
     control = 14,
+    control_challenge = 15,
 };
 
 enum class Direction {
@@ -53,10 +55,10 @@ enum class StatsFormat {
 };
 
 struct Options {
+    control_auth::Config control_auth;
     bool encrypt_ascon = true;
     bool pfs = true;
     bool info_msg_enable = false;
-    bool allow_control_all = false;
     std::map<std::string, std::string> info_fields;
     std::size_t init_window = 300;
     bool ttl_compensate = true;

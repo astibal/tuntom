@@ -210,3 +210,6 @@ input,select,textarea{background:#151b12;border-color:#424c35}button:hover:not(:
 @media(max-width:600px){.cascade-ranges{grid-template-columns:minmax(80px,1fr) minmax(80px,1fr);gap:6px 12px}.cascade-ranges label:nth-child(3){grid-column:1;grid-row:3}.cascade-ranges label:nth-child(4){grid-column:1;grid-row:4}.cascade-ranges label:nth-child(6){grid-column:2;grid-row:3/5}}
 
 .flow-filter-status{font-size:11px;color:var(--accent);padding:0 20px}.flow-filter-status:empty{display:none}.flow-filter-help{padding:5px 20px;font-size:10px;color:var(--muted)}.flow-filter-help summary{cursor:pointer}.flow-regex-control input{accent-color:var(--accent)}.flow-regex-control b{font:15px var(--mono)}#flow-search[aria-invalid="true"]{border-color:var(--red)}
+
+.discovery-results {overflow:auto;max-height:28rem;margin-bottom:1.5rem}
+.discovery-results td {overflow-wrap:anywhere;max-width:32rem}

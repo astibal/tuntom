@@ -391,12 +391,20 @@ private:
         return dispatcher;
     }
     void prepare_remote_control() {
-        routed_control_.configure(options_.allow_control_all, control_dispatcher());
+        if(!control_auth_configured_ && options_.control_auth.enabled()) {
+            remote_control_.configure_auth(options_.control_auth);
+            routed_control_.configure_auth(options_.control_auth);
+            control_auth_configured_=true;
+        }
+        routed_control_.configure(options_.control_auth.allow_all, control_dispatcher());
         if (control_) control_->set_routed(routed_control_.local_submit());
         auto& router = routed_control_.router();
         router.edge("peer", protocol_v5_.ready() ? protocol_v5_.transmit_generation() : 0,
             true, maximum_fragment_payload(), [this](const auto& bytes) {
+                if(!options_.control_auth.enabled())return false;
                 Packet packet; packet.type = PacketType::control; packet.payload = bytes;
+                if(bytes.size()>1 && ((bytes[0]==2 && bytes[1]==10) || (bytes[0]==3 && bytes[1]==6)))
+                    packet.type=PacketType::control_challenge;
                 if (!protocol_v5_.encode_into(packet, tx_encoded_buffer_, tx_mac_buffer_)) return false;
                 if (udp_.send(tx_encoded_buffer_.data(), tx_encoded_buffer_.size()) < 0) {
                     ++stats_.udp_send_errors; return false;
@@ -411,14 +419,17 @@ private:
                 switch_->send(bytes.data(), bytes.size()) == static_cast<ssize_t>(bytes.size());
         });
         remote_control_.payload_limit(maximum_fragment_payload());
-        remote_control_.configure(options_.allow_control_all ? ControlAccess::all() : ControlAccess{},
+        remote_control_.configure(options_.control_auth.enabled() ? ControlAccess::all() : ControlAccess{},
             [this](const std::vector<std::uint8_t>& bytes) {
+                if(!options_.control_auth.enabled())return;
                 Packet packet; packet.type = PacketType::control; packet.payload = bytes;
+                if(bytes.size()>1 && ((bytes[0]==2 && bytes[1]==10) || (bytes[0]==3 && bytes[1]==6)))
+                    packet.type=PacketType::control_challenge;
                 if (!protocol_v5_.encode_into(packet, tx_encoded_buffer_, tx_mac_buffer_)) return;
                 if (udp_.send(tx_encoded_buffer_.data(), tx_encoded_buffer_.size()) < 0) ++stats_.udp_send_errors;
                 else { ++stats_.udp_tx_packets; stats_.udp_tx_bytes += tx_encoded_buffer_.size(); }
             }, [this](const ControlRequest& request) {
-                return control_dispatcher().execute(request, options_.allow_control_all ? ControlAccess::all() : ControlAccess{});
+                return control_dispatcher().execute(request, options_.control_auth.enabled() ? ControlAccess::all() : ControlAccess{});
             });
     }
     void handle_control_request() {
@@ -518,6 +529,11 @@ private:
         log_info("V5 session confirmed");
         peer_info_.activated(relay_exchange_);
         if (info_worker_) info_worker_->request(protocol_v5_.transmit_generation());
+        prepare_remote_control();
+        // Synchronize the generation before advertising; a later TX flush must
+        // not immediately invalidate the just-created challenge.
+        sync_udp_tx_session();
+        if(options_.control_auth.enabled())remote_control_.offer_challenge(RemoteControl::Clock::now());
         if (relay_) relay_->session();
         rtt_probes_.clear();
         send_rtt_probe();
@@ -799,7 +815,10 @@ private:
                 << "\n";
         }
 
-        if (packet.type == PacketType::control) {
+        if (packet.type == PacketType::control || packet.type == PacketType::control_challenge) {
+            if(!options_.control_auth.enabled())return;
+            const bool challenge=packet.payload.size()>1 && ((packet.payload[0]==2 && packet.payload[1]==10) || (packet.payload[0]==3 && packet.payload[1]==6));
+            if(challenge!=(packet.type==PacketType::control_challenge))return;
             prepare_remote_control();
             if (control_route::marked(packet.payload.data(), packet.payload.size()))
                 routed_control_.router().receive("peer", packet.payload.data(), packet.payload.size(), ControlRouter::Clock::now());
@@ -1730,7 +1749,8 @@ private:
             << "pmtud_probes_ok=" << stats_.pmtud_probes_ok << "\n"
             << "pmtud_probes_lost=" << stats_.pmtud_probes_lost << "\n";
 
-        output << "allow_control_all=" << options_.allow_control_all << "\n";
+        output << "allow_control_trusted=" << options_.control_auth.allow_trusted << "\n";
+        output << "allow_control_all=" << options_.control_auth.allow_all << "\n";
         remote_control_.write_stats(output);
         output << "info_msg_enable=" << options_.info_msg_enable << "\n";
         peer_info_.write_stats(output);
@@ -1792,6 +1812,7 @@ private:
     UdpEndpoint udp_;
     std::unique_ptr<SwitchClient> switch_;
     std::unique_ptr<ControlSocket> control_;
+    bool control_auth_configured_=false;
     RemoteControl remote_control_;
     RoutedControl routed_control_{"tunnel"};
     RuntimeRecovery recovery_;

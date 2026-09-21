@@ -16,7 +16,7 @@ st, mp, ctl, tunnel, exit_adapter, divert_adapter = sys.argv[1:]
 for binary in (st, mp):
     with tempfile.TemporaryDirectory(prefix='tuntom-route-') as tmp, contextlib.ExitStack() as stack:
         root = Path(tmp)
-        sw = Switch(binary, ctl, root, RULES)
+        sw = Switch(binary, ctl, root, RULES, extra_args=['--allow-control-all'])
         stack.callback(sw.log.close); stack.callback(sw.stop)
         processes = []
         def start(args, name, tun_count=0):
@@ -92,7 +92,14 @@ for binary in (st, mp):
         assert shown.returncode==0 and shown.stdout==body, shown
         missing = command('show','stats',target='missing')
         assert missing.returncode==255 and 'target_not_found' in missing.stderr, missing
+        rejected = subprocess.run([ctl,'remote',str(root/'peer.ctl'),'---','discover'],
+                                  capture_output=True,text=True,timeout=5)
+        assert rejected.returncode==1 and 'only in switch mode' in rejected.stderr, rejected
         found = command('discover')
         assert found.returncode==0 and '\tadapter\t' in found.stdout and '\tdivert-adapter\t' in found.stdout, found
         assert '\tALT_PATH\t' in found.stdout, found.stdout
+        tree = command('discover','tree')
+        assert tree.returncode==0 and tree.stdout.startswith('switch\n`-- proxy-link\n    `-- peer [tunnel]\n'), tree
+        assert 'proxy-in0~via:c:smithproxy#0 [adapter]' in tree.stdout, tree.stdout
+        assert '[ALT_PATH]' in tree.stdout and '\t' not in tree.stdout, tree.stdout
         print('PASS routed CONTROL, status, multi-block classifier, DISCOVER/ALT_PATH:', Path(binary).name)

@@ -87,7 +87,7 @@ void usage(const char* program) {
         << "      [--route <in-port>:<label>=<out-port>:<label> ...]\n"
         << "      [--exit-port <port-id> ...]\n"
         << "      [--control-socket <unix-path>]\n"
-        << "  --allow-control-all      Allow incoming routed CONTROL and discovery\n"
+        << tuntom::control_auth::help
         << "      [--rules-file <format-1-or-2-config>]\n"
         << "      [--divert-file <config>]  Opt-in local divert, initially disabled\n"
         << "      [--max-ports <1..65535>] [--max-pending <1..65535>]\n"
@@ -190,14 +190,13 @@ int main(int argc, char** argv) {
             {stats.frames_tx, stats.bytes_tx}});
         bool default_back = false;
         tuntom::SwitchCapacity configured_capacity;
-        bool allow_control_all = false;
+        tuntom::control_auth::Config control_auth_config;
         tuntom::RoutedControl routed_control("switch");
 
         for (int index = 1; index < argc; ++index) {
             const std::string option = argv[index];
-            if (option == "--allow-control-all") {
-                allow_control_all = true;
-            } else if (option == "--socket") {
+            if(tuntom::control_auth::option(control_auth_config,option,index,argc,argv))continue;
+            if (option == "--socket") {
                 if (++index >= argc) throw std::runtime_error("--socket requires a value");
                 if (not socket_path.empty()) throw std::runtime_error("Duplicate --socket");
                 socket_path = argv[index];
@@ -707,7 +706,9 @@ int main(int argc, char** argv) {
                 }
                 return ports.finish();
             };
-        routed_control.configure(allow_control_all,control_dispatcher);
+        tuntom::control_auth::validate(control_auth_config);
+        routed_control.configure_auth(control_auth_config);
+        routed_control.configure(control_auth_config.allow_all,control_dispatcher);
         if (control) control->set_routed([&](tuntom::ControlRequest request,unsigned retries,unsigned wait) {
             refresh_control_edges();
             return routed_control.local_submit()(std::move(request),retries,wait);

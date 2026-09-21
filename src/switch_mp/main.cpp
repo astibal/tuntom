@@ -208,7 +208,9 @@ int main(int argc, char **argv) {
                 }
                 return ports.finish();
             };
-        routed_control.configure(config.allow_control_all,control_dispatcher);
+        tuntom::control_auth::validate(config.control_auth);
+        routed_control.configure_auth(config.control_auth);
+        routed_control.configure(config.control_auth.allow_all,control_dispatcher);
         const auto refresh_control_edges = [&] {
             std::set<std::string> names;
             for (const auto& port:engine.plan().ports) if(!port->disconnected.load()) {

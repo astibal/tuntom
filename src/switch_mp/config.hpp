@@ -1,4 +1,5 @@
 #pragma once
+#include "../control_auth.hpp"
 
 #include "../ipc/switch_protocol.hpp"
 #include "../switch_routes.hpp"
@@ -22,6 +23,7 @@ using RouteTarget = SwitchRouteTarget;
 using PortRoutes = SwitchPortRoutes;
 
 struct Config {
+    control_auth::Config control_auth;
     std::string socket, control;
     std::unordered_map<std::string, PortRoutes> routes;
     std::unordered_set<std::string> exits, trunks;
@@ -32,7 +34,7 @@ struct Config {
     ipc::Options ipc;
     std::uint64_t mmap_budget = 256ULL * 1024 * 1024;
     std::size_t workers = 0, pool_size = 128, queue_size = 128;
-    bool default_back = false, help = false, allow_control_all = false;
+    bool default_back = false, help = false;
 
     Kind kind(const std::string &port) const {
         if (via::enabled(ruleset) && via::reserved(port)) return Kind::adapter;
@@ -46,7 +48,7 @@ struct Config {
 inline void usage(std::ostream &out, const char *program) {
     out << "Usage: " << program << " --socket PATH [options]\n"
         << "  --control-socket PATH            tuntomctl show stats endpoint\n"
-        << "  --allow-control-all      Allow incoming routed CONTROL and discovery\n"
+        << control_auth::help
         << "  --rules-file PATH                format 1, 2 or 3; live rules check/load/show via control\n"
         << "  --divert-file PATH               opt-in local divert, initially disabled\n"
         << "  --route IN:LABEL=OUT:LABEL       trailing * on either port; multiple outputs use ECMP\n"
@@ -87,7 +89,7 @@ inline Config parse_config(int argc, char **argv) {
     std::string rules_file, divert_file;
     for (int i = 1; i < argc; ++i) {
         const std::string option = argv[i];
-        if (option == "--allow-control-all") { config.allow_control_all = true; continue; }
+        if(control_auth::option(config.control_auth,option,i,argc,argv))continue;
         if (option == "--help" || option == "-h") {
             config.help = true;
             continue;

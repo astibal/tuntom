@@ -58,7 +58,7 @@ void usage(const char* program) {
         << "Usage: " << program << " <ifname> --switch-socket <path>"
         << " --switch-port-id <name> [options]\n"
         << "  --control-socket <path>  Local tuntomctl socket\n"
-        << "  --allow-control-all      Allow incoming routed CONTROL and discovery\n"
+        << tuntom::control_auth::help
         << "  --switch-ipc <mode>   auto (default), v1, inline (V2 without mmap)\n"
         << "  --switch-ipc-batch <n> Maximum references per record, 1..16 (default 8)\n"
         << "  --mtu <n>             TUN MTU (default 1500)\n"
@@ -97,7 +97,8 @@ int main(int argc, char** argv) {
         std::size_t l4_timeout = 120;
         std::size_t l3_timeout = 30;
         unsigned l4_sport_key_bits = 16;
-        bool l4_only = false, allow_control_all = false;
+        bool l4_only = false;
+        tuntom::control_auth::Config control_auth_config;
         RoutedControl routed_control("adapter");
         for (int index = 2; index < argc; ++index) {
             const std::string option = argv[index];
@@ -105,7 +106,7 @@ int main(int argc, char** argv) {
                 usage(argv[0]);
                 return 0;
             }
-            if (option == "--allow-control-all") { allow_control_all = true; continue; }
+            if(tuntom::control_auth::option(control_auth_config,option,index,argc,argv))continue;
             if (option == "--l4-only") { l4_only = true; continue; }
             if (++index >= argc) throw std::runtime_error(option + " requires a value");
             if (option == "--switch-ipc") ipc_options.mode = ipc::parse_mode(argv[index]);
@@ -339,7 +340,9 @@ int main(int argc, char** argv) {
         control_dispatcher.classifier = [&](const std::string& operation, const std::string& body) {
                 return classifier.control(operation, body, [&] { routes.flush(); });
         };
-        routed_control.configure(allow_control_all,control_dispatcher);
+        tuntom::control_auth::validate(control_auth_config);
+        routed_control.configure_auth(control_auth_config);
+        routed_control.configure(control_auth_config.allow_all,control_dispatcher);
         if (control) control->set_routed(routed_control.local_submit());
         const auto handle_control = [&] {
             if (control) control->handle_dispatch(control_dispatcher);

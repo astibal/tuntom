@@ -31,7 +31,7 @@ private:
     };
     Id instance_{};
     std::string component_;
-    bool allowed_=false;
+    bool allowed_=false, discovery_allowed_=false;
     std::map<std::string,Edge> edges_;
     std::map<Key,Time> seen_;
     std::map<Key,std::pair<Time,std::size_t>> alternatives_;
@@ -48,11 +48,12 @@ private:
     }
     void reject(const Frame& frame, const std::string& reason, Time now) {
         // A broken return path must not recursively generate more route errors.
-        if (frame.kind==Kind::route_error || frame.kind==Kind::reply || frame.kind==Kind::confirmed ||
+        if (frame.kind==Kind::challenge || frame.kind==Kind::route_error || frame.kind==Kind::reply || frame.kind==Kind::confirmed ||
             frame.kind==Kind::found || frame.kind==Kind::alt_path) { ++dropped_; return; }
         route(control_route::response(frame,Kind::route_error,reason),now);
     }
     void route(Frame frame, Time now) {
+        if(!allowed_){++dropped_;return;}
         if (frame.destination.empty()) { if (deliver_) deliver_(frame); return; }
         auto* edge=resolve(frame.destination.front());
         if (!edge) { reject(frame,"target_not_found",now); return; }
@@ -72,7 +73,7 @@ private:
         return out;
     }
     void discover(Frame frame, const std::string& ingress, Time now, bool local) {
-        if (!local && !allowed_) return;
+        if (!local && !discovery_allowed_) {reject(frame,"control_discovery_denied",now);return;}
         const Key key{frame.origin,frame.request};
         const bool duplicate=seen_.count(key)!=0;
         if (!duplicate) {
@@ -101,7 +102,7 @@ private:
 public:
     explicit ControlRouter(std::string component):component_(std::move(component)) {}
     const Id& instance() { if(instance_==Id{}) instance_=remote_control::new_id(); return instance_; }
-    void configure(bool allowed, Deliver deliver) { allowed_=allowed; deliver_=std::move(deliver); }
+    void configure(bool allowed, Deliver deliver, bool authenticated=false) { allowed_=allowed; discovery_allowed_=allowed && !authenticated; deliver_=std::move(deliver); }
     void edge(const std::string& name, std::uint64_t generation, bool peer, std::size_t limit, Sender send) {
         if (!generation) { edges_.erase(name); return; }
         auto i=edges_.find(name);
@@ -122,6 +123,7 @@ public:
     }
     // Ingress is provided by the actual transport, never by the frame itself.
     void receive(const std::string& ingress, const std::uint8_t* p, std::size_t n, Time now) {
+        if(!allowed_){++dropped_;return;}
         Frame frame; if (!control_route::decode(p,n,frame)) { ++dropped_; return; }
         const auto edge=edges_.find(ingress); if (edge==edges_.end()) { ++dropped_; return; }
         if (frame.reply_path.size()>=control_route::max_hops) { reject(frame,"reply_path_limit",now); return; }
@@ -129,20 +131,18 @@ public:
         frame.reply_path.insert(frame.reply_path.begin(),Hop::link(edge->second.token));
         tick(now);
         if (frame.kind==Kind::discover && frame.destination.empty()) { discover(std::move(frame),ingress,now,false); return; }
-        const bool response=frame.kind==Kind::reply || frame.kind==Kind::confirmed || frame.kind==Kind::found || frame.kind==Kind::alt_path || frame.kind==Kind::route_error;
-        if (!allowed_ && !(response && frame.destination.empty() && frame.origin==instance_)) {
-            reject(frame,"control_denied",now); return;
-        }
+        // Enabled relays forward; destinations enforce authority policy.
         route(std::move(frame),now);
     }
     void send(Frame frame, Time now) { tick(now); route(std::move(frame),now); }
     Id begin_discovery(Time now, Path path={}) {
+        if(!allowed_)throw std::runtime_error("network CONTROL is disabled");
         tick(now); Frame frame; frame.kind=Kind::discover; frame.origin=instance(); frame.request=remote_control::new_id();
         const auto id=frame.request;
         if (path.empty()) discover(std::move(frame),{},now,true);
         else { frame.destination=std::move(path); send(std::move(frame),now); }
         return id;
     }
-    void local_discovery(Frame frame, Time now) { tick(now); discover(std::move(frame),{},now,true); }
+    void local_discovery(Frame frame, Time now) { if(!allowed_)throw std::runtime_error("network CONTROL is disabled"); tick(now); discover(std::move(frame),{},now,true); }
 };
 } // namespace tuntom

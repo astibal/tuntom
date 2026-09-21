@@ -22,15 +22,38 @@ class ResponseTooLarge(OSError):
     """The announced reply exceeds the caller's bounded receive budget."""
 
 
-def query(path, operation, body="", timeout=4, expected_pid=None, expected_start_ticks=None, max_response_bytes=None):
-    if operation not in ("stats", "flows", "show", "check", "load"):
+def encode_route(route):
+    """Encode a structured CONTROL v2 path; never accept a raw command."""
+    if not isinstance(route, list) or len(route) > 16:
+        raise ValueError("route must be a list of at most 16 hops")
+    result = bytearray()
+    for hop in route:
+        if isinstance(hop, dict) and set(hop) == {"peer"} and hop["peer"] is True:
+            result.extend((1, 0))
+        elif isinstance(hop, dict) and set(hop) == {"port"} and isinstance(hop["port"], str) and re.fullmatch(r"[\x21-\x7e]{1,63}", hop["port"]):
+            value = hop["port"].encode("ascii")
+            result.extend((2, len(value)))
+            result.extend(value)
+        else:
+            raise ValueError("invalid route hop")
+    if len(result) > 1024:
+        raise ValueError("route exceeds 1024 bytes")
+    return result.hex() or "-"
+
+
+def query(path, operation, body="", timeout=4, expected_pid=None, expected_start_ticks=None, max_response_bytes=None,
+          route=None, on_accepted=None):
+    if operation not in ("stats", "flows", "show", "check", "load", "discover"):
         raise ValueError("unknown control operation")
+    encoded_route = encode_route(route) if route is not None else None
+    if operation == "discover" and route is None:
+        raise ValueError("discover requires routed control")
     if not isinstance(body, str):
         raise ValueError("rules must be text")
     payload = body.encode("utf-8")
     if len(payload) > MAX_BODY:
         raise ValueError("rules exceed 1 MiB")
-    if operation in ("stats", "flows", "show") and payload:
+    if operation in ("stats", "flows", "show", "discover") and payload:
         raise ValueError("unexpected control body")
     deadline = time.monotonic() + timeout
     with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as connection:
@@ -63,16 +86,27 @@ def query(path, operation, body="", timeout=4, expected_pid=None, expected_start
                 if int(stat[stat.rindex(")") + 2:].split()[19]) != expected_start_ticks:
                     raise OSError("control process has restarted; refresh discovery")
         command = f"show {operation}" if operation in ("stats", "flows") else f"rules {operation} {len(payload)}"
+        if operation == "discover":
+            command = "discover"
+        if encoded_route is not None:
+            command = f"routed 5 250 {encoded_route} {command}"
         send(command.encode())
         for offset in range(0, len(payload), CHUNK):
             send(payload[offset:offset + CHUNK])
-        if operation == "stats":
+        if encoded_route is not None:
+            accepted = receive(256)
+            match = re.fullmatch(rb"REQUEST ([0-9a-f]{32})\n?", accepted)
+            if not match:
+                raise ControlError("routed request was not accepted by daemon")
+            if on_accepted is not None:
+                on_accepted(match[1].decode("ascii"))
+        if operation == "stats" and encoded_route is None:
             response = receive(65536).decode("utf-8")
             if response.startswith("error="):
                 raise ControlError(response.strip())
             return response
         header = receive(256)
-        match = re.fullmatch(rb"(OK|ERROR) ([0-9]{1,9})\n?", header)
+        match = re.fullmatch(rb"(OK|ERROR|REJECTED) ([0-9]{1,9})\n?", header)
         if not match or int(match[2]) > (MAX_FLOWS if operation == "flows" else MAX_BODY):
             raise OSError("invalid framed control response")
         length = int(match[2])
@@ -82,7 +116,7 @@ def query(path, operation, body="", timeout=4, expected_pid=None, expected_start
         while len(result) < length:
             result.extend(receive(min(CHUNK, length - len(result))))
         response = result.decode("utf-8")
-        if match[1] == b"ERROR":
+        if match[1] != b"OK":
             raise ControlError(response.strip())
         return response
 

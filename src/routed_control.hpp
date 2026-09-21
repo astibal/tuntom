@@ -21,8 +21,10 @@ private:
     std::map<Id,std::unique_ptr<Receiver>> receivers_;
     ControlDispatcher dispatcher_;
     bool allowed_=false;
+    control_auth::Config auth_config_;
     std::optional<std::pair<Id,Id>> exclusive_;
     void delivered(const Frame& frame) {
+        if(!allowed_)return;
         const auto now=Clock::now();
         if (frame.origin==router_.instance()) {
             auto p=pending_.find(frame.request); if(p==pending_.end())return;
@@ -40,11 +42,12 @@ private:
                 }
                 return;
             }
-            if(frame.kind==Kind::reply || frame.kind==Kind::confirmed) {
+            if(frame.kind==Kind::reply || frame.kind==Kind::confirmed || frame.kind==Kind::challenge) {
                 // Pin retries to the connection identities in the first reply.
-                p->second.acknowledged = true;
-                p->second.path = frame.reply_path;
-                client_.receive(remote_control::encode(control_route::unwrap(frame)),now);
+                client_.receive(remote_control::encode(control_route::unwrap(frame)),now,[&] {
+                    if(frame.kind!=Kind::challenge)p->second.acknowledged = true;
+                    p->second.path = frame.reply_path;
+                });
             }
             return;
         }
@@ -53,7 +56,14 @@ private:
         if(receiver==receivers_.end()) {
             if(receivers_.size()>=8) {router_.send(control_route::response(frame,Kind::route_error,"control_busy"),now);return;}
             auto entry=std::make_unique<Receiver>(); auto* r=entry.get(); const auto origin=frame.origin;
-            r->transactions.payload_limit(352);
+            r->transactions.payload_limit(440);
+            r->transactions.configure_auth(auth_config_,origin);
+            r->transactions.set_admission([this,origin](const Id& id,const ControlRequest& request) {
+                if(ControlDispatcher::parse(request.command).cheap)return true;
+                const auto key=std::make_pair(origin,id);
+                if(exclusive_ && *exclusive_!=key)return false;
+                exclusive_=key;return true;
+            });
             r->transactions.configure(allowed_?ControlAccess::all():ControlAccess{},
                 [this,r,origin](const auto& bytes) {
                     remote_control::Frame legacy; if(!remote_control::decode(bytes,legacy))return;
@@ -68,15 +78,6 @@ private:
         if(!r.replies.count(frame.request) && r.replies.size()>=128) {
             if(r.confirmed.empty()) {router_.send(control_route::response(frame,Kind::route_error,"control_busy"),now);return;}
             r.replies.erase(*r.confirmed.begin());r.confirmed.erase(r.confirmed.begin());
-        }
-        if(frame.kind==Kind::put && !r.transactions.received_state(frame.request)) {
-            try {
-                if(!ControlDispatcher::parse(frame.command).cheap) {
-                    const auto key=std::make_pair(frame.origin,frame.request);
-                    if(exclusive_ && *exclusive_!=key){router_.send(control_route::response(frame,Kind::route_error,"control_busy"),now);return;}
-                    exclusive_=key;
-                }
-            }catch(const std::runtime_error&){} // The dispatcher returns the syntax error.
         }
         r.replies[frame.request]=frame.reply_path;
         r.transactions.receive(remote_control::encode(control_route::unwrap(frame)),now);
@@ -102,7 +103,7 @@ private:
     }
 public:
     explicit RoutedControl(std::string component):router_(std::move(component)) {
-        client_.payload_limit(352);
+        client_.payload_limit(440);
         client_.configure({},[this](const auto& bytes) {
             remote_control::Frame legacy;if(!remote_control::decode(bytes,legacy))return;
             auto p=pending_.find(legacy.id);
@@ -120,9 +121,14 @@ public:
             return submit(std::move(request),retries,wait,std::move(path));
         };
     }
+    void configure_auth(const control_auth::Config& config) {
+        auth_config_=config;
+        client_.configure_auth(config,(!config.enabled() || config.signing.empty())?Id{}:router_.instance());
+    }
     void configure(bool allowed,ControlDispatcher dispatcher) {
-        allowed_=allowed;dispatcher_=std::move(dispatcher);
-        router_.configure(allowed,[this](const Frame& f){delivered(f);});
+        allowed_=allowed || auth_config_.enabled();dispatcher_=std::move(dispatcher);
+        client_.set_enabled(allowed_);
+        router_.configure(allowed_,[this](const Frame& f){delivered(f);},auth_config_.required());
     }
     void tick(Clock::time_point now=Clock::now()) {
         router_.tick(now);client_.tick(now);
@@ -145,6 +151,7 @@ public:
         return false;
     }
     ControlSocket::RemotePending submit(ControlRequest request,unsigned retries,unsigned wait_ms,Path path) {
+        if(!allowed_)throw std::runtime_error("network CONTROL is disabled; use --allow-control-trusted or --allow-control-all");
         if(pending_.size()>=8)throw std::runtime_error("routed control busy");
         const auto now=Clock::now();const bool discovery=request.command=="discover";
         const bool status=request.command.compare(0,15,"request status ")==0;

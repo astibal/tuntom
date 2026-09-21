@@ -215,6 +215,31 @@ class APITests(unittest.TestCase):
         for path in ("/", "/app.js", "/style.css", "/favicon.svg"):
             self.assertEqual(self.request("GET", path, auth=False)[0], 200)
 
+    def test_async_http_submission_and_polling(self):
+        gate = threading.Event()
+        self.fabric.endpoint = lambda key: object()
+        def control(*args, on_accepted, **kwargs):
+            on_accepted("a" * 32)
+            gate.wait(2)
+            return "discovery result"
+        self.fabric.control_query = control
+        path = "/api/v1/endpoints/origin/requests"
+        try:
+            self.assertEqual(self.request("POST", path, {"operation": "discover"}, auth=False)[0], 401)
+            self.assertEqual(self.request("POST", path, {"operation": "load"})[0], 400)
+            status, job = self.request("POST", path, {"operation": "discover"})
+            self.assertEqual(status, 202)
+            result_path = "/api/v1/requests/" + job["id"]
+            self.assertEqual(self.request("GET", result_path, auth=False)[0], 401)
+            self.assertEqual(self.request("GET", result_path)[1]["state"], "running")
+            self.assertEqual(self.request("POST", path, {"operation": "discover"})[0], 429)
+            gate.set()
+            done = until(lambda: (value if (value := self.request("GET", result_path)[1])["state"] != "running" else None))
+            self.assertEqual(done["result"], {"text": "discovery result"})
+            self.assertEqual(self.request("GET", "/api/v1/requests/" + "0" * 32)[0], 404)
+        finally:
+            gate.set()
+
     def test_wildcard_bind_accepts_destination_ip_and_keeps_request_guards(self):
         server = Server(("0.0.0.0", 0), self.fabric, TOKEN)
         worker = threading.Thread(target=server.serve_forever, daemon=True)

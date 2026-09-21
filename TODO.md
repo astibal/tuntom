@@ -1,5 +1,33 @@
 # Project TODO
 
+## Ingress source-IP pseudonymization (idea 2026-09-21)
+
+Explore optional classifier-controlled IPv4 L3 N:N NAT for forwarded traffic:
+replace the source IP with a randomly allocated alias on ingress and restore
+the original destination IP on return. Use labels for return routing and
+mapping context; do not translate ports.
+
+- Maintain bidirectional `(original IP, context) <-> (alias, context)` tables.
+  Allocate a random unused alias on first use, resolving collisions before
+  publishing the mapping. Subsequent packets only require a lookup, address
+  rewrite and checksum adjustment; no per-packet cryptographic transform.
+- Keep aliases stable while in use; define expiration, delayed reuse for late
+  packets, pool exhaustion and restart behavior before implementation.
+- Alias range remains undecided. Consider `240.0.0.0/8` for an isolated
+  experiment; `127.0.0.0/8` was also discussed but has loopback semantics.
+  Neither reservation guarantees safe leak handling: explicitly drop alias
+  traffic outside its authorized label context and verify dataplane behavior.
+- Define translation boundaries so ordinary endpoints never need to reply to
+  an unusable alias. Labels carry return context inside the managed domain;
+  they do not make aliases routable outside it.
+- Handle IP/transport checksums, fragments and ICMP quoted headers. Scope is
+  forwarded traffic; locally terminated traffic is outside the initial idea.
+- This hides original addresses from intermediate observers, not from the
+  mapping owner or an observer able to probe the same mapping context. Random
+  allocation avoids a recoverable arithmetic relationship between addresses.
+
+Status: idea only; implementation and final alias range are deferred.
+
 ## Dynamic classifier configuration (design agreed 2026-09-20)
 
 Add `classifier check/load/load-flush/show/disable` to the existing control

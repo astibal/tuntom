@@ -84,6 +84,7 @@ local packet_type_names = {
     [12] = "IPC",
     [13] = "INFO",
     [14] = "CONTROL",
+    [15] = "CONTROL_CHALLENGE",
 }
 
 local f_magic = ProtoField.string(
@@ -214,7 +215,7 @@ local e_info = ProtoExpert.new("tuntom.info.malformed", "Malformed INFO",
     expert.group.MALFORMED, expert.severity.ERROR)
 
 -- CONTROL v1 envelope; this is separate from DATA fragmentation.
-local control_kinds = {[1]="PUT", [2]="STATUS", [3]="REPLY", [4]="FINISH", [5]="CONFIRMED", [6]="DISCOVER", [7]="FOUND", [8]="ALT_PATH", [9]="ROUTE_ERROR"}
+local control_kinds = {[1]="PUT", [2]="STATUS", [3]="REPLY", [4]="FINISH", [5]="CONFIRMED", [6]="DISCOVER", [7]="FOUND", [8]="ALT_PATH", [9]="ROUTE_ERROR", [10]="CONTROL_CHALLENGE"}
 local control_states = {[1]="RECEIVING", [2]="READY", [3]="RUNNING", [4]="SUCCEEDED",
     [5]="FAILED", [6]="REJECTED", [7]="EXPIRED", [8]="NOT_FOUND"}
 local f_control_version = ProtoField.uint8("tuntom.control.version", "CONTROL Version", base.DEC)
@@ -232,6 +233,11 @@ local f_control_total = ProtoField.uint32("tuntom.control.total", "Total Body Le
 local f_control_command_length = ProtoField.uint16("tuntom.control.command_length", "Command Length", base.DEC)
 local f_control_command = ProtoField.string("tuntom.control.command", "Command")
 local f_control_data = ProtoField.bytes("tuntom.control.data", "Body Block")
+local f_control_auth = ProtoField.bytes("tuntom.control.auth", "Authority Proof (N, key ID, sequence, MAC)")
+local f_control_n = ProtoField.bytes("tuntom.control.challenge.n", "Ephemeral Node Public Key")
+local f_control_authority = ProtoField.bytes("tuntom.control.challenge.authority", "Requested Authority (zero: peer selects)")
+local f_control_caps = ProtoField.uint64("tuntom.control.challenge.caps", "Required Capabilities", base.HEX)
+local f_control_level = ProtoField.uint64("tuntom.control.challenge.level", "Required Level", base.DEC)
 local e_control = ProtoExpert.new("tuntom.control.malformed", "Malformed CONTROL",
     expert.group.MALFORMED, expert.severity.ERROR)
 
@@ -248,6 +254,7 @@ local e_handshake = ProtoExpert.new("tuntom.handshake_error", "Invalid/unsupport
 tuntom.experts = {e_handshake, e_info, e_control}
 
 tuntom.fields = {
+    f_control_auth, f_control_n, f_control_authority, f_control_caps, f_control_level,
     f_control_origin, f_control_hops, f_control_destination, f_control_reply_path, f_control_hop_type, f_control_hop_value,
     f_control_version, f_control_kind, f_control_state, f_control_id,
     f_control_offset, f_control_total, f_control_command_length, f_control_command, f_control_data,
@@ -909,15 +916,21 @@ dissect_control = function(buffer, header, pinfo, tree)
     local function bad(reason) tree:add_proto_expert_info(e_control, reason) end
     if length < 32 then bad("Truncated CONTROL header (expected 32 bytes)"); return end
     local payload = buffer(header):tvb()
+    local function challenge(at)
+        if length-at ~= 80 then bad("Invalid CONTROL_CHALLENGE length"); return end
+        tree:add(f_control_n,payload(at,32)); tree:add(f_control_authority,payload(at+32,32))
+        tree:add(f_control_caps,payload(at+64,8)); tree:add(f_control_level,payload(at+72,8))
+    end
     local version, kind, state = payload(0,1):uint(), payload(1,1):uint(), payload(2,1):uint()
     if version == 2 then
         if length < 52 then bad("Truncated CONTROL v2 header"); return end
         local hops = payload(3,1):uint()
         local offset, total, command_length = payload(36,4):uint(), payload(40,4):uint(), payload(44,2):uint()
         local destination_length, reply_length = payload(46,2):uint(), payload(48,2):uint()
-        local start = 52 + destination_length + reply_length
+        local auth_length = payload(50,2):uint()
+        local start = 52 + auth_length + destination_length + reply_length
         local data_length = length - start - command_length
-        if not control_kinds[kind] or hops < 1 or hops > 16 or payload(50,2):uint() ~= 0 or
+        if not control_kinds[kind] or hops < 1 or hops > 16 or (auth_length ~= 0 and (auth_length ~= 88 or kind > 5)) or
            payload(4,16):raw() == string.rep("\0",16) or payload(20,16):raw() == string.rep("\0",16) or
            command_length > 256 or destination_length > 1024 or reply_length > 1024 or data_length < 0 then
             bad("Invalid CONTROL v2 metadata or lengths"); return
@@ -947,30 +960,44 @@ dissect_control = function(buffer, header, pinfo, tree)
             end
             return true
         end
-        if not path(52,destination_length,f_control_destination) or
-           not path(52+destination_length,reply_length,f_control_reply_path) then bad("Invalid CONTROL routing stack"); return end
+        if not path(52+auth_length,destination_length,f_control_destination) or
+           not path(52+auth_length+destination_length,reply_length,f_control_reply_path) then bad("Invalid CONTROL routing stack"); return end
         tree:add(f_control_version,payload(0,1)); tree:add(f_control_kind,payload(1,1))
         tree:add(f_control_state,payload(2,1)); tree:add(f_control_hops,payload(3,1))
         tree:add(f_control_id,payload(4,16)); tree:add(f_control_origin,payload(20,16))
         tree:add(f_control_offset,payload(36,4)); tree:add(f_control_total,payload(40,4))
         tree:add(f_control_command_length,payload(44,2))
+        if auth_length>0 then tree:add(f_control_auth,payload(52,auth_length)) end
+        if kind==10 then
+            if command_length~=0 then bad("Challenge has command"); return end
+            challenge(start)
+        end
         if command_length>0 then tree:add(f_control_command,payload(start,command_length)) end
         if data_length>0 then tree:add(f_control_data,payload(start+command_length,data_length)) end
         pinfo.cols.info:append(string.format(", v2 %s, hops=%d, offset=%d, total=%d",control_kinds[kind],hops,offset,total))
         return
     end
     local offset, total, command_length = payload(20,4):uint(), payload(24,4):uint(), payload(28,2):uint()
-    if version ~= 1 or kind > 5 or not control_kinds[kind] or not control_states[state] then
+    local auth_length = payload(30,2):uint()
+    local start = 32 + auth_length
+    if version==3 and kind==6 then
+        if state~=1 or offset~=0 or total~=0 or command_length~=0 or auth_length~=0 or payload(3,1):uint()~=0 then
+            bad("Invalid CONTROL_CHALLENGE metadata"); return
+        end
+        tree:add(f_control_version,payload(0,1)); tree:add(f_control_id,payload(4,16))
+        challenge(32); pinfo.cols.info:append(", CONTROL_CHALLENGE"); return
+    end
+    if (version ~= 1 and version ~= 3) or kind > 5 or not control_kinds[kind] or not control_states[state] then
         bad("Unsupported CONTROL version, kind or state"); return
     end
-    if payload(3,1):uint() ~= 0 or payload(30,2):uint() ~= 0 then
+    if payload(3,1):uint() ~= 0 or (version==1 and auth_length~=0) or (auth_length~=0 and auth_length~=88) then
         bad("Nonzero CONTROL reserved bytes"); return
     end
     if payload(4,16):raw() == string.rep("\0",16) then bad("Zero CONTROL request ID"); return end
-    if command_length > 256 or length < 32 + command_length then
+    if command_length > 256 or length < start + command_length then
         bad("Invalid or truncated CONTROL command"); return
     end
-    local data_length = length - 32 - command_length
+    local data_length = length - start - command_length
     if (kind ~= 1 and command_length ~= 0) or
        ((kind == 2 or kind == 4 or kind == 5) and data_length ~= 0) then
         bad("Unexpected CONTROL command or body"); return
@@ -988,13 +1015,14 @@ dissect_control = function(buffer, header, pinfo, tree)
     tree:add(f_control_offset, payload(20,4))
     tree:add(f_control_total, payload(24,4))
     tree:add(f_control_command_length, payload(28,2))
-    if command_length > 0 then tree:add(f_control_command, payload(32,command_length)) end
-    if data_length > 0 then tree:add(f_control_data, payload(32+command_length,data_length)) end
+    if auth_length>0 then tree:add(f_control_auth,payload(32,auth_length)) end
+    if command_length > 0 then tree:add(f_control_command, payload(start,command_length)) end
+    if data_length > 0 then tree:add(f_control_data, payload(start+command_length,data_length)) end
     local id = tostring(payload(4,16):bytes()):gsub(":", ""):lower()
     pinfo.cols.info:append(string.format(", %s, id=%s, offset=%d, total=%d",
         control_kinds[kind], id, offset, total))
     if kind == 3 or kind == 5 then pinfo.cols.info:append(", " .. control_states[state]) end
-    if command_length > 0 then pinfo.cols.info:append(", " .. payload(32,command_length):string()) end
+    if command_length > 0 then pinfo.cols.info:append(", " .. payload(start,command_length):string()) end
 end
 
 local function dissect_v5(buffer, pinfo, tree)
@@ -1071,7 +1099,7 @@ local function dissect_v5(buffer, pinfo, tree)
         end
         return buffer:len()
     end
-    if kind == 14 then
+    if kind == 14 or kind == 15 then
         dissect_control(buffer, header, pinfo, subtree)
         return buffer:len()
     end

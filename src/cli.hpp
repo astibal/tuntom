@@ -48,8 +48,8 @@ inline void usage(const char* program_name) {
         << "  --no-stats             Disable periodic stats file writes; keep metrics/socket\n"
         << "  SIGUSR1 / SIGUSR2       Toggle file writes / write snapshot (needs --stats-file)\n"
         << "  --stats-file <path>    Export runtime statistics to file\n"
+        << control_auth::help
         << "  --control-socket <path>  Local tuntomctl socket\n"
-        << "  --allow-control-all    Allow authenticated peer control operations\n"
         << "  --stats-format <fmt>   Statistics format; currently: txt\n"
         << "\n"
         << "Cryptography:\n"
@@ -104,10 +104,9 @@ inline void parse_options(
     for (int i = first_option; i < argc; ++i) {
         const std::string option = argv[i];
 
+        if(control_auth::option(options.control_auth,option,i,argc,argv))continue;
         if (option == "--crypto-auth-only") {
             options.pfs = options.encrypt_ascon = false;
-        } else if (option == "--allow-control-all") {
-            options.allow_control_all = true;
         } else if (option == "--info-msg-enable") {
             options.info_msg_enable = true;
         } else if (option == "--info-field" || option.rfind("--info-field=", 0) == 0) {
@@ -268,6 +267,7 @@ inline void parse_options(
     if (not options.switch_socket.empty() and options.switch_port_id.empty()) {
         throw std::runtime_error("--switch-socket requires --switch-port-id");
     }
+    control_auth::validate(options.control_auth);
     (void)info::encode_access({}, options.info_fields);
 
 }

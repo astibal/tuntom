@@ -22,7 +22,8 @@ import threading
 import time
 from urllib.parse import unquote, urlsplit, parse_qs
 
-from control import ControlError, ResponseTooLarge, MAX_BODY, query
+from control import ControlError, ResponseTooLarge, MAX_BODY, query, encode_route
+from async_requests import Requests
 from flows import parse_flows, MAX_FLOW_REPLY
 from errors import APIError
 from discovery import discover, stat_fields
@@ -83,6 +84,7 @@ class Fabric:
         self.discover = discover_fn
         self.endpoints = {}
         self.discovery_info = {"source": "procfs", "status": "pending"}
+        self.requests = Requests()
         self.action_lock = threading.Lock()
         self.flow_lock = threading.Lock()
         self.mutex = threading.Lock()
@@ -102,6 +104,7 @@ class Fabric:
         self.syspiper.start()
 
     def close(self):
+        self.requests.close()
         self.stop.set()
         self.wake.set()
         if self.thread:
@@ -110,7 +113,7 @@ class Fabric:
         if self.history_store:
             self.history_store.close()
 
-    def control_query(self, endpoint, operation, body=""):
+    def control_query(self, endpoint, operation, body="", *, route=None, on_accepted=None):
         if not endpoint.control:
             raise OSError("process has no --control-socket")
         if int(stat_fields(Path(f"/proc/{endpoint.pid}/stat"))[19]) != endpoint.start_ticks:
@@ -118,9 +121,31 @@ class Fabric:
         namespace = os.readlink("/proc/self/ns/mnt")
         if endpoint.mount_namespace and endpoint.mount_namespace != namespace:
             raise OSError("control socket is in a different mount namespace")
-        return query(endpoint.control, operation, body, timeout=8 if operation == "flows" else 3,
-                     max_response_bytes=MAX_FLOW_REPLY if operation == "flows" else None,
+        return query(endpoint.control, operation, body, timeout=30 if route is not None else (8 if operation == "flows" else 3),
+                     max_response_bytes=MAX_BODY if route is not None else (MAX_FLOW_REPLY if operation == "flows" else None),
+                     route=route, on_accepted=on_accepted,
                      expected_pid=endpoint.pid, expected_start_ticks=endpoint.start_ticks)
+
+    def submit_request(self, key, body):
+        if not isinstance(body, dict) or set(body) - {"operation", "route"}:
+            raise APIError(400, "invalid async request")
+        operation = body.get("operation")
+        if not isinstance(operation, str) or operation not in {"stats", "flows", "show", "discover"}:
+            raise APIError(400, "unsupported async operation")
+        route = body.get("route", [])
+        try:
+            target = (key, encode_route(route))
+        except ValueError as error:
+            raise APIError(400, str(error)) from error
+        self.endpoint(key)  # Reject invalid origins before reserving a worker.
+        def work(accepted):
+            # Rediscover and verify the origin again immediately before connecting.
+            return {"text": self.control_query(self.endpoint(key), operation,
+                                              route=route, on_accepted=accepted)}
+        return self.requests.submit(work, target=target)
+
+    def request_status(self, key):
+        return self.requests.get(key)
 
     def _sample(self, endpoint):
         try:
@@ -402,6 +427,12 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/v1/refresh" and self.command == "POST":
                 self.server.fabric.wake.set()
                 return self.respond(202, {"result": "discovery scheduled"})
+            match = re.fullmatch(r"/api/v1/endpoints/([^/]+)/requests", path)
+            if match and self.command == "POST":
+                return self.respond(202, self.server.fabric.submit_request(unquote(match[1]), self.body()))
+            match = re.fullmatch(r"/api/v1/requests/([0-9a-f]{32})", path)
+            if match and self.command == "GET":
+                return self.respond(200, self.server.fabric.request_status(match[1]))
             match = re.fullmatch(r"/api/v1/(?:endpoints|syspiper)/([^/]+)/history", path)
             if match and self.command == "GET":
                 params = parse_qs(urlsplit(self.path).query, keep_blank_values=True)

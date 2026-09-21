@@ -19,6 +19,15 @@ TUN routing, use the [split-side namespace lab](../docs/RELAY_SPLIT_SIDES.md#val
 Builds use a temporary directory that is removed on exit. No root privileges,
 live tunnel, or network access are needed.
 
+- `control_auth_test.cpp`: key selection, capability/level policy, proof tampering,
+  origin/request binding, replay, entropy failure, challenge expiry and rekey,
+  lost replies/confirmations and end-to-end routing through a relay.
+- `control_auth_integration_test.py`: real ST/MP switches and adapter processes,
+  key generation/no overwrite, untrusted-key and capability rejection, local
+  compatibility, and auth-session reclamation across repeated commands.
+  `remote_control_integration_test.py` also exercises pinned direct/routed UDP
+  control with automatic challenges in both allow modes, complete network silence
+  when disabled (even with keys loaded), and multiblock requests/results.
 - `info_message_test.cpp`: strict ASCII key/value parsing, every byte value,
   atomic peer snapshots, sender sanitization, custom CLI fields, collector-thread
   handoff/failures/generation changes, authentication, replay and rekey isolation.

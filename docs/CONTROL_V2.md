@@ -3,9 +3,13 @@
 CONTROL v1 and `tuntomctl remote SOCKET --- COMMAND` remain compatible:
 that syntax always controls the remote tunnel. Routed CONTROL v2 is supported
 by tunnels, both switch implementations, relay endpoints, exit adapters and
-divert adapters. Each receiving/forwarding process must opt in with
-`--allow-control-all`. Local control socket permissions remain unchanged;
-locally initiated requests and their replies do not require this flag at origin.
+divert adapters. Every origin, relay and target must explicitly enable network
+CONTROL with `--allow-control-trusted`, or `--allow-control-all` for debugging
+at the operator's own risk. Without either flag, incoming, outgoing and transit
+CONTROL are all disabled. Loading keys alone does not enable the stack.
+Trusted-mode destinations verify pinned authorities and capability grants;
+trusted-mode relays may forward without holding any authority keys. Local Unix
+control socket diagnostics remain available. See [CONTROL_AUTH.md](CONTROL_AUTH.md).
 
 Examples:
 
@@ -25,7 +29,20 @@ tuntomctl switch /run/tuntom/switch.control --port tunnel42 \
   --peer-port 'proxy-in0~via:c:smithproxy#0' --- request status REQUEST_ID
 # Bounded discovery snapshot:
 tuntomctl switch /run/tuntom/switch.control --- discover
+# Same discovery snapshot rendered as an ASCII tree:
+tuntomctl switch /run/tuntom/switch.control --- discover tree
 ```
+
+`discover tree` uses the same ASCII branches as `--port-tree`. Port labels
+are exact registration names (decoded from discovery trace escapes), usable
+with `--port` and `--peer-port`; `peer` denotes the `--peer` hop. Component and
+`ALT_PATH`/`NO_RESPONSE` annotations are not part of the port name. Targeted
+discovery retains the selected route prefix in the tree. Arbitrary deeper
+paths are displayed but still require future N-hop CLI support.
+
+Discovery is exposed only through `tuntomctl switch ... --- discover`;
+`remote ... --- discover` is rejected by the CLI. Protocol-level discovery
+remains available to all supporting components.
 
 Files are read locally and sent as opaque bytes. `--peer-port` implies `--peer`.
 `--remote-retries` and `--remote-wait` precede `---`. Exit statuses: 0 requires

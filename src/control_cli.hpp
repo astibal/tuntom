@@ -1,5 +1,6 @@
 #pragma once
 #include "control_route.hpp"
+#include "control_discovery.hpp"
 #include "control_protocol.hpp"
 #include "control_ports.hpp"
 #include "switch_ruleset.hpp"
@@ -72,6 +73,11 @@ int connect_control(const std::string& path, bool remote) {
 }
 inline int tuntom_control_main(int argc, char **argv) {
     try {
+        if(argc>1 && std::string(argv[1])=="auth-keygen") {
+            if(argc!=6)throw std::runtime_error("usage: tuntomctl auth-keygen PRIVATE PUBLIC CAPS LEVEL");
+            tuntom::control_auth::keygen(argv[2],argv[3],tuntom::control_auth::number(argv[4]),tuntom::control_auth::number(argv[5]));
+            std::cout<<"Control authority keys created\n";return 0;
+        }
         int first = 1;
         std::string path = "/run/tuntom/switch.control";
         const bool remote = argc > 1 && std::string(argv[1]) == "remote";
@@ -117,7 +123,10 @@ inline int tuntom_control_main(int argc, char **argv) {
         if (port_list && (remote_options || first != argc || peer || !target_port.empty())) throw std::runtime_error("port listing accepts only local socket options");
         if (switch_mode && !port_list && !separator) throw std::runtime_error("switch commands require ---");
         if (remote && !target_port.empty()) throw std::runtime_error("--port requires switch mode");
-        const bool discovery = (remote || switch_mode) && argc == first + 1 && std::string(argv[first]) == "discover";
+        const bool discovery_tree = (remote || switch_mode) && argc == first + 2 &&
+            std::string(argv[first]) == "discover" && std::string(argv[first+1]) == "tree";
+        const bool discovery = discovery_tree || ((remote || switch_mode) && argc == first + 1 && std::string(argv[first]) == "discover");
+        if (discovery && !switch_mode) throw std::runtime_error("discover is available only in switch mode");
         const bool routed = discovery || peer || !target_port.empty();
         const bool asynchronous = remote || routed;
         tuntom::control_route::Path route;
@@ -148,9 +157,10 @@ inline int tuntom_control_main(int argc, char **argv) {
         }
         if (!discovery && !port_list && !stats && !flows && !status && operation.empty()) {
             std::cerr << "Switch: tuntomctl switch [--socket PATH | PATH] --port-list|--port-tree\n";
-            std::cerr << "Routed: tuntomctl switch [SOCKET] [--port NAME] [--peer | --peer-port NAME] --- COMMAND|discover\n";
+            std::cerr << "Routed: tuntomctl switch [SOCKET] [--port NAME] [--peer | --peer-port NAME] --- COMMAND|discover [tree]\n";
             std::cerr << "Remote: tuntomctl remote [--socket PATH] [--remote-retries N] [--remote-wait N[ms|s]] --- COMMAND\n";
-            std::cerr << "Usage: " << argv[0] << " <control-socket> show stats|flows\n"
+            std::cerr << "Key generation: " << argv[0] << " auth-keygen PRIVATE PUBLIC CAPS LEVEL\n"
+                      << "Usage: " << argv[0] << " <control-socket> show stats|flows\n"
                       << "       " << argv[0] << " [control-socket] rules show\n"
                       << "       " << argv[0] << " [control-socket] rules check|load FILE|-\n";
             std::cerr << "       " << argv[0] << " <control-socket> divert enable|stop|show\n";
@@ -176,7 +186,22 @@ inline int tuntom_control_main(int argc, char **argv) {
             send_record(socket.fd, body.data() + offset, std::min(tuntom::control_chunk_size, body.size() - offset));
         if (asynchronous) {
             const auto accepted = receive(socket.fd, 256);
-            if (accepted.compare(0, 8, "REQUEST ") != 0) throw std::runtime_error("remote request was not accepted locally: " + accepted);
+            if (accepted.compare(0, 8, "REQUEST ") != 0) {
+                // Admission failures arrive as ordinary framed errors. Read
+                // their body so disabled CONTROL reports the actionable reason.
+                auto header=accepted;if(!header.empty() && header.back()=='\n')header.pop_back();
+                const auto split=header.find(' ');
+                if(split!=std::string::npos && (header.substr(0,split)=="ERROR" || header.substr(0,split)=="REJECTED")) {
+                    const auto size=tuntom::control_length(header.substr(split+1));std::string reason;
+                    while(reason.size()<size) {
+                        const auto chunk=receive(socket.fd,tuntom::control_chunk_size);
+                        if(chunk.size()>size-reason.size())throw std::runtime_error("oversized control error");
+                        reason+=chunk;
+                    }
+                    throw std::runtime_error("remote request was not accepted locally: "+reason);
+                }
+                throw std::runtime_error("remote request was not accepted locally: " + accepted);
+            }
             std::cerr << "request_id=" << accepted.substr(8);
         }
         if (stats && !asynchronous) {
@@ -201,7 +226,7 @@ inline int tuntom_control_main(int argc, char **argv) {
                 std::cerr << "ERROR: " << response;
                 return asynchronous && header.substr(0, space) == "REJECTED" ? 255 : 1;
             }
-            std::cout << (port_tree ? tuntom::ControlPorts::tree(response) : response);
+            std::cout << (discovery_tree ? tuntom::discovery_tree(response, route) : port_tree ? tuntom::ControlPorts::tree(response) : response);
         }
         std::cout.flush();
         if (!std::cout) throw std::runtime_error("cannot write output");

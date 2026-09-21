@@ -129,6 +129,8 @@ int main() {
     require(recv(p.c, data(p.s), rekey - std::chrono::seconds(1)).data, "keep client live");
     require(p.c.tick(rekey - std::chrono::seconds(1), wall).empty(), "early rekey");
     auto delayed1 = data(p.c), delayed2 = data(p.c);
+    Packet challenge;challenge.type=PacketType::control_challenge;challenge.payload.resize(112);
+    const auto delayed_challenge=p.c.encode(challenge);
     const auto init = p.c.tick(rekey, wall);
     require(!init.empty() && init != p.init, "periodic DH rekey");
     require(recv(p.s, data(p.c), rekey).data, "old TX during rekey");
@@ -137,6 +139,8 @@ int main() {
     auto ack = recv(p.s, confirm, rekey).reply;
     require(recv(p.c, ack, rekey).activated, "rekey activation");
     require(recv(p.s, delayed1, rekey).data, "old receive overlap");
+    require(!recv(p.s,delayed_challenge,rekey).data,"old CONTROL_CHALLENGE rejected during rekey grace period");
+    require(recv(p.s,p.c.encode(challenge),rekey).data,"new CONTROL_CHALLENGE after rekey");
     require(!recv(p.s, delayed2, rekey + SP::old_lifetime).data, "old session expiry");
     require(recv(p.s, data(p.c), rekey + SP::old_lifetime).data, "new session data");
     // Restart accepts a new exchange, never the captured confirmation.

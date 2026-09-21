@@ -19,7 +19,7 @@ int main() {
     std::deque<std::vector<std::uint8_t>> ab, ba;
     RemoteControl a, b;
     auto now = RemoteControl::Time{};
-    a.configure({}, [&](auto bytes) { ab.push_back(bytes); }, [&](auto request) { return d.execute(request, {}); });
+    a.configure(ControlAccess::all(), [&](auto bytes) { ab.push_back(bytes); }, [&](auto request) { return d.execute(request, {}); });
     b.configure(ControlAccess::all(), [&](auto bytes) { ba.push_back(bytes); }, [&](auto request) { return d.execute(request, ControlAccess::all()); });
     a.payload_limit(800); b.payload_limit(800);
     const auto load = a.submit({"classifier load 9000", std::string(9000, 'c')}, 5, std::chrono::milliseconds(20), now);

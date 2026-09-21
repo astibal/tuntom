@@ -22,7 +22,7 @@ existing key derivations. Version 5 is transmitted only in INIT/RESPONSE.
 | Type | Extension at offset 9 | Total header |
 |---|---|---:|
 | DATA (3), no fragment flag | none | 25 B |
-| HELLO (1), KEEPALIVE (2), INFO (13) | none | 25 B |
+| HELLO (1), KEEPALIVE (2), INFO (13), CONTROL (14), CONTROL_CHALLENGE (15) | none | 25 B |
 | DATA (3), fragment flag set | message_id[8], offset[2], original_length[2] | 37 B |
 | PING (4), PONG (5) | probe_id[8] | 33 B |
 | MTU_PROBE (6), MTU_REPLY (7) | probe_id[8], outer_mtu[2] | 35 B |
@@ -43,6 +43,16 @@ must fit 16 bits (maximum inner packet 65535 bytes); redundant complete-packet
 fragment extensions are rejected. Fragment IDs remain 64 bits. HELLO, KEEPALIVE,
 PING, PONG, MTU_REPLY and confirmations have no payload. MTU_PROBE carries
 padding.
+
+## CONTROL (14) and CONTROL_CHALLENGE (15)
+
+CONTROL supports legacy direct/routed transactions and optional X25519 authority
+authentication. CONTROL_CHALLENGE carries a fresh node ephemeral key, optional
+authority ID and capability/level requirements. Both are restricted to the active
+transport session. See [CONTROL_AUTH.md](CONTROL_AUTH.md) for encoding,
+provisioning, replay handling and automatic advertisement after rekey whenever
+network CONTROL is enabled. Without an `--allow-control*` flag, CONTROL reception,
+transit and transmission are disabled; local Unix-socket diagnostics remain available.
 
 ## INFO (13)
 

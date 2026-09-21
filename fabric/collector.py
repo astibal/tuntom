@@ -64,6 +64,10 @@ class CollectorHandler(socketserver.BaseRequestHandler):
                 result["collector"] = {"mode": "separate", "uid": os.geteuid()}
             elif operation == "history" and isinstance(key, str):
                 result = fabric.history(key, request.get("body"))
+            elif operation == "request_submit" and isinstance(key, str):
+                result = fabric.submit_request(key, request.get("body"))
+            elif operation == "request_status" and isinstance(key, str):
+                result = fabric.request_status(key)
             elif operation == "refresh":
                 fabric.wake.set()
                 result = {"result": "discovery scheduled"}
@@ -172,6 +176,12 @@ class RemoteFabric:
 
     def flows(self, key):
         return self.call("flows", key)
+
+    def submit_request(self, key, body):
+        return self.call("request_submit", key, body)
+
+    def request_status(self, key):
+        return self.call("request_status", key)
 
     def diagnostics(self, key):
         return self.call("diagnostics", key)

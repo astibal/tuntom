@@ -23,7 +23,8 @@ def config(serial, body):
 
 
 class Switch:
-    def __init__(self, binary, ctl, root, initial, fault_library=None):
+    def __init__(self, binary, ctl, root, initial, fault_library=None, extra_args=()):
+        self.extra_args = list(extra_args)
         self.binary, self.ctl, self.root = binary, ctl, root
         self.data, self.control, self.file = root / "data", root / "control", root / "rules"
         self.file.write_text(initial)
@@ -40,6 +41,7 @@ class Switch:
         args = [self.binary, "--socket", str(self.data), "--control-socket", str(self.control), "--rules-file", str(self.file)]
         if "mp" in Path(self.binary).name:
             args += ["--workers", "2", "--pool-size", "16", "--queue-size", "16"]
+        args += self.extra_args
         self.process = subprocess.Popen(args, stdout=self.log, stderr=self.log, env=self.environment)
         for _ in range(200):
             if self.process.poll() is not None:

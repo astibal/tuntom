@@ -1,4 +1,5 @@
 #include "../src/routed_control.hpp"
+#include "../src/control_discovery.hpp"
 #include <deque>
 #include <iostream>
 using namespace tuntom;
@@ -6,6 +7,17 @@ namespace cr=tuntom::control_route;
 void require(bool ok,const char* why) { if(!ok) throw std::runtime_error(why); }
 struct Delivery { ControlRouter* node; std::string edge; std::vector<std::uint8_t> bytes; };
 int main() {
+    const std::string header="path\tstate\tinstance\tcomponent\tcapabilities\n";
+    const auto tree=discovery_tree(header+
+        "port:uplink/peer/port:proxy%2Fin%25\tALT_PATH\tid\tadapter\tcontrol\n"+
+        "self\tFOUND\tid\tswitch\tcontrol\n"+
+        "port:uplink\tFOUND\tid\ttunnel\tcontrol\n"+
+        "port:uplink/peer\tFOUND\tid\ttunnel\tcontrol\n");
+    require(tree=="switch\n`-- uplink [tunnel]\n    `-- peer [tunnel]\n        `-- proxy/in% [adapter] [ALT_PATH]\n", "discovery tree decodes addressable names and marks alternatives");
+    require(discovery_tree(header+"self\tFOUND\tid\tadapter\tcontrol\n",{cr::Hop::port("edge"),cr::Hop::peer(),cr::Hop::port("exit")})==
+        "switch\n`-- edge\n    `-- peer\n        `-- exit [adapter]\n", "targeted discovery preserves route prefix");
+    require(discovery_tree(header+"peer\tNO_RESPONSE\t-\t-\t-\n")=="switch [NO_RESPONSE]\n", "silent discovery is not a fictitious peer");
+
     cr::Frame source; source.kind=cr::Kind::put; source.state=1;
     source.request=remote_control::new_id(); source.origin=remote_control::new_id();
     source.destination={cr::Hop::port("tunnel42"),cr::Hop::peer(),cr::Hop::port("divert-in")};
@@ -29,7 +41,7 @@ int main() {
     std::size_t calls=0;
     auto now=ControlRouter::Clock::now();
     root.configure(true,[&](const cr::Frame& f){answers.push_back(f);});
-    a.configure(true,[](auto){}); b.configure(true,[](auto){}); other.configure(true,[](auto){});
+    a.configure(false,[](auto){throw std::runtime_error("disabled transit node executed a request");}); b.configure(true,[](auto){}); other.configure(true,[](auto){});
     adapter.configure(true,[&](const cr::Frame& f){
         ++calls;
         auto reply=cr::wrap(cr::unwrap(f),f.origin,f.reply_path);
@@ -48,9 +60,16 @@ int main() {
         d.node->receive(d.edge,d.bytes.data(),d.bytes.size(),now);
     }};
     source.origin=root.instance(); root.send(source,now); drain();
+    require(calls==0 && answers.empty(),"disabled relay neither forwards nor responds");
+    a.send(source,now);require(pending.empty(),"disabled relay cannot originate frames");
+    a.configure(true,[](auto){});
+    root.send(source,now);drain();
     require(calls==1 && answers.size()==1 && answers[0].data=="ok","multi-hop command and reversed return stack");
     const auto bound=answers[0].reply_path;
     require(bound.size()==3,"bound route obtained from reply");
+    source.destination={cr::Hop::port("tunnel42")};root.send(source,now);drain();
+    require(calls==1,"enabled relay delivered self command without invoking adapter");
+    a.configure(true,[](auto){});
     // Bound route fails after adapter reconnect instead of reaching replacement.
     connect(b,"divert-in",false,adapter,"input",false,2);
     source.destination=bound; root.send(source,now);drain();
@@ -64,11 +83,12 @@ int main() {
     std::size_t found=0,alt=0;
     for(const auto& f:answers) {found+=f.kind==cr::Kind::found;alt+=f.kind==cr::Kind::alt_path;}
     require(found==5 && alt>=1 && calls==1,"discovery floods once, alternate paths do not execute or propagate");
-    // Permission denial is silent for discovery, explicit for commands.
+    // Disabled CONTROL is silent for discovery and commands alike.
     adapter.configure(false,[&](auto){++calls;});answers.clear();root.begin_discovery(now);drain();
     for(const auto& f:answers) require(f.data.find(remote_control::hex(adapter.instance()))==std::string::npos,"disabled node advertised itself");
+    const auto answer_count=answers.size();
     source.destination={cr::Hop::port("alternate"),cr::Hop::port("divert-out")};root.send(source,now);drain();
-    require(answers.back().data=="control_denied" && calls==1,"denied command");
+    require(answers.size()==answer_count && calls==1,"disabled node sends no rejection response");
     // MTU failure is explicit, not an oversized datagram silently sent.
     root.edge("tiny",1,false,52,[](auto){throw std::runtime_error("oversized send");return false;});
     source.destination={cr::Hop::port("tiny")};root.send(source,now);
@@ -78,7 +98,7 @@ int main() {
     ControlDispatcher dispatcher;
     unsigned executions=0; bool lost_reply=false,lost_confirmation=false;
     dispatcher.classifier=[&](const std::string&,const std::string& body) {++executions;return body;};
-    sender.configure(false,{}); receiver.configure(true,dispatcher);
+    sender.configure(true,{}); receiver.configure(true,dispatcher);
     connect(sender.router(),"adapter",false,receiver.router(),"switch",false);
     auto request=sender.submit({"classifier load 2048",std::string(2048,'x')},5,10,{cr::Hop::port("adapter")});
     std::optional<ControlResponse> result;
