@@ -136,6 +136,51 @@ switch server to sink allow
         assert after["classifier_misses"] == adapter_stats["classifier_misses"], after
         assert int(after["l4_hits"]) >= 1 and int(after["l3_hits"]) >= 1, after
         assert stats("client")["classifier_enabled"] == "0"
+        def command(role, operation, text=None, success=True):
+            args = [ctl, str(controls[role]), "classifier", operation]
+            if text is not None:
+                args.append("-")
+            result = subprocess.run(args, input=text, text=True, capture_output=True, timeout=5)
+            assert (result.returncode == 0) == success, result
+            return result.stdout
+
+        replacement = "format 1\nclassify to [77,88]\n"
+        command("adapter", "check", replacement)
+        assert command("adapter", "show") == rules("ADPT")
+        command("adapter", "load-flush", "format 1\nclassify dport 99999 to 1\n", False)
+        expect(reply, learned, tun)
+        assert stats("adapter")["classifier_generation"] == "1"
+        command("adapter", "load", replacement)
+        expect(reply, learned, tun)
+        command("adapter", "disable")
+        expect(reply, learned, tun)
+        command("adapter", "load", replacement)
+        before_flush = stats("adapter")
+        command("adapter", "load-flush", replacement)  # Identical config still flushes.
+        flushed = stats("adapter")
+        assert flushed["l3_entries"] == flushed["l4_entries"] == "0", flushed
+        assert flushed["classifier_hits"] == before_flush["classifier_hits"]
+        assert flushed["classifier_flushes"] == "1"
+        expect(reply, [77,88], tun)
+        expect(ipv4(sport=20000), [77,88], tun)
+        app.sendall(frame(learned, request))
+        assert tun.recv(70000) == request
+        expect(reply, learned, tun)
+        command("adapter", "load-flush", "format 1\n")
+        tun.sendall(reply)
+        assert not select.select([sink], [], [], .08)[0]
+        command("server", "load-flush", replacement)
+        expect(reply, [77,88], app)
+        command("server", "load-flush", "invalid", False)
+        expect(reply, [77,88], app)
+        command("server", "disable")
+        expect(reply, [2], app)
+        command("client", "load", replacement)  # No startup classifier file.
+        assert command("client", "show") == replacement
+        assert stats("client")["classifier_enabled"] == "1"
+        rejected = subprocess.run([ctl, str(sw.control), "classifier", "load", "-"],
+                                  input=replacement, text=True, capture_output=True, timeout=5)
+        assert rejected.returncode != 0
         if mode == "auto" and "mp" in Path(switch_binary).name:
             assert after["switch_ipc_mmap"] == "1", after
     print(f"PASS: classifier in tuntom and adapter, reverse cache precedence, IPC={mode}, {Path(switch_binary).name}")

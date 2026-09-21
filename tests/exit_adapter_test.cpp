@@ -140,10 +140,30 @@ int main() {
                 learn(next, 3);
                 require(pooled.l4_size() == 2, "adjacent pool must remain separate");
             }
+            pooled.flush();
+            require(pooled.l3_size() == 0 && pooled.l4_size() == 0, "flush counts");
+            require(!lookup(last, start), "masked cache entry survived flush");
+            learn(0, 4);
+            require(lookup(last, start) && found == std::vector<std::uint64_t>{4}, "relearn after flush");
             require(lookup(last, start + std::chrono::seconds(15)), "pool refresh");
             require(lookup(0, start + std::chrono::seconds(30)), "pool shares timeout");
             require(!lookup(last, start + std::chrono::seconds(51)), "pool must expire");
         }
+    }
+    {
+        tuntom::LruCache<int, int, std::hash<int>> cache(256, std::chrono::seconds(20));
+        const auto now = Clock::now();
+        for (int i = 0; i < 256; ++i) cache.put(i, i, now);
+        cache.flush();
+        int value = -1;
+        require(cache.size() == 0 && !cache.get(255, value, now), "logical flush");
+        cache.put(255, 999, now); // Revive an entry beyond the reclamation batch.
+        require(cache.size() == 1 && cache.get(255, value, now) && value == 999, "revive stale entry");
+        for (int i = 300; i < 600; ++i) cache.put(i, i, now);
+        require(cache.size() == 256 && !cache.get(255, value, now), "post-flush capacity");
+        require(cache.evictions() == 45 && cache.expirations() == 0, "flush preserves accounting");
+        cache.flush(); cache.flush(); cache.reclaim();
+        require(cache.size() == 0 && !cache.get(599, value, now), "repeated flush");
     }
     bool invalid_bits = false;
     try {

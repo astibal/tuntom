@@ -86,11 +86,13 @@ struct ClassifierRule {
 class PacketClassifier {
     std::vector<ClassifierRule> rules_;
     bool enabled_ = false;
+    std::string text_;
+    std::uint64_t generation_ = 0, flushes_ = 0, load_errors_ = 0;
     std::uint64_t hits_ = 0, misses_ = 0, parse_errors_ = 0;
 public:
     static PacketClassifier parse(const std::string& text) {
         if (text.size() > ruleset_max_bytes) throw std::runtime_error("classifier exceeds 1 MiB");
-        PacketClassifier result; result.enabled_ = true;
+        PacketClassifier result; result.enabled_ = true; result.text_ = text; result.generation_ = 1;
         std::istringstream input(text); std::string text_line;
         std::size_t number = 0; bool header = false;
         while (std::getline(input, text_line)) {
@@ -158,6 +160,29 @@ public:
     static PacketClassifier from_file(const std::string& path) {
         return path.empty() ? PacketClassifier{} : parse(read_rules_file(path));
     }
+    // Called between packet-processing steps; flush must not throw.
+    template<class Flush> std::string control(const std::string& operation,
+                                              const std::string& body, Flush flush) {
+        if (operation == "show") return enabled_ ? text_ : "# classifier disabled\n";
+        if (operation != "check" && operation != "load" && operation != "load-flush" && operation != "disable")
+            throw std::runtime_error("unknown classifier operation");
+        PacketClassifier next;
+        try {
+            if (operation != "disable") next = parse(body);
+        } catch (...) {
+            if (operation != "check") ++load_errors_;
+            throw;
+        }
+        if (operation == "check") return "valid=1\n";
+        // Prepare the response before committing any state.
+        auto response = "classifier_generation=" + std::to_string(generation_ + 1) + "\n";
+        rules_.swap(next.rules_);
+        text_.swap(next.text_);
+        enabled_ = next.enabled_;
+        ++generation_;
+        if (operation == "load-flush") { flush(); ++flushes_; }
+        return response;
+    }
     const std::vector<std::uint64_t>* classify(const std::uint8_t* packet, std::size_t size) {
         if (!enabled_) return nullptr;
         ParsedIpFlow flow;
@@ -177,6 +202,9 @@ public:
     void record_parse_error() { if (enabled_) ++parse_errors_; }
     void write_stats(std::ostream& output) const {
         output << "classifier_enabled=" << enabled_ << '\n'
+               << "classifier_generation=" << generation_ << '\n'
+               << "classifier_flushes=" << flushes_ << '\n'
+               << "classifier_load_errors=" << load_errors_ << '\n'
                << "classifier_rules=" << rules_.size() << '\n'
                << "classifier_hits=" << hits_ << '\n'
                << "classifier_misses=" << misses_ << '\n'

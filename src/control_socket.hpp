@@ -8,6 +8,7 @@
 #include <cerrno>
 #include <cstring>
 #include <map>
+#include <functional>
 #include <stdexcept>
 #include <string>
 #include <sys/epoll.h>
@@ -25,7 +26,7 @@ class ControlSocket {
         std::string command, body, response;
         std::size_t expected = 0, sent = 0;
         bool header = false, responding = false, framed = false, response_header = false;
-        bool success = true;
+        bool success = true, classifier = false;
         AcceptBackoff::Time deadline;
     };
     int fd_ = -1, poller_ = -1;
@@ -134,7 +135,8 @@ class ControlSocket {
         handle(stats, rules, [] { return FlowDump("none").finish(); });
     }
     template<class StatsProvider, class RulesProvider, class FlowsProvider>
-    void handle(StatsProvider stats, RulesProvider rules, FlowsProvider flows) {
+    void handle(StatsProvider stats, RulesProvider rules, FlowsProvider flows,
+                std::function<std::string(const std::string&, const std::string&)> classifier = {}) {
         maintain();
         std::array<epoll_event, max_clients + 1> events{};
         const int count = ::epoll_wait(poller_, events.data(), static_cast<int>(events.size()), 0);
@@ -173,10 +175,11 @@ class ControlSocket {
                             respond(fd, c, flows());
                             break;
                         }
+                        c.classifier = command.compare(0, 11, "classifier ") == 0;
                         const bool divert = command.compare(0, 7, "divert ") == 0;
-                        if (!divert && command.compare(0, 6, "rules ") != 0) { respond(fd, c, "error=unknown_command\n"); break; }
+                        if (!c.classifier && !divert && command.compare(0, 6, "rules ") != 0) { respond(fd, c, "error=unknown_command\n"); break; }
                         c.framed = true;
-                        const std::size_t start = divert ? 7 : 6;
+                        const std::size_t start = c.classifier ? 11 : divert ? 7 : 6;
                         const auto space = command.find(' ', start);
                         if (space == std::string::npos) throw std::runtime_error("expected rules OP LENGTH");
                         c.command = command.substr(start, space - start);
@@ -185,6 +188,12 @@ class ControlSocket {
                             if (c.expected || (c.command != "enable" && c.command != "stop" && c.command != "show"))
                                 throw std::runtime_error("expected divert enable|stop|show 0");
                             c.command = "divert." + c.command;
+                        } else if (c.classifier) {
+                            if (c.command != "check" && c.command != "load" && c.command != "load-flush" &&
+                                c.command != "show" && c.command != "disable")
+                                throw std::runtime_error("unknown classifier operation");
+                            if (c.command == "disable" && c.expected)
+                                throw std::runtime_error("disable has no body");
                         } else if (c.command != "check" && c.command != "load" && c.command != "show")
                             throw std::runtime_error("unknown rules operation");
                         if (c.command == "show" && c.expected) throw std::runtime_error("show has no body");
@@ -193,7 +202,11 @@ class ControlSocket {
                             throw std::runtime_error("control body exceeds declared length");
                         c.body.append(bytes.data(), static_cast<std::size_t>(size));
                     }
-                    if (c.body.size() == c.expected) respond(fd, c, rules(c.command, c.body));
+                    if (c.body.size() == c.expected) {
+                        if (c.classifier && !classifier)
+                            throw std::runtime_error("classifier commands unsupported by this component");
+                        respond(fd, c, c.classifier ? classifier(c.command, c.body) : rules(c.command, c.body));
+                    }
                 }
             } catch (const std::bad_alloc &) {
                 constexpr char error[] = "error=out_of_memory\n";

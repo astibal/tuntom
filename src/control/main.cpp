@@ -22,7 +22,7 @@ std::string receive(int fd, std::size_t maximum) {
     ssize_t size;
     do { size = ::recv(fd, buffer.data(), buffer.size(), MSG_TRUNC); } while (size < 0 && errno == EINTR);
     if (size <= 0 || static_cast<std::size_t>(size) > maximum)
-        throw std::runtime_error("incomplete or invalid control response; for load, check active serial before retrying");
+        throw std::runtime_error("incomplete or invalid control response; for load, check active serial or classifier generation before retrying");
     buffer.resize(static_cast<std::size_t>(size));
     return buffer;
 }
@@ -35,13 +35,14 @@ int main(int argc, char **argv) {
         const bool stats = argc == first + 2 && std::string(argv[first]) == "show" && std::string(argv[first + 1]) == "stats";
         const bool flows = argc == first + 2 && std::string(argv[first]) == "show" && std::string(argv[first + 1]) == "flows";
         std::string operation, body;
+        const bool classifier = argc >= first + 2 && first == 2 && std::string(argv[first]) == "classifier";
         const bool divert = argc == first + 2 && first == 2 && std::string(argv[first]) == "divert";
         if (divert && (std::string(argv[first + 1]) == "enable" || std::string(argv[first + 1]) == "stop" ||
                        std::string(argv[first + 1]) == "show"))
             operation = argv[first + 1];
-        if (!stats && argc >= first + 2 && std::string(argv[first]) == "rules") {
+        if (!stats && argc >= first + 2 && (std::string(argv[first]) == "rules" || classifier)) {
             operation = argv[first + 1];
-            if ((operation == "check" || operation == "load") && argc == first + 3) {
+            if ((operation == "check" || operation == "load" || (classifier && operation == "load-flush")) && argc == first + 3) {
                 if (std::string(argv[first + 2]) == "-") {
                     std::array<char, tuntom::control_chunk_size> bytes{};
                     while (std::cin.read(bytes.data(), bytes.size()) || std::cin.gcount()) {
@@ -50,13 +51,15 @@ int main(int argc, char **argv) {
                     }
                     if (!std::cin.eof()) throw std::runtime_error("cannot read stdin");
                 } else body = tuntom::read_rules_file(argv[first + 2]);
-            } else if (operation != "show" || argc != first + 2) operation.clear();
+            } else if ((operation != "show" && !(classifier && operation == "disable")) || argc != first + 2) operation.clear();
         }
         if (!stats && !flows && operation.empty()) {
             std::cerr << "Usage: " << argv[0] << " <control-socket> show stats|flows\n"
                       << "       " << argv[0] << " [control-socket] rules show\n"
                       << "       " << argv[0] << " [control-socket] rules check|load FILE|-\n";
             std::cerr << "       " << argv[0] << " <control-socket> divert enable|stop|show\n";
+            std::cerr << "       " << argv[0] << " <control-socket> classifier check|load|load-flush FILE|-\n"
+                      << "       " << argv[0] << " <control-socket> classifier show|disable\n";
             return 1;
         }
         if (path.empty() || path.size() >= sizeof(sockaddr_un::sun_path)) throw std::runtime_error("invalid control socket path");
@@ -70,7 +73,7 @@ int main(int argc, char **argv) {
         std::memcpy(address.sun_path, path.c_str(), path.size() + 1);
         if (::connect(socket.fd, reinterpret_cast<sockaddr *>(&address), sizeof(address)) < 0)
             throw std::runtime_error("connect(" + path + ") failed: " + std::strerror(errno));
-        const std::string command = stats ? "show stats" : flows ? "show flows" : std::string(divert ? "divert " : "rules ") + operation + " " + std::to_string(body.size());
+        const std::string command = stats ? "show stats" : flows ? "show flows" : std::string(classifier ? "classifier " : divert ? "divert " : "rules ") + operation + " " + std::to_string(body.size());
         send_record(socket.fd, command.data(), command.size());
         for (std::size_t offset = 0; offset < body.size(); offset += tuntom::control_chunk_size)
             send_record(socket.fd, body.data() + offset, std::min(tuntom::control_chunk_size, body.size() - offset));

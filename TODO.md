@@ -1,5 +1,55 @@
 # Project TODO
 
+## Dynamic classifier configuration (design agreed 2026-09-20)
+
+Add `classifier check/load/load-flush/show/disable` to the existing control
+interface of tuntom and the exit adapter. Transfer configuration contents,
+reuse the classifier parser, and validate fully before changing active state.
+Invalid input must preserve both the active configuration and all tables.
+
+- `load` replaces the classifier while preserving learned state.
+- `load-flush` replaces the classifier and invalidates all local tables whose
+  cached decisions can bypass the new classifier. For the current exit adapter
+  this means both L3 and L4 reverse-route caches, including masked L4 keys.
+  Commit configuration and cache invalidation together between packet handling
+  steps; no packet may observe the new classifier with old cache entries.
+- Flush even when the supplied configuration is identical to the active one.
+  Report success once the configuration is active and old entries are
+  inaccessible; physical memory reclamation may finish later in bounded batches.
+- Packets already classified and queued retain their assigned labels. New
+  configuration applies at subsequent routing/classification decisions.
+- `disable` disables only the classifier and preserves learned caches. Allow
+  runtime loading without an initial `--classifier-file` in supported modes
+  (tuntom must have a switch attachment).
+- Subsequent TUN packets classify on cache miss; incoming EXIT packets learn
+  reverse routes again, with the existing cache precedence. A packet matching
+  neither a learned route nor a classifier rule is dropped as before.
+  An EXIT packet may relearn a route before the next TUN packet, so flushing
+  does not guarantee every existing flow will pass through the new classifier.
+  Temporary drops are possible until a route is relearned when no rule matches.
+- Tuntom currently has no classifier-dependent flow table, so its `load-flush`
+  has the same effect as `load`. Do not reset transport reassembly, encryption
+  sessions, IPC queues, or tables in other processes.
+- Preserve cumulative traffic/cache counters; expose configuration generation
+  and flush accounting separately. Runtime loads do not persist across restart.
+- For large tables, consider immediate logical invalidation followed by bounded
+  reclamation of detached entries, avoiding a long pause in packet processing.
+- Verify successful replacement, invalid-load preservation, both cache levels,
+  relearning, fallback/drop behavior, and tuntom's equivalent load semantics.
+
+Status: implemented on 2026-09-20. See the [control commands and impact table](docs/PACKET_CLASSIFIER.md#dynamic-loading-and-load-flush-impact).
+Adapter cache invalidation uses generations and bounded reclamation.
+
+### Deferred: classifier load-rework
+
+Later add `load-rework` to reclassify existing flows without discarding all
+learned state. Define reusable semantics for other stateful components too.
+Process bounded batches, with short locks where concurrency requires them,
+generation/version checks, and observable progress. Resolve missing classifier
+inputs in L3 and masked L4 entries, precedence of learned versus classified
+labels, no-match behavior, concurrent learning/expiration and overlapping loads
+before implementation. Do not refresh flow idle times during reclassification.
+
 ## Fabric: peer access hints via encrypted ANNOUNCE (deferred 2026-09-17)
 
 Expose optional peer address hints in Fabric for monitoring discovery, without

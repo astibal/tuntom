@@ -370,6 +370,13 @@ private:
             output.exceptions(std::ios::badbit);
             format_stats(output);
             return output.str();
+        }, [](const std::string&, const std::string&) -> std::string {
+            throw std::runtime_error("rules commands are supported only by switches");
+        }, [] { return FlowDump("none").finish(); },
+        [this](const std::string& operation, const std::string& body) {
+            if (!switch_ || options_.relay_mode())
+                throw std::runtime_error("classifier requires a non-relay switch attachment");
+            return classifier_.control(operation, body, [] {});
         });
     }
 

@@ -105,6 +105,9 @@ public:
     // Used when parsing is shared with another consumer before lookup.
     void record_parse_error() { ++parse_errors_; }
 
+    void flush() noexcept { l3_.flush(); l4_.flush(); }
+    void reclaim() { l3_.reclaim(); l4_.reclaim(); }
+
     std::size_t l3_size() const { return l3_.size(); }
     std::size_t l4_size() const { return l4_.size(); }
     std::uint64_t learned_packets() const { return learned_packets_; }

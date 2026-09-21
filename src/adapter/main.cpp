@@ -321,13 +321,17 @@ int main(int argc, char** argv) {
                 return out.str();
             }, [](const std::string&, const std::string&) -> std::string {
                 throw std::runtime_error("rules commands are supported only by switches");
-            }, [&] { return routes.dump_flows(); });
+            }, [&] { return routes.dump_flows(); },
+            [&](const std::string& operation, const std::string& body) {
+                return classifier.control(operation, body, [&] { routes.flush(); });
+            });
         };
 
         tuntom::logger.start();
         tuntom::log_info("tuntom-switch-adapter ready");
 
         while (not stop_requested) {
+            routes.reclaim();
             try {
                 if (recovery.wait_for_retry(control ? control->poll_fd() : -1)) {
                     handle_control();

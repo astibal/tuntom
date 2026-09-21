@@ -4,7 +4,7 @@
 an initial label stack from inner IPv4/IPv6 headers. The classifier shares the
 adapter's IP/flow parser with reverse-route lookup and switch ECMP. It retains
 no packets or flow entries; each eligible packet is classified independently.
-Matching rules are parsed once at startup, with no per-packet allocation.
+Matching rules are parsed at startup or runtime load, with no per-packet allocation.
 The adapter parses each connected TUN ingress packet once and shares the
 `ParsedIpFlow` by const reference between reverse lookup and classification.
 Tuntom uses the packet entry point, which parses once inside the classifier.
@@ -67,7 +67,7 @@ keeps its required `--switch-label`; the adapter drops a packet missing both
 reverse caches. Without `--classifier-file`, both retain their previous behavior.
 An empty rule list (`format 1` only) also falls through. Limits are 1 MiB and
 4096 rules. Invalid configuration fails startup before opening TUN/UDP devices.
-Files are loaded at startup; changing them requires restarting that producer.
+Files are loaded at startup; runtime changes use the classifier control commands below.
 Switch `rules check/load/show` commands manage switch rules, not classifiers.
 
 ## Fragments and parsing limits
@@ -117,3 +117,69 @@ that neither reverse cache nor classification can route.
 Labels remain local switch-interface metadata. UDP V5 still carries only
 the payload; a tuntom receiver assigns a fresh stack locally. This feature
 does not add tunnel label-stack transport, NAT, QoS actions or flow tracking.
+
+## Dynamic loading and load-flush impact
+
+With `--control-socket`, both producers support:
+
+```bash
+tuntomctl /run/tuntom/adapter.control classifier check /etc/tuntom/ingress.classifier
+tuntomctl /run/tuntom/adapter.control classifier load /etc/tuntom/ingress.classifier
+tuntomctl /run/tuntom/adapter.control classifier load-flush /etc/tuntom/ingress.classifier
+tuntomctl /run/tuntom/adapter.control classifier show
+tuntomctl /run/tuntom/adapter.control classifier disable
+```
+
+`check`, `load` and `load-flush` also accept `-` for stdin. The client sends
+file contents, so the producer does not need access to that file. `check`
+validates without activating. `show` returns the active source text, or
+`# classifier disabled` when disabled. A disabled export is informational,
+not a loadable configuration. Runtime loading works without a startup
+`--classifier-file`; tuntom requires a non-relay switch attachment.
+
+Stats include `classifier_generation` (0 initially disabled, 1 for a startup
+configuration, incremented on every successful load or disable),
+`classifier_flushes` (successful load-flush commands), and
+`classifier_load_errors` (failed configuration parsing for load/load-flush).
+`check` does not change these counters. Successful mutations return the active
+generation. After an ambiguous connection failure, inspect generation and active
+configuration before retrying, especially because load-flush always flushes.
+
+The `classifier load-flush` command affects only the process whose
+control socket receives it. It validates the complete configuration before
+atomically activating it and invalidating relevant local tables between packet
+handling steps. Invalid configuration changes neither rules nor tables; a valid
+configuration identical to the active one still flushes the tables.
+
+| Component / traffic direction | Configuration or state affected | Effect on existing flows |
+| --- | --- | --- |
+| Exit adapter: TUN to switch | Replace classifier and flush **both L3 and L4 reverse caches**, including masked L4 keys. | The next packet missing the cache uses the new rules; no match means drop. |
+| Exit adapter: switch to TUN (`EXIT`) | Delivery continues; incoming EXIT packets repopulate reverse caches. | Relearned return routes take precedence over classification again. |
+| Tuntom: UDP DATA to switch | Replace classifier; currently no classifier-dependent flow table to flush. | The next classification uses new rules; no match uses `--switch-label`. |
+| Tuntom: switch to UDP | No change. | Existing processing continues. |
+| Tuntom: TUN to/from UDP without a switch attachment | Classifier commands are unsupported in this mode. | No effect. |
+| Switch | Its rules and tables are not flushed. | New labels may select a different path under the existing switch rules. |
+| Other adapter or tuntom processes | Their configuration and caches remain unchanged. | They may receive differently routed traffic but are not themselves flushed. |
+| Already classified packets in queues | Keep their assigned labels. | They may still leave on the previous path. |
+| Encryption, UDP sessions, transport reassembly and IPC connections | No reset or flush. | Sessions and in-progress transport processing continue. |
+
+For an adapter flow, either ordering is possible:
+
+```text
+load-flush -> TUN packet  -> cache miss -> new classifier -> forward / drop
+
+load-flush -> EXIT packet -> relearn return route
+           -> TUN packet  -> cache hit  -> learned route
+```
+
+Flushing therefore does not guarantee that every existing flow passes through
+the new classifier. Temporary drops are possible until a route is relearned
+when no rule matches. Endpoint TCP/UDP application state is not explicitly
+reset, but packet loss or a path change can still disrupt those connections.
+Activation is atomic within one process, not coordinated across components.
+
+Success means the new configuration is active and old cache entries are
+inaccessible; memory reclamation may continue in bounded batches. Cumulative
+traffic/cache counters are preserved. Runtime loading does not persist the
+configuration for restart. Plain `load` preserves caches, and `disable` only
+disables the classifier. Reclassifying stored flows with `load-rework` is deferred.
