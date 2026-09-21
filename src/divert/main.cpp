@@ -187,9 +187,8 @@ int main(int argc, char** argv) {
             account(index, clients[index]->append_frame(SwitchOpcode::switch_packet,
                 labels.values.data(), labels.size, payload, size));
         };
-        const auto control_step = [&] {
-            if (!control) return;
-            control->handle([&] {
+        ControlDispatcher control_dispatcher;
+        control_dispatcher.stats = [&] {
                 std::ostringstream out;
                 std::size_t ready_paths = 0, pairs = 0;
                 for (std::size_t path = 0; path < paths.size(); ++path) {
@@ -217,9 +216,8 @@ int main(int argc, char** argv) {
                 }
                 recovery.write_stats(out);
                 return out.str();
-            }, [](const std::string&, const std::string&) -> std::string {
-                throw std::runtime_error("rules commands are supported only by switches");
-            }, [&] {
+        };
+        control_dispatcher.flows = [&] {
                 const auto now = Clock::now();
                 FlowDump dump(shared ? "shared_shards" : "retained");
                 if (shared) shared->dump_flows(dump, now);
@@ -228,7 +226,9 @@ int main(int argc, char** argv) {
                     admission.dump_flows(dump, seconds(now));
                 }
                 return dump.finish();
-            });
+        };
+        const auto control_step = [&] {
+            if (control) control->handle_dispatch(control_dispatcher);
         };
         const auto handle = [&](std::size_t source) {
             const unsigned side = static_cast<unsigned>(source % 2);

@@ -66,6 +66,10 @@ if(BUILD_TESTING)
     set_tests_properties(logging_test PROPERTIES TIMEOUT 40)
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME control_ports_test COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/control_ports_test.py
+            $<TARGET_FILE:tuntomctl> $<TARGET_FILE:tuntom-switch> $<TARGET_FILE:tomtom-switch-mp> $<TARGET_FILE:tuntom>)
+        set_tests_properties(control_ports_test PROPERTIES TIMEOUT 30)
         add_test(NAME remote_control_integration_test COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/remote_control_integration_test.py
             $<TARGET_FILE:tuntom> $<TARGET_FILE:tuntomctl> $<TARGET_FILE:tuntom-switch>)

@@ -29,11 +29,12 @@ class ControlDispatcher {
 public:
     using Provider = std::function<std::string()>;
     using Handler = std::function<std::string(const std::string&, const std::string&)>;
-    Provider stats, flows;
+    Provider stats, flows, ports;
     Handler rules, classifier;
     static ControlOperation parse(std::string command) {
         while (!command.empty() && (command.back() == '\n' || command.back() == '\r')) command.pop_back();
         if (command == "show stats") return {"stats", "show", 0, ControlPermission::read, true, false, false};
+        if (command == "show ports") return {"ports", "show", 0, ControlPermission::read, false, false, true};
         if (command == "show flows") return {"flows", "show", 0, ControlPermission::read, false, false, true};
         const auto a = command.find(' '), b = a == std::string::npos ? a : command.find(' ', a + 1);
         if (b == std::string::npos) throw std::runtime_error("unknown_command");
@@ -64,6 +65,7 @@ public:
         } catch (const std::exception& e) { return {false, std::string(e.what()) + "\n", true}; }
         try {
             if (op.family == "stats" && stats) return {true, stats()};
+            if (op.family == "ports" && ports) return {true, ports()};
             if (op.family == "flows" && flows) return {true, flows()};
             if (op.family == "classifier" && classifier) return {true, classifier(op.operation, request.body)};
             if ((op.family == "rules" || op.family == "divert") && rules)

@@ -278,9 +278,8 @@ int main(int argc, char** argv) {
         };
 
         tuntom::RuntimeRecovery recovery;
-        const auto handle_control = [&] {
-            if (not control) return;
-            control->handle([&] {
+        ControlDispatcher control_dispatcher;
+        control_dispatcher.stats = [&] {
                 const auto snapshot_at = std::chrono::steady_clock::now();
                 throughput.update(snapshot_at, {
                     {stats.tun_rx_packets, stats.tun_rx_bytes},
@@ -319,12 +318,13 @@ int main(int argc, char** argv) {
                 adaptive_polling.write_stats(out);
                 throughput.write(out);
                 return out.str();
-            }, [](const std::string&, const std::string&) -> std::string {
-                throw std::runtime_error("rules commands are supported only by switches");
-            }, [&] { return routes.dump_flows(); },
-            [&](const std::string& operation, const std::string& body) {
+        };
+        control_dispatcher.flows = [&] { return routes.dump_flows(); };
+        control_dispatcher.classifier = [&](const std::string& operation, const std::string& body) {
                 return classifier.control(operation, body, [&] { routes.flush(); });
-            });
+        };
+        const auto handle_control = [&] {
+            if (control) control->handle_dispatch(control_dispatcher);
         };
 
         tuntom::logger.start();

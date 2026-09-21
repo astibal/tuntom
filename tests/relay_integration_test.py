@@ -12,6 +12,7 @@ sys.dont_write_bytecode = True
 from switch_ruleset_v2_integration_test import Harness
 from switch_ruleset_integration_test import packet
 from via_integration_test import tcp, decode, context, action
+from control_ports_test import listing, tree
 
 RULES = '''format 3
 serial 1
@@ -89,6 +90,15 @@ def run(binary, ctl, tunnel, root, expect_queue=False, expect_ipc_retry=False):
                 assert all(p.poll() is None for p in processes)
             raise AssertionError('remote service did not become available')
         labels = offer(tcp())
+        discovered = {row['port']: row for row in listing(ctl, sw.control)}
+        for name in ('edge', 'exit', 'proxy-link'):
+            assert discovered[name] == {'port': name, 'attachment': 'direct', 'via': '-'}, discovered
+        for name in ('proxy-in0~via:c:smithproxy#0', 'proxy-out0~via:s:smithproxy#0'):
+            assert discovered[name] == {'port': name, 'attachment': 'relay', 'via': 'proxy-link'}, discovered
+        assert tree(ctl, sw.control) == (
+            "switch\n|-- edge\n|-- exit\n`-- proxy-link\n"
+            "    |-- proxy-in0~via:c:smithproxy#0\n"
+            "    `-- proxy-out0~via:s:smithproxy#0\n")
         server.sendall(packet(action(labels),tcp()))
         exit_labels, data = decode(exit_port.recv(70000))
         assert data == tcp() and context(exit_labels)[1:] == (65535,3,False)
@@ -128,6 +138,7 @@ def run(binary, ctl, tunnel, root, expect_queue=False, expect_ipc_retry=False):
                 assert sum(int(v) for k,v in values.items() if k.endswith(('_retry_capacity_drops','_retry_expired','_retry_error_drops'))) == 0, values
         hub.terminate(); hub.wait(timeout=5); processes.remove(hub)
         time.sleep(3.3)
+        assert all(row['attachment'] != 'relay' for row in listing(ctl, sw.control)), 'expired relay ports still listed'
         edge.sendall(packet([17,42],tcp(sport=23456)))
         assert not select.select([client,server,exit_port],[],[],.2)[0]
         hub = start(True)

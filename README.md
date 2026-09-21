@@ -380,6 +380,51 @@ the respective hosts. Sockets use mode `0660`; filesystem permissions control
 access. Both `show stats` and `show flows` are supported. Existing stats signals
 remain available for compatibility.
 
+### Switch port discovery
+
+```bash
+# Automatically select the sole Unix socket whose filename contains "switch":
+tuntomctl switch --port-list
+tuntomctl switch --port-tree
+# Or provide the socket explicitly:
+tuntomctl switch /run/tuntom/switch.control --port-list
+# Equivalent explicit socket option:
+tuntomctl switch --socket /run/tuntom/switch.control --port-list
+```
+
+Automatic discovery searches `/run/tuntom` (or `TUNTOM_RUN_DIR`) without
+recursion, ignoring ordinary files. Zero or multiple matching sockets cause an
+error; ambiguous candidates are listed. Explicit paths bypass discovery. The
+client verifies `component=switch` through `show stats` before requesting ports;
+a stale or wrong-component socket is an error, not a reason to select another.
+For this standalone action, the trailing `---` separator is optional.
+
+Both switch implementations return a sorted TSV snapshot with columns `port`,
+`attachment` (`direct` or `relay`), and `via` (the parent relay port, or `-` for a
+local connection). Only registered, connected ports and live relay directory
+entries appear; pending registrations and expired relay entries are omitted.
+An empty switch returns the column header. This lists attachment topology, not
+CONTROL capabilities or process types, which registration does not yet advertise.
+The response is bounded to 1 MiB; exceeding the limit returns an explicit error.
+
+This is a local query to the switch control socket and needs no `---` separator
+or `--allow-control-all`. It does not yet forward commands to the listed ports.
+`--port-tree` renders exactly the same local snapshot as an ASCII tree, with
+known relay ports beneath their parent connection. The two display options are
+mutually exclusive. Neither option sends DISCOVER or queries remote processes.
+For example:
+
+```text
+switch
+|-- exit0
+`-- proxy-link
+    |-- proxy-in0~via:c:smithproxy#0
+    `-- proxy-out0~via:s:smithproxy#0
+```
+
+The existing `remote ... --- COMMAND` mode continues to address the tunnel peer.
+The integrated spelling `tuntom ctl switch ... --port-list` is also supported.
+
 ### Remote control (`CONTROL`)
 
 The receiving **tuntom process** must explicitly enable `--allow-control-all`.

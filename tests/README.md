@@ -369,3 +369,8 @@ receive expiry, history capacity and authenticated session/replay boundaries.
 `remote_control_integration_test` runs real rootless UDP tunnel peers and checks
 opt-in, local CLI compatibility, the remote `---` separator, text preservation,
 status queries, small-MTU response transfers and exit codes 0/1/255.
+
+`control_ports_test` checks `tuntomctl switch ... --port-list` and `--port-tree` on both switches,
+including empty lists, pending registrations, sorted names and disconnections.
+`relay_integration_test` also verifies live virtual ports, their nesting in the ASCII tree, and removal after
+relay disconnection.

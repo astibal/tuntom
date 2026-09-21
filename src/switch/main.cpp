@@ -1,3 +1,4 @@
+#include "../control_ports.hpp"
 #include "../ipc/retry_queue.hpp"
 #include "../common.hpp"
 #include "../runtime_recovery.hpp"
@@ -666,6 +667,16 @@ int main(int argc, char** argv) {
                     routes.clear(); exit_ports.clear(); default_back = false;
                 }
                 return response;
+            }, [] { return tuntom::FlowDump("none").finish(); }, {}, [&] {
+                tuntom::ControlPorts ports;
+                for (const auto& connection : connections) {
+                    if (connection.fd < 0 || connection.port.empty()) continue;
+                    ports.direct(connection.port);
+                    if (connection.relay.live())
+                        for (const auto& channel : connection.relay.directory.channels)
+                            ports.relayed(channel.second.name, connection.port);
+                }
+                return ports.finish();
             });
         };
 

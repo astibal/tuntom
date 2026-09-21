@@ -141,10 +141,11 @@ class ControlSocket {
     }
     template<class StatsProvider, class RulesProvider, class FlowsProvider>
     void handle(StatsProvider stats, RulesProvider rules, FlowsProvider flows,
-                std::function<std::string(const std::string&, const std::string&)> classifier = {}) {
+                std::function<std::string(const std::string&, const std::string&)> classifier = {},
+                ControlDispatcher::Provider ports = {}) {
         ControlDispatcher dispatcher;
         dispatcher.stats = stats; dispatcher.flows = flows;
-        dispatcher.rules = rules; dispatcher.classifier = classifier;
+        dispatcher.rules = rules; dispatcher.classifier = classifier; dispatcher.ports = ports;
         handle_dispatch(dispatcher);
     }
     struct RemotePending {
@@ -206,7 +207,7 @@ class ControlSocket {
                         }
                         // Preserve the legacy framing even for malformed local commands.
                         if (!c.remote) {
-                            c.framed = command == "show flows" || command.compare(0, 11, "classifier ") == 0 ||
+                            c.framed = command == "show flows" || command == "show ports" || command.compare(0, 11, "classifier ") == 0 ||
                                 command.compare(0, 6, "rules ") == 0 || command.compare(0, 7, "divert ") == 0;
                             if (!c.framed && command != "show stats") {
                                 respond(fd, c, "error=unknown_command\n"); break;

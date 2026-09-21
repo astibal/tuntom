@@ -1,7 +1,10 @@
 #pragma once
 #include "control_protocol.hpp"
+#include "control_ports.hpp"
 #include "switch_ruleset.hpp"
 #include <cerrno>
+#include <cstdlib>
+#include <filesystem>
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
@@ -27,22 +30,68 @@ std::string receive(int fd, std::size_t maximum) {
     buffer.resize(static_cast<std::size_t>(size));
     return buffer;
 }
+std::string discover_switch_socket() {
+    namespace fs = std::filesystem;
+    const char* configured = std::getenv("TUNTOM_RUN_DIR");
+    const fs::path directory = configured && *configured ? configured : "/run/tuntom";
+    std::vector<std::string> candidates;
+    std::error_code error;
+    fs::directory_iterator entries(directory, error);
+    if (error && error != std::errc::no_such_file_or_directory)
+        throw std::runtime_error("cannot inspect " + directory.string() + ": " + error.message());
+    for (const auto& entry : entries) {
+        if (entry.path().filename().string().find("switch") == std::string::npos) continue;
+        const auto status = entry.status(error);
+        if (error == std::errc::no_such_file_or_directory) { error.clear(); continue; }
+        if (error) throw std::runtime_error("cannot inspect " + entry.path().string() + ": " + error.message());
+        if (fs::is_socket(status)) candidates.push_back(entry.path().string());
+    }
+    std::sort(candidates.begin(), candidates.end());
+    if (candidates.size() == 1) return candidates.front();
+    std::string message = candidates.empty() ? "no switch socket found in " : "multiple switch sockets found in ";
+    message += directory.string() + "; specify --socket PATH";
+    for (const auto& candidate : candidates) message += "\n  " + candidate;
+    throw std::runtime_error(message);
+}
+int connect_control(const std::string& path, bool remote) {
+    if (path.empty() || path.size() >= sizeof(sockaddr_un::sun_path)) throw std::runtime_error("invalid control socket path");
+    Socket socket{::socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0)};
+    if (socket.fd < 0) throw std::runtime_error(std::strerror(errno));
+    timeval timeout{remote ? 7200 : 10, 0};
+    if (::setsockopt(socket.fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) < 0 ||
+        ::setsockopt(socket.fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0)
+        throw std::runtime_error("cannot set control timeout");
+    sockaddr_un address{}; address.sun_family = AF_UNIX;
+    std::memcpy(address.sun_path, path.c_str(), path.size() + 1);
+    if (::connect(socket.fd, reinterpret_cast<sockaddr *>(&address), sizeof(address)) < 0)
+        throw std::runtime_error("connect(" + path + ") failed: " + std::strerror(errno));
+    const int result = socket.fd; socket.fd = -1; return result;
+}
+
 }
 inline int tuntom_control_main(int argc, char **argv) {
     try {
         int first = 1;
         std::string path = "/run/tuntom/switch.control";
         const bool remote = argc > 1 && std::string(argv[1]) == "remote";
-        if (remote) ++first;
+        const bool switch_mode = argc > 1 && std::string(argv[1]) == "switch";
+        if (remote || switch_mode) ++first;
+        bool explicit_socket = false;
+        bool port_list = false, port_tree = false;
         bool separator = false;
         unsigned remote_retries = 5, remote_wait = 250;
         while (first < argc) {
             const std::string arg = argv[first];
-            if (remote && arg == "---") { separator = true; ++first; break; }
+            if (switch_mode && (arg == "--port-list" || arg == "--port-tree")) {
+                if (port_list) throw std::runtime_error("choose exactly one of --port-list and --port-tree");
+                port_list = true; port_tree = arg == "--port-tree"; ++first; continue;
+            }
+            if ((remote || switch_mode) && arg == "---") { separator = true; ++first; break; }
             if (arg == "--socket" || arg == "--remote-retries" || arg == "--remote-wait") {
+                if (switch_mode && arg != "--socket") throw std::runtime_error("switch port listing accepts only local socket options");
                 if (++first >= argc) throw std::runtime_error(arg + " requires a value");
                 std::string value = argv[first++];
-                if (arg == "--socket") path = value;
+                if (arg == "--socket") { path = value; explicit_socket = true; }
                 else if (arg == "--remote-retries") remote_retries = static_cast<unsigned>(tuntom::control_length(value, 100));
                 else {
                     unsigned scale = 1000;
@@ -53,9 +102,10 @@ inline int tuntom_control_main(int argc, char **argv) {
                 }
             } else if (!remote && (arg == "show" || arg == "rules" || arg == "classifier" || arg == "divert" || arg == "request")) break;
             else if (arg.empty() || arg[0] == '-') throw std::runtime_error("unknown local option: " + arg);
-            else { path = arg; ++first; }
+            else { path = arg; explicit_socket = true; ++first; }
         }
         if (remote && !separator) throw std::runtime_error("remote requires --- before the command");
+        if (switch_mode && (!port_list || first != argc)) throw std::runtime_error("expected switch [--socket PATH | PATH] --port-list|--port-tree");
         const bool stats = argc == first + 2 && std::string(argv[first]) == "show" && std::string(argv[first + 1]) == "stats";
         const bool flows = argc == first + 2 && std::string(argv[first]) == "show" && std::string(argv[first + 1]) == "flows";
         const bool status = remote && argc == first + 3 && std::string(argv[first]) == "request" && std::string(argv[first + 1]) == "status";
@@ -78,7 +128,8 @@ inline int tuntom_control_main(int argc, char **argv) {
                 } else body = tuntom::read_rules_file(argv[first + 2]);
             } else if ((operation != "show" && !(classifier && operation == "disable")) || argc != first + 2) operation.clear();
         }
-        if (!stats && !flows && !status && operation.empty()) {
+        if (!port_list && !stats && !flows && !status && operation.empty()) {
+            std::cerr << "Switch: tuntomctl switch [--socket PATH | PATH] --port-list|--port-tree\n";
             std::cerr << "Remote: tuntomctl remote [--socket PATH] [--remote-retries N] [--remote-wait N[ms|s]] --- COMMAND\n";
             std::cerr << "Usage: " << argv[0] << " <control-socket> show stats|flows\n"
                       << "       " << argv[0] << " [control-socket] rules show\n"
@@ -88,18 +139,17 @@ inline int tuntom_control_main(int argc, char **argv) {
                       << "       " << argv[0] << " <control-socket> classifier show|disable\n";
             return 1;
         }
-        if (path.empty() || path.size() >= sizeof(sockaddr_un::sun_path)) throw std::runtime_error("invalid control socket path");
-        Socket socket{::socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0)};
-        if (socket.fd < 0) throw std::runtime_error(std::strerror(errno));
-        timeval timeout{remote ? 7200 : 10, 0};
-        if (::setsockopt(socket.fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) < 0 ||
-            ::setsockopt(socket.fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0)
-            throw std::runtime_error("cannot set control timeout");
-        sockaddr_un address{}; address.sun_family = AF_UNIX;
-        std::memcpy(address.sun_path, path.c_str(), path.size() + 1);
-        if (::connect(socket.fd, reinterpret_cast<sockaddr *>(&address), sizeof(address)) < 0)
-            throw std::runtime_error("connect(" + path + ") failed: " + std::strerror(errno));
-        std::string command = status ? "request status " + std::string(argv[first + 2]) : stats ? "show stats" : flows ? "show flows" : std::string(classifier ? "classifier " : divert ? "divert " : "rules ") + operation + " " + std::to_string(body.size());
+        if (switch_mode && !explicit_socket) path = discover_switch_socket();
+        if (switch_mode) {
+            Socket probe{connect_control(path, false)};
+            constexpr char stats_command[] = "show stats";
+            send_record(probe.fd, stats_command, sizeof(stats_command) - 1);
+            const auto snapshot = "\n" + receive(probe.fd, 65536);
+            if (snapshot.find("\ncomponent=switch\n") == std::string::npos)
+                throw std::runtime_error("control socket is not a switch: " + path);
+        }
+        Socket socket{connect_control(path, remote)};
+        std::string command = port_list ? "show ports" : status ? "request status " + std::string(argv[first + 2]) : stats ? "show stats" : flows ? "show flows" : std::string(classifier ? "classifier " : divert ? "divert " : "rules ") + operation + " " + std::to_string(body.size());
         if (remote) command = "remote " + std::to_string(remote_retries) + " " + std::to_string(remote_wait) + " " + command;
         send_record(socket.fd, command.data(), command.size());
         for (std::size_t offset = 0; offset < body.size(); offset += tuntom::control_chunk_size)
@@ -131,7 +181,7 @@ inline int tuntom_control_main(int argc, char **argv) {
                 std::cerr << "ERROR: " << response;
                 return remote && header.substr(0, space) == "REJECTED" ? 255 : 1;
             }
-            std::cout << response;
+            std::cout << (port_tree ? tuntom::ControlPorts::tree(response) : response);
         }
         std::cout.flush();
         if (!std::cout) throw std::runtime_error("cannot write output");

@@ -1,3 +1,4 @@
+#include "../control_ports.hpp"
 #include "../common.hpp"
 #include "../control_socket.hpp"
 #include "../runtime_recovery.hpp"
@@ -193,6 +194,16 @@ int main(int argc, char **argv) {
                     }
                 }
                 return response;
+            }, [] { return tuntom::FlowDump("none").finish(); }, {}, [&] {
+                tuntom::ControlPorts ports;
+                for (const auto& port : engine.plan().ports) {
+                    if (port->disconnected.load(std::memory_order_relaxed)) continue;
+                    ports.direct(port->name);
+                    if (port->relay_registry.live())
+                        for (const auto& channel : port->relay_registry.directory.channels)
+                            ports.relayed(channel.second.name, port->name);
+                }
+                return ports.finish();
             });
         };
 
