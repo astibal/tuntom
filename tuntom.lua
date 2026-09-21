@@ -38,6 +38,7 @@
 --   5 = PONG
 --   6 = MTU_PROBE
 --   7 = MTU_REPLY
+--   14 = CONTROL (V5; version/kind/state, request ID, offset/total, command, body block)
 --
 -- V3 PING/PONG use message_id as the probe_id. fragment_offset and
 -- original_length remain zero and there is no payload.
@@ -82,6 +83,7 @@ local packet_type_names = {
     [11] = "CONFIRM_ACK",
     [12] = "IPC",
     [13] = "INFO",
+    [14] = "CONTROL",
 }
 
 local f_magic = ProtoField.string(
@@ -211,6 +213,22 @@ local f_info_value = ProtoField.string("tuntom.info.value", "INFO Value")
 local e_info = ProtoExpert.new("tuntom.info.malformed", "Malformed INFO",
     expert.group.MALFORMED, expert.severity.ERROR)
 
+-- CONTROL v1 envelope; this is separate from DATA fragmentation.
+local control_kinds = {[1]="PUT", [2]="STATUS", [3]="REPLY", [4]="FINISH", [5]="CONFIRMED"}
+local control_states = {[1]="RECEIVING", [2]="READY", [3]="RUNNING", [4]="SUCCEEDED",
+    [5]="FAILED", [6]="REJECTED", [7]="EXPIRED", [8]="NOT_FOUND"}
+local f_control_version = ProtoField.uint8("tuntom.control.version", "CONTROL Version", base.DEC)
+local f_control_kind = ProtoField.uint8("tuntom.control.kind", "CONTROL Kind", base.DEC, control_kinds)
+local f_control_state = ProtoField.uint8("tuntom.control.state", "Request State", base.DEC, control_states)
+local f_control_id = ProtoField.bytes("tuntom.control.request_id", "Request ID")
+local f_control_offset = ProtoField.uint32("tuntom.control.offset", "Block / Acknowledged Offset", base.DEC)
+local f_control_total = ProtoField.uint32("tuntom.control.total", "Total Body Length", base.DEC)
+local f_control_command_length = ProtoField.uint16("tuntom.control.command_length", "Command Length", base.DEC)
+local f_control_command = ProtoField.string("tuntom.control.command", "Command")
+local f_control_data = ProtoField.bytes("tuntom.control.data", "Body Block")
+local e_control = ProtoExpert.new("tuntom.control.malformed", "Malformed CONTROL",
+    expert.group.MALFORMED, expert.severity.ERROR)
+
 local f_session_hint = ProtoField.uint16("tuntom.session_hint", "Session Hint", base.HEX)
 local f_counter = ProtoField.uint64("tuntom.counter", "Session Packet Counter", base.DEC)
 local f_init_timestamp = ProtoField.uint64("tuntom.init_timestamp", "INIT Unix Timestamp (seconds)", base.DEC)
@@ -221,9 +239,11 @@ local f_dh_length = ProtoField.uint16("tuntom.dh_length", "DH Public Key Length"
 local f_dh = ProtoField.bytes("tuntom.dh", "DH Public Key")
 local e_handshake = ProtoExpert.new("tuntom.handshake_error", "Invalid/unsupported handshake",
     expert.group.MALFORMED, expert.severity.ERROR)
-tuntom.experts = {e_handshake, e_info}
+tuntom.experts = {e_handshake, e_info, e_control}
 
 tuntom.fields = {
+    f_control_version, f_control_kind, f_control_state, f_control_id,
+    f_control_offset, f_control_total, f_control_command_length, f_control_command, f_control_data,
     f_info_entry, f_info_key, f_info_value,
     f_session_hint, f_counter, f_init_timestamp, f_nonce, f_init_hash, f_suite, f_dh_length, f_dh,
     f_magic,
@@ -872,6 +892,50 @@ end
 -- V5: no magic or tunnel ID on wire. Version occurs only in INIT/RESPONSE.
 -- Base = type/flags(1), sequence(8), type extension, tag(16), payload.
 -- Extensions: fragments(12), ping/confirm(8), PMTUD(10), handshake(9).
+local function dissect_control(buffer, header, pinfo, tree)
+    local length = buffer:len() - header
+    local function bad(reason) tree:add_proto_expert_info(e_control, reason) end
+    if length < 32 then bad("Truncated CONTROL header (expected 32 bytes)"); return end
+    local payload = buffer(header):tvb()
+    local version, kind, state = payload(0,1):uint(), payload(1,1):uint(), payload(2,1):uint()
+    local offset, total, command_length = payload(20,4):uint(), payload(24,4):uint(), payload(28,2):uint()
+    if version ~= 1 or not control_kinds[kind] or not control_states[state] then
+        bad("Unsupported CONTROL version, kind or state"); return
+    end
+    if payload(3,1):uint() ~= 0 or payload(30,2):uint() ~= 0 then
+        bad("Nonzero CONTROL reserved bytes"); return
+    end
+    if payload(4,16):raw() == string.rep("\0",16) then bad("Zero CONTROL request ID"); return end
+    if command_length > 256 or length < 32 + command_length then
+        bad("Invalid or truncated CONTROL command"); return
+    end
+    local data_length = length - 32 - command_length
+    if (kind ~= 1 and command_length ~= 0) or
+       ((kind == 2 or kind == 4 or kind == 5) and data_length ~= 0) then
+        bad("Unexpected CONTROL command or body"); return
+    end
+    -- STATUS offsets refer to an independently stored response, and RECEIVING
+    -- replies acknowledge upload bytes with total=0; neither is a body block.
+    if (kind == 1 or (kind == 3 and state >= 4 and state <= 7)) and
+       (total > 1048576 or offset > total or data_length > total - offset) then
+        bad("CONTROL body block exceeds declared length or 1 MiB limit"); return
+    end
+    tree:add(f_control_version, payload(0,1))
+    tree:add(f_control_kind, payload(1,1))
+    tree:add(f_control_state, payload(2,1))
+    tree:add(f_control_id, payload(4,16))
+    tree:add(f_control_offset, payload(20,4))
+    tree:add(f_control_total, payload(24,4))
+    tree:add(f_control_command_length, payload(28,2))
+    if command_length > 0 then tree:add(f_control_command, payload(32,command_length)) end
+    if data_length > 0 then tree:add(f_control_data, payload(32+command_length,data_length)) end
+    local id = tostring(payload(4,16):bytes()):gsub(":", ""):lower()
+    pinfo.cols.info:append(string.format(", %s, id=%s, offset=%d, total=%d",
+        control_kinds[kind], id, offset, total))
+    if kind == 3 or kind == 5 then pinfo.cols.info:append(", " .. control_states[state]) end
+    if command_length > 0 then pinfo.cols.info:append(", " .. payload(32,command_length):string()) end
+end
+
 local function dissect_v5(buffer, pinfo, tree)
     if buffer:len() < 25 then return 0 end
     local flags = buffer(0, 1):uint()
@@ -944,6 +1008,10 @@ local function dissect_v5(buffer, pinfo, tree)
            buffer(9, 8):uint64() == UInt64(0, 0) then
             subtree:add_proto_expert_info(e_handshake, "Invalid confirmation")
         end
+        return buffer:len()
+    end
+    if kind == 14 then
+        dissect_control(buffer, header, pinfo, subtree)
         return buffer:len()
     end
     if kind == 13 then

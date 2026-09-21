@@ -1,8 +1,10 @@
 #include "cli.hpp"
+#include "control_cli.hpp"
 #include "tunnel.hpp"
 #include "stats_control.hpp"
 
 int main(int argc, char** argv) {
+    if (argc > 1 && std::string(argv[1]) == "ctl") return tuntom_control_main(argc - 1, argv + 1);
     tuntom::logger.ignore_sigpipe();
     using namespace tuntom;
     try {

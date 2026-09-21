@@ -26,7 +26,10 @@ from multiple translation units.
 | `cli.hpp` | Usage and argument parsing |
 | `switch_client.hpp` | Tuntom-side Unix switch connection |
 | `ipc/switch_protocol.hpp` | Shared `SWITCH` / `EXIT` frame codec |
-| `control_socket.hpp` | Shared local `show stats` control server |
+| `control_socket.hpp` | Local nonblocking control transport and asynchronous remote requests |
+| `control_dispatcher.hpp` | Shared command validation, permissions and handlers |
+| `remote_control.hpp` | Bounded CONTROL request/reply transfers, status and duplicate handling |
+| `control_cli.hpp` | Compatible local CLI and `remote ... --- ...` client |
 | `adaptive_polling.hpp` | Shared overload detection, batching policy and event-loop metrics |
 | `control/main.cpp` | `tuntomctl` client executable |
 | `switch/main.cpp` | Standalone label-switch executable |

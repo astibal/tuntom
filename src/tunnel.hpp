@@ -17,6 +17,7 @@
 #include "adaptive_polling.hpp"
 #include "stats_control.hpp"
 #include "control_socket.hpp"
+#include "remote_control.hpp"
 #include "runtime_recovery.hpp"
 #include <algorithm>
 #include <array>
@@ -171,6 +172,9 @@ public:
                 sync_udp_tx_session();
                 udp_tx_queue_.expire(UdpTxQueue::Clock::now());
                 update_stats_control();
+                prepare_remote_control();
+                remote_control_.tick(RemoteControl::Clock::now());
+                if (control_ && remote_control_.pending_results()) handle_control_request();
                 descriptors.resize(5);
                 descriptors[0].fd = tun_ ? tun_->fd() : -1;
                 descriptors[0].events = udp_tx_queue_.empty() ? POLLIN : 0;
@@ -192,6 +196,7 @@ public:
                 if (switch_ && switch_->connected()) timeout = switch_->transport().retry_timeout(timeout_at, timeout);
                 if (control_) timeout = control_->poll_timeout_ms(timeout_at, timeout);
                 if (relay_) { relay_->descriptors(descriptors); timeout = relay_->poll_timeout(timeout_at, std::min(timeout, 100)); }
+                if (remote_control_.active()) timeout = std::min(timeout, 10);
                 timeout = udp_tx_queue_.poll_timeout(timeout_at, timeout);
                 const auto poll_started = AdaptivePolling::Clock::now();
                 const int rc = ::poll(descriptors.data(), descriptors.size(), timeout);
@@ -324,6 +329,8 @@ protected:
 private:
     void sync_udp_tx_session() {
         const auto generation = protocol_v5_.transmit_generation();
+        if (generation != udp_tx_generation_)
+            remote_control_.session_changed(RemoteControl::Clock::now());
         if (generation != udp_tx_generation_ || !protocol_v5_.ready()) udp_tx_queue_.discard();
         udp_tx_generation_ = generation;
     }
@@ -364,19 +371,45 @@ private:
                   << " active=" << m.active_entries << "\n";
     }
 
-    void handle_control_request() {
-        control_->handle([this] {
+    ControlDispatcher control_dispatcher() {
+        ControlDispatcher dispatcher;
+        dispatcher.stats = [this] {
             std::ostringstream output;
             output.exceptions(std::ios::badbit);
             format_stats(output);
             return output.str();
-        }, [](const std::string&, const std::string&) -> std::string {
-            throw std::runtime_error("rules commands are supported only by switches");
-        }, [] { return FlowDump("none").finish(); },
-        [this](const std::string& operation, const std::string& body) {
+        };
+        dispatcher.flows = [] { return FlowDump("none").finish(); };
+        dispatcher.classifier = [this](const std::string& operation, const std::string& body) {
             if (!switch_ || options_.relay_mode())
                 throw std::runtime_error("classifier requires a non-relay switch attachment");
             return classifier_.control(operation, body, [] {});
+        };
+        return dispatcher;
+    }
+    void prepare_remote_control() {
+        remote_control_.payload_limit(maximum_fragment_payload());
+        remote_control_.configure(options_.allow_control_all ? ControlAccess::all() : ControlAccess{},
+            [this](const std::vector<std::uint8_t>& bytes) {
+                Packet packet; packet.type = PacketType::control; packet.payload = bytes;
+                if (!protocol_v5_.encode_into(packet, tx_encoded_buffer_, tx_mac_buffer_)) return;
+                if (udp_.send(tx_encoded_buffer_.data(), tx_encoded_buffer_.size()) < 0) ++stats_.udp_send_errors;
+                else { ++stats_.udp_tx_packets; stats_.udp_tx_bytes += tx_encoded_buffer_.size(); }
+            }, [this](const ControlRequest& request) {
+                return control_dispatcher().execute(request, options_.allow_control_all ? ControlAccess::all() : ControlAccess{});
+            });
+    }
+    void handle_control_request() {
+        prepare_remote_control();
+        control_->handle_dispatch(control_dispatcher(), [this](ControlRequest request, unsigned retries, unsigned wait_ms) {
+            const auto id = request.command.compare(0, 15, "request status ") == 0
+                ? remote_control_.query(remote_control::parse_id(request.command.substr(15)), retries, std::chrono::milliseconds(wait_ms), RemoteControl::Clock::now())
+                : remote_control_.submit(std::move(request), retries, std::chrono::milliseconds(wait_ms), RemoteControl::Clock::now());
+            return ControlSocket::RemotePending{remote_control::hex(id), [this, id]() -> std::optional<ControlResponse> {
+                auto result = remote_control_.result(id);
+                if (!result) return {};
+                return ControlResponse{result->exit == 0, std::move(result->body), result->exit == 255};
+            }};
         });
     }
 
@@ -742,6 +775,12 @@ private:
                 << " original=" << packet.original_length
                 << " payload=" << packet.payload.size()
                 << "\n";
+        }
+
+        if (packet.type == PacketType::control) {
+            prepare_remote_control();
+            remote_control_.receive(packet.payload, RemoteControl::Clock::now());
+            return;
         }
 
         if (packet.type == PacketType::info) {
@@ -1661,6 +1700,8 @@ private:
             << "pmtud_probes_ok=" << stats_.pmtud_probes_ok << "\n"
             << "pmtud_probes_lost=" << stats_.pmtud_probes_lost << "\n";
 
+        output << "allow_control_all=" << options_.allow_control_all << "\n";
+        remote_control_.write_stats(output);
         output << "info_msg_enable=" << options_.info_msg_enable << "\n";
         peer_info_.write_stats(output);
         protocol_v5_.write_stats(output, now_steady);
@@ -1721,6 +1762,7 @@ private:
     UdpEndpoint udp_;
     std::unique_ptr<SwitchClient> switch_;
     std::unique_ptr<ControlSocket> control_;
+    RemoteControl remote_control_;
     RuntimeRecovery recovery_;
     static constexpr auto switch_reconnect_interval_ = std::chrono::seconds(1);
     std::chrono::steady_clock::time_point next_switch_reconnect_ {};

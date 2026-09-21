@@ -2,6 +2,8 @@
 
 #include "accept_backoff.hpp"
 #include "control_protocol.hpp"
+#include "control_dispatcher.hpp"
+#include <optional>
 #include "flow_dump.hpp"
 #include <algorithm>
 #include <array>
@@ -26,7 +28,9 @@ class ControlSocket {
         std::string command, body, response;
         std::size_t expected = 0, sent = 0;
         bool header = false, responding = false, framed = false, response_header = false;
-        bool success = true, classifier = false;
+        bool success = true, rejected = false, remote = false;
+        unsigned retries = 5, wait_ms = 250;
+        std::function<std::optional<ControlResponse>()> pending;
         AcceptBackoff::Time deadline;
     };
     int fd_ = -1, poller_ = -1;
@@ -56,9 +60,10 @@ class ControlSocket {
                 listening_ = enabled;
         }
     }
-    void respond(int fd, Client &client, std::string response, bool success = true) {
+    void respond(int fd, Client &client, std::string response, bool success = true, bool rejected = false) {
         client.response = std::move(response);
         client.success = success;
+        client.rejected = rejected;
         client.responding = true;
         client.deadline = AcceptBackoff::Clock::now() + std::chrono::seconds(5);
         epoll_event event{}; event.events = EPOLLOUT; event.data.fd = fd;
@@ -68,7 +73,7 @@ class ControlSocket {
     bool flush(int fd, Client &c) {
         for (unsigned turn = 0; turn < 4; ++turn) {
             const bool header = c.framed && !c.response_header;
-            const std::string prefix = header ? std::string(c.success ? "OK " : "ERROR ") +
+            const std::string prefix = header ? std::string(c.success ? "OK " : c.rejected ? "REJECTED " : "ERROR ") +
                 std::to_string(c.response.size()) + "\n" : "";
             const auto count = header ? prefix.size() :
                 c.framed ? std::min(control_chunk_size, c.response.size() - c.sent) : c.response.size();
@@ -137,7 +142,27 @@ class ControlSocket {
     template<class StatsProvider, class RulesProvider, class FlowsProvider>
     void handle(StatsProvider stats, RulesProvider rules, FlowsProvider flows,
                 std::function<std::string(const std::string&, const std::string&)> classifier = {}) {
+        ControlDispatcher dispatcher;
+        dispatcher.stats = stats; dispatcher.flows = flows;
+        dispatcher.rules = rules; dispatcher.classifier = classifier;
+        handle_dispatch(dispatcher);
+    }
+    struct RemotePending {
+        std::string id;
+        std::function<std::optional<ControlResponse>()> poll;
+    };
+    using RemoteSubmit = std::function<RemotePending(ControlRequest, unsigned, unsigned)>;
+    void handle_dispatch(const ControlDispatcher& dispatcher, RemoteSubmit remote = {}) {
         maintain();
+        for (auto& entry : clients_) {
+            auto& c = entry.second;
+            if (!c.pending) continue;
+            auto result = c.pending();
+            if (result) {
+                c.pending = {};
+                respond(entry.first, c, std::move(result->body), result->success, result->rejected);
+            }
+        }
         std::array<epoll_event, max_clients + 1> events{};
         const int count = ::epoll_wait(poller_, events.data(), static_cast<int>(events.size()), 0);
         for (int i = 0; i < count; ++i) {
@@ -158,6 +183,7 @@ class ControlSocket {
             if (found == clients_.end()) continue;
             auto &c = found->second;
             try {
+                if (c.pending) { if (events[static_cast<std::size_t>(i)].events & (EPOLLHUP | EPOLLRDHUP | EPOLLERR)) remove(fd); continue; }
                 if (c.responding) { if (flush(fd, c)) remove(fd); continue; }
                 for (unsigned turn = 0; turn < 4 && !c.responding; ++turn) {
                     std::array<char, control_chunk_size> bytes{};
@@ -169,43 +195,50 @@ class ControlSocket {
                         std::string command(bytes.data(), static_cast<std::size_t>(size));
                         while (!command.empty() && (command.back() == '\n' || command.back() == '\r')) command.pop_back();
                         c.header = true;
-                        if (command == "show stats") { respond(fd, c, stats()); break; }
-                        if (command == "show flows") {
-                            c.framed = true;
-                            respond(fd, c, flows());
-                            break;
+                        if (command.compare(0, 7, "remote ") == 0) {
+                            c.remote = c.framed = true;
+                            const auto a = command.find(' ', 7), b = a == std::string::npos ? a : command.find(' ', a + 1);
+                            if (b == std::string::npos) throw std::runtime_error("expected remote RETRIES WAIT_MS COMMAND");
+                            c.retries = static_cast<unsigned>(control_length(command.substr(7, a - 7), 100));
+                            c.wait_ms = static_cast<unsigned>(control_length(command.substr(a + 1, b - a - 1), 60000));
+                            if (c.wait_ms < 10) throw std::runtime_error("remote wait must be at least 10 ms");
+                            command = command.substr(b + 1);
                         }
-                        c.classifier = command.compare(0, 11, "classifier ") == 0;
-                        const bool divert = command.compare(0, 7, "divert ") == 0;
-                        if (!c.classifier && !divert && command.compare(0, 6, "rules ") != 0) { respond(fd, c, "error=unknown_command\n"); break; }
-                        c.framed = true;
-                        const std::size_t start = c.classifier ? 11 : divert ? 7 : 6;
-                        const auto space = command.find(' ', start);
-                        if (space == std::string::npos) throw std::runtime_error("expected rules OP LENGTH");
-                        c.command = command.substr(start, space - start);
-                        c.expected = control_length(command.substr(space + 1));
-                        if (divert) {
-                            if (c.expected || (c.command != "enable" && c.command != "stop" && c.command != "show"))
-                                throw std::runtime_error("expected divert enable|stop|show 0");
-                            c.command = "divert." + c.command;
-                        } else if (c.classifier) {
-                            if (c.command != "check" && c.command != "load" && c.command != "load-flush" &&
-                                c.command != "show" && c.command != "disable")
-                                throw std::runtime_error("unknown classifier operation");
-                            if (c.command == "disable" && c.expected)
-                                throw std::runtime_error("disable has no body");
-                        } else if (c.command != "check" && c.command != "load" && c.command != "show")
-                            throw std::runtime_error("unknown rules operation");
-                        if (c.command == "show" && c.expected) throw std::runtime_error("show has no body");
+                        // Preserve the legacy framing even for malformed local commands.
+                        if (!c.remote) {
+                            c.framed = command == "show flows" || command.compare(0, 11, "classifier ") == 0 ||
+                                command.compare(0, 6, "rules ") == 0 || command.compare(0, 7, "divert ") == 0;
+                            if (!c.framed && command != "show stats") {
+                                respond(fd, c, "error=unknown_command\n"); break;
+                            }
+                        }
+                        const auto operation = c.remote && command.compare(0, 15, "request status ") == 0
+                            ? ControlOperation{} : ControlDispatcher::parse(command);
+                        c.command = command; c.expected = operation.length;
+                        c.framed = c.remote || operation.framed;
                     } else {
                         if (static_cast<std::size_t>(size) > c.expected - c.body.size())
                             throw std::runtime_error("control body exceeds declared length");
                         c.body.append(bytes.data(), static_cast<std::size_t>(size));
                     }
                     if (c.body.size() == c.expected) {
-                        if (c.classifier && !classifier)
-                            throw std::runtime_error("classifier commands unsupported by this component");
-                        respond(fd, c, c.classifier ? classifier(c.command, c.body) : rules(c.command, c.body));
+                        if (c.remote) {
+                            if (!remote) throw std::runtime_error("remote control unsupported by this component");
+                            auto pending = remote({c.command, std::move(c.body)}, c.retries, c.wait_ms);
+                            c.pending = std::move(pending.poll);
+                            const auto accepted = "REQUEST " + pending.id + "\n";
+                            if (::send(fd, accepted.data(), accepted.size(), MSG_DONTWAIT | MSG_NOSIGNAL) != static_cast<ssize_t>(accepted.size())) {
+                                remove(fd); break;
+                            }
+                            // The daemon owns the request even if this client disconnects.
+                            c.deadline = AcceptBackoff::Clock::now() + std::chrono::hours(2);
+                            epoll_event event{}; event.events = EPOLLRDHUP; event.data.fd = fd;
+                            ::epoll_ctl(poller_, EPOLL_CTL_MOD, fd, &event);
+                            break;
+                        }
+                        const auto response = dispatcher.execute({c.command, c.body}, ControlAccess::all());
+                        respond(fd, c, !c.framed && !response.success ? "error=" + response.body : response.body, response.success);
+
                     }
                 }
             } catch (const std::bad_alloc &) {

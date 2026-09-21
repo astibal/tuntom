@@ -17,6 +17,7 @@ inline void usage(const char* program_name) {
         << " server <id> <ifname> [options]\n"
         << "  " << program_name
         << " client <id> <ifname> <host> [options]\n"
+        << "  " << program_name << " ctl [remote] [control options] [---] <command>\n"
         << "\n"
         << "Tunnel IDs: 1..255, optionally followed by _1.._63 for a group member\n"
         << "\n"
@@ -48,6 +49,7 @@ inline void usage(const char* program_name) {
         << "  SIGUSR1 / SIGUSR2       Toggle file writes / write snapshot (needs --stats-file)\n"
         << "  --stats-file <path>    Export runtime statistics to file\n"
         << "  --control-socket <path>  Local tuntomctl socket\n"
+        << "  --allow-control-all    Allow authenticated peer control operations\n"
         << "  --stats-format <fmt>   Statistics format; currently: txt\n"
         << "\n"
         << "Cryptography:\n"
@@ -104,6 +106,8 @@ inline void parse_options(
 
         if (option == "--crypto-auth-only") {
             options.pfs = options.encrypt_ascon = false;
+        } else if (option == "--allow-control-all") {
+            options.allow_control_all = true;
         } else if (option == "--info-msg-enable") {
             options.info_msg_enable = true;
         } else if (option == "--info-field" || option.rfind("--info-field=", 0) == 0) {

@@ -26,6 +26,7 @@ enum class PacketType : std::uint8_t {
     confirm_ack = 11,
     ipc = 12,
     info = 13,
+    control = 14,
 };
 
 enum class Direction {
@@ -55,6 +56,7 @@ struct Options {
     bool encrypt_ascon = true;
     bool pfs = true;
     bool info_msg_enable = false;
+    bool allow_control_all = false;
     std::map<std::string, std::string> info_fields;
     std::size_t init_window = 300;
     bool ttl_compensate = true;

@@ -360,3 +360,12 @@ Unix sockets and child processes without TUNs or host-network changes.
 
 The MP planner/helper tests verify that wildcard strings survive rules-file
 and CLI processing and that dry-run reports port counts as a lower bound.
+
+### Remote CONTROL
+
+`remote_control_test` covers dispatcher permissions, multiplexed large stats and
+classifier transfers, lost results/final confirmations, duplicate suppression,
+receive expiry, history capacity and authenticated session/replay boundaries.
+`remote_control_integration_test` runs real rootless UDP tunnel peers and checks
+opt-in, local CLI compatibility, the remote `---` separator, text preservation,
+status queries, small-MTU response transfers and exit codes 0/1/255.

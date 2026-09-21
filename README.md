@@ -380,6 +380,75 @@ the respective hosts. Sockets use mode `0660`; filesystem permissions control
 access. Both `show stats` and `show flows` are supported. Existing stats signals
 remain available for compatibility.
 
+### Remote control (`CONTROL`)
+
+The receiving **tuntom process** must explicitly enable `--allow-control-all`.
+This delegates its control operations to its authenticated tunnel peer; it is
+independent of whether the receiver exposes a local control socket. The default
+is deny. Local clients still require access to the sender's Unix socket.
+Orchestration is responsible for setting the policy consistently across processes.
+
+```bash
+# Existing local syntax is unchanged.
+tuntomctl /run/tuntom/42c.control show stats
+
+# Local options and socket precede the mandatory remote separator.
+tuntomctl remote --socket /run/tuntom/42c.control --- show stats
+tuntomctl remote /run/tuntom/42c.control --remote-retries 5 --remote-wait 250ms --- classifier load classifier.conf
+# The same CLI is also available as: tuntom ctl remote ... --- ...
+
+tuntomctl remote /run/tuntom/42c.control --- request status REQUEST_ID
+```
+
+Everything after `---` belongs to the remote command. For `load`, `load-flush`
+and `check`, the client reads the local file (or `-` for stdin) and transfers its
+original bytes as the command body, without JSON conversion or remote filesystem
+paths. Remote forwarding cannot be nested. Operations target the tunnel daemon,
+not the control socket of its attached switch.
+
+The daemon owns each request after accepting its complete local input. `ctl`
+prints `request_id=<128-bit hex ID>` to stderr immediately after acceptance and
+waits for the result. Exit codes are **0** for success after the final remote
+confirmation, **255** for remote refusal (including busy/unsupported), and **1**
+for execution or transport failure. stdout contains only the command result.
+`request status ID` resumes waiting/retrieving the result without re-execution;
+unknown/evicted IDs are errors, not evidence that an operation never ran.
+Disconnecting `ctl` does not cancel an accepted operation.
+
+CONTROL uses authenticated V5 type 14 in the current session, with replay checks.
+Requests and responses use MTU-sized blocks, offsets and retransmissions under
+one request ID. `--remote-wait` is the interval between retry/status attempts
+(default **250ms**; bare numbers mean seconds); `--remote-retries` is the number
+of additional attempts without progress (default **5**, maximum 100). Successful
+block progress resets the retry budget. A timeout never automatically reissues a
+command under a new ID. Session replacement interrupts outstanding transfers;
+completed receiver results remain queryable while that process lives.
+
+Current resource bounds:
+
+- Input and remote response: **1 MiB each**; local control limits are unchanged.
+- Incomplete input expires after **2s without new bytes**, or **10s total**.
+  Duplicate blocks and status polls do not extend either deadline.
+- One nontrivial request at a time, including its upload. Cheap `show stats`
+  creates an independent immutable snapshot even during a classifier upload;
+  its multi-block response does not hold the exclusive slot. Other operations,
+  including `show flows`, validation and configuration dumps, are conservatively
+  admitted through that slot. Existing handlers run on the daemon event loop.
+- At most **8 active requests per direction**, **128 history entries**, and
+  **16 MiB of accounted payload/reservations per direction**. There is no waiting
+  queue. The receiver evicts only acknowledged terminal entries, oldest first,
+  to meet count or memory limits; unacknowledged results cause admission refusal
+  when capacity is exhausted. The sender caches results for up to five minutes,
+  subject to its count/memory bounds.
+- States: `RECEIVING`, `READY`, `RUNNING`, `SUCCEEDED`, `FAILED`, `REJECTED`,
+  `EXPIRED`; absent history returns `NOT_FOUND`. `FAILED` does not imply rollback.
+  Process exit discards all state; there is no persistent request journal.
+
+The shared dispatcher checks operation-specific permissions before invoking a
+handler. Internal permissions already distinguish reads, classifier validation,
+classifier writes, rules validation/writes and divert writes. Only the all-or-none
+remote switch is currently exposed on the daemon command line.
+
 ### Peer access addresses
 
 Pass `--info-msg-enable` to the **tuntom binary** on a spoke to advertise all
@@ -501,6 +570,14 @@ IPv4/IPv6 dissector. Plaintext INFO exposes validated key/value entries via
 are marked with `tuntom.info.malformed` and expose no partial fields. Values stay
 text (including comma-separated addresses). Encrypted payloads remain encrypted
 in the capture; the dissector does not verify session authentication tags.
+
+V5 CONTROL (type 14) displays envelope version, PUT/STATUS/REPLY/FINISH/CONFIRMED,
+request state, 128-bit ID, offset, total length, command and body block. Filter
+with `tuntom.type == 14`, `tuntom.control.kind`, `tuntom.control.state`, or
+`tuntom.control.request_id`. Body bytes are exposed as `tuntom.control.data`;
+CONTROL blocks are shown individually, not reassembled into files. Malformed
+headers/lengths are marked with `tuntom.control.malformed`. Encrypted CONTROL
+is identified by type but does not expose envelope fields without decryption.
 
 ### PMTUD black-hole test
 

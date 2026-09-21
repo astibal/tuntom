@@ -431,7 +431,7 @@ public:
         // to CONFIRM/ACK and is never inserted into the DATA replay window.
         if (matched == pending_.get()) return result;
         // Metadata belongs only to the current session, never the rekey grace period.
-        if (type == PacketType::info && matched != active_.get()) return result;
+        if ((type == PacketType::info || type == PacketType::control) && matched != active_.get()) return result;
         if (not matched->replay.accept(packet.sequence & counter_mask)) {
             result.replay_drop = true;
             return result;
