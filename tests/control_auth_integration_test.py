@@ -69,6 +69,9 @@ for binary in (st, mp):
             assert time.monotonic()<deadline, result.stderr
             time.sleep(.05)
         assert 'component=adapter\n' in result.stdout
+        metrics = dict(line.split('=',1) for line in result.stdout.splitlines() if '=' in line)
+        assert metrics['control_access']=='allow-trusted' and metrics['control_trusted_keys']==pub, metrics
+        assert metrics['control_authority_keys']==pub and metrics['control_discover_enabled']=='1', metrics
         # Adapters expose the same local routed API; the CLI's switch mode
         # intentionally requires component=switch, so exercise the raw API here.
         with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as reverse:
@@ -81,6 +84,8 @@ for binary in (st, mp):
             while len(data) < int(header[1]):
                 data += reverse.recv(16384)
             assert b'component=switch\n' in data
+            assert b'control_access=allow-trusted\n' in data
+            assert ('control_authority_keys='+pub+'\n').encode() in data
         wrong = routed('switch', 'wrong', 'show', 'stats')
         assert wrong.returncode != 0, 'untrusted authority accepted despite pinning'
         denied = routed('switch', 'target', 'classifier', 'disable')

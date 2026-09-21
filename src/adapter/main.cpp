@@ -330,6 +330,7 @@ int main(int argc, char** argv) {
                     << "switch_reconnects=" << stats.switch_reconnects << "\n";
                 switch_client.write_stats(out);
                 classifier.write_stats(out);
+                control_auth_config.write_stats(out);
                 recovery.write_stats(out);
                 tuntom::logger.write_stats(out);
                 adaptive_polling.write_stats(out);

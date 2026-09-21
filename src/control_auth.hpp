@@ -8,6 +8,7 @@
 #include <map>
 #include <memory>
 #include <sstream>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -78,6 +79,30 @@ struct Config {
     bool allow_trusted=false, allow_all=false;
     bool required()const{return allow_trusted;}
     bool enabled()const{return allow_trusted || allow_all;}
+    // Configuration snapshot only: never serialize secrets or generate identities.
+    void write_stats(std::ostream& out) const {
+        const auto keys = [&](const char* name,const std::set<Key>& values) {
+            out << name << '=';
+            if(values.empty())out << "NONE";
+            bool first=true;
+            for(const auto& key:values) {if(!first)out << ',';first=false;out << hex(key);}
+            out << '\n';
+        };
+        std::set<Key> trusted_public,authority_public;
+        for(const auto& item:trusted)trusted_public.insert(item.first);
+        for(const auto& item:signing)authority_public.insert(item->grant.pub);
+        out << "control_access=" << (allow_all?"allow-all":allow_trusted?"allow-trusted":"disabled") << '\n';
+        keys("control_trusted_keys",trusted_public);
+        keys("control_authority_keys",authority_public);
+        out << "control_enabled=" << (enabled()?1:0)
+            << "\ncontrol_authentication_required=" << (required()?1:0)
+            << "\ncontrol_forward_enabled=" << (enabled()?1:0)
+            << "\ncontrol_discover_enabled=" << (enabled()?1:0)
+            << "\ncontrol_can_initiate=" << (enabled() && (!required() || !signing.empty())?1:0)
+            << "\ncontrol_required_authority=" << (authority==Key{}?"NONE":hex(authority))
+            << "\ncontrol_required_caps=" << caps
+            << "\ncontrol_required_level=" << level << '\n';
+    }
     // A record grants one level to its capability bitfield. Repeated records
     // for the same public key permit distinct levels for distinct capabilities.
     void load(const std::string& path,bool private_key) {

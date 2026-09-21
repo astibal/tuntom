@@ -24,6 +24,21 @@ struct Keys {
         authority.signing.push_back(s);authority.allow_trusted=true;
     }
 };
+static void metrics() {
+    ca::Config disabled;std::ostringstream empty;disabled.write_stats(empty);
+    require(empty.str().find("control_access=disabled\ncontrol_trusted_keys=NONE\ncontrol_authority_keys=NONE\n")!=std::string::npos,"disabled metric keys");
+    require(empty.str().find("control_discover_enabled=0\ncontrol_can_initiate=0\n")!=std::string::npos,"disabled discovery metrics");
+    Keys keys; keys.node.signing=keys.authority.signing;
+    std::ostringstream trusted;keys.node.write_stats(trusted);
+    const auto pub=ca::hex(keys.authority.signing.front()->grant.pub);
+    require(trusted.str().find("control_access=allow-trusted\ncontrol_trusted_keys="+pub+"\ncontrol_authority_keys="+pub+"\n")!=std::string::npos,"public key metrics");
+    require(trusted.str().find(ca::hex(keys.authority.signing.front()->secret.bytes))==std::string::npos,"metrics never expose private key");
+    require(trusted.str().find("control_can_initiate=1\n")!=std::string::npos,"authority can initiate");
+    keys.node.signing.clear();std::ostringstream receiver;keys.node.write_stats(receiver);
+    require(receiver.str().find("control_discover_enabled=1\ncontrol_can_initiate=0\n")!=std::string::npos,"trusted receiver needs authority to initiate");
+    disabled.allow_all=true;std::ostringstream all;disabled.write_stats(all);
+    require(all.str().find("control_access=allow-all\n")!=std::string::npos && all.str().find("control_can_initiate=1\n")!=std::string::npos,"allow-all metrics");
+}
 static void primitives() {
     Keys k;ca::Auth n,a;ca::Id origin{};origin[0]=9;n.configure(k.node,origin);a.configure(k.authority,origin);
     ca::Id id{};id[0]=1;auto now=ca::Time{};
@@ -301,4 +316,4 @@ static void discovery_limits() {
     bool threw=false;try{origin.submit({"discover",{}},1,20,{});}catch(const std::runtime_error&){threw=true;}
     require(threw,"trusted discovery requires an origin authority key");
 }
-int main(){primitives();access_modes();transactions();routed();discovery();discovery_limits();std::cout<<"CONTROL authentication passed\n";}
+int main(){metrics();primitives();access_modes();transactions();routed();discovery();discovery_limits();std::cout<<"CONTROL authentication passed\n";}

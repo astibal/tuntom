@@ -1748,6 +1748,7 @@ private:
 
         output << "allow_control_trusted=" << options_.control_auth.allow_trusted << "\n";
         output << "allow_control_all=" << options_.control_auth.allow_all << "\n";
+        options_.control_auth.write_stats(output);
         remote_control_.write_stats(output);
         output << "info_msg_enable=" << options_.info_msg_enable << "\n";
         peer_info_.write_stats(output);

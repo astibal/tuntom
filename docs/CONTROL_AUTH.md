@@ -254,3 +254,33 @@ to the authority needs separately provisioned node identity/trust. Transport
 protection and endpoint routing remain relevant. No public transferable signature
 or proof that a command came from the authority is produced: a receiving node
 also knows its own MAC key.
+
+## Status metrics for fabric discovery
+
+All components publish the following configuration snapshot in `show stats`
+(and in tunnel statistics files). Key lists contain sorted, unique lowercase
+64-digit X25519 **public** keys, separated by commas. Empty lists and an unset
+required authority are the literal text `NONE`, not a zero byte. Private keys
+are never exported. Loaded keys are shown even when network CONTROL is disabled.
+
+| Metric | Meaning |
+| --- | --- |
+| `control_access` | `allow-all`, `allow-trusted`, or `disabled` when neither flag is set |
+| `control_trusted_keys` | Public keys configured with `--control-trust-key`, or `NONE` |
+| `control_authority_keys` | Public parts of locally loaded authority keys, or `NONE` |
+| `control_enabled` | Network CONTROL is enabled (0/1) |
+| `control_authentication_required` | Trusted authority authentication is required (0/1) |
+| `control_forward_enabled` | CONTROL forwarding is enabled (0/1) |
+| `control_discover_enabled` | Incoming DISCOVER handling is enabled, subject to authentication (0/1) |
+| `control_can_initiate` | Local configuration permits originating requests/discovery: enabled and, in trusted mode, an authority key is loaded (0/1) |
+| `control_required_authority` | Explicitly required public key, or `NONE` for peer-selected authority |
+| `control_required_caps` | Additional required capability mask, decimal |
+| `control_required_level` | Configured minimum level, decimal |
+
+These describe local configuration, not end-to-end reachability or a guarantee
+that a particular authority has sufficient grants. Fabric can compare its
+public authority keys against the target's trusted keys and explicit authority
+requirement; actual authentication still checks capability/level grants.
+Local control sockets remain usable for reading this snapshot when network
+CONTROL is disabled. An unreachable target cannot advertise its configuration
+through a disabled CONTROL path.
