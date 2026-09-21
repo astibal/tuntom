@@ -277,6 +277,12 @@ Object.assign(messages, {
   health:["Zdraví","Health","État"], healthReason:["Zdraví a důvody","Health and reasons","État et explications"],
   fieldStatus:["RUNTIME / STAV","RUNTIME / STATUS","RUNTIME / ÉTAT"], fieldNotes:["RUNTIME / DIAGNOSTIKA","RUNTIME / DIAGNOSTICS","RUNTIME / DIAGNOSTIC"],
   switchRuntime:["Porty a workery","Ports and workers","Ports et workers"],
+  controlAuthority:["Autorita","Authority","Autorité"],
+  controlAuthorityHint:["Komponenta má načtený privátní klíč autority. Nezaručuje přístup ke všem cílům.","The component has a loaded authority private key. This does not guarantee access to all targets.","Le composant possède une clé privée d’autorité chargée. Cela ne garantit pas l’accès à toutes les cibles."],
+  controlSettings:["CONTROL · oprávnění a veřejné klíče","CONTROL · permissions and public keys","CONTROL · permissions et clés publiques"],
+  controlUnknown:["Možnost DISCOVER nezjištěna — chybí aktuální CONTROL stats.","DISCOVER availability unknown — current CONTROL stats are missing.","Disponibilité de DISCOVER inconnue — statistiques CONTROL actuelles absentes."],
+  controlNoDiscover:["Tato komponenta podle stats nemůže zahájit DISCOVER.","This component cannot initiate DISCOVER according to its stats.","Ce composant ne peut pas lancer DISCOVER selon ses statistiques."],
+  controlAvailable:["Komponenta může zahájit DISCOVER. Přístup k cílům závisí na jejich oprávněních.","This component can initiate DISCOVER. Access to targets depends on their permissions.","Ce composant peut lancer DISCOVER. L’accès aux cibles dépend de leurs permissions."],
   networkDiscovery:["Průzkum sítě","Network discovery","Découverte du réseau"],
   discoverNetwork:["Prozkoumat síť","Discover network","Explorer le réseau"],
   discoveryHint:["DISCOVER z vybraného procesu. Chybějící odpověď nerozlišuje nedostupný, starý nebo nepovolený uzel.","DISCOVER from the selected process. No reply cannot distinguish an unavailable, old or disabled node.","DISCOVER depuis le processus sélectionné. Une absence de réponse ne distingue pas un nœud indisponible, ancien ou désactivé."],
@@ -509,11 +515,15 @@ function tunnelPayload(e) {
   return null;
 }
 function payloadClass(e) {
-  return ({DATA:"payload-data",IPC:"payload-ipc"})[tunnelPayload(e)] || "";
+  return ({DATA:"payload-data",IPC:"payload-ipc"})[tunnelPayload(e)] ||
+    ({switch:"component-switch",adapter:"component-adapter",divert:"component-adapter"})[e?.kind] || "";
 }
 function payloadMark(e) {
   const mode=tunnelPayload(e);
-  return mode ? `<span class="payload-mark ${mode === "DATA" ? "payload-arrows" : ""}" aria-hidden="true">${mode === "IPC" ? "▣─▣" : "<span>→</span><span>←</span>"}</span>` : "";
+  if (mode) return `<span class="payload-mark ${mode === "DATA" ? "payload-arrows" : ""}" aria-hidden="true">${mode === "IPC" ? "▣─▣" : "<span>→</span><span>←</span>"}</span>`;
+  const shapes=e?.kind === "switch" ? '<rect x="6" y="5" width="8" height="8" rx="1"/><path d="M10 1v4M10 13v4M1 9h5M14 9h5M7 8h6M7 10h6"/>' :
+    ["adapter","divert"].includes(e?.kind) ? '<path d="M1 6h5v6H1M19 4h-5v10h5M6 9h8M3 6v6M17 4v10"/>' : "";
+  return shapes ? `<svg class="payload-mark component-mark" viewBox="0 0 20 18" aria-hidden="true" focusable="false">${shapes}</svg>` : "";
 }
 function endpointType(e) {
   return typeName(e?.kind)+(e?.kind === "tunnel" ? " · "+(tunnelPayload(e) || "?") : "");
@@ -812,7 +822,7 @@ function renderProcesses() {
     const [color, text] = status(e);
     const reasons=attentionReasons(e);
     const indicator=reasons.length ? `<button class="status attention-status" data-attention="${esc(e.id)}" title="${esc(reasons.map(reason=>reason.text).join("\n"))}"><span class="attention-title"><span class="attention-mark" aria-hidden="true">!</span>${esc(text)} ↗</span><span class="status-reasons">${reasons.slice(0,2).map(reason=>esc(reason.text)).join("<br>")}${reasons.length > 2 ? `<br>${esc(t("moreReasons",{count:reasons.length-2}))}` : ""}</span></button>` : `<span class="status"><i class="dot ${color}"></i>${esc(text)}</span>`;
-    return `<tr data-process-row="${esc(e.id)}" class="${e.id === state.selected ? "selected" : ""} ${count>1 ? "peer-group"+(first ? " peer-group-first" : "")+(last ? " peer-group-last" : "") : ""}"><td><button class="process-name" data-id="${esc(e.id)}" aria-pressed="${e.id === state.selected}">${esc(e.name)}<small>PID ${e.pid}${e.interface && e.interface !== "-" ? " · " + esc(e.interface) : ""}</small></button>${first ? peerSecuritySummary(e,peers) : ""}</td><td><span class="kind ${payloadClass(e)}">${payloadMark(e)}${esc(endpointType(e))}</span></td><td>${indicator}</td><td>${bps(rate(e,"rx"))}<small>↑ ${bps(rate(e,"tx"))}</small></td><td class="rtt-value" title="${esc(metricHelp("rtt_last_ms"))}">${esc(lastRTT(e))}</td><td>${duration(e.uptime_seconds)}</td></tr>`;
+    return `<tr data-process-row="${esc(e.id)}" class="${e.id === state.selected ? "selected" : ""} ${count>1 ? "peer-group"+(first ? " peer-group-first" : "")+(last ? " peer-group-last" : "") : ""}"><td><button class="process-name" data-id="${esc(e.id)}" aria-pressed="${e.id === state.selected}">${esc(e.name)}${authorityBadge(e)}<small>PID ${e.pid}${e.interface && e.interface !== "-" ? " · " + esc(e.interface) : ""}</small></button>${first ? peerSecuritySummary(e,peers) : ""}</td><td><span class="kind ${payloadClass(e)}">${payloadMark(e)}${esc(endpointType(e))}</span></td><td>${indicator}</td><td>${bps(rate(e,"rx"))}<small>↑ ${bps(rate(e,"tx"))}</small></td><td class="rtt-value" title="${esc(metricHelp("rtt_last_ms"))}">${esc(lastRTT(e))}</td><td>${duration(e.uptime_seconds)}</td></tr>`;
   }).join("");
   $("empty").hidden = rows.length > 0;
   $("empty").querySelector("h3").textContent = t(eligible.length ? "noMatches" : state.view==="flows" ? "noFlowComponents" : state.view==="rules" ? "noSwitchComponents" : "noProcesses");
@@ -820,7 +830,7 @@ function renderProcesses() {
 }
 function renderDetail() {
   const e = selected();
-  $("detail-title").textContent = e?.name || t("chooseProcess");
+  $("detail-title").innerHTML = esc(e?.name || t("chooseProcess"))+authorityBadge(e);
   $("detail-kind").innerHTML = payloadMark(e)+esc(endpointType(e));
   $("detail-kind").className="kind "+payloadClass(e);
   if (!e) { $("detail").innerHTML = `<p class="muted">${esc(t("appearAfterStart"))}</p>`; drawChart(); return; }
@@ -1359,7 +1369,7 @@ function renderObserved() {
       const worst=card.members.find(e=>attentionReasons(e).length) || card.members.find(e=>status(e)[0]!=="") || e;
       const [color,label]=status(worst),compact=!full && size!=="full";
       const attrs=card.stack?`data-map-toggle="${esc(g.key)}" aria-expanded="false"`:`data-map-node="${esc(e.id)}" aria-pressed="${state.selected===e.id}"`;
-      return `<button ${attrs} data-offset="${card.y-y}" data-height="${card.h}" class="map-node ${payloadClass(e)} ${color} ${card.stack?"map-stack":""} ${compact?"map-"+size:""} ${!card.stack && state.selected===e.id?"selected":""}" title="${esc(card.stack?t("mapStackHint"):e.name+" · "+endpointType(e))}"><span class="map-node-kind">${payloadMark(e)}${esc(endpointType(e))}${card.stack?"":" · PID "+e.pid}<i class="dot ${color}"></i></span><strong>${esc(card.stack?g.name:e.name)}${card.stack?` <em>×${g.members.length}</em>`:""}</strong><span class="map-node-status">${esc(card.stack?t("mapMembers",{count:g.members.length,issues}):label+(e.kind==="tunnel"?" · RTT "+lastRTT(e):""))}</span><span class="map-node-rate">↓ ${esc(bps(aggregate(card.members,"rx")))} &nbsp; ↑ ${esc(bps(aggregate(card.members,"tx")))}</span></button>`;
+      return `<button ${attrs} data-offset="${card.y-y}" data-height="${card.h}" class="map-node ${payloadClass(e)} ${color} ${card.stack?"map-stack":""} ${compact?"map-"+size:""} ${!card.stack && state.selected===e.id?"selected":""}" title="${esc(card.stack?t("mapStackHint"):e.name+" · "+endpointType(e))}"><span class="map-node-kind">${payloadMark(e)}${esc(endpointType(e))}${card.stack?"":" · PID "+e.pid}<i class="dot ${color}"></i></span><strong>${esc(card.stack?g.name:e.name)}${card.stack ? "" : authorityBadge(e)}${card.stack?` <em>×${g.members.length}</em>`:""}</strong><span class="map-node-status">${esc(card.stack?t("mapMembers",{count:g.members.length,issues}):label+(e.kind==="tunnel"?" · RTT "+lastRTT(e):""))}</span><span class="map-node-rate">↓ ${esc(bps(aggregate(card.members,"rx")))} &nbsp; ↑ ${esc(bps(aggregate(card.members,"tx")))}</span></button>`;
     }).join("");
     for(const card of showLabels?cards:[]) {
       const policy=mapPolicyRows(card.members);
@@ -1374,7 +1384,7 @@ function renderObserved() {
   }
   for(const wrapper of previous.values()){if(mapHoverPending===wrapper)cancelMapHover();wrapper.remove();}
   const e=selected(),detail=$("observed-detail");
-  detail.innerHTML=e?`<span class="kind ${payloadClass(e)}">${payloadMark(e)}${esc(endpointType(e))}</span><h3>${esc(e.name)}</h3><p>PID ${e.pid} · ${esc(duration(e.uptime_seconds))}</p>${peerNodes(e,state.data?.syspiper?.nodes || []).map(nodeSystemSummary).join("")}<dl><dt>RTT</dt><dd>${esc(lastRTT(e))}</dd><dt>RX / TX</dt><dd>${esc(bps(rate(e,"rx")))} / ${esc(bps(rate(e,"tx")))}</dd><dt>Peer access</dt><dd>${esc(e.metrics?.peer_info_access || "—")}</dd><dt>${esc(t("port"))}</dt><dd>${esc(e.port_id || "—")}</dd></dl>${attentionReasons(e).map(r=>`<p class="map-issue">${esc(r.text)}</p>`).join("")}<button class="quiet-button" data-map-open>${esc(t("mapOpen"))}</button>`:`<p>${esc(t("chooseProcess"))}</p>`;
+  detail.innerHTML=e?`<span class="kind ${payloadClass(e)}">${payloadMark(e)}${esc(endpointType(e))}</span><h3>${esc(e.name)}${authorityBadge(e)}</h3><p>PID ${e.pid} · ${esc(duration(e.uptime_seconds))}</p>${peerNodes(e,state.data?.syspiper?.nodes || []).map(nodeSystemSummary).join("")}<dl><dt>RTT</dt><dd>${esc(lastRTT(e))}</dd><dt>RX / TX</dt><dd>${esc(bps(rate(e,"rx")))} / ${esc(bps(rate(e,"tx")))}</dd><dt>Peer access</dt><dd>${esc(e.metrics?.peer_info_access || "—")}</dd><dt>${esc(t("port"))}</dt><dd>${esc(e.port_id || "—")}</dd></dl>${attentionReasons(e).map(r=>`<p class="map-issue">${esc(r.text)}</p>`).join("")}<button class="quiet-button" data-map-open>${esc(t("mapOpen"))}</button>`:`<p>${esc(t("chooseProcess"))}</p>`;
 }
 $("observed-canvas").addEventListener("click",event=>{
   const toggle=event.target.closest("[data-map-toggle]");
@@ -1393,12 +1403,12 @@ function renderTopology() {
     const lines = links.map(l => {
       const e = data.endpoints.find(e=>e.id === l.source);
       const registered = sw.switch_detail?.ports.some(p=>p.name === l.port_id);
-      return `<div class="topology-branch"><button data-node="${esc(e?.id)}" class="topology-node ${payloadClass(e)} ${e?.id === state.selected ? "active" : ""}"><span><i class="dot ${status(e)[0]}"></i>${esc(e?.name)}</span><small>${esc(endpointType(e))} · ${esc(l.port_id || "—")}</small></button><span class="link-basis">${esc(t(registered ? "confirmedPort" : "observed"))}${l.namespace_verified ? "" : " (?)"}</span></div>`;
+      return `<div class="topology-branch"><button data-node="${esc(e?.id)}" class="topology-node ${payloadClass(e)} ${e?.id === state.selected ? "active" : ""}"><span><i class="dot ${status(e)[0]}"></i>${esc(e?.name)}${authorityBadge(e)}</span><small>${esc(endpointType(e))} · ${esc(l.port_id || "—")}</small></button><span class="link-basis">${esc(t(registered ? "confirmedPort" : "observed"))}${l.namespace_verified ? "" : " (?)"}</span></div>`;
     });
-    return `<div class="topology-cluster"><div class="topology-root"><button class="topology-node ${sw.id === state.selected ? "active" : ""}" data-node="${esc(sw.id)}"><span><i class="dot ${status(sw)[0]}"></i>${esc(sw.name)}</span><small>SWITCH · PID ${sw.pid}</small></button><button class="quiet-button" data-node-rules="${esc(sw.id)}">${esc(t("openRules"))}</button></div><div class="topology-branches">${lines.join("") || `<p>${esc(t("noLinks"))}</p>`}</div></div>`;
+    return `<div class="topology-cluster"><div class="topology-root"><button class="topology-node ${payloadClass(sw)} ${sw.id === state.selected ? "active" : ""}" data-node="${esc(sw.id)}"><span><i class="dot ${status(sw)[0]}"></i>${esc(sw.name)}${authorityBadge(sw)}</span><small>SWITCH · PID ${sw.pid}</small></button><button class="quiet-button" data-node-rules="${esc(sw.id)}">${esc(t("openRules"))}</button></div><div class="topology-branches">${lines.join("") || `<p>${esc(t("noLinks"))}</p>`}</div></div>`;
   });
   const others = data.endpoints.filter(e=>e.kind !== "switch" && !attached.has(e.id));
-  if (others.length) blocks.push(`<div class="topology-cluster"><p>${esc(t("noLocalSwitch"))}</p>${others.map(e=>`<button class="topology-node ${payloadClass(e)}" data-node="${esc(e.id)}"><span>${esc(e.name)}</span><small>${esc(endpointType(e))}${e.peer ? " → "+esc(e.peer) : ""}</small></button>`).join("")}</div>`);
+  if (others.length) blocks.push(`<div class="topology-cluster"><p>${esc(t("noLocalSwitch"))}</p>${others.map(e=>`<button class="topology-node ${payloadClass(e)}" data-node="${esc(e.id)}"><span>${esc(e.name)}${authorityBadge(e)}</span><small>${esc(endpointType(e))}${e.peer ? " → "+esc(e.peer) : ""}</small></button>`).join("")}</div>`);
   $("topology").innerHTML = blocks.join("") || `<p class="muted">${esc(t("noTopology"))}</p>`;
 }
 function renderMetrics() {
@@ -1841,6 +1851,28 @@ for (const id of ["flow-search","flow-regex","flow-table","flow-protocol","flow-
 $("flows-prev").addEventListener("click",()=>{state.flowPage--;renderFlows();});
 $("flows-next").addEventListener("click",()=>{state.flowPage++;renderFlows();});
 $("flows-labels").addEventListener("click",event=>{const button=event.target.closest("[data-flow-label]");if(button){$("flow-search").value=button.dataset.flowLabel;state.flowPage=0;renderFlows();}});
+function controlState(e) {
+  const metrics=e?.metrics || {};
+  const flag=key=>metrics[key]==="1" || metrics[key]===1 ? true : metrics[key]==="0" || metrics[key]===0 ? false : null;
+  const enabled=flag("control_enabled"), discovery=flag("control_discover_enabled"), initiate=flag("control_can_initiate");
+  const available=e?.status==="reachable";
+  const authority=available && typeof metrics.control_authority_keys==="string" &&
+    /^[0-9a-f]{64}(,[0-9a-f]{64})*$/.test(metrics.control_authority_keys);
+  return {authority, canDiscover:!!e?.control && available && enabled===true && discovery===true && initiate===true,
+    reason:!available || [enabled,discovery,initiate].includes(null) ? "controlUnknown" :
+      enabled && discovery && initiate && e?.control ? "controlAvailable" : "controlNoDiscover"};
+}
+function authorityBadge(e) {
+  return controlState(e).authority ? ` <span class="authority-badge" title="${esc(t("controlAuthorityHint"))}">⚿ ${esc(t("controlAuthority"))}</span>` : "";
+}
+function renderControlSettings(e) {
+  const fields=["control_access","control_trusted_keys","control_authority_keys","control_enabled",
+    "control_authentication_required","control_forward_enabled","control_discover_enabled","control_can_initiate",
+    "control_required_authority","control_required_caps","control_required_level"];
+  const metrics=e?.status==="reachable" ? e.metrics || {} : {};
+  $("control-settings-values").innerHTML=fields.map(key=>`<dt>${esc(key)}</dt><dd>${esc(metrics[key] ?? "—")}</dd>`).join("");
+  $("control-discovery-availability").textContent=t(controlState(e).reason);
+}
 function parseDiscovery(text) {
   if (typeof text !== "string" || text.length > 1048576) throw new Error(t("discoveryInvalid"));
   const lines=text.trimEnd().split("\n");
@@ -1854,7 +1886,9 @@ function parseDiscovery(text) {
 }
 function renderDiscovery() {
   const e=selected(), entry=state.discoveries.get(e?.id);
-  $("discovery-read").disabled=!e?.control || !!entry?.busy;
+  $("discovery-read").hidden=!controlState(e).canDiscover;
+  $("discovery-read").disabled=!!entry?.busy;
+  renderControlSettings(e);
   $("discovery-status").textContent=!entry ? t("discoveryIdle") : entry.busy ? t("discoveryRunning") : entry.error ?
     t("discoveryFailed",{error:diagnostic(entry.error)}) : t("discoveryDone",{
       count:entry.rows.filter(row=>row.state!=="NO_RESPONSE").length,
@@ -1864,7 +1898,7 @@ function renderDiscovery() {
   $("discovery-results").innerHTML=rows.length ? `<table><thead><tr>${["discoveryPath","discoveryState","discoveryComponent","discoveryCapabilities"].map(key=>`<th>${esc(t(key))}</th>`).join("")}</tr></thead><tbody>${rows.map(row=>`<tr>${[row.path,row.state,row.component,row.capabilities].map(value=>`<td>${esc(value)}</td>`).join("")}</tr>`).join("")}</tbody></table>` : "";
 }
 async function discoverNetwork() {
-  const e=selected(); if (!e?.control || state.discoveries.get(e.id)?.busy) return;
+  const e=selected(); if (!controlState(e).canDiscover || state.discoveries.get(e.id)?.busy) return;
   const entry={busy:true,rows:[]}; state.discoveries.set(e.id,entry); renderDiscovery();
   try {
     let job=await api(`/api/v1/endpoints/${encodeURIComponent(e.id)}/requests`,"POST",{operation:"discover"});
@@ -1882,7 +1916,7 @@ async function discoverNetwork() {
 function renderDiagnostics() {
   renderDiscovery();
   const e=selected(), logs=state.logs.get(e?.id), report=state.reports.get(e?.id);
-  $("diagnostic-title").textContent=e ? `${e.name} · PID ${e.pid}` : t("diagnostics");
+  $("diagnostic-title").innerHTML=e ? `${esc(e.name)}${authorityBadge(e)} · PID ${e.pid}` : esc(t("diagnostics"));
   for (const id of ["logs-read","diagnostics-copy","diagnostics-save"]) $(id).disabled=!e || state.diagnosticBusy;
   $("log-meta").textContent=logs?.sampled_at ? new Date(logs.sampled_at).toLocaleString(locale()) : "";
   const logText=logs?.error ? diagnostic(logs.error) : logs?.sources?.length ? logs.sources.map(source=>

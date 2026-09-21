@@ -596,3 +596,22 @@ Autorizované HTTP API: `POST /api/v1/endpoints/{id}/requests` s JSON tělem
 stejným jako RPC `body` vrací 202 a úlohu; `GET /api/v1/requests/{job_id}`
 vrací její stav. Stav `failed` je výsledek úlohy v HTTP 200, neznámé ID HTTP 404.
 UI používá pouze DISCOVER; ostatní čtecí operace jsou dostupné přes API.
+
+
+### CONTROL stats v UI
+
+Diagnostics zobrazuje všech jedenáct `control_*` konfiguračních údajů
+v rozbalovacím detailu, včetně veřejných klíčů, požadované autority, masky
+capabilities a levelu. Číselné hodnoty zůstávají přesnými řetězci.
+
+Tlačítko Prozkoumat síť se zobrazuje pouze u dosažitelného procesu s control
+socketem a aktuálními stats `control_enabled=1`, `control_discover_enabled=1`
+a `control_can_initiate=1`. Samotný příjem DISCOVER nestačí k jeho zahájení.
+Chybějící stats staršího daemonu znamenají nezjištěnou možnost, bez tlačítka;
+UI ji neodhaduje z argumentů ani z typu komponenty.
+
+Proces s neprázdným seznamem `control_authority_keys` má u názvu štítek
+Autorita (seznam procesů, detail, diagnostika a jednotlivé uzly topologie).
+Označuje načtený klíč i při vypnutém CONTROL, nikoli zaručené oprávnění ke
+všem cílům. Samotné trusted keys ani allow-all tento štítek nezapínají.
+Při nedostupných metrikách se štítek i akce skryjí.
