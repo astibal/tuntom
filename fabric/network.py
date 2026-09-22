@@ -260,8 +260,8 @@ class Network:
                 raise APIError(404, 'discovered component expired; refresh discovery')
             return node['endpoint']
 
-    def read(self, key, operation):
-        if operation not in {'stats', 'flows', 'show'}:
+    def read(self, key, operation, body=""):
+        if operation not in {'stats', 'flows', 'show', 'classifier-show', 'classifier-check', 'classifier-load', 'classifier-load-flush', 'classifier-disable'}:
             raise APIError(403, 'discovered components support read-only operations')
         instance = key.removeprefix('control:')
         with self.lock:
@@ -277,7 +277,7 @@ class Network:
             if not self._reserve(instance, route['origin']):
                 raise APIError(429, 'CONTROL request already running; retry shortly')
         try:
-            result = self.probe(route['origin'], operation, route['route'])
+            result = self.probe(route['origin'], operation, route['route'], body) if body else self.probe(route['origin'], operation, route['route'])
             with self.lock:
                 if instance not in self.nodes or token not in self.nodes[instance]['routes']:
                     raise APIError(409, 'CONTROL route changed during request')

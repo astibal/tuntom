@@ -663,3 +663,39 @@ The observed map resolves adjacent DISCOVER path prefixes (including verified lo
 Discovered tunnel peers can collapse into a visual bundle when adjacent `peer` hops uniquely connect them to members of an already verified local tunnel stack. Names alone never create these bundles; stale, ambiguous and unknown-payload peers remain separate. Expanding preserves every component and its individual detail.
 
 Direct discovered adapter attachments to a peer bundle can also collapse by component type, provided each peer has exactly one adapter attachment and each adapter has one unambiguous parent. These are visual bundles only; stale or ambiguous attachments stay separate.
+
+### Klasifikátor
+
+Pohled **Classifier / Klasifikátor** spravuje L3/L4 klasifikátor DATA tunelů
+připojených ke switchi a TUN adaptérů. Zobrazuje stav, generaci, počet pravidel,
+hits/misses, chyby parsování/načítání a flushes. VIA a divert komponenty tuto
+rodinu CONTROL příkazů nepodporují. U vzdálených tunelů UI vyžaduje aktuálně
+hlášené připojení ke switchi; definitivní podporu a oprávnění ověřuje daemon.
+
+API `/api/v1/endpoints/{id}/classifier` vrací aktivní text, SHA-256 a generaci.
+POST `/check`, `/load`, `/load-flush`, `/disable` používají rodinu `classifier`
+přes lokální socket i routed CONTROL. Check neaktivuje návrh. Zápisy vyžadují
+`--allow-write` na webu i kolektoru a odpovídající oprávnění cílového daemonu.
+Body zápisu obsahuje `expected_sha256` a řetězec `expected_generation`;
+load/load-flush navíc `rules`. Disable neposílá text pravidel.
+
+Každý load znovu validuje návrh. Změna hash/generace proti načtené verzi
+zastaví zápis (409). Jde o optimistickou kontrolu, nikoli atomický compare-and-swap
+v daemonu: jiný řídicí klient může změnit konfiguraci mezi kontrolou a zápisem.
+U routed CONTROL také nadále platí popsané omezení identity cíle mezi DISCOVER koly.
+
+Load zachová cache; load-flush u adaptéru smaže L3/L4 reverse cache a může ovlivnit
+existující toky. Disable vypne klasifikátor, cache zachová. UI zobrazuje dopad
+před potvrzením; operace se týká jedné komponenty, nikoli celé vizuální skupiny.
+Změny jsou runtime-only. Po zápisu nebo nejasném výsledku se musí konfigurace
+znovu načíst; UI zápisy automaticky neopakuje. Vypnutý export není validní návrh.
+
+U ověřené lokální skupiny DATA tunelů editor implicitně cílí load/load-flush
+na všechny její členy. Lze přepnout na jedinou komponentu. Vizuální discovered
+peer balíčky samy nedokládají sibling identitu a automatické hromadné zápisy
+proto nezapínají. Read/check ukazují aktivní text nebo diff a generaci každého cíle.
+Seznam cílů zůstává během kontroly zmrazený; nedostupný člen se tiše nevynechá.
+Před první mutací projdou všechny cíle novou validací a kontrolou hash/generace.
+Zápisy probíhají postupně, při chybě se zastaví bez automatického retry/rollbacku.
+Výsledek zobrazuje applied/error/pending pro každý cíl; nejde o distribuovanou
+transakci. Disable nadále zasahuje pouze explicitně vybranou komponentu.

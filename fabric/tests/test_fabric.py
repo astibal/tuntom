@@ -129,6 +129,8 @@ class ControlTests(unittest.TestCase):
                         if not request:
                             return
                         expected = f"show {operation}" if operation in ("stats", "flows") else f"rules {operation} {len(body.encode())}"
+                        if operation.startswith("classifier-"):
+                            expected = f"classifier {operation.removeprefix('classifier-')} {len(body.encode())}"
                         self.assertEqual(request.decode(), expected)
                         remaining = len(body.encode())
                         while remaining:

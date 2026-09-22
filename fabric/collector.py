@@ -71,6 +71,8 @@ class CollectorHandler(socketserver.BaseRequestHandler):
             elif operation == "refresh":
                 fabric.refresh()
                 result = {"result": "discovery scheduled"}
+            elif operation in {"classifier-show", "classifier-check", "classifier-load", "classifier-load-flush", "classifier-disable"} and isinstance(key, str):
+                result = fabric.classifier(key, operation.removeprefix("classifier-"), request.get("body"))
             elif operation in {"show", "check", "load", "logs", "diagnostics", "flows"} and isinstance(key, str):
                 # The caller supplies a discovered identity, never a path or command.
                 if operation in {"logs", "diagnostics", "flows"}:
@@ -137,7 +139,7 @@ class RemoteFabric:
     def call(self, operation, key=None, body=None):
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-                sock.settimeout(12)
+                sock.settimeout(180 if operation.startswith("classifier-") else 12)
                 sock.connect(self.path)
                 if peer_uid(sock) not in {0, os.geteuid()}:
                     raise OSError("unexpected collector UID")
@@ -165,6 +167,11 @@ class RemoteFabric:
         result = self.call("snapshot")
         result["allow_write"] = bool(result["allow_write"] and self.allow_write)
         return result
+
+    def classifier(self, key, operation, body=None):
+        if operation in {"load", "load-flush", "disable"} and not self.allow_write:
+            raise APIError(403, "classifier writes are disabled; restart with --allow-write")
+        return self.call("classifier-" + operation, key, body)
 
     def rules(self, key, operation, body=None):
         if operation == "load" and not self.allow_write:

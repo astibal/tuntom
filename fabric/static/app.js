@@ -49,7 +49,37 @@ const messages = {
   mapStackHint:["Hover: náhled · klik: připnout / sbalit","Hover: preview · click: pin / collapse","Survol : aperçu · clic : fixer / replier"],
   mapMemberCount:["{count} prvků","{count} components","{count} composants"],
   mapWarningCount:["{issues} s upozorněním","{issues} with warnings","{issues} avec alertes"],
+  classifierSiblings:["Použít na ověřenou skupinu sourozeneckých tunelů (load / load-flush)","Apply to the verified sibling tunnel group (load / load-flush)","Appliquer au groupe vérifié de tunnels frères (load / load-flush)"],
+  classifierBatchHint:["Cíle: {names}. Před zápisem se znovu ověří všichni členové. Zápis není atomický; při chybě se zastaví a ukáže dílčí výsledky. Disable se týká pouze vybrané komponenty.","Targets: {names}. All members are rechecked before writing. Writes are not atomic; a failure stops the batch and shows partial results. Disable affects only the selected component.","Cibles : {names}. Tous les membres sont revérifiés avant écriture. L’écriture n’est pas atomique ; un échec arrête le lot et affiche les résultats partiels. Disable ne concerne que le composant sélectionné."],
+  classifierBatchReady:["Ověřeno na všech cílech; prohlédni diff každého člena.","Validated on all targets; review each member’s diff.","Validé sur toutes les cibles ; examine le diff de chaque membre."],
+  classifierTitle:["Klasifikátor","Classifier","Classificateur"],
+  classifierHint:["L3/L4 pravidla přiřazující label stack. Změny platí pro jednu komponentu, pouze do restartu.","L3/L4 rules assigning label stacks. Changes affect one component and last until restart.","Règles L3/L4 attribuant des piles de labels. Les changements concernent un composant, jusqu’au redémarrage."],
+  classifierChoose:["Vyber DATA tunel připojený ke switchi nebo TUN adaptér.","Select a switch-attached DATA tunnel or a TUN adapter.","Choisis un tunnel DATA relié au switch ou un adaptateur TUN."],
+  classifierLoad:["Použít pravidla","Apply rules","Appliquer les règles"],
+  classifierFlush:["Použít + vyprázdnit cache","Apply + flush caches","Appliquer + vider les caches"],
+  classifierDisable:["Vypnout klasifikátor","Disable classifier","Désactiver le classificateur"],
+  classifierOn:["Zapnutý","Enabled","Activé"],
+  classifierOff:["Vypnutý","Disabled","Désactivé"],
+  classifierUnknown:["Stav klasifikátoru není známý","Classifier state unknown","État du classificateur inconnu"],
+  classifierConfirmLoad:["Použít ověřená pravidla na {name}? Existující cache zůstanou zachované.","Apply validated rules to {name}? Existing caches will be retained.","Appliquer les règles validées à {name} ? Les caches existants seront conservés."],
+  classifierConfirmFlush:["Použít pravidla a vyprázdnit cache na {name}? U adaptéru to smaže L3 i L4 zpětné cesty a může změnit nebo přerušit existující toky. U DATA tunelu nyní není cache k vyprázdnění.","Apply rules and flush caches on {name}? On an adapter this clears L3 and L4 reverse routes and may change or interrupt existing flows. DATA tunnels currently have no classifier cache to flush.","Appliquer les règles et vider les caches sur {name} ? Sur un adaptateur, cela efface les routes retour L3/L4 et peut modifier ou interrompre les flux. Les tunnels DATA n’ont pas de cache à vider."],
+  classifierConfirmDisable:["Vypnout klasifikátor na {name}? DATA tunel se vrátí k výchozímu labelu; adaptér bez zpětné cesty může pakety zahazovat. Cache se nemažou.","Disable the classifier on {name}? DATA tunnels fall back to their default label; adapters may drop packets without a reverse route. Caches are retained.","Désactiver le classificateur sur {name} ? Le tunnel DATA reprend le label par défaut ; l’adaptateur peut rejeter les paquets sans route retour. Les caches sont conservés."],
+  classifierReload:["Před dalším zápisem znovu načti aktivní konfiguraci a generaci.","Read the active configuration and generation again before another write.","Relis la configuration active et sa génération avant une nouvelle écriture."],
   observedTitle:["Topologie","Topology","Topologie"],
+  labelTopologyTitle:["Label Topology","Label Topology","Topologie des labels"],
+  labelTopologyHint:["Logické cesty mezi porty, label stacky a místa klasifikace. Tunely jsou skryté.","Logical paths between ports, label stacks and classification points. Tunnels are hidden.","Chemins logiques entre ports, piles de labels et points de classification. Les tunnels sont masqués."],
+  labelTopologyLoading:["Načítám aktivní pravidla a klasifikátory…","Loading active rules and classifiers…","Chargement des règles et classificateurs actifs…"],
+  labelTopologyEmpty:["Nejsou dostupná žádná aktivní pravidla switche.","No active switch rules are available.","Aucune règle de switch active n’est disponible."],
+  labelTopologyPartial:["Část aktivní konfigurace není dostupná.","Some active configuration is unavailable.","Une partie de la configuration active est indisponible."],
+  activeRules:["AKTIVNÍ PRAVIDLA","ACTIVE RULES","RÈGLES ACTIVES"],
+  classification:["KLASIFIKACE","CLASSIFICATION","CLASSIFICATION"],
+  noClassifier:["Bez klasifikátoru","No classifier","Sans classificateur"],
+  defaultLabel:["Výchozí label","Default label","Label par défaut"],
+  ruleOrder:["Pravidla se vyhodnocují shora dolů.","Rules are evaluated top to bottom.","Les règles sont évaluées de haut en bas."],
+  labelNoReturn:["Žádné allow pravidlo nepovoluje tento label stack zpět.","No allow rule permits this label stack back.","Aucune règle allow ne permet le retour de cette pile de labels."],
+  labelConfigChanged:["Aktivní konfigurace se změnila: {names}.","Active configuration changed: {names}.","La configuration active a changé : {names}."],
+  acknowledge:["Potvrdit","Acknowledge","Confirmer"],
+  labelSyncing:["Synchronizuji aktivní konfiguraci","Syncing active configuration","Synchronisation de la configuration active"],
   observedHint:["Lokální i discovered komponenty podle doložených vazeb. Vyber uzel pro detail.","Local and discovered components arranged by observed links. Select a node for details.","Composants locaux et découverts selon les liens observés. Sélectionne un nœud."],
   observedLive:["ŽIVÁ TELEMETRIE","LIVE TELEMETRY","TÉLÉMÉTRIE EN DIRECT"],
   observedLegend:["Plná: registrovaný port · přerušovaná: vazba z parametrů · šedá přerušovaná: CONTROL · pohyb: provoz procesu, nikoli trasování paketů","Solid: registered port · dashed: argument-based attachment · grey dashed: CONTROL · motion: process traffic, not packet tracing","Plein : port enregistré · pointillé : lien par paramètres · gris pointillé : CONTROL · mouvement : trafic du processus, pas traçage des paquets"],
@@ -675,10 +705,10 @@ function status(e) {
   }
   return {pending:["dim", t("loading")], unavailable:["warn", t("socketUnavailable")], process_only:["dim", t("processOnly")]}[e.status] || ["dim", t("unknown")];
 }
-async function api(path, method = "GET", body) {
+async function api(path, method = "GET", body, timeout=15000) {
   const headers = {Authorization: `Bearer ${state.token}`};
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  const response = await fetch(path, {method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(15000)});
+  const response = await fetch(path, {method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(timeout)});
   const data = await response.json();
   if (!response.ok) {
     if (response.status === 401) { $("login").hidden = false; $("workspace").hidden = true; }
@@ -727,7 +757,7 @@ async function refresh(force = false) {
       history.add(node.chart,state.chartNow); state.history.set(node.id,history);
     }
     render();
-    refreshMapRules();
+    refreshMapRules(force);
     loadHistory(state.selected);
     if (state.chartDialog) loadHistory(state.chartDialog.endpointId);
   } catch (error) {
@@ -754,7 +784,7 @@ function render() {
   $("count-sessions").nextElementSibling.textContent = knownSessions.length < tunnels.length ? t("unknownSessions",{count:tunnels.length-knownSessions.length}) : t("readyFound");
   const ports = endpoints.filter(e => e.kind === "switch" && /^\d+$/.test(e.metrics.connections_current || ""));
   $("count-ports").textContent = ports.length ? ports.reduce((n,e) => n + BigInt(e.metrics.connections_current), 0n).toString() : "—";
-  notice(); renderProcesses(); renderDetail(); renderTopology(); renderMetrics(); renderRules();
+  notice(); renderProcesses(); renderDetail(); renderTopology(); renderMetrics(); renderRules(); renderClassifier();
   renderHealth(); renderSwitch(); renderDiagnostics(); renderWarnings(); renderSyspiper(); renderFlows();
 }
 function lastRTT(e) {
@@ -825,6 +855,7 @@ function processBundles(endpoints,links,rows) {
   return observedGroups(endpoints,links).map(g=>({...g,members:g.members.filter(e=>visible.has(e.id))})).filter(g=>g.members.length);
 }
 function supportsProcessView(e, view) {
+  if(view==="classifier")return supportsClassifier(e);
   return view === "flows" ? ["adapter","divert"].includes(e.kind) : view === "rules" ? e.kind === "switch" : true;
 }
 function processViewSelection(endpoints, view, id) {
@@ -865,8 +896,8 @@ function renderProcesses() {
   $("processes").innerHTML=html;
   if(focused)[...$("processes").querySelectorAll("[data-process-toggle]")].find(e=>e.dataset.processToggle===focused)?.focus({preventScroll:true});
   $("empty").hidden = rows.length > 0;
-  $("empty").querySelector("h3").textContent = t(eligible.length ? "noMatches" : state.view==="flows" ? "noFlowComponents" : state.view==="rules" ? "noSwitchComponents" : "noProcesses");
-  $("empty").querySelector("p").textContent = t(eligible.length ? "changeFilter" : state.view==="flows" ? "startFlowComponents" : state.view==="rules" ? "startSwitchComponents" : "startProcesses");
+  $("empty").querySelector("h3").textContent = t(eligible.length ? "noMatches" : state.view==="classifier" ? "classifierChoose" : state.view==="flows" ? "noFlowComponents" : state.view==="rules" ? "noSwitchComponents" : "noProcesses");
+  $("empty").querySelector("p").textContent = t(eligible.length ? "changeFilter" : state.view==="classifier" ? "classifierHint" : state.view==="flows" ? "startFlowComponents" : state.view==="rules" ? "startSwitchComponents" : "startProcesses");
 }
 function renderDetail() {
   const e = selected();
@@ -1207,8 +1238,29 @@ function mapConnector(x1,y1,x2,y2,offset=0) {
 }
 // Name is only a candidate: verify the encoded tunnel ID and local context.
 // Read canonical rules exported by the switch, never the editor's draft.
+function switchTopologyRules(text) {
+  const side=text=>{
+    text=text.trim();
+    if(!text)return {port:'',stack:'*',unrestricted:true};
+    if(text.startsWith('['))return {port:'',stack:text};
+    const comma=text.indexOf(',');
+    return comma<0?{port:text,stack:'*',unrestricted:true}:{port:text.slice(0,comma).trim(),stack:text.slice(comma+1).trim()};
+  };
+  const rows=[];
+  for(const [index,line] of text.split('\n').entries()) {
+    const rule=line.match(/^switch(?:\s+(.*?))?\s+(allow|drop)(?:\s+\[id=[^\]]+\])?$/);
+    if(!rule)continue;
+    let body=(rule[1] || '').trim(),via='';
+    const service=body.match(/(?:^|\s)via\s+(\[[^\]]*\])$/);
+    if(service){via=service[1];body=body.slice(0,service.index).trim();}
+    const parts=body.split(/(?:^|\s)to\s+/);
+    const input=side(parts[0]),output=side(parts[1] || '');
+    rows.push({source:input.port || '*',stack:input.stack,sourceUnrestricted:!!input.unrestricted,target:output.port || '*',rewrite:output.stack,rewriteUnchanged:!!output.unrestricted,action:rule[2],line:index+1,raw:line,via});
+  }
+  return rows;
+}
 function topologyRules(text, port) {
-  const matches=pattern=>!pattern || pattern==='*' || (pattern.endsWith('*')?port.startsWith(pattern.slice(0,-1)):port===pattern);
+  const matches=pattern=>pattern==='*' || (pattern.endsWith('*')?port.startsWith(pattern.slice(0,-1)):port===pattern);
   const side=text=>{
     text=text.trim();
     if(!text)return {port:'',stack:'*'};
@@ -1223,28 +1275,168 @@ function topologyRules(text, port) {
     let body=(rule[1] || '').trim(),via='';
     const service=body.match(/(?:^|\s)via\s+(\[[^\]]*\])$/);
     if(service){via=service[1];body=body.slice(0,service.index).trim();}
-    const parts=body.split(/(?:^|\s)to\s+/);
-    const input=side(parts[0]),output=side(parts[1] || '');
-    if(matches(input.port))rows.push({direction:'→',stack:input.stack,target:output.port || '*',rewrite:output.stack,action:rule[2],line:index+1,raw:line,via});
-    if(matches(output.port))rows.push({direction:'←',stack:output.stack,target:input.port || '*',rewrite:input.stack,action:rule[2],line:index+1,raw:line,via});
+    const parts=body.split(/(?:^|\s)to\s+/),input=side(parts[0]),output=side(parts[1] || '');
+    if(matches(input.port || '*'))rows.push({direction:'→',stack:input.stack,target:output.port || '*',rewrite:output.stack,action:rule[2],line:index+1,raw:line,via});
+    if(matches(output.port || '*'))rows.push({direction:'←',stack:output.stack,target:input.port || '*',rewrite:input.stack,action:rule[2],line:index+1,raw:line,via});
   }
   return rows;
 }
+function classifierTopologyRules(text) {
+  const uncomment=line=>{
+    let quote=false,escaped=false;
+    for(let i=0;i<line.length;i++) {
+      if(escaped){escaped=false;continue;}
+      if(line[i]==='\\' && quote){escaped=true;continue;}
+      if(line[i]==='"')quote=!quote;
+      if(line[i]==='#' && !quote)return line.slice(0,i);
+    }
+    return line;
+  };
+  const rows=[];
+  for(const [index,original] of text.split('\n').entries()) {
+    const line=uncomment(original).trim();
+    if(!line.startsWith('classify '))continue;
+    const body=line.slice(9),match=body.match(/^(.*?)\bto\s+(.+)$/);
+    if(!match)continue;
+    rows.push({match:match[1].trim() || '*',stack:match[2].trim(),line:index+1});
+  }
+  return rows;
+}
+function splitLabelStack(text) {
+  text=text.trim();
+  if(text.startsWith('[') && text.endsWith(']'))text=text.slice(1,-1);
+  const parts=[];let start=0,quote=false,escaped=false,angle=0;
+  for(let i=0;i<text.length;i++) {
+    const char=text[i];
+    if(escaped){escaped=false;continue;}
+    if(char==='\\' && quote){escaped=true;continue;}
+    if(char==='"'){quote=!quote;continue;}
+    if(!quote && char==='<')angle++;
+    if(!quote && char==='>')angle--;
+    if(!quote && !angle && char===','){parts.push(text.slice(start,i).trim());start=i+1;}
+  }
+  parts.push(text.slice(start).trim());
+  return parts.filter(Boolean);
+}
+function labelLiteral(text) {
+  text=text.trim();
+  try {
+    if(/^"(?:[^"\\]|\\["\\])*"$/.test(text)) {
+      const bytes=new TextEncoder().encode(JSON.parse(text));
+      if(bytes.length>8)return null;
+      let value=0n;for(const byte of bytes)value=(value<<8n)|BigInt(byte);
+      return value<<BigInt((8-bytes.length)*8);
+    }
+    if(/^0[xX][0-9a-fA-F]+$/.test(text))return BigInt(text);
+    if(/^(?:0[bB]|[bB])[01]+$/.test(text))return BigInt('0b'+text.replace(/^(?:0[bB]|[bB])/,'').toLowerCase());
+    if(/^\d+$/.test(text))return BigInt(text);
+  } catch {/* Invalid literals do not create visual matches. */}
+  return null;
+}
+function labelStackMatches(exactText,patternText,unrestricted=false) {
+  const values=splitLabelStack(exactText).map(labelLiteral);
+  if(!values.length || values.some(value=>value===null))return false;
+  if(unrestricted)return true;
+  const pattern=splitLabelStack(patternText),rest=pattern.at(-1)==='...',items=rest?pattern.slice(0,-1):pattern;
+  if(values.length<items.length || (!rest && values.length!==items.length))return false;
+  return items.every((item,index)=>{
+    if(item==='*')return true;
+    if(item.startsWith('&')){const mask=labelLiteral(item.slice(1));return mask!==null && (values[index]&mask)!==0n;}
+    if(item.startsWith('<') && item.endsWith('>')) {
+      const [first,last]=splitLabelStack(item.slice(1,-1)).map(labelLiteral);
+      return first!==null && last!==null && values[index]>=first && values[index]<=last;
+    }
+    const expected=labelLiteral(item);return expected!==null && values[index]===expected;
+  });
+}
+function classifierRouteMatches(ports,stack,route) {
+  const portMatches=route.source==='*' || ports.some(port=>route.source.endsWith('*')?port.startsWith(route.source.slice(0,-1)):port===route.source);
+  return portMatches && labelStackMatches(stack,route.stack,route.sourceUnrestricted);
+}
+function rewrittenLabelStack(exactText,route) {
+  const values=splitLabelStack(exactText).map(labelLiteral);
+  if(!values.length || values.some(value=>value===null) || route.action!=='allow')return null;
+  if(route.rewriteUnchanged)return '['+values.join(', ')+']';
+  const template=splitLabelStack(route.rewrite),rest=template.at(-1)==='...',items=rest?template.slice(0,-1):template;
+  const output=[];
+  for(let index=0;index<items.length;index++) {
+    if(items[index]==='*') {if(index>=values.length)return null;output.push(values[index]);}
+    else {const value=labelLiteral(items[index]);if(value===null)return null;output.push(value);}
+  }
+  if(rest)output.push(...values.slice(items.length));
+  return '['+output.join(', ')+']';
+}
+function portPatternMatches(pattern,port) {
+  return pattern==='*' || (pattern.endsWith('*')?port.startsWith(pattern.slice(0,-1)):port===pattern);
+}
+function classifierRouteLinks(ports,stack,routes,knownPorts) {
+  const forward=new Set(),returns=new Set();let forwardAllowed=false,returnAllowed=false;
+  routes.forEach((route,index)=>{if(classifierRouteMatches(ports,stack,route))forward.add(index);});
+  for(const index of forward) {
+    const route=routes[index],rewritten=rewrittenLabelStack(stack,route);
+    if(!rewritten)continue;
+    forwardAllowed=true;
+    const destinations=knownPorts.filter(port=>portPatternMatches(route.target,port));
+    routes.forEach((candidate,candidateIndex)=>{
+      if(!destinations.some(port=>portPatternMatches(candidate.source,port)) ||
+        !ports.some(port=>portPatternMatches(candidate.target,port)))return;
+      if(labelStackMatches(rewritten,candidate.stack,candidate.sourceUnrestricted)) {
+        if(candidate.action==='allow')returnAllowed=true;
+        if(!forward.has(candidateIndex))returns.add(candidateIndex);
+      }
+    });
+  }
+  return {forward,returns,missingReturn:forwardAllowed && !returnAllowed};
+}
 const mapRules=new Map();
+const labelClassifiers=new Map();
 let mapRulesBusy=false;
-async function refreshMapRules() {
-  if(state.view!=="observed" || mapRulesBusy)return;
+let labelTopologyReady=false;
+const labelRuleMatches=new Map();
+let labelTopologySelection=null;
+const labelConfigChanges=new Map();
+const labelConfigPollMs=30000;
+let mapRulesLastRefresh=0;
+async function refreshMapRules(force=false) {
+  if(!["observed","labels"].includes(state.view) || mapRulesBusy)return;
+  const started=Date.now();
+  if(!force && mapRulesLastRefresh && started-mapRulesLastRefresh<labelConfigPollMs)return;
+  mapRulesLastRefresh=started;
   mapRulesBusy=true;
+  if(state.view==="labels")renderLabelTopology();
   try {
     const switches=(state.data?.endpoints || []).filter(e=>e.kind==="switch" && e.source!=="discovered");
     const live=new Set(switches.map(e=>e.id));
-    for(const key of mapRules.keys())if(!live.has(key))mapRules.delete(key);
+    for(const key of mapRules.keys())if(!live.has(key)){mapRules.delete(key);labelConfigChanges.delete('rules:'+key);}
     await Promise.all(switches.map(async sw=>{
-      try {const result=await api(endpointURL(sw.id));mapRules.set(sw.id,{text:result.rules});}
+      const previous=mapRules.get(sw.id),serial=sw.metrics?.ruleset_serial;
+      if(previous && !previous.error && serial && previous.serial===serial)return;
+      try {
+        const result=await api(endpointURL(sw.id));
+        if(previous?.sha256 && previous.sha256!==result.sha256)labelConfigChanges.set('rules:'+sw.id,sw.name+' / rules');
+        mapRules.set(sw.id,{text:result.rules,sha256:result.sha256,serial});
+      }
       catch {mapRules.set(sw.id,{error:true});}
     }));
-    renderObserved();
-  } finally {mapRulesBusy=false;}
+    if(state.view==="labels") {
+      const classifiers=(state.data?.endpoints || []).filter(e=>supportsClassifier(e) && (!!e.control || e.source==="discovered"));
+      const present=new Set(classifiers.map(e=>e.id));
+      for(const key of labelClassifiers.keys())if(!present.has(key)){labelClassifiers.delete(key);labelConfigChanges.delete('classifier:'+key);}
+      await Promise.all(classifiers.map(async e=>{
+        const previous=labelClassifiers.get(e.id),generation=e.metrics?.classifier_generation;
+        if(previous && !previous.error && generation && previous.generation===generation)return;
+        try {
+          const result=await api(`/api/v1/endpoints/${encodeURIComponent(e.id)}/classifier`);
+          if(previous?.generation && (previous.generation!==result.generation || previous.sha256!==result.sha256))labelConfigChanges.set('classifier:'+e.id,e.name+' / classifier');
+          labelClassifiers.set(e.id,{text:result.rules,sha256:result.sha256,generation:result.generation});
+        }
+        catch {labelClassifiers.set(e.id,{error:true});}
+      }));
+    } else renderObserved();
+  } finally {
+    mapRulesBusy=false;
+    if(state.view==="labels") {labelTopologyReady=true;renderLabelTopology();}
+  }
 }
 function viaServices(text) {
   return [...text.matchAll(/^service\s+(\S+)\s*\{\s*\n([\s\S]*?)^\}/gm)].map(match=>{
@@ -1592,6 +1784,123 @@ function renderTopology() {
   if (others.length) blocks.push(`<div class="topology-cluster"><p>${esc(t("noLocalSwitch"))}</p>${others.map(e=>`<button class="topology-node ${payloadClass(e)}" data-node="${esc(e.id)}"><span>${esc(e.name)}${authorityBadge(e)}</span><small>${esc(endpointType(e))}${e.peer ? " → "+esc(e.peer) : ""}</small></button>`).join("")}</div>`);
   $("topology").innerHTML = blocks.join("") || `<p class="muted">${esc(t("noTopology"))}</p>`;
 }
+function labelPortGroups(endpoints,links,switchId,registered=[]) {
+  const attached=links.filter(link=>link.target===switchId && link.port_id);
+  const portByEndpoint=new Map(attached.map(link=>[link.source,link.port_id]));
+  const used=new Set(),groups=[];
+  for(const group of observedGroups(endpoints,links)) {
+    const ports=[...new Set(group.members.map(e=>portByEndpoint.get(e.id)).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+    if(!ports.length)continue;
+    ports.forEach(port=>used.add(port));
+    groups.push({key:group.key,name:ports.length>1?group.name:ports[0],ports});
+  }
+  for(const port of registered.map(port=>port.name).filter(Boolean))if(!used.has(port))groups.push({key:'port:'+port,name:port,ports:[port]});
+  return groups.sort((a,b)=>a.ports[0].localeCompare(b.ports[0]));
+}
+function renderLabelTopology() {
+  const panel=$("label-topology"),statusNode=$("label-topology-status");
+  if(!panel || !state.data)return;
+  $("label-sync-spinner").hidden=!mapRulesBusy;
+  $("label-sync-text").textContent=mapRulesBusy?t("labelSyncing"):"";
+  labelRuleMatches.clear();
+  const switches=state.data.endpoints.filter(e=>e.kind==="switch");
+  let partial=false,routeCount=0;
+  const sections=switches.map(sw=>{
+    const active=mapRules.get(sw.id);
+    if(!active || active.error){partial=true;return `<section class="label-switch"><header><strong>${esc(sw.name)}</strong><div class="label-switch-actions"><span>${esc(t("mapPolicyUnknown"))}</span><button class="quiet-button" data-label-open-rules="${esc(sw.id)}">${esc(t('openRules'))}</button></div></header></section>`;}
+    const routes=switchTopologyRules(active.text);routeCount+=routes.length;
+    const routeIds=routes.map((route,index)=>JSON.stringify([sw.id,index]));
+    const links=(state.data.links || []).filter(link=>link.target===sw.id && link.port_id);
+    const ingress=new Map();
+    for(const link of links) {
+      const endpoint=state.data.endpoints.find(e=>e.id===link.source);
+      if(!endpoint || !supportsClassifier(endpoint))continue;
+      const classifier=labelClassifiers.get(endpoint.id);
+      if(!classifier || classifier.error){partial=true;continue;}
+      const rules=classifierTopologyRules(classifier.text);
+      const fallback=endpoint.kind==="tunnel"?(endpoint.options?.["switch-label"] || endpoint.options?.label):null;
+      if(!rules.length && !fallback)continue;
+      if(!ingress.has(link.port_id))ingress.set(link.port_id,[]);
+      ingress.get(link.port_id).push({id:endpoint.id,rules,fallback});
+    }
+    const portGroups=labelPortGroups(state.data.endpoints,state.data.links || [],sw.id,sw.switch_detail?.ports || []);
+    const ports=portGroups.length?`<div class="label-port-strip"><span>PORTS</span>${portGroups.map(group=>{const classified=group.ports.some(port=>ingress.has(port));return `<code class="${classified?'classifies':''}" title="${esc(group.ports.join(', '))}">${esc(group.name)}${group.ports.length>1?' ×'+group.ports.length:''}${classified?' · '+esc(t('classification')):''}</code>`;}).join('')}</div>`:'';
+    const classifiers=portGroups.filter(group=>group.ports.some(port=>ingress.has(port))).map(group=>{
+      const items=new Map();
+      for(const port of group.ports)for(const entry of ingress.get(port) || []) {
+        for(const rule of entry.rules) {
+          const key=JSON.stringify(['rule',rule.match,rule.stack]);
+          if(!items.has(key))items.set(key,{...rule,id:entry.id,ports:new Set()});
+          items.get(key).ports.add(port);
+        }
+        if(entry.fallback) {
+          const key=JSON.stringify(['fallback',entry.fallback]);
+          if(!items.has(key))items.set(key,{fallback:true,match:t('defaultLabel'),stack:'['+entry.fallback+']',id:entry.id,ports:new Set()});
+          items.get(key).ports.add(port);
+        }
+      }
+      const classifierId=[...items.values()][0]?.id;
+      return `<article class="label-classifier"><div class="label-port-name"><span>${esc(group.name)}${group.ports.length>1?' ×'+group.ports.length:''}</span>${group.ports.length>1?`<em>${group.ports.map(esc).join(' · ')}</em>`:''}<small>${esc(t("classification"))}</small><button class="label-edit-button" data-label-open-classifier="${esc(classifierId)}">${esc(t('classifierTitle'))} ↗</button></div><div class="label-classifier-rules">${[...items.entries()].map(([key,item],index)=>{
+        const matchId=JSON.stringify([sw.id,group.key,key]),matched=classifierRouteLinks(group.ports,item.stack,routes,portGroups.flatMap(group=>group.ports));
+        labelRuleMatches.set(matchId,{forward:new Set([...matched.forward].map(i=>routeIds[i])),returns:new Set([...matched.returns].map(i=>routeIds[i]))});
+        return `<button class="${item.fallback?'fallback':''} ${matched.missingReturn?'return-missing':''}" data-label-match="${esc(matchId)}" data-label-classifier="${esc(item.id)}" aria-pressed="false" title="${esc([...item.ports].join(', '))}${item.line?' · line '+item.line:''}"><small>${item.fallback?'↳':index+1}</small><code>${esc(item.match)}</code><span>→</span><strong>${esc(item.stack)}</strong>${matched.missingReturn?`<span class="label-return-warning" title="${esc(t('labelNoReturn'))}">! ← OUT</span>`:''}</button>`;
+      }).join('')}</div></article>`;
+    }).join("");
+    const table=routes.length?`<div class="label-route-list"><div class="label-route-head"><span>#</span><span>INGRESS</span><span>LABEL STACK</span><span></span><span>EGRESS</span><span>OUTPUT STACK</span><span>ACTION</span></div>${routes.map((route,index)=>`<div class="label-route ${route.action==='drop'?'drop':''}" data-label-route="${esc(routeIds[index])}"><span class="label-order">${index+1}</span><code class="label-port">${esc(route.source)}</code><code>${esc(route.stack)}</code><span class="label-arrow">→</span><code class="label-port">${esc(route.target)}</code><code>${esc(route.rewrite)}${route.via?' via '+esc(route.via):''}</code><strong>${esc(route.action)}</strong></div>`).join("")}</div>`:`<p class="label-empty">${esc(t("labelTopologyEmpty"))}</p>`;
+    return `<section class="label-switch"><header><strong>${esc(sw.name)}</strong><div class="label-switch-actions"><span>SWITCH · ${esc(sw.switch_detail?.ports?.length ?? "—")} PORTS</span><button class="quiet-button" data-label-open-rules="${esc(sw.id)}">${esc(t('openRules'))}</button></div></header>${ports}${classifiers?`<div class="label-classifiers">${classifiers}</div>`:""}<p class="label-order-note">${esc(t("ruleOrder"))}</p>${table}</section>`;
+  }).join("");
+  panel.innerHTML=sections || `<p class="label-empty">${esc(t("labelTopologyEmpty"))}</p>`;
+  if(labelTopologySelection && !labelRuleMatches.has(labelTopologySelection))labelTopologySelection=null;
+  applyLabelTopologyMatch(labelTopologySelection);
+  const messages=[];
+  if(mapRulesBusy && !labelTopologyReady)messages.push(`<span>${esc(t("labelTopologyLoading"))}</span>`);
+  if(partial)messages.push(`<span>${esc(t("labelTopologyPartial"))}</span>`);
+  if(labelConfigChanges.size)messages.push(`<span class="label-config-changed"><span class="attention-mark" aria-hidden="true">!</span> ${esc(t('labelConfigChanged',{names:[...labelConfigChanges.values()].join(', ')}))}</span><button class="quiet-button" data-label-ack>${esc(t('acknowledge'))}</button>`);
+  statusNode.innerHTML=messages.join(' ');
+  statusNode.hidden=!messages.length;
+}
+function applyLabelTopologyMatch(matchId) {
+  const panel=$("label-topology"),matches=matchId?labelRuleMatches.get(matchId):null;
+  panel.classList.toggle('has-label-match',!!matchId);
+  for(const button of panel.querySelectorAll('[data-label-match]')) {
+    const active=button.dataset.labelMatch===matchId;
+    button.classList.toggle('match-source',active);
+    button.classList.toggle('match-empty',active && !matches?.forward.size);
+    button.setAttribute('aria-pressed',String(button.dataset.labelMatch===labelTopologySelection));
+  }
+  for(const route of panel.querySelectorAll('[data-label-route]')) {
+    route.classList.toggle('match-target',!!matches?.forward.has(route.dataset.labelRoute));
+    route.classList.toggle('match-return',!!matches?.returns.has(route.dataset.labelRoute));
+  }
+}
+$("label-topology").addEventListener('mouseover',event=>{
+  const button=event.target.closest('[data-label-match]');
+  if(button && !button.contains(event.relatedTarget))applyLabelTopologyMatch(button.dataset.labelMatch);
+});
+$("label-topology").addEventListener('mouseout',event=>{
+  const button=event.target.closest('[data-label-match]');
+  if(button && !button.contains(event.relatedTarget))applyLabelTopologyMatch(labelTopologySelection);
+});
+$("label-topology").addEventListener('focusin',event=>{
+  const button=event.target.closest('[data-label-match]');if(button)applyLabelTopologyMatch(button.dataset.labelMatch);
+});
+$("label-topology").addEventListener('focusout',event=>{
+  if(event.target.closest('[data-label-match]'))applyLabelTopologyMatch(labelTopologySelection);
+});
+$("label-topology").addEventListener("click",event=>{
+  const classifier=event.target.closest("[data-label-open-classifier]"),rules=event.target.closest("[data-label-open-rules]");
+  if(classifier){openClassifierRules(classifier.dataset.labelOpenClassifier);return;}
+  if(rules){openSwitchRules(rules.dataset.labelOpenRules);return;}
+  const button=event.target.closest("[data-label-match]");
+  if(button){labelTopologySelection=labelTopologySelection===button.dataset.labelMatch?null:button.dataset.labelMatch;applyLabelTopologyMatch(labelTopologySelection);}
+});
+$("label-topology").addEventListener("dblclick",event=>{
+  const button=event.target.closest("[data-label-classifier]");
+  if(button)openClassifierRules(button.dataset.labelClassifier);
+});
+$("label-topology-status").addEventListener("click",event=>{
+  if(event.target.closest('[data-label-ack]')){labelConfigChanges.clear();renderLabelTopology();}
+});
 function renderMetrics() {
   const e = selected(), query = $("metric-search").value.toLowerCase();
   const problems=problemMetrics(e);
@@ -1599,6 +1908,136 @@ function renderMetrics() {
   const entries = Object.entries(e?.metrics || {}).filter(([k,v])=>(k+" "+v).toLowerCase().includes(query)).sort(([a],[b])=>a.localeCompare(b));
   $("metrics").innerHTML = entries.map(([k,v])=>`<tr class="${problems.has(k) ? "metric-problem" : ""}"><td>${problems.has(k) ? `<span class="attention-mark" aria-label="${esc(t("attentionCause"))}">!</span> ` : ""}${esc(k)} ${metricInfo(k)}</td><td>${esc(v)}</td><td>${deltaText(e,k)}</td></tr>`).join("") || `<tr><td colspan="3">${esc(t("noMetrics"))}</td></tr>`;
 }
+function supportsClassifier(e) {
+  if(e?.kind==="adapter")return true;
+  if(e?.kind!=="tunnel" || ["listen","connect"].includes(e.metrics?.relay_mode))return false;
+  return e.source==="discovered"?e.metrics?.switch_connected==="1":!!e.switch_socket;
+}
+const classifierDrafts=new Map();
+let classifierBusy=false;
+function classifierDraft(id) {
+  if(!classifierDrafts.has(id))classifierDrafts.set(id,{text:"",active:"",revision:null,generation:null,checked:null,diff:"",message:""});
+  return classifierDrafts.get(id);
+}
+function classifierTargets(e) {
+  if(!$('classifier-siblings').checked || e.kind!=='tunnel')return [e];
+  const group=observedGroups(state.data.endpoints,state.data.links || []).find(g=>g.members.some(m=>m.id===e.id));
+  // Peer bundles are visual only; they do not prove a remote sibling identity.
+  return group && !group.key.startsWith('single:') && !group.key.startsWith('peers:')?group.members:[e];
+}
+async function classifierBatch(targets,operation,text,review,request,progress) {
+  const results=targets.map(e=>({id:e.id,name:e.name,state:'pending'}));
+  const mutation=['load','load-flush'].includes(operation);
+  let failed=false;
+  for(const row of results) {
+    try {
+      row.state='checking';progress(results);
+      const result=await request(row.id,operation==='show'?'show':'check',text);
+      Object.assign(row,{result,state:operation==='show'?'read':'checked'});
+      if(mutation) {
+        const old=review?.find(r=>r.id===row.id)?.result;
+        if(!old || result.sha256!==old.sha256 || result.generation!==old.generation)throw Error('Active classifier changed; review every diff again.');
+      }
+    } catch(error) {row.state='error';row.error=error.message;failed=true;}
+    progress(results);
+  }
+  if(failed || !mutation)return {ok:!failed,results};
+  for(const row of results)row.state='pending';
+  for(const row of results) {
+    try {
+      row.state='writing';progress(results);
+      row.applied=await request(row.id,operation,text,row.result);
+      row.state='applied';
+    } catch(error) {row.state='error';row.error=error.message;progress(results);return {ok:false,results};}
+    progress(results);
+  }
+  return {ok:true,results};
+}
+async function classifierGroupAction(e,draft,operation) {
+  const current=classifierTargets(e).map(e=>({id:e.id,name:e.name}));
+  const targets=operation==='show'?[...new Map([...(draft.targets || []),...current].map(e=>[e.id,e])).values()]:draft.targets || current,text=draft.text;
+  const mutation=['load','load-flush'].includes(operation);
+  if(operation==='show' && draft.revision && text!==draft.active && !window.confirm(t('discardDraft')))return;
+  if(mutation) {
+    if(current.some(e=>!targets.some(t=>t.id===e.id))){draft.checked=null;draft.message={key:'classifierReload'};renderClassifier();return;}
+    if(!state.data?.allow_write || !draft.checked || draft.checked.text!==text)return;
+    if(!window.confirm(t(operation==='load'?'classifierConfirmLoad':'classifierConfirmFlush',{name:targets.map(e=>e.name).join(', ')})+'\n'+t('classifierBatchHint',{names:targets.map(e=>e.name).join(', ')})))return;
+  }
+  classifierBusy=true;draft.message={key:'working'};draft.targets=targets;renderClassifier();
+  try {
+    const outcome=await classifierBatch(targets,operation,text,draft.review,async(id,op,text,expected)=>api(`/api/v1/endpoints/${encodeURIComponent(id)}/classifier`+(op==='show'?'':'/'+op),op==='show'?'GET':'POST',op==='show'?undefined:{rules:text,expected_sha256:expected?.sha256,expected_generation:expected?.generation},180000),results=>{draft.batch=results;renderClassifier();});
+    if(operation==='show') {
+      const own=outcome.results.find(r=>r.id===e.id)?.result;
+      if(own)Object.assign(draft,{text:own.rules,active:own.rules,revision:own.sha256,generation:own.generation});
+      draft.checked=null;draft.review=null;draft.diff='';
+    } else if(operation==='check') {
+      draft.checked=outcome.ok?{text}:null;
+      draft.review=outcome.ok?outcome.results:null;
+    }
+    draft.message=outcome.ok?(mutation?t('classifierReload'):operation==='check'?t('classifierBatchReady'):t('rulesLoaded')):outcome.results.filter(r=>r.error).map(r=>r.name+': '+r.error).join(' · ');
+    if(mutation)await refresh(true);
+  } finally {
+    if(mutation){draft.checked=null;draft.revision=null;draft.review=null;}
+    classifierBusy=false;renderClassifier();
+  }
+}
+function renderClassifier() {
+  const e=selected(),valid=supportsClassifier(e) && (!!e.control || e.source==="discovered");
+  const draft=e?classifierDraft(e.id):{text:"",message:""};
+  const metrics=e?.metrics || {};
+  const targets=e?(draft.targets || classifierTargets(e)):[];
+  $('classifier-siblings').disabled=classifierBusy || e?.kind!=='tunnel';
+  $('classifier-targets').textContent=valid?t('classifierBatchHint',{names:targets.map(e=>e.name).join(', ')}):'';
+  $('classifier-reviews').innerHTML=(draft.batch || []).map(row=>`<details class="classifier-review" open><summary>${esc(row.name)} · ${esc(row.state)}${row.result?' · generation '+esc(row.result.generation):''}</summary>${row.error?`<p class="map-warning-count">${esc(row.error)}</p>`:''}<pre class="diff">${esc(row.applied?.result || row.result?.diff || row.result?.rules || (row.result?t('noDiff'):''))}</pre></details>`).join('');
+  $('classifier-title').textContent=t('classifierTitle')+(valid?' · '+e.name:'');
+  $('classifier-summary').textContent=valid?(['0','1'].includes(metrics.classifier_enabled)?t(metrics.classifier_enabled==='1'?'classifierOn':'classifierOff'):t('classifierUnknown')):'';
+  $('classifier-stats').innerHTML=valid?['generation','rules','hits','misses','parse_errors','load_errors','flushes'].map(key=>`<div><dt>${esc('classifier_'+key)}</dt><dd>${esc(metrics['classifier_'+key] ?? '—')}</dd></div>`).join(''):'';
+  $('classifier-hint').textContent=!valid?t('classifierChoose'):!state.data?.allow_write?t('readOnlyHint'):'';
+  $('classifier-read').disabled=!valid || classifierBusy;
+  $('classifier-editor').disabled=!valid || classifierBusy || !draft.revision;
+  if($('classifier-editor').value!==draft.text)$('classifier-editor').value=draft.text;
+  $('classifier-check').disabled=!valid || classifierBusy || !draft.revision || !draft.text.trim();
+  const writable=valid && !classifierBusy && state.data?.allow_write && draft.revision;
+  for(const op of ['load','load-flush'])$('classifier-'+op).disabled=!writable || !draft.checked || draft.checked.text!==draft.text;
+  $('classifier-disable').disabled=!writable;
+  $('classifier-status').textContent=messageText(draft.message);
+  $('classifier-diff').hidden=!draft.diff && !draft.checked;
+  $('classifier-diff').innerHTML=(draft.diff || (draft.checked?t('noDiff'):'')).split('\n').map(line=>`<span class="diff-line ${line.startsWith('+')?'add':line.startsWith('-')?'remove':''}">${esc(line)}</span>`).join('\n');
+}
+async function classifierAction(operation) {
+  const e=selected();if(!supportsClassifier(e) || classifierBusy)return;
+  const draft=classifierDraft(e.id),text=draft.text,mutation=['load','load-flush','disable'].includes(operation);
+  if(operation!=='disable' && (draft.targets || classifierTargets(e)).length>1)return classifierGroupAction(e,draft,operation);
+  if(operation==='show' && draft.revision && text!==draft.active && !window.confirm(t('discardDraft')))return;
+  if(mutation) {
+    if(!state.data?.allow_write || !draft.revision)return;
+    if(operation!=='disable' && (!draft.checked || draft.checked.text!==text))return;
+    const prompt={load:'classifierConfirmLoad','load-flush':'classifierConfirmFlush',disable:'classifierConfirmDisable'}[operation];
+    if(!window.confirm(t(prompt,{name:e.name})))return;
+  }
+  classifierBusy=true;draft.message={key:'working'};renderClassifier();
+  const expected=operation==='disable'?draft:draft.checked || draft;
+  try {
+    const result=await api(`/api/v1/endpoints/${encodeURIComponent(e.id)}/classifier`+(operation==='show'?'':'/'+operation),operation==='show'?'GET':'POST',operation==='show'?undefined:{rules:operation==='disable'?'':text,expected_sha256:expected.revision,expected_generation:expected.generation},180000);
+    if(operation==='show')Object.assign(draft,{text:result.rules,active:result.rules,revision:result.sha256,generation:result.generation,checked:null,diff:'',message:{key:'rulesLoaded'}});
+    else if(operation==='check')Object.assign(draft,{checked:{text,revision:result.sha256,generation:result.generation},diff:result.diff,message:result.result});
+    else {draft.message=result.result+' · '+t('classifierReload');await refresh(true);}
+  } catch(error) {draft.checked=null;draft.message=error.message+(mutation?' · '+t('classifierReload'):'');}
+  finally {
+    if(mutation){draft.revision=null;draft.checked=null;}
+    classifierBusy=false;renderClassifier();
+  }
+}
+$('classifier-siblings').addEventListener('change',()=>{
+  if(!selected())return;
+  const draft=classifierDraft(selected().id);draft.targets=null;draft.review=null;draft.batch=null;draft.checked=null;draft.revision=null;draft.message={key:'classifierReload'};renderClassifier();
+});
+for(const op of ['show','check','load','load-flush','disable'])$('classifier-'+(op==='show'?'read':op)).addEventListener('click',()=>classifierAction(op));
+$('classifier-editor').addEventListener('input',()=>{
+  if(!selected())return;
+  const draft=classifierDraft(selected().id);draft.text=$('classifier-editor').value;draft.checked=null;draft.diff='';draft.message={key:'draftChanged'};renderClassifier();
+});
+
 function draftFor(id) {
   if (!state.drafts.has(id)) state.drafts.set(id, {text:"", revision:null, checked:null, diff:"", message:""});
   return state.drafts.get(id);
@@ -1638,9 +2077,10 @@ function showView(view) {
   state.view=view;
   render();
   document.querySelectorAll("[data-view]").forEach(b=>b.classList.toggle("active",b.dataset.view === state.view));
-  for (const name of ["overview","metrics","rules","switch","diagnostics","syspiper","flows","observed"]) $("view-"+name).hidden = view !== name;
-  document.querySelector(".process-panel").hidden=["observed","syspiper"].includes(view);
+  for (const name of ["overview","metrics","rules","switch","diagnostics","syspiper","flows","observed","labels","classifier"]) $("view-"+name).hidden = view !== name;
+  document.querySelector(".process-panel").hidden=["observed","labels","syspiper"].includes(view);
   if(view === "observed") {renderObserved();refreshMapRules();}
+  if(view === "labels") {renderLabelTopology();refreshMapRules(!labelTopologyReady);}
   $("view-"+view).scrollIntoView({block:"start"});
   if (view === "overview") drawChart();
   if (view === "diagnostics" && selected() && selected().source!=="discovered" && !state.logs.has(state.selected)) readLogs();
@@ -2162,6 +2602,10 @@ async function openSwitchRules(id) {
   selectProcess(id,"rules");
   if (!draftFor(id).revision) await ruleAction("show");
 }
+async function openClassifierRules(id) {
+  selectProcess(id,"classifier");
+  if (!classifierDraft(id).revision) await classifierAction("show");
+}
 $("topology").addEventListener("click",event=> {
   const node=event.target.closest("[data-node]"),rules=event.target.closest("[data-node-rules]");
   if (node) selectProcess(node.dataset.node,"overview");
@@ -2192,8 +2636,8 @@ function applyLanguage() {
   document.querySelectorAll("[data-language]").forEach(button=>button.setAttribute("aria-pressed",String(button.dataset.language === language)));
   $("pause").textContent=t(state.paused ? "resume" : "pause");
   $("login-error").textContent=diagnostic(state.loginError);
-  if (state.data) render();
-  else { renderDetail(); renderMetrics(); renderRules(); notice(); }
+  if (state.data) {render();if(state.view==="labels")renderLabelTopology();}
+  else { renderDetail(); renderMetrics(); renderRules(); renderClassifier(); notice(); }
 }
 document.querySelectorAll("[data-language]").forEach(button=>button.addEventListener("click",()=>{
   language=button.dataset.language;

@@ -69,3 +69,12 @@ test('table filters retain verified grouping from the complete topology without 
  assert.equal(one.length,1);assert.equal(one[0].members.length,1);
  assert.equal(processBundles(nodes,localLinks,[]).length,0);
 });
+
+const labelPortGroups=runInNewContext(source.slice(source.indexOf('function labelPortGroups('),source.indexOf('function renderLabelTopology('))+';labelPortGroups',{observedGroups:groups});
+test('label topology presents verified sibling attachments as one logical port group',()=>{
+ const result=labelPortGroups(bundleNodes(),localLinks,'sw',[{name:'edge0'},{name:'edge1'},{name:'admin'}]);
+ const bundle=result.find(group=>group.name==='231s');
+ assert.deepEqual(Array.from(bundle.ports),['edge0','edge1']);
+ assert.equal(result.find(group=>group.name==='admin').ports.length,1);
+ assert.equal(result.length,2);
+});

@@ -117,11 +117,11 @@ class Fabric:
         if self.history_store:
             self.history_store.close()
 
-    def _network_probe(self, origin, operation, route):
+    def _network_probe(self, origin, operation, route, body=""):
         endpoint = self.endpoint(origin)
         if endpoint.source != "local":
             raise APIError(400, "CONTROL origin must be local")
-        return self.control_query(endpoint, operation, route=route)
+        return self.control_query(endpoint, operation, body, route=route)
 
     def refresh(self):
         self.network.refresh()
@@ -129,9 +129,9 @@ class Fabric:
 
     def control_query(self, endpoint, operation, body="", *, route=None, on_accepted=None):
         if endpoint.source == "discovered":
-            if route is not None or body:
+            if route is not None or (body and not operation.startswith("classifier-")):
                 raise APIError(403, "discovered components support read-only operations")
-            return self.network.read(endpoint.id, operation)
+            return self.network.read(endpoint.id, operation, body) if body else self.network.read(endpoint.id, operation)
         if not endpoint.control:
             raise OSError("process has no --control-socket")
         if int(stat_fields(Path(f"/proc/{endpoint.pid}/stat"))[19]) != endpoint.start_ticks:
@@ -313,6 +313,63 @@ class Fabric:
                 return endpoint
         raise APIError(404, "process no longer exists; refresh discovery")
 
+    def classifier(self, key, operation, body=None):
+        if operation not in {"show", "check", "load", "load-flush", "disable"}:
+            raise APIError(400, "unsupported classifier operation")
+        endpoint = self.endpoint(key)
+        if endpoint.kind not in {"tunnel", "adapter"}:
+            raise APIError(400, "classifier requires a DATA tunnel or TUN adapter")
+        mutation = operation in {"load", "load-flush", "disable"}
+        if mutation and not self.allow_write:
+            raise APIError(403, "classifier writes are disabled; restart with --allow-write")
+        candidate = ""
+        if operation != "show":
+            if not isinstance(body, dict) or set(body) - {"rules", "expected_sha256", "expected_generation"}:
+                raise APIError(400, "expected rules, expected_sha256 and expected_generation")
+            if operation != "disable":
+                candidate = body.get("rules")
+                if not isinstance(candidate, str) or not candidate.strip():
+                    raise APIError(400, "classifier rules must be nonempty text")
+                if len(candidate.encode()) > MAX_BODY:
+                    raise APIError(413, "classifier exceeds 1 MiB")
+            elif body.get("rules", ""):
+                raise APIError(400, "disable does not accept classifier rules")
+        with self.action_lock:
+            sent = False
+            try:
+                metrics = parse_stats(self.control_query(endpoint, "stats"))
+                generation = metrics.get("classifier_generation")
+                if not generation or not generation.isdecimal():
+                    raise APIError(400, "daemon does not expose classifier generation")
+                current = self.control_query(endpoint, "classifier-show")
+                revision = digest(current)
+                if operation == "show":
+                    return {"rules":current, "sha256":revision, "generation":generation,
+                            "metrics":{k:v for k,v in metrics.items() if k.startswith("classifier_")}, "sampled_at":now()}
+                if mutation and (body.get("expected_sha256") != revision or body.get("expected_generation") != generation):
+                    raise APIError(409, "active classifier changed; reload and review before writing")
+                checked = None
+                if operation != "disable":
+                    checked = self.control_query(endpoint, "classifier-check", candidate)
+                diff = "".join(difflib.unified_diff(current.splitlines(True), candidate.splitlines(True),
+                                                    fromfile="active", tofile="candidate"))
+                if operation == "check":
+                    return {"result":checked, "sha256":revision, "generation":generation, "diff":diff}
+                sent = True
+                result = self.control_query(endpoint, "classifier-" + operation, candidate)
+                self.wake.set()
+                LOG.info(json.dumps({"event":"classifier."+operation, "endpoint":key, "at":now(),
+                                     "previous_generation":generation, "candidate_sha256":digest(candidate)}))
+                return {"result":result, "persistence":"runtime only"}
+            except ControlError as error:
+                raise APIError(422, str(error)) from error
+            except (OSError, ValueError) as error:
+                message = str(error)
+                if sent:
+                    message += "; outcome may be unknown: read active classifier and generation before retrying"
+                    LOG.warning(json.dumps({"event":"classifier."+operation+".uncertain", "endpoint":key, "at":now()}))
+                raise APIError(502, message) from error
+
     def rules(self, key, operation, body=None):
         endpoint = self.endpoint(key)
         if endpoint.source == "discovered" and operation != "show":
@@ -475,6 +532,13 @@ class Handler(BaseHTTPRequestHandler):
             if match and self.command == "GET":
                 action = getattr(self.server.fabric, match[2])
                 return self.respond(200, action(unquote(match[1])))
+            match = re.fullmatch(r"/api/v1/endpoints/([^/]+)/classifier(?:/(check|load|load-flush|disable))?", path)
+            if match:
+                operation = match[2] or "show"
+                if self.command != ("GET" if operation == "show" else "POST"):
+                    raise APIError(405, "method not allowed")
+                return self.respond(200, self.server.fabric.classifier(unquote(match[1]), operation,
+                                    self.body() if self.command == "POST" else None))
             match = re.fullmatch(r"/api/v1/endpoints/([^/]+)/rules(?:/(check|load))?", path)
             if match:
                 operation = match[2] or "show"
