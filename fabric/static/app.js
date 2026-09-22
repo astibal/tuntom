@@ -1807,7 +1807,7 @@ function renderLabelTopology() {
   let partial=false,routeCount=0;
   const sections=switches.map(sw=>{
     const active=mapRules.get(sw.id);
-    if(!active || active.error){partial=true;return `<section class="label-switch"><header><strong>${esc(sw.name)}</strong><div class="label-switch-actions"><span>${esc(t("mapPolicyUnknown"))}</span><button class="quiet-button" data-label-open-rules="${esc(sw.id)}">${esc(t('openRules'))}</button></div></header></section>`;}
+    if(!active || active.error){partial=true;return `<section class="label-switch"><header><strong>${esc(sw.name)}</strong><span>${esc(t("mapPolicyUnknown"))}</span></header><div class="label-rules-action"><button class="quiet-button" data-label-open-rules="${esc(sw.id)}">${esc(t('openRules'))}</button></div></section>`;}
     const routes=switchTopologyRules(active.text);routeCount+=routes.length;
     const routeIds=routes.map((route,index)=>JSON.stringify([sw.id,index]));
     const links=(state.data.links || []).filter(link=>link.target===sw.id && link.port_id);
@@ -1847,7 +1847,7 @@ function renderLabelTopology() {
       }).join('')}</div></article>`;
     }).join("");
     const table=routes.length?`<div class="label-route-list"><div class="label-route-head"><span>#</span><span>INGRESS</span><span>LABEL STACK</span><span></span><span>EGRESS</span><span>OUTPUT STACK</span><span>ACTION</span></div>${routes.map((route,index)=>`<div class="label-route ${route.action==='drop'?'drop':''}" data-label-route="${esc(routeIds[index])}"><span class="label-order">${index+1}</span><code class="label-port">${esc(route.source)}</code><code>${esc(route.stack)}</code><span class="label-arrow">→</span><code class="label-port">${esc(route.target)}</code><code>${esc(route.rewrite)}${route.via?' via '+esc(route.via):''}</code><strong>${esc(route.action)}</strong></div>`).join("")}</div>`:`<p class="label-empty">${esc(t("labelTopologyEmpty"))}</p>`;
-    return `<section class="label-switch"><header><strong>${esc(sw.name)}</strong><div class="label-switch-actions"><span>SWITCH · ${esc(sw.switch_detail?.ports?.length ?? "—")} PORTS</span><button class="quiet-button" data-label-open-rules="${esc(sw.id)}">${esc(t('openRules'))}</button></div></header>${ports}${classifiers?`<div class="label-classifiers">${classifiers}</div>`:""}<p class="label-order-note">${esc(t("ruleOrder"))}</p>${table}</section>`;
+    return `<section class="label-switch"><header><strong>${esc(sw.name)}</strong><span>SWITCH · ${esc(sw.switch_detail?.ports?.length ?? "—")} PORTS</span></header>${ports}${classifiers?`<div class="label-classifiers">${classifiers}</div>`:""}<div class="label-rules-action"><button class="quiet-button" data-label-open-rules="${esc(sw.id)}">${esc(t('openRules'))}</button></div>${table}</section>`;
   }).join("");
   panel.innerHTML=sections || `<p class="label-empty">${esc(t("labelTopologyEmpty"))}</p>`;
   if(labelTopologySelection && !labelRuleMatches.has(labelTopologySelection))labelTopologySelection=null;
