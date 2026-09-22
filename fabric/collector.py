@@ -69,7 +69,7 @@ class CollectorHandler(socketserver.BaseRequestHandler):
             elif operation == "request_status" and isinstance(key, str):
                 result = fabric.request_status(key)
             elif operation == "refresh":
-                fabric.wake.set()
+                fabric.refresh()
                 result = {"result": "discovery scheduled"}
             elif operation in {"show", "check", "load", "logs", "diagnostics", "flows"} and isinstance(key, str):
                 # The caller supplies a discovered identity, never a path or command.
@@ -156,6 +156,9 @@ class RemoteFabric:
         pass
 
     def set(self):
+        self.call("refresh")
+
+    def refresh(self):
         self.call("refresh")
 
     def snapshot(self):

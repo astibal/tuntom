@@ -233,3 +233,66 @@ input,select,textarea{background:#151b12;border-color:#424c35}button:hover:not(:
 .topology-node.component-adapter{background:#222c23}
 .map-node.component-switch:hover:not(:disabled),.topology-node.component-switch:hover:not(:disabled){background:#33382a}
 .map-node.component-adapter:hover:not(:disabled),.topology-node.component-adapter:hover:not(:disabled){background:#2c382d}
+
+.discovered-badge{font:9px var(--mono);font-weight:400;text-transform:none;letter-spacing:0;opacity:.8;margin:0 5px;border-bottom:1px dotted currentColor;white-space:nowrap}
+
+/* CONTROL reachability is not evidence of data traffic. */
+.map-link.control-link{stroke:#a2aeb2;stroke-width:1.5px;stroke-dasharray:6 5;opacity:.5;animation:none}
+
+.map-label-toggle{position:absolute;right:7px;width:22px;height:22px;min-height:0;padding:0;z-index:2;font:16px var(--mono);line-height:20px;background:#1b2519;color:var(--muted);border:1px solid var(--line);border-radius:3px}
+.map-label-toggle[aria-pressed="true"]{color:var(--accent);border-color:var(--accent)}
+.map-label-toggle:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.map-node.has-label-toggle .map-node-kind{padding-right:22px}
+.map-node.has-label-toggle.map-names strong{padding-right:24px}
+
+/* Keep stack and selection shadows while making problems visible at any density. */
+.map-node.warn{outline:2px solid var(--accent);outline-offset:1px;filter:drop-shadow(0 0 6px #d6b97099)}
+.map-node.alert,.map-node.map-problem{outline:2px solid var(--red);outline-offset:1px;filter:drop-shadow(0 0 8px #ed786aaa)}
+.map-warning-count{color:var(--red);font-weight:700}
+
+/* Keep explanations beside their headings rather than in separate bands. */
+.observed-panel>.panel-heading{row-gap:7px;padding-top:10px;padding-bottom:10px}
+.map-heading-notes{flex-basis:100%;display:flex;align-items:baseline;flex-wrap:wrap;gap:5px 22px;font-size:11px;color:var(--muted)}
+.map-heading-notes .observed-legend{padding:0;border:0;font:10px/1.5 var(--mono)}
+.via-panel{position:relative;padding-top:10px;padding-bottom:10px}
+.via-panel>summary{padding-right:85px;line-height:1.6}
+.via-inline-hint{margin-left:20px;font:11px/1.5 var(--sans, sans-serif);color:var(--muted)}
+.via-controls{position:absolute;right:23px;top:7px;margin:0}
+.via-controls select{padding:4px 8px;font-size:11px}
+.via-service{margin-top:8px;padding-top:9px;padding-bottom:4px}
+@media(max-width:800px){.via-inline-hint{display:block;margin-left:14px;margin-top:4px}}
+
+.via-summary-rates{display:none;margin-left:20px;color:#bdd2db;font:11px var(--mono);white-space:nowrap}
+.via-panel:not([open]) .via-summary-rates{display:inline}
+.via-panel:not([open]) .via-inline-hint{display:none}
+.via-panel:not([open])>summary{padding-right:0}
+
+.process-bundle{background:#263120;cursor:default}
+.process-bundle>td{border-top:1px solid var(--line)}
+.process-toggle{display:inline-block;min-width:26px;padding:3px 6px;margin-right:6px;color:var(--accent);background:transparent;border:0;font-size:16px;vertical-align:middle}
+.process-toggle:focus-visible{outline:2px solid var(--accent)}
+tr[data-process-group][data-process-row]>td:first-child{padding-left:38px}
+
+/* Selection stays dark; borders and a cool focus tint carry the emphasis. */
+.process-table tr.selected,.process-table tbody tr.selected:hover{background:#1d2819;box-shadow:none}
+.process-table tr.selected>td{box-shadow:inset 0 1px #798c60,inset 0 -1px #798c60}
+.process-table tr.selected>td:first-child{box-shadow:inset 2px 0 #798c60,inset 0 1px #798c60,inset 0 -1px #798c60}
+.process-table tr.selected>td:last-child{box-shadow:inset -1px 0 #798c60,inset 0 1px #798c60,inset 0 -1px #798c60}
+.process-table tbody tr:hover,.process-table tbody tr:focus-within{background:#25301e}
+.process-table tbody tr:hover>td,.process-table tbody tr:focus-within>td{box-shadow:inset 0 1px #8caa6b,inset 0 -1px #8caa6b}
+.process-table tbody tr:hover>td:first-child,.process-table tbody tr:focus-within>td:first-child{box-shadow:inset 2px 0 #8caa6b,inset 0 1px #8caa6b,inset 0 -1px #8caa6b}
+.process-table tbody tr:hover>td:last-child,.process-table tbody tr:focus-within>td:last-child{box-shadow:inset -1px 0 #8caa6b,inset 0 1px #8caa6b,inset 0 -1px #8caa6b}
+.map-node.selected,.map-node.selected:hover{background:linear-gradient(120deg,#252e1e,#182014);box-shadow:inset 2px 0 #99aa8b,0 3px 12px #0004}
+.map-node:hover:not(:disabled),.map-node:focus-visible{background:linear-gradient(120deg,#2a3521,#1d2718);border-right-color:#94ad72;border-bottom-color:#94ad72;border-left-color:#94ad72}
+
+.process-table .process-bundle:has(.process-toggle[aria-expanded="false"]){background:#1a2216}
+.process-table .process-bundle.selected:has(.process-toggle[aria-expanded="false"]){background:#1e2818}
+.process-table .process-bundle:has(.process-toggle[aria-expanded="false"]):hover,
+.process-table .process-bundle:has(.process-toggle[aria-expanded="false"]):focus-within{background:#25301e}
+.process-table tbody td:first-child{position:relative}
+.process-table tr.selected>td:first-child::before{content:"";position:absolute;left:7px;top:50%;transform:translateY(-50%);width:8px;height:28px;background:#bad28d;clip-path:polygon(0 0,35% 0,100% 50%,35% 100%,0 100%,65% 50%);pointer-events:none}
+
+/* Shared row pointer; do not mark outer rows when interacting with a nested table. */
+table:not(.process-table)>tbody>tr>:first-child{position:relative;padding-left:28px}
+table:not(.process-table)>tbody>tr:is(.selected,[aria-selected="true"],:hover,:focus-within):not(:has(tbody tr:hover,tbody tr:focus-within))>:first-child::before{content:"";position:absolute;left:7px;top:50%;transform:translateY(-50%);width:8px;height:28px;max-height:calc(100% - 8px);background:#bad28d;clip-path:polygon(0 0,35% 0,100% 50%,35% 100%,0 100%,65% 50%);pointer-events:none}
+table:not(.process-table)>tbody>tr:is(.selected,[aria-selected="true"],:hover,:focus-within):not(:has(tbody tr:hover,tbody tr:focus-within))>td{background-color:#25301e}

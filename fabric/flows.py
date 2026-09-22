@@ -86,7 +86,7 @@ def parse_flows(text, expected_pid):
             else:
                 raise ValueError('invalid flow header')
     if (header.get('format') != 'txt' or header.get('format_version') != '1' or
-            header.get('view') != 'flows' or header.get('pid') != str(expected_pid) or
+            header.get('view') != 'flows' or (not re.fullmatch(r'[0-9]+', header.get('pid', '')) or (expected_pid is not None and header.get('pid') != str(expected_pid))) or
             header.get('tracking') not in ('none', 'retained') or footer != count or
             (header['tracking'] == 'none' and count)):
         raise ValueError('inconsistent flow snapshot')

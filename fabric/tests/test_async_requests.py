@@ -21,7 +21,7 @@ class AsyncTests(unittest.TestCase):
         gate = threading.Event()
         started = threading.Event()
         fabric = Fabric(discover_fn=lambda: ([], {}))
-        fabric.endpoint = lambda key: object()
+        fabric.endpoint = lambda key: type("Origin", (), {"source":"local"})()
         def control(*args, on_accepted, **kwargs):
             on_accepted('a' * 32)
             started.set()

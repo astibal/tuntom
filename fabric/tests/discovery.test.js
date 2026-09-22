@@ -80,3 +80,12 @@ test('CONTROL details preserve uint64 masks and levels and never render unescape
  assert.match(html,/18446744073709551615/);assert.match(html,/18446744073709551614/);
  assert.doesNotMatch(html,/<img>/);assert.match(html,/control_forward_enabled/);
 });
+test('remote component marker distinguishes discovered items and does not invent a PID',()=>{
+ const body=source.slice(source.indexOf('function payloadMark('),source.indexOf('function endpointType('));
+ const f=runInNewContext(body+';({payloadMark,processIdentity})',{esc:x=>String(x),t:x=>x,tunnelPayload:()=>null});
+ const remote={source:'discovered',kind:'adapter',pid:null};
+ assert.match(f.payloadMark(remote),/discovered-badge/);
+ assert.equal(f.processIdentity(remote),'CONTROL');
+ assert.doesNotMatch(f.payloadMark({...remote,source:'local',pid:42}),/discovered-badge/);
+ assert.match(f.payloadMark({...remote,discovery_stale:true}),/discoveryStale/);
+});

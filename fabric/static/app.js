@@ -47,15 +47,16 @@ const messages = {
   mapCompact:["Kompaktní","Compact","Compact"],
   mapNames:["Jen názvy","Names only","Noms seuls"],
   mapStackHint:["Hover: náhled · klik: připnout / sbalit","Hover: preview · click: pin / collapse","Survol : aperçu · clic : fixer / replier"],
-  mapMembers:["{count} tunelů · {issues} s upozorněním","{count} tunnels · {issues} with warnings","{count} tunnels · {issues} avec alertes"],
-  observedTitle:["Pozorovaná topologie","Observed topology","Topologie observée"],
-  observedHint:["Lokální procesy a doložené vazby. Vyber uzel pro detail.","Local processes and observed attachments. Select a node for details.","Processus locaux et liens observés. Sélectionne un nœud."],
+  mapMemberCount:["{count} prvků","{count} components","{count} composants"],
+  mapWarningCount:["{issues} s upozorněním","{issues} with warnings","{issues} avec alertes"],
+  observedTitle:["Topologie","Topology","Topologie"],
+  observedHint:["Lokální i discovered komponenty podle doložených vazeb. Vyber uzel pro detail.","Local and discovered components arranged by observed links. Select a node for details.","Composants locaux et découverts selon les liens observés. Sélectionne un nœud."],
   observedLive:["ŽIVÁ TELEMETRIE","LIVE TELEMETRY","TÉLÉMÉTRIE EN DIRECT"],
-  observedLegend:["Plná: registrovaný port · přerušovaná: vazba z parametrů · pohyb: provoz procesu, nikoli trasování paketů","Solid: registered port · dashed: argument-based attachment · motion: process traffic, not packet tracing","Plein : port enregistré · pointillé : lien par paramètres · mouvement : trafic du processus, pas traçage des paquets"],
+  observedLegend:["Plná: registrovaný port · přerušovaná: vazba z parametrů · šedá přerušovaná: CONTROL · pohyb: provoz procesu, nikoli trasování paketů","Solid: registered port · dashed: argument-based attachment · grey dashed: CONTROL · motion: process traffic, not packet tracing","Plein : port enregistré · pointillé : lien par paramètres · gris pointillé : CONTROL · mouvement : trafic du processus, pas traçage des paquets"],
   mapInputs:["TUNELY / OSTATNÍ","TUNNELS / OTHER","TUNNELS / AUTRES"],
   mapAdapters:["ADAPTÉRY / DIVERT","ADAPTERS / DIVERT","ADAPTATEURS / DIVERT"],
   mapOpen:["Otevřít detail →","Open details →","Ouvrir les détails →"],
-  overview:["Živý přehled","Live overview","Vue en direct"],
+  overview:["Komponenty","Components","Composants"],
   metrics:["Metriky","Metrics","Métriques"],
   rules:["Pravidla switche","Switch rules","Règles du switch"],
   host:["POZOROVANÝ STROJ","OBSERVED HOST","MACHINE OBSERVÉE"],
@@ -176,7 +177,7 @@ const messages = {
   flowNoRows:["Žádné odpovídající řádky.","No matching rows.","Aucune ligne correspondante."],
   flowExact:["Přesná data řádku","Exact row data","Données exactes de la ligne"],
   flowRefreshFailed:["Obnova selhala; ponechávám předchozí snímek.","Refresh failed; keeping the previous snapshot.","Actualisation échouée ; instantané précédent conservé."],
-  syspiperTitle:["Uzly / Syspiper","Nodes / Syspiper","Nœuds / Syspiper"],
+  syspiperTitle:["Syspiper","Syspiper","Syspiper"],
   syspiperHint:["Systémové metriky známých IP Tuntom sítě. Sběr zajišťuje backend.","System metrics for known Tuntom IPs. Collected by the backend.","Métriques système des IP Tuntom connues. Collectées par le backend."],
   syspiperDisabled:["Syspiper není zapnutý. Nastav klíč v backendu (na collectoru při odděleném sběru).","Syspiper is disabled. Configure its key in the backend (on the separate collector when used).","Syspiper est désactivé. Configure sa clé sur le backend (collecteur séparé si utilisé)."],
   syspiperEmpty:["Čekám na známé IP protistran nebo rozhraní Tuntomu. Další známou IP lze zadat backendu.","Waiting for known Tuntom peer or interface IPs. Additional known IPs can be configured in the backend.","En attente d’IP Tuntom connues. D’autres IP connues peuvent être configurées sur le backend."],
@@ -277,6 +278,10 @@ Object.assign(messages, {
   health:["Zdraví","Health","État"], healthReason:["Zdraví a důvody","Health and reasons","État et explications"],
   fieldStatus:["RUNTIME / STAV","RUNTIME / STATUS","RUNTIME / ÉTAT"], fieldNotes:["RUNTIME / DIAGNOSTIKA","RUNTIME / DIAGNOSTICS","RUNTIME / DIAGNOSTIC"],
   switchRuntime:["Porty a workery","Ports and workers","Ports et workers"],
+  discoveredHint:["Nalezeno přes CONTROL; vzdálená komponenta","Discovered through CONTROL; remote component","Découvert via CONTROL ; composant distant"],
+  discoveryStale:["DISCOVER naposledy před více než 4 minutami","Last seen by DISCOVER over 4 minutes ago","Dernière découverte il y a plus de 4 minutes"],
+  controlRoutes:["Cesty přes CONTROL","CONTROL routes","Chemins CONTROL"],
+  controlLastSeen:["Naposledy v DISCOVER","Last seen in DISCOVER","Dernière découverte"],
   controlAuthority:["Autorita","Authority","Autorité"],
   controlAuthorityHint:["Komponenta má načtený privátní klíč autority. Nezaručuje přístup ke všem cílům.","The component has a loaded authority private key. This does not guarantee access to all targets.","Le composant possède une clé privée d’autorité chargée. Cela ne garantit pas l’accès à toutes les cibles."],
   controlSettings:["CONTROL · oprávnění a veřejné klíče","CONTROL · permissions and public keys","CONTROL · permissions et clés publiques"],
@@ -519,6 +524,13 @@ function payloadClass(e) {
     ({switch:"component-switch",adapter:"component-adapter",divert:"component-adapter"})[e?.kind] || "";
 }
 function payloadMark(e) {
+  const hint=e?.source === "discovered" ? ` <span class="discovered-badge" title="${esc(t(e.discovery_stale ? "discoveryStale" : "discoveredHint"))}">discovered${e.discovery_stale ? " · !" : ""}</span> ` : "";
+  return componentMark(e)+hint;
+}
+function processIdentity(e) {
+  return e?.source === "discovered" ? "CONTROL" : `PID ${e?.pid ?? "—"}`;
+}
+function componentMark(e) {
   const mode=tunnelPayload(e);
   if (mode) return `<span class="payload-mark ${mode === "DATA" ? "payload-arrows" : ""}" aria-hidden="true">${mode === "IPC" ? "▣─▣" : "<span>→</span><span>←</span>"}</span>`;
   const shapes=e?.kind === "switch" ? '<rect x="6" y="5" width="8" height="8" rx="1"/><path d="M10 1v4M10 13v4M1 9h5M14 9h5M7 8h6M7 10h6"/>' :
@@ -629,7 +641,7 @@ function bps(value) {
   return `${value.toLocaleString(locale(), {maximumFractionDigits: index ? 1 : 0})} ${units[index]}`;
 }
 function duration(seconds) {
-  if (seconds === undefined) return "—";
+  if (seconds === undefined || seconds === null) return "—";
   seconds = Math.max(0, Number(seconds));
   if (seconds >= 86400) return `${Math.floor(seconds / 86400)} ${t("day")} ${Math.floor(seconds % 86400 / 3600)} ${t("hour")}`;
   if (seconds >= 3600) return `${Math.floor(seconds / 3600)} ${t("hour")} ${Math.floor(seconds % 3600 / 60)} ${t("minute")}`;
@@ -735,7 +747,7 @@ function render() {
   $("last-update").textContent = state.failure ? t("disconnected") : data.discovery.scanned_at ? t("scanTime",{time:new Date(data.discovery.scanned_at).toLocaleTimeString(locale()),interval:data.poll_interval_seconds}) : t("waitingScan");
   const endpoints = data.endpoints, tunnels = endpoints.filter(e => e.kind === "tunnel");
   $("count-processes").textContent = endpoints.length;
-  $("count-kinds").textContent = t("kindCount",{tunnels:tunnels.length,endpoints:observedGroups(tunnels).length,switches:endpoints.filter(e => e.kind === "switch").length});
+  $("count-kinds").textContent = t("kindCount",{tunnels:tunnels.length,endpoints:observedGroups(endpoints,data.links || []).filter(g=>g.members[0].kind==="tunnel").length,switches:endpoints.filter(e => e.kind === "switch").length});
   $("count-metrics").textContent = `${endpoints.filter(e => e.status === "reachable").length} / ${endpoints.length}`;
   const knownSessions = tunnels.filter(e => ["0","1"].includes(e.metrics.session_ready));
   $("count-sessions").textContent = `${knownSessions.length ? tunnels.filter(e => e.metrics.session_ready === "1").length : "—"} / ${tunnels.length}`;
@@ -798,6 +810,20 @@ function peerSecuritySummary(e, nodes) {
     return `<div class="peer-system ${level}" title="${esc(node.ip)}"><span>${esc(node.values?.hostname || node.ip)} · CPU ${esc(percent(node.values?.cpu))} · steal ${esc(percent(node.values?.steal))}${fresh ? "" : " · "+esc(t("stale"))}</span><span class="peer-updates">${esc(known ? t("securityUpdates",{count}) : t("securityUpdatesUnknown"))}</span></div>`;
   }).join("");
 }
+const processExpanded=new Set();
+let processHovered=null,processHoverPending=null,processHoverTimer=null;
+function cancelProcessHover() {
+  clearTimeout(processHoverTimer);processHoverTimer=null;processHoverPending=null;
+}
+function toggleProcessGroup(key) {
+  cancelProcessHover();processHovered=null;
+  processExpanded.has(key)?processExpanded.delete(key):processExpanded.add(key);
+  renderProcesses();
+}
+function processBundles(endpoints,links,rows) {
+  const visible=new Set(rows.map(e=>e.id));
+  return observedGroups(endpoints,links).map(g=>({...g,members:g.members.filter(e=>visible.has(e.id))})).filter(g=>g.members.length);
+}
 function supportsProcessView(e, view) {
   return view === "flows" ? ["adapter","divert"].includes(e.kind) : view === "rules" ? e.kind === "switch" : true;
 }
@@ -818,12 +844,26 @@ function renderProcesses() {
   const rows = eligible.filter(e => (!kind || e.kind === kind) &&
     [e.name,e.pid,e.interface,e.executable,e.port_id].join(" ").toLowerCase().includes(query));
   $("process-total").textContent = rows.length;
-  $("processes").innerHTML = groupPeerRows(rows,state.data.syspiper?.nodes || []).map(({e,peers,first,last,count}) => {
+  const renderRows=(members,key="")=>groupPeerRows(members,state.data.syspiper?.nodes || []).map(({e,peers,first,last,count}) => {
     const [color, text] = status(e);
     const reasons=attentionReasons(e);
     const indicator=reasons.length ? `<button class="status attention-status" data-attention="${esc(e.id)}" title="${esc(reasons.map(reason=>reason.text).join("\n"))}"><span class="attention-title"><span class="attention-mark" aria-hidden="true">!</span>${esc(text)} ↗</span><span class="status-reasons">${reasons.slice(0,2).map(reason=>esc(reason.text)).join("<br>")}${reasons.length > 2 ? `<br>${esc(t("moreReasons",{count:reasons.length-2}))}` : ""}</span></button>` : `<span class="status"><i class="dot ${color}"></i>${esc(text)}</span>`;
-    return `<tr data-process-row="${esc(e.id)}" class="${e.id === state.selected ? "selected" : ""} ${count>1 ? "peer-group"+(first ? " peer-group-first" : "")+(last ? " peer-group-last" : "") : ""}"><td><button class="process-name" data-id="${esc(e.id)}" aria-pressed="${e.id === state.selected}">${esc(e.name)}${authorityBadge(e)}<small>PID ${e.pid}${e.interface && e.interface !== "-" ? " · " + esc(e.interface) : ""}</small></button>${first ? peerSecuritySummary(e,peers) : ""}</td><td><span class="kind ${payloadClass(e)}">${payloadMark(e)}${esc(endpointType(e))}</span></td><td>${indicator}</td><td>${bps(rate(e,"rx"))}<small>↑ ${bps(rate(e,"tx"))}</small></td><td class="rtt-value" title="${esc(metricHelp("rtt_last_ms"))}">${esc(lastRTT(e))}</td><td>${duration(e.uptime_seconds)}</td></tr>`;
+    return `<tr ${key?`data-process-group="${esc(key)}"`:""} data-process-row="${esc(e.id)}" class="${e.id === state.selected ? "selected" : ""} ${count>1 ? "peer-group"+(first ? " peer-group-first" : "")+(last ? " peer-group-last" : "") : ""}"><td><button class="process-name" data-id="${esc(e.id)}" aria-pressed="${e.id === state.selected}">${esc(e.name)}${authorityBadge(e)}<small>${esc(processIdentity(e))}${e.interface && e.interface !== "-" ? " · " + esc(e.interface) : ""}</small></button>${first ? peerSecuritySummary(e,peers) : ""}</td><td><span class="kind ${payloadClass(e)}">${payloadMark(e)}${esc(endpointType(e))}</span></td><td>${indicator}</td><td>${bps(rate(e,"rx"))}<small>↑ ${bps(rate(e,"tx"))}</small></td><td class="rtt-value" title="${esc(metricHelp("rtt_last_ms"))}">${esc(lastRTT(e))}</td><td>${duration(e.uptime_seconds)}</td></tr>`;
   }).join("");
+  const bundles=processBundles(state.data.endpoints,state.data.links || [],rows);
+  const alive=new Set(observedGroups(state.data.endpoints,state.data.links || []).map(g=>g.key));
+  for(const key of processExpanded)if(!alive.has(key))processExpanded.delete(key);
+  const focused=document.activeElement?.dataset.processToggle;
+  const html=state.view==="diagnostics"?renderRows(rows):bundles.map(g=>{
+    if(g.members.length<2)return renderRows(g.members);
+    const open=processExpanded.has(g.key) || processHovered===g.key || !!query;
+    const e=g.members[0],issues=g.members.filter(e=>attentionReasons(e).length).length;
+    const sum=dir=>{const values=g.members.map(e=>rate(e,dir));return values.every(Number.isFinite)?values.reduce((a,b)=>a+b,0):null;};
+    const peers=[...new Set(g.members.flatMap(e=>peerNodes(e,state.data.syspiper?.nodes || [])))];
+    return `<tr data-process-group="${esc(g.key)}" data-process-header="${esc(g.key)}" class="process-bundle ${g.members.some(e=>e.id===state.selected)?"selected":""}"><td><button class="process-toggle" data-process-toggle="${esc(g.key)}" aria-expanded="${open}" aria-label="${esc(g.name)}">${open?"▾":"▸"}</button><strong>${esc(g.name)}</strong> <span class="count">×${g.members.length}</span>${!open?peerSecuritySummary(e,peers):""}</td><td><span class="kind ${payloadClass(e)}">${payloadMark(e)}${esc(endpointType(e))}</span></td><td><span class="${issues?"map-warning-count":""}">${esc(t("mapWarningCount",{issues}))}</span></td><td>${bps(sum("rx"))}<small>↑ ${bps(sum("tx"))}</small></td><td>—</td><td>—</td></tr>`+(open?renderRows(g.members,g.key):"");
+  }).join("");
+  $("processes").innerHTML=html;
+  if(focused)[...$("processes").querySelectorAll("[data-process-toggle]")].find(e=>e.dataset.processToggle===focused)?.focus({preventScroll:true});
   $("empty").hidden = rows.length > 0;
   $("empty").querySelector("h3").textContent = t(eligible.length ? "noMatches" : state.view==="flows" ? "noFlowComponents" : state.view==="rules" ? "noSwitchComponents" : "noProcesses");
   $("empty").querySelector("p").textContent = t(eligible.length ? "changeFilter" : state.view==="flows" ? "startFlowComponents" : state.view==="rules" ? "startSwitchComponents" : "startProcesses");
@@ -834,10 +874,12 @@ function renderDetail() {
   $("detail-kind").innerHTML = payloadMark(e)+esc(endpointType(e));
   $("detail-kind").className="kind "+payloadClass(e);
   if (!e) { $("detail").innerHTML = `<p class="muted">${esc(t("appearAfterStart"))}</p>`; drawChart(); return; }
-  const values = [["PID / UID", `${e.pid} / ${e.uid}`], [t("binary"), e.executable], [t("control"), e.control || t("unset")],
+  const values = [["PID / UID", `${e.pid ?? "—"} / ${e.uid ?? "—"}`], [t("binary"), e.executable || "—"], [t("control"), e.source === "discovered" ? "CONTROL" : e.control || t("unset")],
     ["Switch", e.switch_socket || "—"], [t("portRole"), [e.port_id,e.role].filter(Boolean).join(" / ") || "—"],
-    [t("peer"), e.peer || "—"], ["Peer access (INFO)", e.metrics?.peer_info_access || "—"], [t("memoryThreads"), `${(e.rss_bytes / 1048576).toLocaleString(locale(),{minimumFractionDigits:1,maximumFractionDigits:1})} MiB / ${e.threads}`],
+    [t("peer"), e.peer || "—"], ["Peer access (INFO)", e.metrics?.peer_info_access || "—"], [t("memoryThreads"), e.rss_bytes == null ? "—" : `${(e.rss_bytes / 1048576).toLocaleString(locale(),{minimumFractionDigits:1,maximumFractionDigits:1})} MiB / ${e.threads}`],
     [t("cgroup"), e.unit || "—"], [t("metricAge"), sampleAge(e) === null ? "—" : `${sampleAge(e)} s`]];
+  if(e.source === "discovered") values.push([t("controlRoutes"),(e.control_routes || []).map(r=>`${r.origin} → ${r.path}`).join(" · ") || "—"],
+    [t("controlLastSeen"),e.discovered_at ? new Date(e.discovered_at).toLocaleString(locale()) : "—"]);
   const notes = [...e.notes, e.error].filter(Boolean).map(diagnostic);
   const wasOpen = $("detail").querySelector("details")?.open;
   $("detail").innerHTML = `<dl>${values.map(([key,value])=>`<dt>${esc(key)}</dt><dd>${esc(value)}</dd>`).join("")}</dl>${notes.length ? `<div class="notice">${notes.map(esc).join("<br>")}</div>` : ""}<details ${wasOpen ? "open" : ""}><summary>${esc(t("publicArgs"))}</summary><pre>${esc(Object.entries(e.options).map(([k,v])=>`--${k}${v === true ? "" : " " + v}`).join("\n") || t("noArgs"))}</pre></details>`;
@@ -1194,7 +1236,7 @@ async function refreshMapRules() {
   if(state.view!=="observed" || mapRulesBusy)return;
   mapRulesBusy=true;
   try {
-    const switches=(state.data?.endpoints || []).filter(e=>e.kind==="switch");
+    const switches=(state.data?.endpoints || []).filter(e=>e.kind==="switch" && e.source!=="discovered");
     const live=new Set(switches.map(e=>e.id));
     for(const key of mapRules.keys())if(!live.has(key))mapRules.delete(key);
     await Promise.all(switches.map(async sw=>{
@@ -1226,7 +1268,7 @@ function viaShares(values) {
 function renderViaBars() {
   const panel=$('via-bars'),unit=$('via-unit').value;
   const switches=(state.data?.endpoints || []).filter(e=>e.kind==='switch');
-  const sections=[];let unavailable=false;
+  const sections=[],totals=new Map();let unavailable=false;
   for(const sw of switches) {
     const rules=mapRules.get(sw.id);
     if(!rules || rules.error){unavailable=true;continue;}
@@ -1237,6 +1279,10 @@ function renderViaBars() {
         const ids=new Set(links.map(link=>link.source));
         const members=state.data.endpoints.filter(e=>ids.has(e.id) && tunnelPayload(e)==='IPC');
         const values=members.map(e=>viaRate(e,unit));
+        if(!totals.has(side.name))totals.set(side.name,{members:new Map(),missing:false});
+        const total=totals.get(side.name);
+        if(!ids.size)total.missing=true;
+        for(const id of ids)total.members.set(id,viaRate(state.data.endpoints.find(e=>e.id===id) || {},unit));
         return {...side,members,values,shares:viaShares(values)};
       });
       const max=Math.max(1,...sides.flatMap(side=>side.values).filter(v=>v!==null));
@@ -1246,6 +1292,12 @@ function renderViaBars() {
       }).join('') || `<p>${esc(t('viaNoMembers'))}</p>`}</section>`).join('')}</div></article>`);
     }
   }
+  $('via-summary-rates').textContent=[...totals].map(([name,total])=>{
+    const values=[...total.members.values()];
+    const valid=!unavailable && !total.missing && values.length && values.every(v=>v!==null);
+    const sum=values.reduce((a,b)=>a+(b || 0),0);
+    return name+' '+(valid?(unit==='bps'?bps(sum):sum.toLocaleString(locale(),{maximumFractionDigits:1})+' pps'):'—');
+  }).join(' · ') || 'IN — · OUT —';
   const scroll=panel.scrollTop;
   panel.innerHTML=(unavailable?`<p>${esc(t('mapPolicyUnknown'))}</p>`:'')+(sections.join('') || (!unavailable?`<p>${esc(t('viaNoMembers'))}</p>`:''));
   panel.scrollTop=scroll;
@@ -1254,7 +1306,7 @@ $('via-unit').addEventListener('change',renderViaBars);
 $('via-bars').addEventListener('click',event=>{
   const button=event.target.closest('[data-via-node]');if(!button)return;
   const id=button.dataset.viaNode;
-  const group=observedGroups(state.data.endpoints).find(g=>g.members.some(e=>e.id===id));
+  const group=observedGroups(state.data.endpoints,state.data.links || []).find(g=>g.members.some(e=>e.id===id));
   if(group)mapPinned.add(group.key);
   mapLarge.add(id);selectProcess(id);
   [...$('observed-canvas').querySelectorAll('[data-map-node]')].find(el=>el.dataset.mapNode===id)?.scrollIntoView({block:'nearest',inline:'nearest'});
@@ -1278,21 +1330,139 @@ function mapPolicyRows(members) {
   return {rows:[...rows.values()],unknown};
 }
 
-function observedGroups(endpoints) {
+// Resolve only adjacent, observed hops. A missing prefix is not a direct link.
+function controlTopology(endpoints, localLinks) {
+  const paths=new Map(), ids=new Set(endpoints.map(e=>e.id));
+  const key=(origin,path)=>JSON.stringify([origin,path]);
+  const add=(origin,path,id)=>{
+    const k=key(origin,path);
+    if(!paths.has(k))paths.set(k,new Set());
+    paths.get(k).add(id);
+  };
+  for(const e of endpoints) {
+    if(e.source!=="discovered")add(e.id,"self",e.id);
+    for(const r of e.control_routes || [])if(ids.has(r.origin))add(r.origin,r.path,e.id);
+  }
+  for(const l of localLinks)if(l.namespace_verified && l.port_id)
+    add(l.target,"port:"+encodeURIComponent(l.port_id),l.source);
+  const resolve=(origin,path)=>{
+    const candidates=paths.get(key(origin,path));
+    return candidates?.size===1?[...candidates][0]:null;
+  };
+  const links=[...localLinks], pairs=new Set(localLinks.map(l=>[l.source,l.target].sort().join("\n")));
+  for(const e of endpoints)for(const r of e.control_routes || []) {
+    const parts=r.path.split("/");
+    if(r.path==="self")continue;
+    const parent=resolve(r.origin,parts.slice(0,-1).join("/") || "self");
+    if(!parent || parent===e.id)continue;
+    const pair=[parent,e.id].sort().join("\n");
+    if(pairs.has(pair))continue;
+    pairs.add(pair);
+    links.push({source:parent,target:e.id,kind:"control",port_id:parts.at(-1),basis:r.path});
+  }
+  return links;
+}
+
+// Stable breadth-first spanning forest; alternate links do not duplicate cards.
+function observedPlacement(groups, links, heights) {
+  const owner=new Map(), adjacent=new Map(groups.map(g=>[g.key,new Set()]));
+  for(const g of groups)for(const e of g.members)owner.set(e.id,g.key);
+  for(const l of links) {
+    const a=owner.get(l.source),b=owner.get(l.target);
+    if(a && b && a!==b){adjacent.get(a).add(b);adjacent.get(b).add(a);}
+  }
+  const rank=new Map(groups.map((g,i)=>[g.key,i]));
+  const roots=[...groups].sort((a,b)=>{
+    const root=g=>g.members[0].kind==="switch" && g.members[0].source!=="discovered"?0:1;
+    return root(a)-root(b) || rank.get(a.key)-rank.get(b.key);
+  });
+  const placed=new Map(), seen=new Set();let bottom=65;
+  for(const root of roots) {
+    if(seen.has(root.key))continue;
+    const queue=[root.key],children=new Map(),depth=new Map([[root.key,0]]);seen.add(root.key);
+    for(let i=0;i<queue.length;i++) {
+      const k=queue[i],next=[...adjacent.get(k)].sort((a,b)=>rank.get(a)-rank.get(b));
+      children.set(k,[]);
+      for(const n of next)if(!seen.has(n)) {
+        seen.add(n);children.get(k).push(n);depth.set(n,depth.get(k)+1);queue.push(n);
+      }
+    }
+    const spans=new Map();
+    for(const k of [...queue].reverse())spans.set(k,Math.max(heights.get(k),
+      children.get(k).reduce((total,n)=>total+spans.get(n)+28,0)-28));
+    const tops=new Map([[root.key,bottom]]);
+    for(const k of queue) {
+      const y=tops.get(k);placed.set(k,{col:depth.get(k),y});
+      let next=y;
+      for(const n of children.get(k)){tops.set(n,next);next+=spans.get(n)+28;}
+    }
+    bottom+=spans.get(root.key)+64;
+  }
+  return {placed,height:Math.max(420,bottom),columns:Math.max(1,...[...placed.values()].map(p=>p.col+1))};
+}
+
+function observedGroups(endpoints, links=[]) {
   const grouped=new Map();
   for(const e of endpoints) {
     const match=e.kind === "tunnel" && /^([1-9][0-9]{0,2})(?:_([1-9][0-9]?))?([sc])$/.exec(e.name);
     const group=match ? Number(match[1]) : 0, member=match ? Number(match[2] || 0) : 0;
     const mode=tunnelPayload(e);
-    const verified=match && group<=255 && member<=63 && mode &&
+    const verified=e.source!=="discovered" && match && group<=255 && member<=63 && mode &&
       e.metrics?.tunnel_id === String(group+256*member) && e.role === (match[3]==="s"?"server":"client") && e.net_namespace && e.mount_namespace;
     const key=verified ? JSON.stringify([e.host,e.net_namespace,e.mount_namespace,group,e.role,mode,e.switch_socket || "",e.peer || "",e.metrics?.peer_info_access || ""]) : "single:"+e.id;
     if(!grouped.has(key)) grouped.set(key,{key,name:verified?match[1]+match[3]:e.name,members:[]});
     grouped.get(key).members.push(e);
   }
+  // Visual peer bundles inherit only a proven local stack, not remote identity.
+  if(links.length) {
+    const owners=new Map(), parents=new Map(), peers=new Map();
+    for(const g of grouped.values())if(g.members.length>1 && !g.key.startsWith("single:"))
+      for(const e of g.members)owners.set(e.id,g);
+    for(const l of controlTopology(endpoints,links))if(l.kind==="control" && l.port_id==="peer") {
+      if(!parents.has(l.target))parents.set(l.target,new Set());
+      parents.get(l.target).add(l.source);
+      if(!peers.has(l.source))peers.set(l.source,new Set());
+      peers.get(l.source).add(l.target);
+    }
+    for(const e of endpoints) {
+      if(e.source!=="discovered" || e.kind!=="tunnel" || e.discovery_stale)continue;
+      const candidates=parents.get(e.id);
+      if(candidates?.size!==1)continue;
+      const parent=[...candidates][0],owner=owners.get(parent),mode=tunnelPayload(e);
+      if(!owner || peers.get(parent)?.size!==1 || !mode)continue;
+      const key="peers:"+owner.key+":"+mode;
+      if(!grouped.has(key))grouped.set(key,{key,name:owner.name+" / peer",members:[]});
+      grouped.get(key).members.push(e);
+      grouped.delete("single:"+e.id);
+    }
+  }
+  // Bundle direct adapter attachments to peer stacks; never infer from names.
+  if(links.length) {
+    const owners=new Map(), parents=new Map(), children=new Map();
+    const adapters=new Map(endpoints.filter(e=>e.source==="discovered" && ["adapter","divert"].includes(e.kind)).map(e=>[e.id,e]));
+    for(const g of grouped.values())if(g.key.startsWith("peers:") && g.members.length>1)
+      for(const e of g.members)owners.set(e.id,g);
+    for(const l of controlTopology(endpoints,links))if(l.kind==="control" && l.port_id.startsWith("port:") && adapters.has(l.target)) {
+      if(!parents.has(l.target))parents.set(l.target,new Set());
+      parents.get(l.target).add(l.source);
+      if(!children.has(l.source))children.set(l.source,new Set());
+      children.get(l.source).add(l.target);
+    }
+    for(const e of adapters.values()) {
+      const candidates=parents.get(e.id);
+      if(e.discovery_stale || candidates?.size!==1)continue;
+      const parent=[...candidates][0],owner=owners.get(parent);
+      if(!owner || children.get(parent)?.size!==1)continue;
+      const key="adapters:"+owner.key+":"+e.kind;
+      if(!grouped.has(key))grouped.set(key,{key,name:owner.name.replace(/ \/ peer$/,"")+" / "+e.kind.toUpperCase(),members:[]});
+      grouped.get(key).members.push(e);
+      grouped.delete("single:"+e.id);
+    }
+  }
   for(const group of grouped.values()) group.members.sort((a,b)=>Number(a.metrics?.tunnel_id || 0)-Number(b.metrics?.tunnel_id || 0) || a.id.localeCompare(b.id));
   return [...grouped.values()];
 }
+const mapLabels=new Set();
 const mapPinned=new Set(), mapLarge=new Set(), mapOrder=new Map();
 let mapHovered=null, mapOrderNext=0, mapHoverTimer=null, mapHoverPending=null;
 function cancelMapHover() {
@@ -1301,26 +1471,32 @@ function cancelMapHover() {
 }
 $("map-expand-all").addEventListener("change",()=>{cancelMapHover();mapHovered=null;renderObserved();});
 $("map-density").addEventListener("change",renderObserved);
-$("map-show-labels").addEventListener("change",()=>{renderObserved();refreshMapRules();});
 function renderObserved() {
   const canvas=$("observed-canvas");
   if(!canvas || !state.data) return;
   renderViaBars();
-  const endpoints=state.data.endpoints, groups=observedGroups(endpoints);
+  const endpoints=state.data.endpoints, groups=observedGroups(endpoints,state.data.links || []);
   const keys=new Set(groups.map(g=>g.key)), ids=new Set(endpoints.map(e=>e.id));
-  for(const key of mapOrder.keys()) if(!keys.has(key)) {mapOrder.delete(key);mapPinned.delete(key);}
+  for(const key of mapOrder.keys()) if(!keys.has(key)) {mapOrder.delete(key);mapPinned.delete(key);mapLabels.delete(key);}
   for(const id of mapLarge) if(!ids.has(id))mapLarge.delete(id);
   for(const g of groups) if(!mapOrder.has(g.key)) mapOrder.set(g.key,mapOrderNext++);
   groups.sort((a,b)=>mapOrder.get(a.key)-mapOrder.get(b.key));
-  const showLabels=$("map-show-labels").checked, laneWidth=showLabels?560:300, canvasWidth=showLabels?1400:900;
-  canvas.style.minWidth=canvasWidth+"px";
+  const laneWidth=mapLabels.size?590:340;
   const all=$("map-expand-all").checked, density=$("map-density").value;
   const size=density === "auto" ? (groups.length>30?"names":groups.length>12?"compact":"full") : density;
   const heightFor=full=>full?114:size==="names"?36:size==="compact"?66:114;
-  const lanes=[65,65,65], positions=new Map(), layouts=[];
-  const lane=e=>e.kind === "switch"?1:["adapter","divert"].includes(e.kind)?2:0;
+  const topology=controlTopology(endpoints,state.data.links || []);
+  const heights=new Map(groups.map(g=>{
+    const stack=g.members.length>1,open=stack && (all || mapPinned.has(g.key) || mapHovered===g.key);
+    const full=all || open || (!stack && mapLarge.has(g.members[0].id));
+    return [g.key,stack && !open?heightFor(false):(open?44:0)+g.members.length*(heightFor(full)+12)];
+  }));
+  const placement=observedPlacement(groups,topology,heights);
+  const canvasWidth=Math.max(900,48+(placement.columns-1)*laneWidth+250);
+  canvas.style.minWidth=canvasWidth+"px";
+  const positions=new Map(), layouts=[];
   for(const g of groups) {
-    const col=lane(g.members[0]),x=24+col*laneWidth,y=lanes[col], stack=g.members.length>1;
+    const {col,y}=placement.placed.get(g.key),x=24+col*laneWidth, stack=g.members.length>1;
     const open=stack && (all || mapPinned.has(g.key) || mapHovered===g.key);
     const full=all || open || (!stack && mapLarge.has(g.members[0].id));
     let offset=stack && open ? 44 : 0;
@@ -1332,20 +1508,20 @@ function renderObserved() {
       const h=heightFor(full);cards.push({members:[e],x,y:y+offset,h,stack:false});
       positions.set(e.id,{x,y:y+offset,h});offset+=h+12;
     }
-    layouts.push({g,x,y,stack,open,full,cards,height:offset});lanes[col]+=offset+28;
+    layouts.push({g,x,y,stack,open,full,cards,height:offset});
   }
-  const height=Math.max(420,...lanes);
-  const links=(state.data.links || []).map(link=>{
+  const height=placement.height;
+  const links=topology.map(link=>{
     const source=endpoints.find(e=>e.id===link.source),target=endpoints.find(e=>e.id===link.target);
     if(!source || !target)return "";
     const a=positions.get(source.id),b=positions.get(target.id),left=a.x<b.x;
     const registered=link.namespace_verified && target.switch_detail?.ports.some(p=>p.name===link.port_id);
-    const traffic=!outdated(source) && source.status === "reachable" ? (rate(source,"rx") || 0)+(rate(source,"tx") || 0) : 0;
+    const traffic=link.kind!=="control" && !outdated(source) && source.status === "reachable" ? (rate(source,"rx") || 0)+(rate(source,"tx") || 0) : 0;
     const active=traffic>0;
-    return `<path data-link-width="${mapLinkWidth(traffic).toFixed(2)}" class="map-link ${payloadClass(source)} ${registered?"confirmed":"inferred"} ${active?"flowing":""} ${attentionReasons(source).length?"problem":""}" d="${mapConnector(a.x+(left?250:0),a.y+a.h/2,b.x+(left?0:250),b.y+b.h/2,tunnelPayload(source)==="IPC"?6:-6)}"><title>${esc(source.name+" ↔ "+target.name+" · "+(link.port_id || "—"))}</title></path>`;
+    return `<path data-link-width="${mapLinkWidth(traffic).toFixed(2)}" class="map-link ${link.kind==="control"?"control-link":""} ${payloadClass(source)} ${registered?"confirmed":"inferred"} ${active?"flowing":""} ${attentionReasons(source).length?"problem":""}" d="${mapConnector(a.x+(left?250:0),a.y+a.h/2,b.x+(left?0:250),b.y+b.h/2,tunnelPayload(source)==="IPC"?6:-6)}"><title>${esc(source.name+" ↔ "+target.name+" · "+(link.kind==="control"?"CONTROL · ":"")+(link.port_id || "—"))}</title></path>`;
   }).join("");
-  if(!canvas.querySelector("svg")) canvas.innerHTML=`<div class="map-lane">${esc(t("mapInputs"))}</div><div class="map-lane">SWITCH FABRIC</div><div class="map-lane">${esc(t("mapAdapters"))}</div><svg width="1400" aria-hidden="true"></svg>`;
-  [...canvas.querySelectorAll(".map-lane")].forEach((el,i)=>{el.style.left=(24+i*laneWidth)+"px";el.textContent=i===0?t("mapInputs"):i===1?"SWITCH FABRIC":t("mapAdapters");});
+  if(!canvas.querySelector("svg"))canvas.innerHTML='<svg aria-hidden="true"></svg>';
+  for(const el of canvas.querySelectorAll(".map-lane"))el.remove();
   canvas.style.height=height+"px";const svg=canvas.querySelector("svg");svg.setAttribute("height",height);svg.setAttribute("width",canvasWidth);svg.innerHTML=links;
   for(const path of svg.querySelectorAll("[data-link-width]"))path.style.strokeWidth=path.dataset.linkWidth+"px";
   const previous=new Map([...canvas.querySelectorAll(".map-group")].map(el=>[el.dataset.mapGroup,el]));
@@ -1361,32 +1537,37 @@ function renderObserved() {
       canvas.append(wrapper);
     }
     previous.delete(g.key);wrapper.dataset.stack=String(stack);wrapper.style.left=x+"px";wrapper.style.top=y+"px";wrapper.style.height=layout.height+"px";
-    const focus=wrapper.contains(document.activeElement)?document.activeElement.dataset.mapNode || "group":null;
+    const focus=wrapper.contains(document.activeElement)?document.activeElement.dataset.mapLabels?"labels":document.activeElement.dataset.mapNode || "group":null;
     const header=stack && open?`<button class="map-stack-header ${payloadClass(g.members[0])}" data-map-toggle="${esc(g.key)}" aria-expanded="true" title="${esc(t("mapStackHint"))}">${esc(g.name)} · ×${g.members.length} ${mapPinned.has(g.key)||all?"▣":"◇"} ▴</button>`:"";
     const aggregate=(members,dir)=>{const rates=members.map(e=>rate(e,dir));return rates.every(Number.isFinite)?rates.reduce((a,b)=>a+b,0):null;};
+    const policy=mapPolicyRows(g.members),hasPolicy=policy.rows.length>0 || policy.unknown;
     let html=header+cards.map(card=>{
       const e=card.members[0],issues=card.members.filter(e=>attentionReasons(e).length).length;
       const worst=card.members.find(e=>attentionReasons(e).length) || card.members.find(e=>status(e)[0]!=="") || e;
       const [color,label]=status(worst),compact=!full && size!=="full";
       const attrs=card.stack?`data-map-toggle="${esc(g.key)}" aria-expanded="false"`:`data-map-node="${esc(e.id)}" aria-pressed="${state.selected===e.id}"`;
-      return `<button ${attrs} data-offset="${card.y-y}" data-height="${card.h}" class="map-node ${payloadClass(e)} ${color} ${card.stack?"map-stack":""} ${compact?"map-"+size:""} ${!card.stack && state.selected===e.id?"selected":""}" title="${esc(card.stack?t("mapStackHint"):e.name+" · "+endpointType(e))}"><span class="map-node-kind">${payloadMark(e)}${esc(endpointType(e))}${card.stack?"":" · PID "+e.pid}<i class="dot ${color}"></i></span><strong>${esc(card.stack?g.name:e.name)}${card.stack ? "" : authorityBadge(e)}${card.stack?` <em>×${g.members.length}</em>`:""}</strong><span class="map-node-status">${esc(card.stack?t("mapMembers",{count:g.members.length,issues}):label+(e.kind==="tunnel"?" · RTT "+lastRTT(e):""))}</span><span class="map-node-rate">↓ ${esc(bps(aggregate(card.members,"rx")))} &nbsp; ↑ ${esc(bps(aggregate(card.members,"tx")))}</span></button>`;
+      return `<button ${attrs} data-offset="${card.y-y}" data-height="${card.h}" class="map-node ${hasPolicy && card===cards[0]?"has-label-toggle":""} ${payloadClass(e)} ${color} ${issues?"map-problem":""} ${card.stack?"map-stack":""} ${compact?"map-"+size:""} ${!card.stack && state.selected===e.id?"selected":""}" title="${esc(card.stack?t("mapStackHint"):e.name+" · "+endpointType(e))}"><span class="map-node-kind">${payloadMark(e)}${esc(endpointType(e))}${card.stack?"":" · "+processIdentity(e)}<i class="dot ${color}"></i></span><strong>${esc(card.stack?g.name:e.name)}${card.stack ? "" : authorityBadge(e)}${card.stack?` <em>×${g.members.length}</em>`:""}</strong><span class="map-node-status">${card.stack?`${esc(t("mapMemberCount",{count:g.members.length}))} · <span class="${issues?"map-warning-count":""}">${esc(t("mapWarningCount",{issues}))}</span>`:esc(label+(e.kind==="tunnel"?" · RTT "+lastRTT(e):""))}</span><span class="map-node-rate">↓ ${esc(bps(aggregate(card.members,"rx")))} &nbsp; ↑ ${esc(bps(aggregate(card.members,"tx")))}</span></button>`;
     }).join("");
-    for(const card of showLabels?cards:[]) {
-      const policy=mapPolicyRows(card.members);
-      if(!policy.rows.length && !policy.unknown)continue;
+    if(hasPolicy && cards.length) {
+      const card=cards[0];
+      html+=`<button class="map-label-toggle" data-map-labels="${esc(g.key)}" data-offset="${card.y-y+5}" aria-label="${esc(t("mapShowLabels")+" · "+g.name)}" aria-pressed="${mapLabels.has(g.key)}" title="${esc(t("mapShowLabels"))}">≡</button>`;
+    }
+    for(const card of mapLabels.has(g.key) && hasPolicy?cards.slice(0,1):[]) {
       html+=`<aside class="map-policy ${payloadClass(card.members[0])}" data-offset="${card.y-y}" data-height="${card.h}" tabindex="0" aria-label="${esc(t("mapPolicy"))}" title="${esc(t("mapPolicyHint"))}"><strong>${esc(t("mapPolicy"))}</strong>${policy.unknown?`<p>${esc(t("mapPolicyUnknown"))}</p>`:""}${policy.rows.map(row=>`<div class="map-policy-row ${row.action==='drop'?'denied':''}" title="${esc([...row.ports].join(', ')+" · "+row.raw)}"><span>${row.direction} ${esc(row.stack)}</span><small>${esc(row.action)} · ${esc(row.target)}${row.rewrite!=='*'?' · '+esc(row.rewrite):''}${row.via?' via '+esc(row.via):''}</small></div>`).join("")}</aside>`;
     }
     const policyScroll=[...wrapper.querySelectorAll(".map-policy")].map(el=>el.scrollTop);
     if(wrapper.innerHTML!==html)wrapper.innerHTML=html;
     [...wrapper.querySelectorAll(".map-policy")].forEach((el,i)=>{el.scrollTop=policyScroll[i] || 0;});
-    for(const button of wrapper.querySelectorAll("[data-offset]")){button.style.top=button.dataset.offset+"px";button.style.height=button.dataset.height+"px";}
-    if(focus){const button=[...wrapper.querySelectorAll("button")].find(el=>focus==="group"?el.hasAttribute("data-map-toggle"):el.dataset.mapNode===focus);button?.focus({preventScroll:true});}
+    for(const button of wrapper.querySelectorAll("[data-offset]")){button.style.top=button.dataset.offset+"px";if(button.dataset.height)button.style.height=button.dataset.height+"px";}
+    if(focus){const button=[...wrapper.querySelectorAll("button")].find(el=>focus==="labels"?el.hasAttribute("data-map-labels"):focus==="group"?el.hasAttribute("data-map-toggle"):el.dataset.mapNode===focus);button?.focus({preventScroll:true});}
   }
   for(const wrapper of previous.values()){if(mapHoverPending===wrapper)cancelMapHover();wrapper.remove();}
   const e=selected(),detail=$("observed-detail");
-  detail.innerHTML=e?`<span class="kind ${payloadClass(e)}">${payloadMark(e)}${esc(endpointType(e))}</span><h3>${esc(e.name)}${authorityBadge(e)}</h3><p>PID ${e.pid} · ${esc(duration(e.uptime_seconds))}</p>${peerNodes(e,state.data?.syspiper?.nodes || []).map(nodeSystemSummary).join("")}<dl><dt>RTT</dt><dd>${esc(lastRTT(e))}</dd><dt>RX / TX</dt><dd>${esc(bps(rate(e,"rx")))} / ${esc(bps(rate(e,"tx")))}</dd><dt>Peer access</dt><dd>${esc(e.metrics?.peer_info_access || "—")}</dd><dt>${esc(t("port"))}</dt><dd>${esc(e.port_id || "—")}</dd></dl>${attentionReasons(e).map(r=>`<p class="map-issue">${esc(r.text)}</p>`).join("")}<button class="quiet-button" data-map-open>${esc(t("mapOpen"))}</button>`:`<p>${esc(t("chooseProcess"))}</p>`;
+  detail.innerHTML=e?`<span class="kind ${payloadClass(e)}">${payloadMark(e)}${esc(endpointType(e))}</span><h3>${esc(e.name)}${authorityBadge(e)}</h3><p>${esc(processIdentity(e))} · ${esc(duration(e.uptime_seconds))}</p>${peerNodes(e,state.data?.syspiper?.nodes || []).map(nodeSystemSummary).join("")}<dl><dt>RTT</dt><dd>${esc(lastRTT(e))}</dd><dt>RX / TX</dt><dd>${esc(bps(rate(e,"rx")))} / ${esc(bps(rate(e,"tx")))}</dd><dt>Peer access</dt><dd>${esc(e.metrics?.peer_info_access || "—")}</dd><dt>${esc(t("port"))}</dt><dd>${esc(e.port_id || "—")}</dd></dl>${attentionReasons(e).map(r=>`<p class="map-issue">${esc(r.text)}</p>`).join("")}<button class="quiet-button" data-map-open>${esc(t("mapOpen"))}</button>`:`<p>${esc(t("chooseProcess"))}</p>`;
 }
 $("observed-canvas").addEventListener("click",event=>{
+  const labels=event.target.closest("[data-map-labels]");
+  if(labels){cancelMapHover();const key=labels.dataset.mapLabels;mapLabels.has(key)?mapLabels.delete(key):mapLabels.add(key);renderObserved();return;}
   const toggle=event.target.closest("[data-map-toggle]");
   if(toggle){cancelMapHover();const key=toggle.dataset.mapToggle;mapPinned.has(key)?mapPinned.delete(key):mapPinned.add(key);mapHovered=null;renderObserved();return;}
   const node=event.target.closest("[data-map-node]");
@@ -1423,22 +1604,22 @@ function draftFor(id) {
   return state.drafts.get(id);
 }
 function renderRules() {
-  const e = selected(), valid = e?.kind === "switch" && !!e.control;
+  const e = selected(), valid = e?.kind === "switch" && (!!e.control || e.source==="discovered"), remote=e?.source==="discovered";
   const draft = e ? draftFor(e.id) : {text:"", message:"", diff:""};
   $("rules-title").textContent = valid ? t("rulesFor",{name:e.name}) : t("rules");
-  $("rules-hint").textContent = t(valid ? (state.data.allow_write ? "editRulesHint" : "readOnlyHint") : "chooseSwitch");
+  $("rules-hint").textContent = t(valid ? (state.data.allow_write && !remote ? "editRulesHint" : "readOnlyHint") : "chooseSwitch");
   $("rules-read").disabled = !valid || state.ruleBusy;
-  $("rules-editor").disabled = !valid || state.ruleBusy || !draft.revision;
+  $("rules-editor").disabled = remote || !valid || state.ruleBusy || !draft.revision;
   if ($("rules-editor").value !== draft.text) $("rules-editor").value = draft.text;
-  $("rules-check").disabled = !valid || state.ruleBusy || !draft.revision || !draft.text.trim();
-  $("rules-load").disabled = !valid || state.ruleBusy || !state.data?.allow_write || !draft.checked || draft.checked.text !== draft.text;
+  $("rules-check").disabled = remote || !valid || state.ruleBusy || !draft.revision || !draft.text.trim();
+  $("rules-load").disabled = remote || !valid || state.ruleBusy || !state.data?.allow_write || !draft.checked || draft.checked.text !== draft.text;
   $("rules-status").textContent = messageText(draft.message);
   $("rules-diff").hidden = !draft.diff && !draft.checked;
   $("rules-diff").innerHTML = (draft.diff || (draft.checked ? t("noDiff") : "")).split("\n").map(line=>`<span class="diff-line ${line.startsWith("+") ? "add" : line.startsWith("-") ? "remove" : ""}">${esc(line)}</span>`).join("\n");
 }
 async function ruleAction(operation) {
   const e = selected();
-  if (!e || state.ruleBusy) return;
+  if (!e || state.ruleBusy || (e.source==="discovered" && operation!=="show")) return;
   const draft = draftFor(e.id), text = draft.text;
   if (operation === "show" && draft.revision && draft.text !== draft.active && !window.confirm(t("discardDraft"))) return;
   if (operation === "load" && (!draft.checked || draft.checked.text !== text || !window.confirm(t("confirmLoad",{name:e.name})))) return;
@@ -1453,28 +1634,51 @@ async function ruleAction(operation) {
   finally { state.ruleBusy=false; renderRules(); }
 }
 function showView(view) {
+  cancelProcessHover();processHovered=null;
   state.view=view;
   render();
   document.querySelectorAll("[data-view]").forEach(b=>b.classList.toggle("active",b.dataset.view === state.view));
   for (const name of ["overview","metrics","rules","switch","diagnostics","syspiper","flows","observed"]) $("view-"+name).hidden = view !== name;
-  document.querySelector(".process-panel").hidden=view === "observed";
+  document.querySelector(".process-panel").hidden=["observed","syspiper"].includes(view);
   if(view === "observed") {renderObserved();refreshMapRules();}
   $("view-"+view).scrollIntoView({block:"start"});
   if (view === "overview") drawChart();
-  if (view === "diagnostics" && selected() && !state.logs.has(state.selected)) readLogs();
+  if (view === "diagnostics" && selected() && selected().source!=="discovered" && !state.logs.has(state.selected)) readLogs();
 }
 function selectProcess(id, view) {
   if (state.selected!==id) state.flowPage=0;
   state.selected=id; if(view)state.view=view; render(); loadHistory(state.selected);
   if (view) showView(view);
-  else if (state.view === "diagnostics" && !state.logs.has(id)) readLogs();
+  else if (state.view === "diagnostics" && selected()?.source!=="discovered" && !state.logs.has(id)) readLogs();
 }
 document.querySelectorAll("[data-view]").forEach(button=>button.addEventListener("click",()=>showView(button.dataset.view)));
 $("processes").addEventListener("click",event=>{
+  const toggle=event.target.closest("[data-process-toggle]");
+  if(toggle){toggleProcessGroup(toggle.dataset.processToggle);return;}
   const attention=event.target.closest("[data-attention]"),button=event.target.closest("[data-id]"),row=event.target.closest("[data-process-row]");
   if (attention) selectProcess(attention.dataset.attention,"overview");
   else if (button) selectProcess(button.dataset.id);
   else if (row && !event.target.closest("button,a,input,select,textarea,summary") && !window.getSelection()?.toString()) selectProcess(row.dataset.processRow);
+});
+$("processes").addEventListener("dblclick",event=>{
+  const header=event.target.closest("[data-process-header]");
+  if(header && !event.target.closest("button,a"))toggleProcessGroup(header.dataset.processHeader);
+});
+$("processes").addEventListener("pointerover",event=>{
+  if(event.pointerType==="touch" || state.view==="diagnostics")return;
+  const key=event.target.closest("[data-process-group]")?.dataset.processGroup;
+  if(!key || key===processHovered || key===processHoverPending || processExpanded.has(key))return;
+  cancelProcessHover();processHoverPending=key;
+  processHoverTimer=setTimeout(()=>{
+    processHoverPending=null;processHovered=key;renderProcesses();
+  },1200);
+});
+$("processes").addEventListener("pointerout",event=>{
+  const key=event.target.closest("[data-process-group]")?.dataset.processGroup;
+  const next=event.relatedTarget?.closest?.("[data-process-group]")?.dataset.processGroup;
+  if(!key || key===next)return;
+  cancelProcessHover();
+  if(processHovered===key){processHovered=null;renderProcesses();}
 });
 $("search").addEventListener("input",renderProcesses); $("kind-filter").addEventListener("change",renderProcesses);
 $("metric-search").addEventListener("input",renderMetrics);
@@ -1761,7 +1965,7 @@ $('flows-rows').addEventListener('click',event=>{
   if(more){const key=more.dataset.cascadeMore;flowCascadeLimits.set(key,(flowCascadeLimits.get(key)||50)+50);renderFlows();}
 });
 async function readFlows() {
-  const e=selected(); if (!e?.control || state.flowBusy) return;
+  const e=selected(); if ((!e?.control && e?.source!=="discovered") || state.flowBusy) return;
   state.flowBusy=true; renderFlows();
   const previous=state.flows.get(e.id);
   try {
@@ -1776,10 +1980,10 @@ function renderFlows() {
   for(let i=0;i<4;i++)$("cascade-title-"+i).textContent=t("cascadeLevel",{n:i+1});
   const e=selected(), entry=state.flows.get(e?.id), data=entry?.data;
   $("flows-title").textContent=e ? `${t("flowsTitle")} · ${e.name}` : t("flowsTitle");
-  $("flows-read").disabled=!e?.control || state.flowBusy;
+  $("flows-read").disabled=(!e?.control && e?.source!=="discovered") || state.flowBusy;
   $("flows-export").disabled=!data;
   $("flows-status").textContent=[state.flowBusy ? t("working") : "",entry?.error ? diagnostic(entry.error) : "",entry?.error && data ? t("flowRefreshFailed") : "",
-    data ? new Date(data.sampled_at).toLocaleString(locale())+" · PID "+e.pid : t("flowsNotRead"),
+    data ? new Date(data.sampled_at).toLocaleString(locale())+" · "+processIdentity(e) : t("flowsNotRead"),
     data?.truncated ? t("flowsLimit",{shown:data.returned_count,total:data.flow_count}) : ""].filter(Boolean).join(" ");
   $("flows-context").textContent=t(data?.tracking === "none" ? "flowsNone" : "flowsSemantics");
   $("flows-summary").innerHTML=data ? [["flowsCount",data.flow_count],["flowsRetained",data.flow_count-data.admission_count],["flowsAdmission",data.admission_count],["flowsDistinct",data.label_count]].map(([key,n])=>`<article><span>${esc(t(key))}</span><strong>${n.toLocaleString(locale())}</strong></article>`).join("") : "";
@@ -1916,8 +2120,9 @@ async function discoverNetwork() {
 function renderDiagnostics() {
   renderDiscovery();
   const e=selected(), logs=state.logs.get(e?.id), report=state.reports.get(e?.id);
-  $("diagnostic-title").innerHTML=e ? `${esc(e.name)}${authorityBadge(e)} · PID ${e.pid}` : esc(t("diagnostics"));
+  $("diagnostic-title").innerHTML=e ? `${esc(e.name)}${authorityBadge(e)} · ${esc(processIdentity(e))}` : esc(t("diagnostics"));
   for (const id of ["logs-read","diagnostics-copy","diagnostics-save"]) $(id).disabled=!e || state.diagnosticBusy;
+  $("logs-read").hidden=e?.source==="discovered";
   $("log-meta").textContent=logs?.sampled_at ? new Date(logs.sampled_at).toLocaleString(locale()) : "";
   const logText=logs?.error ? diagnostic(logs.error) : logs?.sources?.length ? logs.sources.map(source=>
     `[${source.source}${source.truncated ? " · "+t("truncated") : ""}]\n${source.text || "—"}`).join("\n\n") : t(logs ? "logsEmpty" : "logsNotRead");
@@ -1928,7 +2133,7 @@ function renderDiagnostics() {
   if ($("diagnostic-report").value !== (report?.text || "")) $("diagnostic-report").value=report?.text || "";
 }
 async function readLogs() {
-  const e=selected(); if (!e || state.diagnosticBusy) return;
+  const e=selected(); if (!e || e.source==="discovered" || state.diagnosticBusy) return;
   state.diagnosticBusy=true; renderDiagnostics();
   try { state.logs.set(e.id,await api(`/api/v1/endpoints/${encodeURIComponent(e.id)}/logs`)); }
   catch(error) { state.logs.set(e.id,{error:error.message}); }

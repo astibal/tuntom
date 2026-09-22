@@ -217,7 +217,7 @@ class APITests(unittest.TestCase):
 
     def test_async_http_submission_and_polling(self):
         gate = threading.Event()
-        self.fabric.endpoint = lambda key: object()
+        self.fabric.endpoint = lambda key: type("Origin", (), {"source":"local"})()
         def control(*args, on_accepted, **kwargs):
             on_accepted("a" * 32)
             gate.wait(2)

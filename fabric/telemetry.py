@@ -47,6 +47,8 @@ def health(endpoint, sample):
     checks = [{"key": "process", "state": "warn" if endpoint.state in {"T", "t", "D"} else "ok",
                "code": "process_blocked" if endpoint.state in {"T", "t", "D"} else "process_running",
                "value": endpoint.state}]
+    if getattr(endpoint, "source", "local") == "discovered":
+        checks = []  # No remote /proc state is available over CONTROL.
     if sample["status"] != "reachable":
         checks += [{"key": key, "state": "unknown", "code": "telemetry_missing"}
                    for key in ("session", "traffic", "errors")]

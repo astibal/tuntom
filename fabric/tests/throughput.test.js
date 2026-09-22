@@ -133,7 +133,7 @@ test("returning to overview redraws after revealing the chart, even while paused
     ["view-"+name,{hidden:name!=="metrics",scrollIntoView(){}}]));
   let draws=0;
   const show=runInNewContext(source.slice(source.indexOf("function showView("),source.indexOf("function selectProcess("))+";showView",{
-    render(){},state:{view:"metrics",paused:true},document:{querySelectorAll:()=>[],querySelector:()=>({hidden:false})},$:id=>views[id],
+    cancelProcessHover(){},processHovered:null,render(){},state:{view:"metrics",paused:true},document:{querySelectorAll:()=>[],querySelector:()=>({hidden:false})},$:id=>views[id],
     drawChart(){assert.equal(views["view-overview"].hidden,false);draws++;}
   });
   show("overview");

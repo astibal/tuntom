@@ -615,3 +615,51 @@ Autorita (seznam procesů, detail, diagnostika a jednotlivé uzly topologie).
 Označuje načtený klíč i při vypnutém CONTROL, nikoli zaručené oprávnění ke
 všem cílům. Samotné trusted keys ani allow-all tento štítek nezapínají.
 Při nedostupných metrikách se štítek i akce skryjí.
+
+
+## Automatický DISCOVER a polling přes CONTROL
+
+Collector automaticky vybere místní procesy, jejichž aktuální stats povolují
+CONTROL, DISCOVER a zahájení požadavků. Přes ně spustí DISCOVER při prvním
+nalezení a poté každých **120 sekund**. Tlačítko Obnovit plánuje i nový síťový
+průzkum; ruční DISCOVER v Diagnostics také doplní společný přehled.
+Privátní klíč zůstává na výchozím daemonu, collector jej nečte.
+
+Vzdálené instance se slučují podle instance ID; jejich stabilní Fabric ID je
+`control:<instance>`. Uchovává se nejvýše osm cest na instanci. `self` a známé
+přímé lokální přípojky switche ve stejné mount namespace se neduplikují.
+Vzdálená položka má u typu malý štítek **discovered**, místo lokálního PID
+uvádí CONTROL. Detail ukazuje cesty a čas posledního DISCOVER; PID, UID,
+RSS, uptime ani vzdálené /proc údaje se neodhadují.
+
+Statistiky se načítají v samostatných workerech po **5 sekundách** od dokončení
+předchozího vzorku. Nejvýše jeden dotaz na instanci, 16 celkem a 4 přes jeden
+výchozí proces; žádná čekací fronta. Po chybě roste interval 10/20/40/80/120 s,
+zkouší se alternativní cesta; úspěch obnoví 5 s. Lokální sběr tím není blokovaný.
+Metriky, delty, grafy a SQLite historie jsou stejné jako u místních komponent.
+Vzorek starší než 15 s je nedostupný, nikoli živá nula.
+
+Neúplný průzkum nemaže dřívější nálezy. Po 4 minutách bez DISCOVER potvrzení
+má položka stale hint. Cesta se nepoužije po 10 minutách bez potvrzení; položka
+zmizí po 10 minutách bez discovery i úspěšné statistiky. Restart s novým instance
+ID dostane novou historii. Změna instance na známé cestě vyřadí starou cestu
+včetně právě dobíhajícího výsledku. **Současné stats ale neobsahují instance ID**:
+výměnu stejného typu procesu na stejné cestě mezi průzkumy nelze spolehlivě
+poznat. Cesty nejsou kryptograficky ověřenou identitou vzdáleného stroje.
+
+Limity: 8 výchozích procesů (switche mají přednost), 256 vzdálených instancí,
+64 KiB serializovaných metrik na instanci a 2 MiB celkem. Přesah instancí hlásí
+`network_discovery.truncated`; chyba cache limitu je viditelná u komponenty.
+Metadata síťového sběru a chyby průzkumu jsou v `snapshot.network_discovery`.
+
+Flows a čtení pravidel vzdálené komponenty jsou ruční, sdílejí stejný limit
+jednoho aktivního dotazu na instanci (při souběhu 429). Logy, validace a zápisy
+pravidel přes vzdálenou položku nejsou dostupné. Automatické čtení pravidel
+pro místní topologii nezahrnuje vzdálené switche. Syspiper dál vychází pouze
+z lokálního discovery a svých dosavadních pravidel.
+
+The observed map resolves adjacent DISCOVER path prefixes (including verified local switch attachments) and lays out a stable spanning forest rooted at local switches. Alternate paths add edges, not cards; unresolved or ambiguous intermediate hops do not imply a direct connection. Grey dashed CONTROL edges represent discovered reachability and never animate as data traffic.
+
+Discovered tunnel peers can collapse into a visual bundle when adjacent `peer` hops uniquely connect them to members of an already verified local tunnel stack. Names alone never create these bundles; stale, ambiguous and unknown-payload peers remain separate. Expanding preserves every component and its individual detail.
+
+Direct discovered adapter attachments to a peer bundle can also collapse by component type, provided each peer has exactly one adapter attachment and each adapter has one unambiguous parent. These are visual bundles only; stale or ambiguous attachments stay separate.

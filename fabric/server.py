@@ -24,6 +24,7 @@ from urllib.parse import unquote, urlsplit, parse_qs
 
 from control import ControlError, ResponseTooLarge, MAX_BODY, query, encode_route
 from async_requests import Requests
+from network import Network
 from flows import parse_flows, MAX_FLOW_REPLY
 from errors import APIError
 from discovery import discover, stat_fields
@@ -96,12 +97,14 @@ class Fabric:
         self.thread = None
         self.history_store = History(history_path) if history_path else None
         self.history_error = None
+        self.network = Network(self._network_probe, parse_stats, self.history_store)
         self.syspiper = Syspiper(history=self.history_store, **(syspiper or {}))
 
     def start(self):
         self.thread = threading.Thread(target=self._poll, name="fabric-poll", daemon=True)
         self.thread.start()
         self.syspiper.start()
+        self.network.start()
 
     def close(self):
         self.requests.close()
@@ -109,11 +112,26 @@ class Fabric:
         self.wake.set()
         if self.thread:
             self.thread.join()
+        self.network.close()
         self.syspiper.close()
         if self.history_store:
             self.history_store.close()
 
+    def _network_probe(self, origin, operation, route):
+        endpoint = self.endpoint(origin)
+        if endpoint.source != "local":
+            raise APIError(400, "CONTROL origin must be local")
+        return self.control_query(endpoint, operation, route=route)
+
+    def refresh(self):
+        self.network.refresh()
+        self.wake.set()
+
     def control_query(self, endpoint, operation, body="", *, route=None, on_accepted=None):
+        if endpoint.source == "discovered":
+            if route is not None or body:
+                raise APIError(403, "discovered components support read-only operations")
+            return self.network.read(endpoint.id, operation)
         if not endpoint.control:
             raise OSError("process has no --control-socket")
         if int(stat_fields(Path(f"/proc/{endpoint.pid}/stat"))[19]) != endpoint.start_ticks:
@@ -137,11 +155,15 @@ class Fabric:
             target = (key, encode_route(route))
         except ValueError as error:
             raise APIError(400, str(error)) from error
-        self.endpoint(key)  # Reject invalid origins before reserving a worker.
+        endpoint = self.endpoint(key)  # Reject invalid origins before reserving a worker.
+        if endpoint.source == "discovered":
+            raise APIError(400, "choose a local CONTROL authority for discovery")
         def work(accepted):
             # Rediscover and verify the origin again immediately before connecting.
-            return {"text": self.control_query(self.endpoint(key), operation,
-                                              route=route, on_accepted=accepted)}
+            text = self.control_query(self.endpoint(key), operation, route=route, on_accepted=accepted)
+            if operation == "discover" and not route:
+                self.network.ingest(key, text)
+            return {"text": text}
         return self.requests.submit(work, target=target)
 
     def request_status(self, key):
@@ -208,6 +230,7 @@ class Fabric:
                     with self.mutex:
                         samples = dict(self.samples)
                     self.syspiper.update(endpoints, samples)
+                    self.network.update(endpoints, samples)
                     if self.history_store:
                         try:
                             self.history_store.prune()
@@ -218,6 +241,7 @@ class Fabric:
                         self.endpoints, self.samples, self.baselines = {}, {}, {}
                         self.discovery_info = {"source": "procfs", "status": "error", "error": str(error)}
                     self.syspiper.update([])
+                    self.network.update([], {})
                 self.wake.wait(max(.2, self.interval - (time.monotonic() - started)))
 
     def snapshot(self):
@@ -229,7 +253,9 @@ class Fabric:
                           if endpoint.kind == "switch" else None}
                          for endpoint in self.endpoints.values()]
             info = dict(self.discovery_info)
-        return {"api_version": 1, "generated_at": now(), "started_at": self.started_at,
+        remote, network = self.network.snapshot()
+        endpoints.extend(remote)
+        return {"api_version": 1, "network_discovery": network, "generated_at": now(), "started_at": self.started_at,
                 "poll_interval_seconds": self.interval, "allow_write": self.allow_write,
                 "discovery": info, "endpoints": endpoints, "links": topology(endpoints),
                 "collector": {"mode": "local", "uid": os.geteuid()},
@@ -238,6 +264,8 @@ class Fabric:
                             "error": self.history_error}}
 
     def logs(self, key):
+        if key.startswith("control:"):
+            raise APIError(400, "logs are unavailable over CONTROL")
         try:
             return {**read_logs(self.endpoint(key)), "sampled_at": now()}
         except (OSError, ValueError) as error:
@@ -252,7 +280,7 @@ class Fabric:
             result = parse_flows(self.control_query(endpoint, "flows"), endpoint.pid)
             return {**result, "endpoint_id": key, "sampled_at": now()}
         except ResponseTooLarge as error:
-            raise APIError(413, "flow snapshot exceeds Fabric's 8 MiB limit; use tuntomctl show flows") from error
+            raise APIError(413, "flow snapshot exceeds Fabric receive limit (1 MiB via CONTROL, 8 MiB local); use tuntomctl show flows") from error
         except ControlError as error:
             raise APIError(422, str(error)) from error
         except (OSError, ValueError) as error:
@@ -266,7 +294,7 @@ class Fabric:
         observed = next((e for e in snapshot["endpoints"] if e["id"] == key), asdict(endpoint))
         report = {"format": "tuntom-fabric-diagnostic-v1", "generated_at": now(), "endpoint": observed,
                   "links": [link for link in snapshot["links"] if key in (link["source"], link["target"])],
-                  "logs": self.logs(key)}
+                  "logs": self.logs(key) if endpoint.source == "local" else {"error":"logs are unavailable over CONTROL"}}
         if endpoint.kind == "switch":
             try:
                 report["active_rules"] = self.rules(key, "show")
@@ -275,6 +303,8 @@ class Fabric:
         return report
 
     def endpoint(self, key):
+        if key.startswith("control:"):
+            return self.network.endpoint(key)
         # Rediscover before an action: the process may have exited or exec'd
         # since the displayed snapshot, even if its PID has not changed.
         endpoints, _ = self.discover()
@@ -285,6 +315,8 @@ class Fabric:
 
     def rules(self, key, operation, body=None):
         endpoint = self.endpoint(key)
+        if endpoint.source == "discovered" and operation != "show":
+            raise APIError(403, "discovered components support read-only operations")
         if endpoint.kind != "switch":
             raise APIError(400, "rules are supported only by switches")
         if operation == "load" and not self.allow_write:
@@ -425,7 +457,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/v1/snapshot" and self.command == "GET":
                 return self.respond(200, self.server.fabric.snapshot())
             if path == "/api/v1/refresh" and self.command == "POST":
-                self.server.fabric.wake.set()
+                self.server.fabric.refresh()
                 return self.respond(202, {"result": "discovery scheduled"})
             match = re.fullmatch(r"/api/v1/endpoints/([^/]+)/requests", path)
             if match and self.command == "POST":

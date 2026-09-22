@@ -43,6 +43,8 @@ class Endpoint:
     net_namespace: str = ""
     options: dict = field(default_factory=dict)
     notes: list = field(default_factory=list)
+    source: str = "local"
+    instance: str = ""
 
 
 def options(argv):
