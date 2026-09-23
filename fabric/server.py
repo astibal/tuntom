@@ -30,8 +30,10 @@ from errors import APIError
 from discovery import discover, stat_fields
 from logs import read_logs
 from history import History, default_path
+from journal import Journal, actor as audit_actor, operation_id, audited, clipped, default_journal_path
 from telemetry import changes, health, switch_detail
 from syspiper import Syspiper
+from auth import AuthManager
 
 STATIC = Path(__file__).parent / "static"
 LOG = logging.getLogger("fabric")
@@ -80,11 +82,12 @@ def topology(endpoints):
 
 
 class Fabric:
-    def __init__(self, *, allow_write=False, interval=5, discover_fn=discover, history_path=None, syspiper=None):
+    def __init__(self, *, allow_write=False, interval=5, discover_fn=discover, history_path=None, syspiper=None, journal_path=None, journal_retention_days=90):
         self.allow_write, self.interval = allow_write, interval
         self.discover = discover_fn
         self.endpoints = {}
         self.discovery_info = {"source": "procfs", "status": "pending"}
+        self.journal = Journal(journal_path, journal_retention_days, missing_grace_seconds=150)
         self.requests = Requests()
         self.action_lock = threading.Lock()
         self.flow_lock = threading.Lock()
@@ -116,6 +119,7 @@ class Fabric:
         self.syspiper.close()
         if self.history_store:
             self.history_store.close()
+        self.journal.close()
 
     def _network_probe(self, origin, operation, route, body=""):
         endpoint = self.endpoint(origin)
@@ -123,6 +127,7 @@ class Fabric:
             raise APIError(400, "CONTROL origin must be local")
         return self.control_query(endpoint, operation, body, route=route)
 
+    @audited("refresh")
     def refresh(self):
         self.network.refresh()
         self.wake.set()
@@ -144,6 +149,7 @@ class Fabric:
                      route=route, on_accepted=on_accepted,
                      expected_pid=endpoint.pid, expected_start_ticks=endpoint.start_ticks)
 
+    @audited("request")
     def submit_request(self, key, body):
         if not isinstance(body, dict) or set(body) - {"operation", "route"}:
             raise APIError(400, "invalid async request")
@@ -158,12 +164,17 @@ class Fabric:
         endpoint = self.endpoint(key)  # Reject invalid origins before reserving a worker.
         if endpoint.source == "discovered":
             raise APIError(400, "choose a local CONTROL authority for discovery")
+        initiator=dict(audit_actor.get()); audit_id=operation_id.get()
         def work(accepted):
             # Rediscover and verify the origin again immediately before connecting.
-            text = self.control_query(self.endpoint(key), operation, route=route, on_accepted=accepted)
-            if operation == "discover" and not route:
-                self.network.ingest(key, text)
-            return {"text": text}
+            try:
+                text = self.control_query(self.endpoint(key), operation, route=route, on_accepted=accepted)
+                if operation == "discover" and not route:self.network.ingest(key, text)
+                self.journal.append('request.'+operation,key,'succeeded',{'route':route},op=audit_id,identity=initiator)
+                return {"text": text}
+            except Exception as error:
+                self.journal.append('request.'+operation,key,'failed',{'error':clipped(error,2048)[0]},op=audit_id,identity=initiator)
+                raise
         return self.requests.submit(work, target=target)
 
     def request_status(self, key):
@@ -231,6 +242,10 @@ class Fabric:
                         samples = dict(self.samples)
                     self.syspiper.update(endpoints, samples)
                     self.network.update(endpoints, samples)
+                    try:self.journal.observe(self.snapshot()['endpoints'])
+                    except (sqlite3.Error, OSError, ValueError):
+                        self.journal.error='component event recording failed'
+                        LOG.exception('Component journal failed')
                     if self.history_store:
                         try:
                             self.history_store.prune()
@@ -255,7 +270,7 @@ class Fabric:
             info = dict(self.discovery_info)
         remote, network = self.network.snapshot()
         endpoints.extend(remote)
-        return {"api_version": 1, "network_discovery": network, "generated_at": now(), "started_at": self.started_at,
+        return {"api_version": 1, "journal": {"persistent":self.journal.persistent,"error":self.journal.error,"retention_days":self.journal.retention_days}, "network_discovery": network, "generated_at": now(), "started_at": self.started_at,
                 "poll_interval_seconds": self.interval, "allow_write": self.allow_write,
                 "discovery": info, "endpoints": endpoints, "links": topology(endpoints),
                 "collector": {"mode": "local", "uid": os.geteuid()},
@@ -263,6 +278,7 @@ class Fabric:
                 "history": {"enabled": self.history_store is not None, "retention_seconds": 86400,
                             "error": self.history_error}}
 
+    @audited("logs")
     def logs(self, key):
         if key.startswith("control:"):
             raise APIError(400, "logs are unavailable over CONTROL")
@@ -271,6 +287,7 @@ class Fabric:
         except (OSError, ValueError) as error:
             raise APIError(502, str(error)) from error
 
+    @audited("flows")
     def flows(self, key):
         # Read-only and on demand. Serialize large dumps without queuing callers.
         if not self.flow_lock.acquire(blocking=False):
@@ -288,6 +305,7 @@ class Fabric:
         finally:
             self.flow_lock.release()
 
+    @audited("diagnostics")
     def diagnostics(self, key):
         endpoint = self.endpoint(key)
         snapshot = self.snapshot()
@@ -313,6 +331,23 @@ class Fabric:
                 return endpoint
         raise APIError(404, "process no longer exists; refresh discovery")
 
+    def journal_entries(self, params=None):
+        return self.journal.page(params)
+
+    def audit_event(self, body):
+        if not isinstance(body,dict) or set(body)-{'action','target','outcome','details'}:
+            raise APIError(400,'invalid audit event')
+        if body.get('action') not in {'auth.login','auth.logout','users.save','users.delete','http.denied'}:
+            raise APIError(400,'invalid audit action')
+        details=body.get('details',{})
+        if not isinstance(details,dict) or set(details)-{'role','enabled','password_changed','status'}:
+            raise APIError(400,'invalid audit metadata')
+        if any(k in details and not isinstance(details[k],bool) for k in ('enabled','password_changed')) or ('role' in details and not isinstance(details['role'],str)) or ('status' in details and not isinstance(details['status'],int)):
+            raise APIError(400,'invalid audit metadata types')
+        if body.get('outcome') not in {'started','succeeded','failed'}:raise APIError(400,'invalid audit outcome')
+        return {'id':self.journal.append(body['action'],str(body.get('target',''))[:128],body['outcome'],details)}
+
+    @audited("classifier")
     def classifier(self, key, operation, body=None):
         if operation not in {"show", "check", "load", "load-flush", "disable"}:
             raise APIError(400, "unsupported classifier operation")
@@ -355,6 +390,12 @@ class Fabric:
                                                     fromfile="active", tofile="candidate"))
                 if operation == "check":
                     return {"result":checked, "sha256":revision, "generation":generation, "diff":diff}
+                recorded_diff = "".join(difflib.unified_diff(current.splitlines(True),
+                    ("# classifier disabled\n" if operation=="disable" else candidate).splitlines(True),fromfile="active",tofile="candidate"))
+                text,truncated=clipped(recorded_diff)
+                self.journal.append('classifier.'+operation,key,'prepared',{'name':endpoint.name if hasattr(endpoint,'name') else key,
+                    'previous_sha256':revision,'candidate_sha256':digest(candidate),'previous_generation':generation,
+                    'diff':text,'diff_truncated':truncated})
                 sent = True
                 result = self.control_query(endpoint, "classifier-" + operation, candidate)
                 self.wake.set()
@@ -370,6 +411,7 @@ class Fabric:
                     LOG.warning(json.dumps({"event":"classifier."+operation+".uncertain", "endpoint":key, "at":now()}))
                 raise APIError(502, message) from error
 
+    @audited("rules")
     def rules(self, key, operation, body=None):
         endpoint = self.endpoint(key)
         if endpoint.source == "discovered" and operation != "show":
@@ -401,6 +443,8 @@ class Fabric:
                                                     fromfile="active", tofile="candidate"))
                 if operation == "check":
                     return {"result": checked, "sha256": revision, "diff": diff}
+                text,truncated=clipped(diff)
+                self.journal.append('rules.load',key,'prepared',{'previous_sha256':revision,'candidate_sha256':digest(candidate),'diff':text,'diff_truncated':truncated})
                 result = self.control_query(endpoint, "load", candidate)
                 self.wake.set()
                 LOG.info(json.dumps({"event": "rules.load", "endpoint": key, "at": now(),
@@ -420,8 +464,9 @@ class Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address, fabric, token):
+    def __init__(self, address, fabric, token, users_file=None):
         self.fabric, self.token = fabric, token
+        self.auth = AuthManager(token, users_file)
         self.slots = threading.BoundedSemaphore(24)
         super().__init__(address, Handler)
 
@@ -448,6 +493,7 @@ class Handler(BaseHTTPRequestHandler):
     def setup(self):
         super().setup()
         self.connection.settimeout(10)
+        self._body_raw = None
 
     def log_message(self, *_):
         pass  # Request URLs and bearer tokens never enter access logs.
@@ -482,12 +528,29 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get("Sec-Fetch-Site") == "cross-site":
             raise APIError(403, "cross-site requests are not supported")
 
-    def authorize(self):
+    def authorize(self, admin=False):
         supplied = self.headers.get("Authorization", "")
-        if not secrets.compare_digest(supplied.encode(), ("Bearer " + self.server.token).encode()):
-            raise APIError(401, "a valid bearer token is required")
+        if secrets.compare_digest(supplied.encode(), ("Bearer " + self.server.token).encode()):
+            principal={"username":"bootstrap","role":"admin","auth_method":"bootstrap"}
+            audit_actor.set({'username':'bootstrap (shared)' if principal.get('auth_method')=='bootstrap' else principal['username'],'role':principal['role']})
+            return principal
+        try:
+            principal = self.server.auth.verify(self.headers.get("X-Tuntom-Session", ""),
+                self.headers.get("X-Tuntom-Time", ""), self.headers.get("X-Tuntom-Nonce", ""),
+                self.headers.get("X-Tuntom-Signature", ""), self.command, self.path, self.raw_body())
+        except PermissionError as error:
+            raise APIError(401, str(error)) from error
+        audit_actor.set({'username':'bootstrap (shared)' if principal.get('auth_method')=='bootstrap' else principal['username'],'role':principal['role']})
+        if admin and principal["role"] != "admin":
+            raise APIError(403, "admin access is required")
+        return principal
 
-    def body(self):
+    def raw_body(self):
+        if self._body_raw is not None:
+            return self._body_raw
+        if self.command not in {"POST", "PUT", "PATCH"}:
+            self._body_raw = b""
+            return self._body_raw
         if self.headers.get_content_type() != "application/json" or self.headers.get("Transfer-Encoding"):
             raise APIError(415, "send application/json with Content-Length")
         lengths = self.headers.get_all("Content-Length", [])
@@ -496,11 +559,14 @@ class Handler(BaseHTTPRequestHandler):
         length = int(lengths[0])
         if length > MAX_BODY * 6 + 4096:
             raise APIError(413, "request too large")
-        raw = self.rfile.read(length)
-        if len(raw) != length:
+        self._body_raw = self.rfile.read(length)
+        if len(self._body_raw) != length:
             raise APIError(400, "incomplete request")
+        return self._body_raw
+
+    def body(self):
         try:
-            return json.loads(raw)
+            return json.loads(self.raw_body())
         except (ValueError, UnicodeError) as error:
             raise APIError(400, "invalid JSON") from error
 
@@ -510,7 +576,68 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/healthz" and self.command == "GET":
             return self.respond(200, {"status": "ok", "api_version": 1})
         if path.startswith("/api/"):
-            self.authorize()
+            if path == "/api/v1/auth/challenge" and self.command == "POST":
+                data = self.body()
+                try:
+                    result = self.server.auth.challenge(data.get("username", ""), data.get("client_nonce", ""), data.get("bootstrap") is True)
+                except ValueError as error:
+                    raise APIError(400, str(error)) from error
+                return self.respond(200, result)
+            if path == "/api/v1/auth/login" and self.command == "POST":
+                data = self.body()
+                try:
+                    result = self.server.auth.login(data.get("challenge_id", ""), data.get("proof", ""))
+                    audit_actor.set({'username':'bootstrap (shared)' if result.get('auth_method')=='bootstrap' else result['username'],'role':result['role']})
+                    self.server.fabric.audit_event({'action':'auth.login','target':result['username'],'outcome':'succeeded'})
+                except PermissionError as error:
+                    raise APIError(401, str(error)) from error
+                return self.respond(200, result)
+            principal = self.authorize(admin=bool(
+                re.fullmatch(r"/api/v1/users(?:/[^/]+/delete)?", path) or
+                re.fullmatch(r"/api/v1/endpoints/[^/]+/(?:rules/load|classifier/(?:load|load-flush|disable))", path)))
+            if path == "/api/v1/auth/logout" and self.command == "POST":
+                self.server.fabric.audit_event({'action':'auth.logout','target':principal['username'],'outcome':'succeeded'})
+                self.server.auth.logout(self.headers.get("X-Tuntom-Session", ""))
+                return self.respond(200, {"result": "logged out"})
+            if path == "/api/v1/auth/me" and self.command == "GET":
+                return self.respond(200, principal)
+            if path == "/api/v1/users" and self.command == "GET":
+                return self.respond(200, {"generation": self.server.auth.users.generation,
+                                          "users": self.server.auth.users.public()})
+            if path == "/api/v1/users" and self.command == "POST":
+                data = self.body()
+                try:
+                    self.server.fabric.audit_event({'action':'users.save','target':data.get('username',''),'outcome':'started',
+                        'details':{'role':data.get('role'),'enabled':data.get('enabled',True),'password_changed':bool(data.get('password'))}})
+                    self.server.auth.users.save_user(data.get("username"), data.get("role"),
+                        data.get("enabled", True), data.get("password"), principal["username"])
+                    self.server.auth.revoke_user(data.get("username"))
+                except ValueError as error:
+                    try:self.server.fabric.audit_event({'action':'users.save','target':data.get('username',''),'outcome':'failed'})
+                    except APIError:LOG.exception('Could not record failed user update')
+                    raise APIError(400, str(error)) from error
+                self.server.fabric.audit_event({'action':'users.save','target':data.get('username',''),'outcome':'succeeded'})
+                return self.respond(200, {"generation": self.server.auth.users.generation})
+            match = re.fullmatch(r"/api/v1/users/([^/]+)/delete", path)
+            if match and self.command == "POST":
+                try:
+                    self.server.fabric.audit_event({'action':'users.delete','target':unquote(match[1]),'outcome':'started'})
+                    self.server.auth.users.delete(unquote(match[1]))
+                    self.server.auth.revoke_user(unquote(match[1]))
+                except KeyError as error:
+                    try:self.server.fabric.audit_event({'action':'users.delete','target':unquote(match[1]),'outcome':'failed'})
+                    except APIError:LOG.exception('Could not record failed user deletion')
+                    raise APIError(404, "unknown user") from error
+                except ValueError as error:
+                    try:self.server.fabric.audit_event({'action':'users.delete','target':unquote(match[1]),'outcome':'failed'})
+                    except APIError:LOG.exception('Could not record failed user deletion')
+                    raise APIError(409, str(error)) from error
+                self.server.fabric.audit_event({'action':'users.delete','target':unquote(match[1]),'outcome':'succeeded'})
+                return self.respond(200, {"generation": self.server.auth.users.generation})
+            if path == "/api/v1/journal" and self.command == "GET":
+                values=parse_qs(urlsplit(self.path).query,keep_blank_values=True)
+                if any(len(v)!=1 for v in values.values()):raise APIError(400,'invalid journal query')
+                return self.respond(200,self.server.fabric.journal_entries({k:v[0] for k,v in values.items()}))
             if path == "/api/v1/snapshot" and self.command == "GET":
                 return self.respond(200, self.server.fabric.snapshot())
             if path == "/api/v1/refresh" and self.command == "POST":
@@ -551,6 +678,7 @@ class Handler(BaseHTTPRequestHandler):
         assets = {"/": ("index.html", "text/html; charset=utf-8"),
                   "/flow-filter.js": ("flow-filter.js", "text/javascript; charset=utf-8"),
                   "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+                  "/vendor/noble-auth.js": ("vendor/noble-auth.js", "text/javascript; charset=utf-8"),
                   "/style.css": ("style.css", "text/css; charset=utf-8"),
                   "/favicon.svg": ("favicon.svg", "image/svg+xml")}
         if self.command == "GET" and path in assets:
@@ -559,15 +687,23 @@ class Handler(BaseHTTPRequestHandler):
         raise APIError(404, "not found")
 
     def dispatch(self):
+        context=audit_actor.set({"username":"unauthenticated","role":"none"})
+        audit_context=operation_id.set(secrets.token_hex(16))
         try:
             self.route()
         except APIError as error:
+            if error.status in {401,403}:
+                try:self.server.fabric.audit_event({'action':'http.denied','target':'','outcome':'failed','details':{'status':error.status}})
+                except Exception:LOG.warning('Could not record denied access')
             self.respond(error.status, {"error": str(error)})
         except (BrokenPipeError, ConnectionResetError, socket.timeout):
             pass
         except Exception:
             LOG.exception("API request failed")
             self.respond(500, {"error": "internal server error"})
+        finally:
+            audit_actor.reset(context)
+            operation_id.reset(audit_context)
 
     do_GET = dispatch
     do_POST = dispatch
@@ -582,7 +718,10 @@ def main():
     parser.add_argument("--allow-write", action="store_true", help="enable runtime rule loads")
     parser.add_argument("--collector", help="use a separate Unix-socket collector")
     parser.add_argument("--golden-token", metavar="TOKEN", help="fixed lab access token; overrides TUNTOM_FABRIC_TOKEN (short tokens produce a warning)")
+    parser.add_argument("--users-file", type=Path, help="0600 JSON file with local admin/admin-ro accounts")
     parser.add_argument("--history-db", type=Path, default=default_path(), help="SQLite telemetry cache for local collection")
+    parser.add_argument("--journal-db", type=Path, default=default_journal_path(), help="Persistent audit and component events")
+    parser.add_argument("--journal-retention-days", type=int, default=90)
     parser.add_argument("--no-history", action="store_true", help="disable local telemetry cache")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -603,9 +742,9 @@ def main():
             fabric = RemoteFabric(args.collector, allow_write=args.allow_write)
         else:
             fabric = Fabric(allow_write=args.allow_write, interval=args.interval,
-                            history_path=None if args.no_history else args.history_db)
+                            history_path=None if args.no_history else args.history_db, journal_path=args.journal_db, journal_retention_days=args.journal_retention_days)
         write_enabled = fabric.snapshot()["allow_write"]
-        server = Server((str(args.host), args.port), fabric, token)
+        server = Server((str(args.host), args.port), fabric, token, args.users_file)
     except (ValueError, TypeError, OSError, sqlite3.Error, APIError) as error:
         parser.exit(1, f"Fabric: {error}\n")
     link_host = "127.0.0.1" if args.host.is_unspecified else str(args.host)

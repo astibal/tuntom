@@ -24,7 +24,7 @@ na **`0.0.0.0:8765`** (všechna IPv4 rozhraní). Pro přístup z jiného stroje 
 `127.0.0.1` ve vypsaném odkazu skutečnou IPv4 adresou serveru; token ponech.
 Ukončíš ho přes Ctrl+C. Při příštím spuštění si vše znovu najde.
 
-Vpravo nahoře přepneš rozhraní přes **EN / CZ / FR**. Výchozí je čeština;
+Dole v postranním panelu přepneš rozhraní přes **EN / CZ / FR**. Výchozí je čeština;
 volba se ukládá pouze v prohlížeči (`localStorage`). Přepnutí zachová filtry,
 graf i rozepsaná pravidla. Názvy metrik, syntaxe pravidel, podrobné zprávy daemonu
 a exportované JSON zůstávají v původním formátu.
@@ -34,7 +34,26 @@ python3 -B fabric/server.py --port 8766 --interval 3
 python3 -B fabric/server.py --host 127.0.0.1  # pouze místní přístup
 python3 -B fabric/server.py --host 0.0.0.0    # všechna IPv4 rozhraní (výchozí)
 python3 -B fabric/server.py --allow-write   # navíc ruční načítání pravidel
+python3 -B fabric/server.py --users-file ~/.config/tuntom/fabric-users.json
 ```
+
+### Lokální administrátoři
+
+`--users-file` zapne lokální účty `admin` a `admin-ro`. Soubor nemusí před
+prvním spuštěním existovat. Přihlas se bootstrap tokenem, otevři
+**Administrátoři** a založ první účet. Server zapisuje JSON atomicky s módem
+`0600`; do prohlížeče ani API nikdy neposílá uložené verifiery.
+
+Heslo se po HTTP neposílá. Přihlášení používá salted challenge/response odvozené
+z SCRAM-SHA-256 a PBKDF2-HMAC-SHA256 (600 000 iterací). Každý další API požadavek
+je podepsán klíčem odvozeným z přihlášení a obsahuje krátce platnou časovou značku
+a jednorázový nonce. To brání pasivnímu odposlechu hesla, krádeži bearer session
+a replayi. Čisté HTTP ale nemůže zabránit aktivnímu útočníkovi změnit doručený
+JavaScript; proti tomu nadále použij HTTPS nebo SSH tunel.
+
+`admin-ro` může číst stav, logy, flows a provádět validace. Runtime změny rulesetu
+a klasifikátoru i správa účtů vyžadují roli `admin`. Bootstrap token má vždy
+oprávnění `admin` a slouží jako recovery přístup.
 
 Pro pohodlné přihlašování v labu můžeš webům nastavit jeden stálý token:
 
@@ -699,3 +718,48 @@ Před první mutací projdou všechny cíle novou validací a kontrolou hash/gen
 Zápisy probíhají postupně, při chybě se zastaví bez automatického retry/rollbacku.
 Výsledek zobrazuje applied/error/pending pro každý cíl; nejde o distribuovanou
 transakci. Disable nadále zasahuje pouze explicitně vybranou komponentu.
+
+### Události a audit
+
+Pohled **Events & audit / Události a audit** nabízí aktivní problémy, historii
+přechodů a audit ručních operací. Sběr událostí běží v kolektoru i bez prohlížeče.
+Jde o interpretované události Tuntom komponent, nikoli o syslog nebo sběr všech
+textových logů zařízení. Systémové alerty Syspiperu zatím do tohoto proudu nevstupují.
+
+Výchozí trvalé SQLite úložiště je `/var/lib/tuntom-fabric/journal.sqlite` pro root
+kolektor a `$XDG_STATE_HOME/tuntom-fabric/journal.sqlite` (jinak
+`~/.local/state/tuntom-fabric/journal.sqlite`) pro samostatný web. Přepíšeš jej
+`--journal-db`; `--journal-retention-days` má výchozí hodnotu 90. Je nezávislé na
+24hodinové telemetry cache a `--no-history` ho nevypíná. Adresář musí mít 0700,
+soubory 0600. Obsahuje citlivou historii konfigurací; není kryptograficky
+nezměnitelné ani nezávislé na oprávněních správce hostitele.
+
+Audit zaznamenává ověřený účet a roli z HTTP session; sdílený nouzový token je
+explicitně `bootstrap (shared)`. Klient nemůže jméno přepsat v API body. Web
+předává identitu kolektoru pouze přes Unix socket ověřující UID webu; tento UID
+je důvěryhodnou součástí auditní hranice. Tokeny, hesla, verifiery a session klíče
+se nezaznamenávají. Diff je obsah konfigurace a může obsahovat její komentáře.
+
+Zaznamenávají se ruční reads/checks/loads klasifikátoru a switchových pravidel,
+flows/logs/diagnostics, refresh a asynchronní CONTROL dotazy (včetně dokončení),
+přihlášení/odhlášení, správa účtů a zamítnuté přístupy. Automatické statistické
+pollingy ani čtení žurnálu nejsou auditní události. Záznamy používají společné
+`operation_id`: started → prepared (diff + hashes/generace) → succeeded/failed/unknown.
+U async dotazu je navíc submitted. Záznam bez dokončení znamená neznámý výsledek,
+například po pádu procesu; nikdy se neinterpretuje jako úspěch. Diff se omezuje
+na 64 Ki znaků s explicitním příznakem truncation. Pokud nelze uložit audit před
+operací, operace nezačne. Selhání zápisu dokončení už provedenou operaci nevrací;
+API a UI upozorní a zápis se nesmí slepě opakovat.
+
+Události zachycují vznik, změnu typu příčiny a odeznění health podmínek, nedostupnost
+telemetrie a zmizení komponenty. Opakovaný stejný problém nevytváří novou událost
+každý poll. Neznámá nebo chybějící telemetrie neznamená zotavení předchozí chyby.
+Stav aktivních podmínek přežije restart. Zmizelé komponenty a historie podléhají
+retenci; nejde o trvalý inventář. Zdrojové časy jsou časy detekce na kolektoru.
+Po startu kolektoru má detekce zmizení 150 s odklad, aby se nejprve obnovil
+DISCOVER inventář. Výslovná nedostupnost telemetrie se tím neodkládá.
+
+GET `/api/v1/journal?category=audit|event` podporuje `before` (ID), přesné filtry
+`actor` a `target`. Vrací nejvýše 100 záznamů a 2 MiB na stránku. `active=1`
+vrací aktivní podmínky (nejvýše 500, s celkovým počtem). UI má filtr a načítání
+starších stránek; při prohlížení otevřeného detailu je samo nepřepisuje.

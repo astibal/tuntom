@@ -52,6 +52,23 @@ const messages = {
   classifierSiblings:["Použít na ověřenou skupinu sourozeneckých tunelů (load / load-flush)","Apply to the verified sibling tunnel group (load / load-flush)","Appliquer au groupe vérifié de tunnels frères (load / load-flush)"],
   classifierBatchHint:["Cíle: {names}. Před zápisem se znovu ověří všichni členové. Zápis není atomický; při chybě se zastaví a ukáže dílčí výsledky. Disable se týká pouze vybrané komponenty.","Targets: {names}. All members are rechecked before writing. Writes are not atomic; a failure stops the batch and shows partial results. Disable affects only the selected component.","Cibles : {names}. Tous les membres sont revérifiés avant écriture. L’écriture n’est pas atomique ; un échec arrête le lot et affiche les résultats partiels. Disable ne concerne que le composant sélectionné."],
   classifierBatchReady:["Ověřeno na všech cílech; prohlédni diff každého člena.","Validated on all targets; review each member’s diff.","Validé sur toutes les cibles ; examine le diff de chaque membre."],
+  journalTitle:["Události a audit","Events & audit","Événements et audit"],
+  journalHint:["Detekované problémy komponent a ruční operace administrátorů. Sběr běží i bez otevřeného prohlížeče.","Detected component problems and manual operator actions. Collection continues without an open browser.","Problèmes détectés et actions des administrateurs. La collecte continue sans navigateur ouvert."],
+  journalRefresh:["↻ Nejnovější","↻ Latest","↻ Récents"],
+  journalActive:["Aktivní problémy","Active problems","Problèmes actifs"],
+  journalEvents:["Historie událostí","Event history","Historique des événements"],
+  journalAudit:["Audit operací","Operation audit","Audit des opérations"],
+  journalActor:["Administrátor","Operator","Administrateur"],
+  journalTarget:["ID komponenty","Component ID","ID du composant"],
+  journalFilter:["Filtrovat","Filter","Filtrer"],
+  journalTime:["Čas","Time","Heure"],
+  journalAction:["Operace / problém","Action / problem","Action / problème"],
+  journalOutcome:["Výsledek","Outcome","Résultat"],
+  journalDetails:["Podrobnosti / diff","Details / diff","Détails / diff"],
+  journalMore:["Starší záznamy","Older records","Enregistrements précédents"],
+  journalEmpty:["Žádné odpovídající záznamy.","No matching records.","Aucun enregistrement correspondant."],
+  journalTemporary:["Dočasné úložiště: záznamy nepřežijí restart.","Temporary storage: records will not survive a restart.","Stockage temporaire : les enregistrements ne survivent pas au redémarrage."],
+  journalRetention:["Uchování: {days} dní","Retention: {days} days","Conservation : {days} jours"],
   classifierTitle:["Klasifikátor","Classifier","Classificateur"],
   classifierHint:["L3/L4 pravidla přiřazující label stack. Změny platí pro jednu komponentu, pouze do restartu.","L3/L4 rules assigning label stacks. Changes affect one component and last until restart.","Règles L3/L4 attribuant des piles de labels. Les changements concernent un composant, jusqu’au redémarrage."],
   classifierChoose:["Vyber DATA tunel připojený ke switchi nebo TUN adaptér.","Select a switch-attached DATA tunnel or a TUN adapter.","Choisis un tunnel DATA relié au switch ou un adaptateur TUN."],
@@ -101,6 +118,7 @@ const messages = {
   run:["Spusť","Run","Exécute"],
   loginInstructions:["a otevři vypsanou adresu. Přístupový token můžeš vložit i sem.","and open the printed URL. You can also enter the access token here.","et ouvre l’URL affichée. Tu peux aussi saisir le jeton d’accès ici."],
   accessToken:["Přístupový token","Access token","Jeton d’accès"],
+  logout:["Odhlásit","Sign out","Déconnexion"],
   connect:["Připojit","Connect","Se connecter"],
   explorer:["ŽIVÝ PRŮZKUM PROCESŮ","LIVE RUNTIME EXPLORER","EXPLORATEUR DE PROCESSUS"],
   heading:["Běžící fabric","Live fabric","Fabric en direct"],
@@ -539,7 +557,7 @@ const state = {data: null, selected: null, view: "overview", paused: false, busy
   flows: new Map(), flowBusy: false, flowPage: 0,
   history: new Map(), historyLoads: new Map(), chartRange: 300000, chartNow: Date.now(), drafts: new Map(), logs: new Map(), reports: new Map(), discoveries: new Map(), diagnosticBusy: false,
   warnings: new WarningHistory(), warningsLayout: "", chartDialog: null,
-  token: "", failure: "", loginError: "", ruleBusy: false};
+  auth: null, failure: "", loginError: "", ruleBusy: false};
 const types = {tunnel:"typeTunnel", switch:"typeSwitch", adapter:"typeAdapter", divert:"typeDivert", process:"typeProcess"};
 const typeName = kind => types[kind] ? t(types[kind]) : kind || "—";
 function tunnelPayload(e) {
@@ -554,7 +572,8 @@ function payloadClass(e) {
     ({switch:"component-switch",adapter:"component-adapter",divert:"component-adapter"})[e?.kind] || "";
 }
 function payloadMark(e) {
-  const hint=e?.source === "discovered" ? ` <span class="discovered-badge" title="${esc(t(e.discovery_stale ? "discoveryStale" : "discoveredHint"))}">discovered${e.discovery_stale ? " · !" : ""}</span> ` : "";
+  const discoveryLabel=t("discoveredHint")+(e?.discovery_stale?" · "+t("discoveryStale"):"");
+  const hint=e?.source === "discovered" ? ` <span class="discovered-badge${e.discovery_stale?" stale":""}" role="img" aria-label="${esc(discoveryLabel)}" title="${esc(discoveryLabel)}"><svg viewBox="0 0 20 20" aria-hidden="true" focusable="false"><circle cx="10" cy="10" r="8"/><circle cx="10" cy="10" r="4.5"/><path d="M10 10 16 4"/><circle class="radar-contact" cx="6" cy="6" r="1.5"/></svg>${e.discovery_stale?'<span aria-hidden="true">!</span>':""}</span> ` : "";
   return componentMark(e)+hint;
 }
 function processIdentity(e) {
@@ -706,14 +725,23 @@ function status(e) {
   return {pending:["dim", t("loading")], unavailable:["warn", t("socketUnavailable")], process_only:["dim", t("processOnly")]}[e.status] || ["dim", t("unknown")];
 }
 async function api(path, method = "GET", body, timeout=15000) {
-  const headers = {Authorization: `Bearer ${state.token}`};
+  const raw=body === undefined ? "" : JSON.stringify(body), headers={};
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  const response = await fetch(path, {method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(timeout)});
+  if(state.auth?.bearer)headers.Authorization=`Bearer ${state.auth.bearer}`;
+  else if(state.auth?.key){
+    const stamp=String(Math.floor(Date.now()/1000)),nonce=random64(18);
+    const digest=hex(await sha256Raw(new TextEncoder().encode(raw)));
+    const canonical=`${method}\n${path}\n${stamp}\n${nonce}\n${digest}`;
+    headers["X-Tuntom-Session"]=state.auth.id;headers["X-Tuntom-Time"]=stamp;headers["X-Tuntom-Nonce"]=nonce;
+    headers["X-Tuntom-Signature"]=b64url(await hmacRaw(state.auth.key,new TextEncoder().encode(canonical)));
+  }
+  const response = await fetch(path, {method, headers, body: body === undefined ? undefined : raw, signal: AbortSignal.timeout(timeout)});
   const data = await response.json();
   if (!response.ok) {
     if (response.status === 401) { $("login").hidden = false; $("workspace").hidden = true; }
     throw new Error(data.error || `HTTP ${response.status}`);
   }
+  if(data.audit_error)throw new Error(data.audit_error);
   return data;
 }
 function notice() {
@@ -726,7 +754,7 @@ function notice() {
   $("notice").hidden = !$("notice").textContent;
 }
 async function refresh(force = false) {
-  if (state.busy || !state.token || (state.paused && !force)) return;
+  if (state.busy || !state.auth || (state.paused && !force)) return;
   state.busy = true;
   try {
     const data = await api("/api/v1/snapshot");
@@ -772,6 +800,9 @@ async function refresh(force = false) {
 }
 function render() {
   const data = state.data;
+  $("users-nav").hidden=state.auth?.role!=="admin"||!state.auth?.usersEnabled;
+  $("logout").hidden=!state.auth;
+  $("logout").textContent=state.auth?`${state.auth.username} · ${state.auth.role} · ${t("logout")}`:t("logout");
   $("hostname").textContent = data.discovery.host || "—";
   $("write-mode").textContent = t(data.allow_write ? "writeEnabled" : "observing");
   $("last-update").textContent = state.failure ? t("disconnected") : data.discovery.scanned_at ? t("scanTime",{time:new Date(data.discovery.scanned_at).toLocaleTimeString(locale()),interval:data.poll_interval_seconds}) : t("waitingScan");
@@ -1997,7 +2028,7 @@ function renderClassifier() {
   $('classifier-editor').disabled=!valid || classifierBusy || !draft.revision;
   if($('classifier-editor').value!==draft.text)$('classifier-editor').value=draft.text;
   $('classifier-check').disabled=!valid || classifierBusy || !draft.revision || !draft.text.trim();
-  const writable=valid && !classifierBusy && state.data?.allow_write && draft.revision;
+  const writable=valid && !classifierBusy && state.data?.allow_write && state.auth?.role==="admin" && draft.revision;
   for(const op of ['load','load-flush'])$('classifier-'+op).disabled=!writable || !draft.checked || draft.checked.text!==draft.text;
   $('classifier-disable').disabled=!writable;
   $('classifier-status').textContent=messageText(draft.message);
@@ -2051,7 +2082,7 @@ function renderRules() {
   $("rules-editor").disabled = remote || !valid || state.ruleBusy || !draft.revision;
   if ($("rules-editor").value !== draft.text) $("rules-editor").value = draft.text;
   $("rules-check").disabled = remote || !valid || state.ruleBusy || !draft.revision || !draft.text.trim();
-  $("rules-load").disabled = remote || !valid || state.ruleBusy || !state.data?.allow_write || !draft.checked || draft.checked.text !== draft.text;
+  $("rules-load").disabled = remote || !valid || state.ruleBusy || !state.data?.allow_write || state.auth?.role!=="admin" || !draft.checked || draft.checked.text !== draft.text;
   $("rules-status").textContent = messageText(draft.message);
   $("rules-diff").hidden = !draft.diff && !draft.checked;
   $("rules-diff").innerHTML = (draft.diff || (draft.checked ? t("noDiff") : "")).split("\n").map(line=>`<span class="diff-line ${line.startsWith("+") ? "add" : line.startsWith("-") ? "remove" : ""}">${esc(line)}</span>`).join("\n");
@@ -2072,14 +2103,58 @@ async function ruleAction(operation) {
   } catch (error) { draft.checked=null; draft.message=error.message; }
   finally { state.ruleBusy=false; renderRules(); }
 }
+const journalView={rows:[],before:null,busy:false,older:false,query:''};
+async function loadJournal(older=false) {
+  if(journalView.busy)return;
+  const category=$('journal-category').value;
+  $('journal-actor').disabled=category!=='audit';
+  const params=new URLSearchParams({category:category==='audit'?'audit':'event'});
+  if(category==='active')params.set('active','1');
+  if($('journal-target').value.trim())params.set('target',$('journal-target').value.trim());
+  if(category==='audit' && $('journal-actor').value.trim())params.set('actor',$('journal-actor').value.trim());
+  const query=params.toString();
+  if(older && journalView.before)params.set('before',journalView.before);
+  journalView.busy=true;$('journal-status').textContent=t('working');
+  try {
+    const data=await api('/api/v1/journal?'+params);
+    const rows=data.entries || (data.conditions || []).map(c=>({at:c.since,target:c.target,actor:'collector',action:c.code,outcome:'active',details:{name:c.name,condition:c.details,since:c.since}}));
+    journalView.rows=older && query===journalView.query?[...journalView.rows,...rows]:rows;
+    journalView.query=query;journalView.before=data.before;journalView.older=older;
+    $('journal-more').hidden=!data.before;
+    $('journal-status').textContent=data.error || (data.persistent===false?t('journalTemporary'):t('journalRetention',{days:data.retention_days || state.data?.journal?.retention_days || 90}));
+    if(data.total!==undefined)$('journal-status').textContent+=' · '+rows.length+' / '+data.total;
+    const html=journalView.rows.map(row=>{
+      const endpoint=state.data?.endpoints.find(e=>e.id===row.target);
+      const details={...row.details};delete details.diff;
+      const error=['failed','unknown','raised','active'].includes(row.outcome);
+      return `<tr><td>${esc(new Date(row.at*1000).toLocaleString(locale()))}</td><td>${esc(row.actor)}<small>${esc(row.role || '')}</small></td><td>${esc(row.action)}</td><td>${endpoint?`<button class="quiet-button" data-journal-endpoint="${esc(row.target)}">${esc(endpoint.name)}</button>`:esc(row.details?.name || row.target)}<small>${esc(row.target)}</small></td><td class="${error?'map-warning-count':''}">${esc(row.outcome)}</td><td><details><summary>${esc(t('journalDetails'))}</summary><pre>${esc(JSON.stringify({...details,operation_id:row.operation_id},null,2))}</pre>${row.details?.diff!==undefined?`<pre class="diff">${esc(row.details.diff)}</pre>`:''}</details></td></tr>`;
+    }).join('') || `<tr><td colspan="6">${esc(t('journalEmpty'))}</td></tr>`;
+    const table=$('journal-rows');
+    // Keep open details and keyboard focus when nothing changed.
+    if(table.journalHTML!==html){table.innerHTML=html;table.journalHTML=html;}
+  } catch(error){$('journal-status').textContent=error.message;}
+  finally{journalView.busy=false;}
+}
+$('journal-refresh').addEventListener('click',()=>loadJournal());
+$('journal-filter').addEventListener('click',()=>loadJournal());
+$('journal-category').addEventListener('change',()=>loadJournal());
+$('journal-more').addEventListener('click',()=>loadJournal(true));
+$('journal-rows').addEventListener('click',event=>{
+  const button=event.target.closest('[data-journal-endpoint]');
+  if(button)selectProcess(button.dataset.journalEndpoint,'diagnostics');
+});
+setInterval(()=>{if(state.view==='journal' && !document.hidden && !journalView.older && !$('journal-rows').querySelector('details[open]'))loadJournal();},5000);
+
 function showView(view) {
   cancelProcessHover();processHovered=null;
   state.view=view;
   render();
   document.querySelectorAll("[data-view]").forEach(b=>b.classList.toggle("active",b.dataset.view === state.view));
-  for (const name of ["overview","metrics","rules","switch","diagnostics","syspiper","flows","observed","labels","classifier"]) $("view-"+name).hidden = view !== name;
-  document.querySelector(".process-panel").hidden=["observed","labels","syspiper"].includes(view);
+  for (const name of ["overview","metrics","rules","switch","diagnostics","syspiper","flows","observed","labels","classifier","users","journal"]) {const panel=$("view-"+name);if(panel)panel.hidden=view!==name;}
+  document.querySelector(".process-panel").hidden=["observed","labels","syspiper","users","journal"].includes(view);
   if(view === "observed") {renderObserved();refreshMapRules();}
+  if(view === "users") loadUsers();
+  if(view === "journal") loadJournal();
   if(view === "labels") {renderLabelTopology();refreshMapRules(!labelTopologyReady);}
   $("view-"+view).scrollIntoView({block:"start"});
   if (view === "overview") drawChart();
@@ -2134,12 +2209,103 @@ $("export").addEventListener("click",()=>{
   const link=document.createElement("a"), url=URL.createObjectURL(new Blob([JSON.stringify(state.data,null,2)],{type:"application/json"}));
   link.href=url;link.download="tuntom-fabric-snapshot.json";link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
 });
-function connect(token) { state.token=token.trim(); sessionStorage.setItem("tuntom-fabric-token",state.token); refresh(true); }
-$("login-form").addEventListener("submit",event=>{event.preventDefault();connect($("token").value);$("token").value="";});
+const bytes=value=>new TextEncoder().encode(value);
+const b64url=value=>{let text="";for(const byte of value)text+=String.fromCharCode(byte);return btoa(text).replace(/=+$/g,"").replace(/\+/g,"-").replace(/\//g,"_");};
+const unb64url=value=>{const raw=atob(value.replace(/-/g,"+").replace(/_/g,"/")+"=".repeat((4-value.length%4)%4));return Uint8Array.from(raw,char=>char.charCodeAt(0));};
+const hex=value=>[...new Uint8Array(value)].map(byte=>byte.toString(16).padStart(2,"0")).join("");
+const random64=size=>b64url(crypto.getRandomValues(new Uint8Array(size)));
+async function sha256Raw(data){return crypto.subtle?new Uint8Array(await crypto.subtle.digest("SHA-256",data)):TuntomCrypto.digest(data);}
+async function hmacRaw(raw,data){if(!crypto.subtle)return TuntomCrypto.mac(raw,data);const key=await crypto.subtle.importKey("raw",raw,{name:"HMAC",hash:"SHA-256"},false,["sign"]);return new Uint8Array(await crypto.subtle.sign("HMAC",key,data));}
+async function derivePassword(password,salt,iterations){if(!crypto.subtle)return TuntomCrypto.pbkdf2(bytes(password),salt,iterations);const material=await crypto.subtle.importKey("raw",bytes(password),"PBKDF2",false,["deriveBits"]);return new Uint8Array(await crypto.subtle.deriveBits({name:"PBKDF2",hash:"SHA-256",salt,iterations},material,256));}
+async function authenticate(username,password,bootstrap=false){
+  const clientNonce=random64(24),challengeResponse=await fetch("/api/v1/auth/challenge",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username,client_nonce:clientNonce,bootstrap})});
+  const challenge=await challengeResponse.json();if(!challengeResponse.ok)throw new Error(challenge.error||`HTTP ${challengeResponse.status}`);
+  const identity=bootstrap?"bootstrap":username;
+  const salted=await derivePassword(password,unb64url(challenge.salt),challenge.iterations);
+  const clientKey=await hmacRaw(salted,bytes("Client Key")),stored=await sha256Raw(clientKey);
+  const message=bytes(`n=${identity}\nr=${clientNonce}\ns=${challenge.salt}\ni=${challenge.iterations}\nr=${challenge.nonce}`);
+  const signature=await hmacRaw(stored,message),proof=clientKey.map((value,index)=>value^signature[index]);
+  const response=await fetch("/api/v1/auth/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({challenge_id:challenge.challenge_id,proof:b64url(proof)})});
+  const result=await response.json();if(!response.ok)throw new Error(result.error||`HTTP ${response.status}`);
+  const serverKey=await hmacRaw(salted,bytes("Server Key")),expected=b64url(await hmacRaw(serverKey,message));
+  if(expected!==result.server_signature)throw new Error("Server authentication failed");
+  const sessionKey=await hmacRaw(serverKey,new Uint8Array([...bytes("Session Key\0"),...message]));
+  state.auth={id:result.session_id,key:sessionKey,username:result.username,role:result.role,usersEnabled:result.users_enabled};
+  await refresh(true);
+}
+async function passwordRecord(password){
+  const salt=crypto.getRandomValues(new Uint8Array(16)),salted=await derivePassword(password,salt,600000);
+  const clientKey=await hmacRaw(salted,bytes("Client Key"));
+  return {algorithm:"scram-sha-256",iterations:600000,salt:b64url(salt),stored_key:b64url(await sha256Raw(clientKey)),server_key:b64url(await hmacRaw(salted,bytes("Server Key")))};
+}
+async function submitLogin(username,password,bootstrap=false){
+  try{state.loginError="";await authenticate(username,password,bootstrap);}catch(error){state.loginError=error.message;$("login-error").textContent=diagnostic(error.message);$("login-error").hidden=false;}
+}
+const usersEditor={users:[],editing:null,busy:false};
+function userBusy(value){
+  usersEditor.busy=value;
+  document.querySelectorAll('#view-users button, #user-form input, #user-form select').forEach(element=>element.disabled=value);
+}
+function editUser(user=null){
+  usersEditor.editing=user?.username ?? null;
+  $("user-form").hidden=false;
+  $("user-form-title").textContent=user?`Upravit účet ${user.username}`:"Nový účet";
+  $("user-name").value=user?.username || "";$("user-name").readOnly=!!user;
+  $("user-role").value=user?.role || "admin-ro";$("user-enabled").checked=user?.enabled ?? true;
+  $("user-password").value="";$("user-password").required=!user;
+  $("user-password-help").textContent=user?"Prázdné heslo zachová stávající. Změna účtu ukončí jeho stávající relace.":"Zadej heslo pro nový účet. Do serveru se posílá pouze verifier.";
+  $("users-status").textContent="";
+  $(user?"user-role":"user-name").focus();
+  $("user-form").scrollIntoView({block:"nearest"});
+}
+function closeUserEditor(){usersEditor.editing=null;$("user-password").value="";$("user-form").hidden=true;}
+async function loadUsers(message=""){
+  if(state.auth?.role!=="admin")return;
+  try{
+    const result=await api("/api/v1/users");usersEditor.users=result.users;
+    $("users-list").innerHTML=result.users.map(user=>`<div class="user-row ${user.enabled?'':'user-inactive'}"><div><strong>${esc(user.username)}</strong>${user.username===state.auth?.username?'<small>Tvůj účet</small>':''}<small>${esc(user.created_by?`Vytvořil ${user.created_by}`:'')}${user.created_at?' · '+esc(new Date(user.created_at).toLocaleDateString(locale())):''}</small></div><span>${esc(user.role==='admin'?'Plná správa':'Pouze prohlížení')}</span><span class="user-state">${user.enabled?'● Aktivní':'○ Neaktivní'}</span><div class="button-row"><button class="quiet-button" data-user-edit="${esc(user.username)}">Upravit</button><button class="danger-button" data-user-delete="${esc(user.username)}">Smazat</button></div></div>`).join("")||`<p class="muted">Zatím žádné lokální účty. Přidej účet pro jmenný přístup a audit.</p>`;
+    $("users-status").textContent=typeof message==='string'?message:"";
+    if(usersEditor.busy)userBusy(true);
+  }catch(error){$("users-status").textContent=diagnostic(error.message);}
+}
+$("user-form").addEventListener("submit",async event=>{
+  event.preventDefault();if(usersEditor.busy)return;
+  const username=$("user-name").value.trim(),password=$("user-password").value;
+  if(usersEditor.editing===null && usersEditor.users.some(user=>user.username===username)){$("users-status").textContent="Účet už existuje. Použij tlačítko Upravit.";return;}
+  const body={username,role:$("user-role").value,enabled:$("user-enabled").checked};
+  $("user-password").value="";userBusy(true);$("users-status").textContent="Ukládám účet…";
+  try{
+    if(password)body.password=await passwordRecord(password);
+    await api("/api/v1/users","POST",body,30000);closeUserEditor();
+    await loadUsers(`Účet ${username} byl uložen.`);
+  }catch(error){$("users-status").textContent=diagnostic(error.message);}
+  finally{userBusy(false);}
+});
+$("users-list").addEventListener("click",async event=>{
+  if(usersEditor.busy)return;
+  const edit=event.target.closest("[data-user-edit]");
+  if(edit){const user=usersEditor.users.find(user=>user.username===edit.dataset.userEdit);if(user)editUser(user);return;}
+  const button=event.target.closest("[data-user-delete]");if(!button||!window.confirm(`Smazat účet ${button.dataset.userDelete}? Tuto akci nelze vrátit. Účet můžeš místo toho deaktivovat přes Upravit.`))return;
+  userBusy(true);
+  try{await api(`/api/v1/users/${encodeURIComponent(button.dataset.userDelete)}/delete`,"POST",{});if(usersEditor.editing===button.dataset.userDelete)closeUserEditor();await loadUsers(`Účet ${button.dataset.userDelete} byl smazán.`);}
+  catch(error){$("users-status").textContent=diagnostic(error.message);}
+  finally{userBusy(false);}
+});
+$("users-read").addEventListener("click",()=>loadUsers());
+$("user-new").addEventListener("click",()=>editUser());
+$("user-cancel").addEventListener("click",closeUserEditor);
+$("login-form").addEventListener("submit",async event=>{event.preventDefault();const password=$("login-password").value;$("login-password").value="";await submitLogin($("login-username").value.trim(),password);});
+$("token-form").addEventListener("submit",async event=>{event.preventDefault();const token=$("token").value;$("token").value="";await submitLogin("bootstrap",token,true);});
+$("logout").addEventListener("click",async()=>{
+  try{if(state.auth)await api("/api/v1/auth/logout","POST",{});}catch{/* Local logout must still complete. */}
+  state.auth=null;state.data=null;state.selected=null;state.paused=false;state.failure="";state.loginError="";
+  state.flows.clear();state.history.clear();state.logs.clear();state.reports.clear();state.discoveries.clear();state.drafts.clear();
+  $("workspace").hidden=true;$("login").hidden=false;$("login-error").hidden=true;$("logout").hidden=true;$("users-nav").hidden=true;
+});
 function readTokenLink() {
   const token = new URLSearchParams(location.hash.slice(1)).get("token");
   if (location.hash) history.replaceState(null,"",location.pathname);
-  if (token) connect(token);
+  if (token) submitLogin("bootstrap",token,true);
   return !!token;
 }
 window.addEventListener("hashchange",readTokenLink);
@@ -2645,10 +2811,7 @@ document.querySelectorAll("[data-language]").forEach(button=>button.addEventList
   applyLanguage();
 }));
 applyLanguage();
-if (!readTokenLink()) {
-  const saved = sessionStorage.getItem("tuntom-fabric-token");
-  if (saved) connect(saved); else $("login").hidden=false;
-}
+if (!readTokenLink()) $("login").hidden=false;
 // Collect independently of tab visibility; browsers may still throttle timers.
 // Refresh immediately on return, including after a suspended/backgrounded tab.
 function resumeVisiblePage() {

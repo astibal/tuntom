@@ -6,6 +6,7 @@ import argparse
 import json
 import logging
 import os
+import re
 from pathlib import Path
 import socket
 import socketserver
@@ -17,6 +18,7 @@ import threading
 from errors import APIError
 from server import Fabric
 from history import default_path
+from journal import actor as audit_actor, operation_id, default_journal_path
 from syspiper import add_arguments as syspiper_arguments, options as syspiper_options
 
 MAX_FRAME = 8 * 1024 * 1024
@@ -50,16 +52,30 @@ def peer_uid(sock):
 
 class CollectorHandler(socketserver.BaseRequestHandler):
     def handle(self):
+        context=audit_actor.set({"username":"collector-client","role":"internal"})
+        audit_context=operation_id.set(None)
         self.request.settimeout(12)
         try:
             if peer_uid(self.request) != self.server.allowed_uid:
                 raise APIError(403, "collector peer UID is not allowed")
             request = receive(self.request)
-            if not isinstance(request, dict) or set(request) - {"operation", "id", "body"}:
+            if not isinstance(request, dict) or set(request) - {"operation", "id", "body", "actor", "audit_context"}:
                 raise APIError(400, "invalid collector request")
+            identity=request.get('actor',{'username':'collector-client','role':'internal'})
+            if not isinstance(identity,dict) or set(identity)-{'username','role'} or any(not isinstance(v,str) or len(v)>128 for v in identity.values()):
+                raise APIError(400,'invalid audit identity')
+            audit_actor.set(identity)
+            audit_id=request.get('audit_context')
+            if audit_id is not None and (not isinstance(audit_id,str) or not re.fullmatch('[0-9a-f]{32}',audit_id)):
+                raise APIError(400,'invalid audit operation ID')
+            operation_id.set(audit_id)
             operation, key = request.get("operation"), request.get("id")
             fabric = self.server.fabric
-            if operation == "snapshot":
+            if operation == 'journal':
+                result=fabric.journal_entries(request.get('body'))
+            elif operation == 'audit_event':
+                result=fabric.audit_event(request.get('body'))
+            elif operation == "snapshot":
                 result = fabric.snapshot()
                 result["collector"] = {"mode": "separate", "uid": os.geteuid()}
             elif operation == "history" and isinstance(key, str):
@@ -90,6 +106,9 @@ class CollectorHandler(socketserver.BaseRequestHandler):
             except OSError:
                 pass
 
+        finally:
+            audit_actor.reset(context)
+            operation_id.reset(audit_context)
 
 class CollectorServer(socketserver.ThreadingUnixStreamServer):
     daemon_threads = True
@@ -143,7 +162,7 @@ class RemoteFabric:
                 sock.connect(self.path)
                 if peer_uid(sock) not in {0, os.geteuid()}:
                     raise OSError("unexpected collector UID")
-                send(sock, {"operation": operation, "id": key, "body": body})
+                send(sock, {"operation": operation, "id": key, "body": body, "actor":audit_actor.get(), "audit_context":operation_id.get()})
                 response = receive(sock)
                 if "error" in response:
                     raise APIError(response.get("status", 502), response["error"])
@@ -167,6 +186,12 @@ class RemoteFabric:
         result = self.call("snapshot")
         result["allow_write"] = bool(result["allow_write"] and self.allow_write)
         return result
+
+    def journal_entries(self, params=None):
+        return self.call('journal',body=params)
+
+    def audit_event(self, body):
+        return self.call('audit_event',body=body)
 
     def classifier(self, key, operation, body=None):
         if operation in {"load", "load-flush", "disable"} and not self.allow_write:
@@ -204,6 +229,8 @@ def main():
     parser.add_argument("--interval", type=float, default=5)
     parser.add_argument("--allow-write", action="store_true", help="also permit manual runtime rule loads")
     parser.add_argument("--history-db", type=Path, default=default_path(), help="SQLite telemetry cache (24 hour retention)")
+    parser.add_argument("--journal-db", type=Path, default=default_journal_path())
+    parser.add_argument("--journal-retention-days", type=int, default=90)
     parser.add_argument("--no-history", action="store_true", help="disable telemetry cache")
     syspiper_arguments(parser)
     args = parser.parse_args()
@@ -216,7 +243,7 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     try:
         fabric = Fabric(allow_write=args.allow_write, interval=args.interval,
-                        history_path=None if args.no_history else args.history_db, syspiper=syspiper_options(args))
+                        history_path=None if args.no_history else args.history_db, syspiper=syspiper_options(args), journal_path=args.journal_db, journal_retention_days=args.journal_retention_days)
         server = CollectorServer(str(path), fabric, args.allow_uid)
     except (OSError, ValueError, sqlite3.Error) as error:
         parser.exit(1, f"Collector: {error}\n")
