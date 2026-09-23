@@ -69,6 +69,18 @@ const messages = {
   journalEmpty:["Žádné odpovídající záznamy.","No matching records.","Aucun enregistrement correspondant."],
   journalTemporary:["Dočasné úložiště: záznamy nepřežijí restart.","Temporary storage: records will not survive a restart.","Stockage temporaire : les enregistrements ne survivent pas au redémarrage."],
   journalRetention:["Uchování: {days} dní","Retention: {days} days","Conservation : {days} jours"],
+  servicesTitle:["Services","Services","Services"],
+  servicesHint:["Volitelný význam labelů, endpointy a externí pozorování. Síť na těchto metadatech nezávisí.","Optional label meaning, endpoints and external observations. The network does not depend on this metadata.","Sens optionnel des labels, endpoints et observations externes. Le réseau ne dépend pas de ces métadonnées."],
+  serviceAdd:["Přidat službu","Add service","Ajouter un service"],
+  serviceName:["Název","Name","Nom"],
+  serviceKind:["Typ","Type","Type"],
+  serviceDescription:["Popis / proč službu sledujeme","Description / why this service is observed","Description / raison de l’observation"],
+  serviceLabels:["Labely","Labels","Labels"],
+  serviceLabelsHint:["Jeden label může vlastnit jen jedna MS. Pozice ve stacku nehraje roli.","A label can belong to only one MS. Its stack position does not matter.","Un label ne peut appartenir qu’à un MS. Sa position dans la pile n’a pas d’importance."],
+  servicePeek:["Peek HTTPS targety","Peek HTTPS targets","Cibles HTTPS Peek"],
+  servicePeekHint:["Jeden target na řádek: URL a volitelný interval v sekundách.","One target per line: URL and optional interval in seconds.","Une cible par ligne : URL et intervalle facultatif en secondes."],
+  save:["Uložit","Save","Enregistrer"],
+  delete:["Smazat","Delete","Supprimer"],
   classifierTitle:["Klasifikátor","Classifier","Classificateur"],
   classifierHint:["L3/L4 pravidla přiřazující label stack. Změny platí pro jednu komponentu, pouze do restartu.","L3/L4 rules assigning label stacks. Changes affect one component and last until restart.","Règles L3/L4 attribuant des piles de labels. Les changements concernent un composant, jusqu’au redémarrage."],
   classifierChoose:["Vyber DATA tunel připojený ke switchi nebo TUN adaptér.","Select a switch-attached DATA tunnel or a TUN adapter.","Choisis un tunnel DATA relié au switch ou un adaptateur TUN."],
@@ -1874,10 +1886,10 @@ function renderLabelTopology() {
       return `<article class="label-classifier"><div class="label-port-name"><span>${esc(group.name)}${group.ports.length>1?' ×'+group.ports.length:''}</span>${group.ports.length>1?`<em>${group.ports.map(esc).join(' · ')}</em>`:''}<small>${esc(t("classification"))}</small><button class="label-edit-button" data-label-open-classifier="${esc(classifierId)}">${esc(t('classifierTitle'))} ↗</button></div><div class="label-classifier-rules">${[...items.entries()].map(([key,item],index)=>{
         const matchId=JSON.stringify([sw.id,group.key,key]),matched=classifierRouteLinks(group.ports,item.stack,routes,portGroups.flatMap(group=>group.ports));
         labelRuleMatches.set(matchId,{forward:new Set([...matched.forward].map(i=>routeIds[i])),returns:new Set([...matched.returns].map(i=>routeIds[i]))});
-        return `<button class="${item.fallback?'fallback':''} ${matched.missingReturn?'return-missing':''}" data-label-match="${esc(matchId)}" data-label-classifier="${esc(item.id)}" aria-pressed="false" title="${esc([...item.ports].join(', '))}${item.line?' · line '+item.line:''}"><small>${item.fallback?'↳':index+1}</small><code>${esc(item.match)}</code><span>→</span><strong>${esc(item.stack)}</strong>${matched.missingReturn?`<span class="label-return-warning" title="${esc(t('labelNoReturn'))}">! ← OUT</span>`:''}</button>`;
+        return `<button class="${item.fallback?'fallback':''} ${matched.missingReturn?'return-missing':''}" data-label-match="${esc(matchId)}" data-label-classifier="${esc(item.id)}" aria-pressed="false" title="${esc([...item.ports].join(', '))}${item.line?' · line '+item.line:''}"><small>${item.fallback?'↳':index+1}</small><code>${esc(item.match)}</code><span>→</span><strong>${esc(item.stack)}${serviceBadgesForStack(item.stack)}</strong>${matched.missingReturn?`<span class="label-return-warning" title="${esc(t('labelNoReturn'))}">! ← OUT</span>`:''}</button>`;
       }).join('')}</div></article>`;
     }).join("");
-    const table=routes.length?`<div class="label-route-list"><div class="label-route-head"><span>#</span><span>INGRESS</span><span>LABEL STACK</span><span></span><span>EGRESS</span><span>OUTPUT STACK</span><span>ACTION</span></div>${routes.map((route,index)=>`<div class="label-route ${route.action==='drop'?'drop':''}" data-label-route="${esc(routeIds[index])}"><span class="label-order">${index+1}</span><code class="label-port">${esc(route.source)}</code><code>${esc(route.stack)}</code><span class="label-arrow">→</span><code class="label-port">${esc(route.target)}</code><code>${esc(route.rewrite)}${route.via?' via '+esc(route.via):''}</code><strong>${esc(route.action)}</strong></div>`).join("")}</div>`:`<p class="label-empty">${esc(t("labelTopologyEmpty"))}</p>`;
+    const table=routes.length?`<div class="label-route-list"><div class="label-route-head"><span>#</span><span>INGRESS</span><span>LABEL STACK</span><span></span><span>EGRESS</span><span>OUTPUT STACK</span><span>ACTION</span></div>${routes.map((route,index)=>`<div class="label-route ${route.action==='drop'?'drop':''}" data-label-route="${esc(routeIds[index])}"><span class="label-order">${index+1}</span><code class="label-port">${esc(route.source)}</code><code>${esc(route.stack)}${serviceBadgesForStack(route.stack)}</code><span class="label-arrow">→</span><code class="label-port">${esc(route.target)}</code><code>${esc(route.rewrite)}${serviceBadgesForStack(route.rewrite)}${route.via?' via '+esc(route.via):''}</code><strong>${esc(route.action)}</strong></div>`).join("")}</div>`:`<p class="label-empty">${esc(t("labelTopologyEmpty"))}</p>`;
     return `<section class="label-switch"><header><strong>${esc(sw.name)}</strong><span>SWITCH · ${esc(sw.switch_detail?.ports?.length ?? "—")} PORTS</span></header>${ports}${classifiers?`<div class="label-classifiers">${classifiers}</div>`:""}<div class="label-rules-action"><button class="quiet-button" data-label-open-rules="${esc(sw.id)}">${esc(t('openRules'))}</button></div>${table}</section>`;
   }).join("");
   panel.innerHTML=sections || `<p class="label-empty">${esc(t("labelTopologyEmpty"))}</p>`;
@@ -2103,6 +2115,72 @@ async function ruleAction(operation) {
   } catch (error) { draft.checked=null; draft.message=error.message; }
   finally { state.ruleBusy=false; renderRules(); }
 }
+const servicesView={services:[],owners:{},editing:null,busy:false,loaded:false};
+function serviceBusy(value){
+  servicesView.busy=value;
+  document.querySelectorAll('#view-services button,#service-form input,#service-form select,#service-form textarea').forEach(element=>element.disabled=value || (element.id==='service-new' && state.auth?.role!=='admin'));
+}
+function serviceLabels(text){
+  return text.split(/[\s,]+/).map(value=>value.trim()).filter(Boolean);
+}
+function serviceTargets(text){
+  return text.split('\n').map(line=>line.trim()).filter(Boolean).map(line=>{
+    const parts=line.split(/\s+/);if(parts.length>2)throw new Error('Peek target: URL a volitelný interval.');
+    const interval=parts[1]===undefined?60:Number(parts[1]);
+    if(!Number.isInteger(interval))throw new Error('Peek interval musí být celé číslo.');
+    return {url:parts[0],interval};
+  });
+}
+function renderServices(message=''){
+  const rows=servicesView.services;
+  $('services-list').innerHTML=rows.map(service=>`<button class="service-card" data-service-edit="${esc(service.id)}">
+    <div><span class="eyebrow">${esc(service.kind.toUpperCase())}</span><h3>${esc(service.name)}</h3></div><span class="tag">${service.labels.length} LABEL${service.labels.length===1?'':'S'}</span>
+    <p>${esc(service.description || 'Bez popisu.')}</p><div class="service-card-meta">${service.labels.map(label=>`<code class="tag">${esc(label)} · 0x${BigInt(label).toString(16)}</code>`).join('')}${service.peek_targets.map(target=>`<span class="tag">PEEK · ${esc(target.url)} · ${target.interval}s</span>`).join('')}</div>
+  </button>`).join('') || '<div class="service-empty">Zatím žádné Managed Services.<br>Neznámé labely zůstávají platným a viditelným stavem.</div>';
+  $('services-status').textContent=message || `${rows.length} Managed Services · metadata nejsou autoritou síťového stavu`;
+  $('service-new').disabled=servicesView.busy || state.auth?.role!=='admin';
+}
+function editService(service=null){
+  if(state.auth?.role!=='admin')return;
+  servicesView.editing=service?structuredClone(service):null;
+  $('service-form').hidden=false;$('service-form-title').textContent=service?`Upravit ${service.name}`:'Nová Managed Service';
+  $('service-name').value=service?.name || '';$('service-kind').value=service?.kind || 'external';
+  $('service-description').value=service?.description || '';
+  $('service-labels').value=(service?.labels || []).join(', ');
+  $('service-peek').value=(service?.peek_targets || []).map(target=>`${target.url} ${target.interval}`).join('\n');
+  $('service-delete').hidden=!service;$('service-form-status').textContent='';
+  $('service-name').focus();$('service-form').scrollIntoView({block:'nearest'});
+}
+function closeServiceEditor(){servicesView.editing=null;$('service-form').hidden=true;$('service-form-status').textContent='';}
+async function loadServices(message=''){
+  if(servicesView.busy)return;
+  servicesView.busy=true;serviceBusy(true);
+  try{const data=await api('/api/v1/services');servicesView.services=data.services;servicesView.owners=data.label_owners;servicesView.loaded=true;renderServices(message);}
+  catch(error){$('services-status').textContent=diagnostic(error.message);}
+  finally{servicesView.busy=false;serviceBusy(false);}
+}
+$('services-list').addEventListener('click',event=>{const button=event.target.closest('[data-service-edit]');if(button)editService(servicesView.services.find(service=>service.id===button.dataset.serviceEdit));});
+$('service-new').addEventListener('click',()=>editService());
+$('services-read').addEventListener('click',()=>loadServices());
+$('service-cancel').addEventListener('click',closeServiceEditor);
+$('service-form').addEventListener('submit',async event=>{
+  event.preventDefault();if(servicesView.busy || state.auth?.role!=='admin')return;
+  let body;
+  try{body={name:$('service-name').value.trim(),kind:$('service-kind').value,description:$('service-description').value.trim(),labels:serviceLabels($('service-labels').value),peek_targets:serviceTargets($('service-peek').value)};}
+  catch(error){$('service-form-status').textContent=error.message;return;}
+  if(servicesView.editing){body.id=servicesView.editing.id;body.generation=servicesView.editing.generation;}
+  serviceBusy(true);$('service-form-status').textContent='Ukládám…';
+  try{const saved=await api('/api/v1/services','POST',body);serviceBusy(false);closeServiceEditor();await loadServices(`Managed Service ${saved.name} byla uložena.`);}
+  catch(error){$('service-form-status').textContent=diagnostic(error.message);}
+  finally{serviceBusy(false);}
+});
+$('service-delete').addEventListener('click',async()=>{
+  const service=servicesView.editing;if(!service || servicesView.busy || !window.confirm(`Smazat Managed Service ${service.name}? Aktivní classifier ani síť se nezmění.`))return;
+  serviceBusy(true);
+  try{await api(`/api/v1/services/${encodeURIComponent(service.id)}/delete`,'POST',{generation:service.generation});serviceBusy(false);closeServiceEditor();await loadServices(`Managed Service ${service.name} byla smazána. Síťový stav nebyl změněn.`);}
+  catch(error){$('service-form-status').textContent=diagnostic(error.message);}
+  finally{serviceBusy(false);}
+});
 const journalView={rows:[],before:null,busy:false,older:false,query:''};
 async function loadJournal(older=false) {
   if(journalView.busy)return;
@@ -2150,11 +2228,12 @@ function showView(view) {
   state.view=view;
   render();
   document.querySelectorAll("[data-view]").forEach(b=>b.classList.toggle("active",b.dataset.view === state.view));
-  for (const name of ["overview","metrics","rules","switch","diagnostics","syspiper","flows","observed","labels","classifier","users","journal"]) {const panel=$("view-"+name);if(panel)panel.hidden=view!==name;}
-  document.querySelector(".process-panel").hidden=["observed","labels","syspiper","users","journal"].includes(view);
+  for (const name of ["overview","metrics","rules","switch","diagnostics","syspiper","flows","observed","labels","classifier","services","users","journal"]) {const panel=$("view-"+name);if(panel)panel.hidden=view!==name;}
+  document.querySelector(".process-panel").hidden=["observed","labels","services","syspiper","users","journal"].includes(view);
   if(view === "observed") {renderObserved();refreshMapRules();}
   if(view === "users") loadUsers();
   if(view === "journal") loadJournal();
+  if(view === "services") loadServices();
   if(view === "labels") {renderLabelTopology();refreshMapRules(!labelTopologyReady);}
   $("view-"+view).scrollIntoView({block:"start"});
   if (view === "overview") drawChart();
@@ -2232,6 +2311,7 @@ async function authenticate(username,password,bootstrap=false){
   const sessionKey=await hmacRaw(serverKey,new Uint8Array([...bytes("Session Key\0"),...message]));
   state.auth={id:result.session_id,key:sessionKey,username:result.username,role:result.role,usersEnabled:result.users_enabled};
   await refresh(true);
+  await loadServices();
 }
 async function passwordRecord(password){
   const salt=crypto.getRandomValues(new Uint8Array(16)),salted=await derivePassword(password,salt,600000);
@@ -2410,6 +2490,15 @@ function flowLabel(value, format) {
   if(n===magic || header)return "VIA";
   return format === "hex" ? value : n.toString();
 }
+function managedServiceForLabel(value){
+  try {const id=servicesView.owners[String(BigInt(value))];return servicesView.services.find(service=>service.id===id) || null;}
+  catch{return null;}
+}
+function serviceBadgesForStack(value){
+  const labels=String(value ?? '').match(/0[xX][0-9a-fA-F]+|\b[0-9]+\b/g) || [],seen=new Set(),found=[];
+  for(const label of labels){const service=managedServiceForLabel(label);if(service && !seen.has(service.id)){seen.add(service.id);found.push(service);}}
+  return found.map(service=>`<span class="service-badge" title="Managed Service">${esc(service.name)}</span>`).join('');
+}
 function flowMatches(row, query, regex=false) {
   return FlowFilter.matches(row,FlowFilter.parse(query,regex));
 }
@@ -2429,7 +2518,7 @@ function flowStack(values, savedVia=false) {
   if (values === null) return `<span class="muted">${esc(t("flowUnknownLabels"))}</span>`;
   if (!values.length) return `<span class="muted">${esc(t("flowEmptyStack"))}</span>`;
   const format=$("flow-label-format").value, saved=viaSavedPositions(values), internal=viaSavedPositions(values,true);
-  return values.slice(0,8).map((label,index)=>`<span class="flow-label ${savedVia || saved.has(index) || flowLabel(label,format)==="VIA"?"flow-label-via":internal.has(index)?"flow-label-internal":""}" title="${esc((savedVia || saved.has(index)?"VIA · ":"")+label+" · "+BigInt(label).toString())}"><small>${index+1}</small>${esc(flowLabel(label,format))}</span>`).join('<span class="flow-arrow">→</span>')+(values.length>8 ? `<span>+${values.length-8}</span>` : "");
+  return values.slice(0,8).map((label,index)=>{const service=managedServiceForLabel(label);return `<span class="flow-label ${savedVia || saved.has(index) || flowLabel(label,format)==="VIA"?"flow-label-via":internal.has(index)?"flow-label-internal":""} ${service?'flow-label-service':''}" title="${esc((savedVia || saved.has(index)?"VIA · ":"")+label+" · "+BigInt(label).toString()+(service?' · MS '+service.name:''))}"><small>${index+1}</small>${esc(flowLabel(label,format))}${service?`<b>${esc(service.name)}</b>`:''}</span>`;}).join('<span class="flow-arrow">→</span>')+(values.length>8 ? `<span>+${values.length-8}</span>` : "");
 }
 function flowContext(row) {
   return ["client","server"].map(side=>{
@@ -2594,7 +2683,7 @@ function renderFlows() {
   $("flows-context").textContent=t(data?.tracking === "none" ? "flowsNone" : "flowsSemantics");
   $("flows-summary").innerHTML=data ? [["flowsCount",data.flow_count],["flowsRetained",data.flow_count-data.admission_count],["flowsAdmission",data.admission_count],["flowsDistinct",data.label_count]].map(([key,n])=>`<article><span>${esc(t(key))}</span><strong>${n.toLocaleString(locale())}</strong></article>`).join("") : "";
   const format=$("flow-label-format").value;
-  $("flows-labels").innerHTML=data?.labels.length ? `<p>${esc(t("flowsLabelsHint"))}</p><div>${data.labels.map(label=>`<button class="flow-label" data-flow-label="${esc(label.value)}" title="${esc(label.value+" · "+BigInt(label.value).toString())}">${esc(flowLabel(label.value,format))}<small>×${label.rows}</small></button>`).join("")}</div>${data.labels_truncated ? `<p>${esc(t("flowsLabelsLimit"))}</p>` : ""}` : "";
+  $("flows-labels").innerHTML=data?.labels.length ? `<p>${esc(t("flowsLabelsHint"))}</p><div>${data.labels.map(label=>{const service=managedServiceForLabel(label.value);return `<button class="flow-label ${service?'flow-label-service':''}" data-flow-label="${esc(label.value)}" title="${esc(label.value+" · "+BigInt(label.value).toString()+(service?' · MS '+service.name:''))}">${esc(flowLabel(label.value,format))}${service?`<b>${esc(service.name)}</b>`:''}<small>×${label.rows}</small></button>`;}).join("")}</div>${data.labels_truncated ? `<p>${esc(t("flowsLabelsLimit"))}</p>` : ""}` : "";
   const table=$("flow-table").value;
   const options=`<option value="">${esc(t("flowAll"))}</option>`+Object.keys(data?.table_counts || {}).map(key=>`<option value="${esc(key)}">${esc(key)} (${data.table_counts[key]})</option>`).join("");
   if ($("flow-table").innerHTML!==options) { $("flow-table").innerHTML=options; $("flow-table").value=Object.hasOwn(data?.table_counts || {},table) ? table : ""; }

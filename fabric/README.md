@@ -35,6 +35,7 @@ python3 -B fabric/server.py --host 127.0.0.1  # pouze místní přístup
 python3 -B fabric/server.py --host 0.0.0.0    # všechna IPv4 rozhraní (výchozí)
 python3 -B fabric/server.py --allow-write   # navíc ruční načítání pravidel
 python3 -B fabric/server.py --users-file ~/.config/tuntom/fabric-users.json
+python3 -B fabric/server.py --services-db ~/.local/state/tuntom-fabric/services.sqlite
 ```
 
 ### Lokální administrátoři
@@ -708,6 +709,31 @@ existující toky. Disable vypne klasifikátor, cache zachová. UI zobrazuje dop
 před potvrzením; operace se týká jedné komponenty, nikoli celé vizuální skupiny.
 Změny jsou runtime-only. Po zápisu nebo nejasném výsledku se musí konfigurace
 znovu načíst; UI zápisy automaticky neopakuje. Vypnutý export není validní návrh.
+
+### Managed Services
+
+Pohled **Services** přidává volitelnou sémantickou vrstvu nad živě objevenou
+Fabric. Managed Service má jméno, typ, popis, jeden nebo více uint64 labelů a
+HTTPS targety pro externí Peek. Jeden label smí vlastnit nejvýše jedna MS; jedna
+MS může vlastnit více labelů. Hexadecimální vstup se ukládá v kanonické desítkové
+podobě, UI zobrazuje oba tvary.
+
+Pokud se kterýkoliv label MS objeví kdekoliv ve stacku frame nebo flow, je tento
+frame/flow asociovaný s danou MS. Jeden stack proto může souviset s více službami.
+Pozice labelu nemá význam. UI doplňuje jména MS do Label Topology a flow stacků;
+neznámé labely nadále zobrazuje jako původní čísla.
+
+Metadata jsou uložena odděleně ve `--services-db` (výchozí
+`$XDG_STATE_HOME/tuntom-fabric/services.sqlite`, jinak
+`~/.local/state/tuntom-fabric/services.sqlite`). Nejde o autoritu síťového stavu:
+smazání databáze nemění forwarding, aktivní ruleset ani klasifikátory. Fabric pouze
+ztratí názvy, vazby a Peek plán a labely znovu ukáže jako neznámé.
+
+Zápisy vyžadují roli `admin`, používají optimistickou generaci a vstupují do
+auditu. Smazání MS nikdy samo nemaže ani nepřepisuje runtime classifier. Peek
+target musí být HTTPS URL bez credentials a fragmentu; interval je 10..86400 s.
+V této iteraci UI targety definuje, ale pravidelné volání vzdáleného Peeku ani
+generování classifier rules z MS ještě neprovádí.
 
 U ověřené lokální skupiny DATA tunelů editor implicitně cílí load/load-flush
 na všechny její členy. Lze přepnout na jedinou komponentu. Vizuální discovered

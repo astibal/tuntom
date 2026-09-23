@@ -34,6 +34,7 @@ from journal import Journal, actor as audit_actor, operation_id, audited, clippe
 from telemetry import changes, health, switch_detail
 from syspiper import Syspiper
 from auth import AuthManager
+from services import Services, default_services_path
 
 STATIC = Path(__file__).parent / "static"
 LOG = logging.getLogger("fabric")
@@ -337,12 +338,14 @@ class Fabric:
     def audit_event(self, body):
         if not isinstance(body,dict) or set(body)-{'action','target','outcome','details'}:
             raise APIError(400,'invalid audit event')
-        if body.get('action') not in {'auth.login','auth.logout','users.save','users.delete','http.denied'}:
+        if body.get('action') not in {'auth.login','auth.logout','users.save','users.delete','services.save','services.delete','http.denied'}:
             raise APIError(400,'invalid audit action')
         details=body.get('details',{})
-        if not isinstance(details,dict) or set(details)-{'role','enabled','password_changed','status'}:
+        if not isinstance(details,dict) or set(details)-{'role','enabled','password_changed','status','name','kind','label_count','peek_target_count'}:
             raise APIError(400,'invalid audit metadata')
         if any(k in details and not isinstance(details[k],bool) for k in ('enabled','password_changed')) or ('role' in details and not isinstance(details['role'],str)) or ('status' in details and not isinstance(details['status'],int)):
+            raise APIError(400,'invalid audit metadata types')
+        if any(k in details and not isinstance(details[k],str) for k in ('name','kind')) or any(k in details and (not isinstance(details[k],int) or isinstance(details[k],bool)) for k in ('label_count','peek_target_count')):
             raise APIError(400,'invalid audit metadata types')
         if body.get('outcome') not in {'started','succeeded','failed'}:raise APIError(400,'invalid audit outcome')
         return {'id':self.journal.append(body['action'],str(body.get('target',''))[:128],body['outcome'],details)}
@@ -464,11 +467,18 @@ class Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address, fabric, token, users_file=None):
+    def __init__(self, address, fabric, token, users_file=None, services_path=None):
         self.fabric, self.token = fabric, token
         self.auth = AuthManager(token, users_file)
+        self.services = Services(services_path)
         self.slots = threading.BoundedSemaphore(24)
         super().__init__(address, Handler)
+
+    def server_close(self):
+        try:
+            self.services.close()
+        finally:
+            super().server_close()
 
     def process_request(self, request, client_address):
         if not self.slots.acquire(blocking=False):
@@ -594,6 +604,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(200, result)
             principal = self.authorize(admin=bool(
                 re.fullmatch(r"/api/v1/users(?:/[^/]+/delete)?", path) or
+                (path == "/api/v1/services" and self.command == "POST") or
+                re.fullmatch(r"/api/v1/services/[0-9a-f]{32}/delete", path) or
                 re.fullmatch(r"/api/v1/endpoints/[^/]+/(?:rules/load|classifier/(?:load|load-flush|disable))", path)))
             if path == "/api/v1/auth/logout" and self.command == "POST":
                 self.server.fabric.audit_event({'action':'auth.logout','target':principal['username'],'outcome':'succeeded'})
@@ -638,6 +650,38 @@ class Handler(BaseHTTPRequestHandler):
                 values=parse_qs(urlsplit(self.path).query,keep_blank_values=True)
                 if any(len(v)!=1 for v in values.values()):raise APIError(400,'invalid journal query')
                 return self.respond(200,self.server.fabric.journal_entries({k:v[0] for k,v in values.items()}))
+            if path == "/api/v1/services" and self.command == "GET":
+                return self.respond(200, self.server.services.list())
+            if path == "/api/v1/services" and self.command == "POST":
+                data = self.body()
+                try:
+                    audit_details={'name':data.get('name','') if isinstance(data,dict) else '',
+                        'kind':data.get('kind','other') if isinstance(data,dict) else '',
+                        'label_count':len(data.get('labels',[])) if isinstance(data,dict) and isinstance(data.get('labels',[]),list) else 0,
+                        'peek_target_count':len(data.get('peek_targets',[])) if isinstance(data,dict) and isinstance(data.get('peek_targets',[]),list) else 0}
+                    self.server.fabric.audit_event({'action':'services.save','target':data.get('id',data.get('name','')) if isinstance(data,dict) else '',
+                        'outcome':'started','details':audit_details})
+                    result = self.server.services.save(data)
+                except KeyError as error:
+                    raise APIError(404, str(error)) from error
+                except RuntimeError as error:
+                    raise APIError(409, str(error)) from error
+                except ValueError as error:
+                    raise APIError(400, str(error)) from error
+                self.server.fabric.audit_event({'action':'services.save','target':result['id'],'outcome':'succeeded','details':audit_details})
+                return self.respond(200, result)
+            match = re.fullmatch(r"/api/v1/services/([0-9a-f]{32})/delete", path)
+            if match and self.command == "POST":
+                data = self.body()
+                try:
+                    self.server.fabric.audit_event({'action':'services.delete','target':match[1],'outcome':'started'})
+                    self.server.services.delete(match[1], data.get("generation") if isinstance(data, dict) else None)
+                except KeyError as error:
+                    raise APIError(404, str(error)) from error
+                except RuntimeError as error:
+                    raise APIError(409, str(error)) from error
+                self.server.fabric.audit_event({'action':'services.delete','target':match[1],'outcome':'succeeded'})
+                return self.respond(200, {"result": "deleted"})
             if path == "/api/v1/snapshot" and self.command == "GET":
                 return self.respond(200, self.server.fabric.snapshot())
             if path == "/api/v1/refresh" and self.command == "POST":
@@ -722,6 +766,7 @@ def main():
     parser.add_argument("--history-db", type=Path, default=default_path(), help="SQLite telemetry cache for local collection")
     parser.add_argument("--journal-db", type=Path, default=default_journal_path(), help="Persistent audit and component events")
     parser.add_argument("--journal-retention-days", type=int, default=90)
+    parser.add_argument("--services-db", type=Path, default=default_services_path(), help="Optional managed-service metadata")
     parser.add_argument("--no-history", action="store_true", help="disable local telemetry cache")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -744,7 +789,7 @@ def main():
             fabric = Fabric(allow_write=args.allow_write, interval=args.interval,
                             history_path=None if args.no_history else args.history_db, journal_path=args.journal_db, journal_retention_days=args.journal_retention_days)
         write_enabled = fabric.snapshot()["allow_write"]
-        server = Server((str(args.host), args.port), fabric, token, args.users_file)
+        server = Server((str(args.host), args.port), fabric, token, args.users_file, args.services_db)
     except (ValueError, TypeError, OSError, sqlite3.Error, APIError) as error:
         parser.exit(1, f"Fabric: {error}\n")
     link_host = "127.0.0.1" if args.host.is_unspecified else str(args.host)
