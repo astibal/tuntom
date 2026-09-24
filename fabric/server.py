@@ -35,6 +35,7 @@ from telemetry import changes, health, switch_detail
 from syspiper import Syspiper
 from auth import AuthManager
 from services import Services, default_services_path
+from externals import PeekError, observe, peek_health, peek_syspiper
 
 STATIC = Path(__file__).parent / "static"
 LOG = logging.getLogger("fabric")
@@ -467,10 +468,11 @@ class Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address, fabric, token, users_file=None, services_path=None):
+    def __init__(self, address, fabric, token, users_file=None, services_path=None, peek_url=None, peek_token=None):
         self.fabric, self.token = fabric, token
         self.auth = AuthManager(token, users_file)
         self.services = Services(services_path)
+        self.peek_url, self.peek_token = peek_url, peek_token
         self.slots = threading.BoundedSemaphore(24)
         super().__init__(address, Handler)
 
@@ -652,6 +654,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(200,self.server.fabric.journal_entries({k:v[0] for k,v in values.items()}))
             if path == "/api/v1/services" and self.command == "GET":
                 return self.respond(200, self.server.services.list())
+            if path == "/api/v1/externals" and self.command == "GET":
+                try:
+                    services = self.server.services.list()["services"]
+                    return self.respond(200, observe(services, self.server.peek_url, self.server.peek_token))
+                except PeekError as error:
+                    raise APIError(502, str(error)) from error
+            if path == "/api/v1/peek-probes" and self.command == "GET":
+                return self.respond(200,peek_syspiper(self.server.peek_url,self.server.peek_token))
             if path == "/api/v1/services" and self.command == "POST":
                 data = self.body()
                 try:
@@ -767,6 +777,8 @@ def main():
     parser.add_argument("--journal-db", type=Path, default=default_journal_path(), help="Persistent audit and component events")
     parser.add_argument("--journal-retention-days", type=int, default=90)
     parser.add_argument("--services-db", type=Path, default=default_services_path(), help="Optional managed-service metadata")
+    parser.add_argument("--peek-url", default=os.environ.get("TUNTOM_PEEK_URL"), help="Peek base URL (or TUNTOM_PEEK_URL)")
+    parser.add_argument("--peek-token", default=os.environ.get("TUNTOM_PEEK_TOKEN"), help="Peek bearer token (or TUNTOM_PEEK_TOKEN)")
     parser.add_argument("--no-history", action="store_true", help="disable local telemetry cache")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -789,7 +801,10 @@ def main():
             fabric = Fabric(allow_write=args.allow_write, interval=args.interval,
                             history_path=None if args.no_history else args.history_db, journal_path=args.journal_db, journal_retention_days=args.journal_retention_days)
         write_enabled = fabric.snapshot()["allow_write"]
-        server = Server((str(args.host), args.port), fabric, token, args.users_file, args.services_db)
+        if bool(args.peek_url) != bool(args.peek_token):
+            raise ValueError("Peek URL and token must be configured together")
+        server = Server((str(args.host), args.port), fabric, token, args.users_file, args.services_db,
+                        args.peek_url, args.peek_token)
     except (ValueError, TypeError, OSError, sqlite3.Error, APIError) as error:
         parser.exit(1, f"Fabric: {error}\n")
     link_host = "127.0.0.1" if args.host.is_unspecified else str(args.host)

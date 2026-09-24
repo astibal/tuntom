@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import sys
 import threading
+import tempfile
 import unittest
 from unittest import mock
 
@@ -11,6 +12,16 @@ import peek
 
 
 class PeekTests(unittest.TestCase):
+    def test_history_lease_and_release(self):
+        with tempfile.TemporaryDirectory() as root:
+            store=peek.PeekHistory(root+"/peek.sqlite",7,30)
+            target={"id":"one","url":"https://example.com","interval":60}
+            store.renew([target]);store.record({"id":"one","observed_at":peek.utc_now(),"ok":True})
+            self.assertEqual(len(store.history(["one"])["one"]),1)
+            store.release(["one"])
+            self.assertEqual(store.due(),[])
+            store.close()
+
     def test_rejects_non_https_and_private_destinations(self):
         result = peek.probe({"id": "plain", "url": "http://example.com"})
         self.assertEqual(result["error"]["kind"], "invalid_target")

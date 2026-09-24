@@ -237,7 +237,7 @@ const messages = {
   flowNoRows:["Žádné odpovídající řádky.","No matching rows.","Aucune ligne correspondante."],
   flowExact:["Přesná data řádku","Exact row data","Données exactes de la ligne"],
   flowRefreshFailed:["Obnova selhala; ponechávám předchozí snímek.","Refresh failed; keeping the previous snapshot.","Actualisation échouée ; instantané précédent conservé."],
-  syspiperTitle:["Syspiper","Syspiper","Syspiper"],
+  syspiperTitle:["Pollers","Pollers","Pollers"],
   syspiperHint:["Systémové metriky známých IP Tuntom sítě. Sběr zajišťuje backend.","System metrics for known Tuntom IPs. Collected by the backend.","Métriques système des IP Tuntom connues. Collectées par le backend."],
   syspiperDisabled:["Syspiper není zapnutý. Nastav klíč v backendu (na collectoru při odděleném sběru).","Syspiper is disabled. Configure its key in the backend (on the separate collector when used).","Syspiper est désactivé. Configure sa clé sur le backend (collecteur séparé si utilisé)."],
   syspiperEmpty:["Čekám na známé IP protistran nebo rozhraní Tuntomu. Další známou IP lze zadat backendu.","Waiting for known Tuntom peer or interface IPs. Additional known IPs can be configured in the backend.","En attente d’IP Tuntom connues. D’autres IP connues peuvent être configurées sur le backend."],
@@ -1217,6 +1217,8 @@ function updateSystemRows(card,values) {
 }
 function renderSyspiper() {
   const info=state.data?.syspiper;
+  const collector=state.data?.collector||{},discovery=state.data?.discovery||{};
+  $('collector-poller').innerHTML=`<span class="status"><i class="dot ${state.failure?'alert':''}"></i>${state.failure?'Nedostupný':'Běží'}</span><span><b>${esc(collector.mode||'—')}</b> režim</span><span>UID <b>${esc(collector.uid??'—')}</b></span><span>host <b>${esc(discovery.host||'—')}</b></span>`;
   const nodes=info?.nodes || [];
   $("syspiper-notice").textContent=!info?.enabled ? t("syspiperDisabled") :
     [t("syspiperScope"), !nodes.length ? t("syspiperEmpty") : "",info.discovery_error ? t("syspiperDiscovery") : "",
@@ -1254,6 +1256,14 @@ function renderSyspiper() {
   });
   for(const card of cards.values()) card.remove();
 }
+let peekProbesBusy=false;
+async function loadPeekProbes(){
+  if(peekProbesBusy)return;peekProbesBusy=true;$('peek-probes-read').disabled=true;
+  try{const data=await api('/api/v1/peek-probes'),history=data.history||{},system=data.syspiper?.values||{},ok=data.status==='ok';$('peek-probes').innerHTML=`<article class="peek-probe ${ok?'ok':'bad'}"><header><div><span class="eyebrow">PEEK INSTANCE · ${esc(system.hostname||'HOST UNKNOWN')}</span><h3>${esc(data.endpoint||'Nenakonfigurováno')}</h3></div><span class="status"><i class="dot ${ok?'':'alert'}"></i>${ok?'Dostupná':'Nedostupná'}</span></header><div class="peek-probe-values"><dl><dt>ACTIVE TARGETS</dt><dd>${esc(history.active_targets??'—')}</dd></dl><dl><dt>OBSERVATIONS</dt><dd>${esc(history.observations??'—')}</dd></dl><dl><dt>LEASE</dt><dd>${history.lease_days!==undefined?esc(history.lease_days)+' dní':'—'}</dd></dl><dl><dt>RETENTION</dt><dd>${history.retention_days!==undefined?esc(history.retention_days)+' dní':'—'}</dd></dl><dl><dt>CPU</dt><dd>${Number.isFinite(system.cpu)?esc(system.cpu)+' %':'—'}</dd></dl><dl><dt>RAM</dt><dd>${Number.isFinite(system.ram)?esc(system.ram)+' %':'—'}</dd></dl><dl><dt>DISK</dt><dd>${Number.isFinite(system.disk)?esc(system.disk)+' %':'—'}</dd></dl><dl><dt>UPTIME</dt><dd>${Number.isFinite(system.uptime_seconds)?esc(duration(system.uptime_seconds)):'—'}</dd></dl><dl><dt>LAST SAMPLE</dt><dd>${history.newest_observation?esc(new Date(history.newest_observation).toLocaleString(locale())):'—'}</dd></dl></div>${data.syspiper?.errors&&Object.keys(data.syspiper.errors).length?`<p class="syspiper-error">Syspiper: ${esc(Object.entries(data.syspiper.errors).map(([path,error])=>path+' '+error).join(' · '))}</p>`:''}${data.error?`<p class="syspiper-error">${esc(data.error)}</p>`:''}</article>`;}
+  catch(error){$('peek-probes').innerHTML=`<p class="notice">${esc(diagnostic(error.message))}</p>`;}
+  finally{peekProbesBusy=false;$('peek-probes-read').disabled=false;}
+}
+$('peek-probes-read').addEventListener('click',loadPeekProbes);
 
 $("syspiper-nodes").addEventListener("click",event=>{
   const process=event.target.closest("[data-system-process]");
@@ -2116,6 +2126,87 @@ async function ruleAction(operation) {
   finally { state.ruleBusy=false; renderRules(); }
 }
 const servicesView={services:[],owners:{},editing:null,busy:false,loaded:false};
+const externalsView={rows:[],history:{},busy:false,sampledAt:null,sortBy:'total_ms',sortDir:1,trendKey:'total_ms'};
+let externalsTimer=null;
+function showServicesTab(name){
+  const external=name==='externals';
+  clearTimeout(externalsTimer);externalsTimer=null;
+  $('services-managed').hidden=external;$('services-externals').hidden=!external;
+  $('services-tab-managed').classList.toggle('active',!external);$('services-tab-managed').setAttribute('aria-selected',String(!external));
+  $('services-tab-externals').classList.toggle('active',external);$('services-tab-externals').setAttribute('aria-selected',String(external));
+  if(external)loadExternals();
+}
+function externalCert(row){return row.tls?.certificate || {};}
+function externalExpiry(row){
+  const cert=externalCert(row),value=cert.not_after;if(!value)return ['—','unknown'];
+  const days=Math.floor(cert.days_remaining ?? ((new Date(value).getTime()-Date.now())/86400000));
+  return [`${days} d`,days<=7?'bad':days<=14?'warn':'ok'];
+}
+function externalHttpTone(value){return !Number.isFinite(value)?'bad':value>=500?'bad':value>=400?'warn':'ok';}
+function externalLatencyTone(value,warn,bad){return !Number.isFinite(value)?'bad':value>bad?'bad':value>warn?'warn':'ok';}
+function externalSparkline(samples){
+  const values=(samples||[]).slice(-120).map(row=>Number(row.total_ms)).filter(Number.isFinite);if(values.length<2)return '';
+  const max=Math.max(1,...values),points=values.map((value,index)=>`${(index/(values.length-1)*100).toFixed(2)},${(30-value/max*28).toFixed(2)}`).join(' ');
+  return `<div class="external-history"><span>LATENCY HISTORY · ${values.length} VZORKŮ</span><svg viewBox="0 0 100 32" preserveAspectRatio="none" aria-label="Historie celkové odezvy"><polyline points="${points}"></polyline></svg></div>`;
+}
+function renderExternals(){
+  const query=$('externals-filter').value.trim().toLowerCase(),status=$('externals-state').value,labelOnly=$('externals-label-only').checked;
+  const rows=externalsView.rows.filter(row=>{
+    const labels=row.service_labels||[],labelValues=[...labels,...labels.map(label=>'0x'+BigInt(label).toString(16))],good=row.ok&&row.available&&row.tls?.trusted,haystack=(labelOnly?labelValues:[row.service_name,row.service_kind,row.service_description,row.url,...labelValues]).join(' ').toLowerCase();
+    return (!query||haystack.includes(query))&&(!status||(status==='ok'&&good)||(status==='problem'&&!good)||(status==='trusted'&&row.tls?.trusted===true)||(status==='untrusted'&&row.tls?.trusted===false));
+  }),up=rows.filter(row=>row.available).length,trusted=rows.filter(row=>row.tls?.trusted).length;
+  $('externals-summary').innerHTML=`<article><span>TARGETY</span><strong>${rows.length}</strong></article><article><span>DOSTUPNÉ</span><strong>${up}/${rows.length}</strong></article><article><span>TRUSTED TLS</span><strong>${trusted}/${rows.length}</strong></article>`;
+  $('externals-list').innerHTML=rows.map(row=>{const expiry=externalExpiry(row),good=row.ok&&row.available&&row.tls?.trusted;return `<article class="external-card ${good?'ok':'bad'}"><header><div><span class="eyebrow">${esc(row.service_name)} · ${esc(row.service_kind)} ${(row.service_labels||[]).map(label=>`· LABEL ${esc(label)}`).join(' ')}</span><h3>${esc(row.url)}</h3></div><span class="external-state">${good?'● OK':'● PROBLÉM'}</span></header><div class="external-metrics"><dl class="${externalHttpTone(row.http_status)}"><dt>HTTP</dt><dd>${esc(row.http_status ?? '—')}</dd></dl><dl class="${externalLatencyTone(row.connect_ms,300,1000)}"><dt>CONNECT</dt><dd>${esc(row.connect_ms ?? '—')} ms</dd></dl><dl class="${externalLatencyTone(row.tls_handshake_ms,300,1000)}"><dt>TLS HANDSHAKE</dt><dd>${esc(row.tls_handshake_ms ?? '—')} ms</dd></dl><dl class="${externalLatencyTone(row.total_ms,1000,3000)}"><dt>CELKEM</dt><dd>${esc(row.total_ms ?? '—')} ms</dd></dl><dl class="${expiry[1]}"><dt>CERT EXPIRY</dt><dd>${esc(expiry[0])}</dd></dl><dl class="${row.tls?.trusted===true?'ok':'bad'}"><dt>TRUST</dt><dd>${row.tls?.trusted===true?'trusted':'untrusted'}</dd></dl></div><details><summary>Certifikát a detail</summary><pre>${esc(JSON.stringify({tls:row.tls,error:row.error,address:row.address,interval:row.interval},null,2))}</pre></details></article>`}).join('') || `<div class="service-empty">${externalsView.rows.length?'Filtru neodpovídají žádné externals.':'Žádná Managed Service nemá Peek target.'}</div>`;
+  document.querySelectorAll('#externals-list .external-card').forEach((card,index)=>card.querySelector('details').insertAdjacentHTML('beforebegin',externalSparkline(externalsView.history[rows[index].id])));
+}
+function externalSortValue(row,key){
+  if(key==='service_name')return row.service_name||'';
+  if(key==='service_label')return (row.service_labels||[]).join(',');
+  if(key==='status')return row.ok&&row.available&&row.tls?.trusted?1:0;
+  if(key==='expiry')return Number(externalCert(row).days_remaining ?? -Infinity);
+  if(key==='trust')return row.tls?.trusted===true?1:0;
+  if(key==='url')return row.url||'';
+  return Number(row[key] ?? Infinity);
+}
+function externalTrendLabel(){return {total_ms:'RTT',connect_ms:'CONNECT',tls_handshake_ms:'TLS',http_response_ms:'HTTP'}[externalsView.trendKey]||'RTT';}
+function externalTrendSelect(){return `<label class="external-trend-select"><span>Trend</span><select data-external-trend><option value="total_ms" ${externalsView.trendKey==='total_ms'?'selected':''}>RTT</option><option value="connect_ms" ${externalsView.trendKey==='connect_ms'?'selected':''}>Connect</option><option value="tls_handshake_ms" ${externalsView.trendKey==='tls_handshake_ms'?'selected':''}>TLS handshake</option><option value="http_response_ms" ${externalsView.trendKey==='http_response_ms'?'selected':''}>HTTP response</option></select></label>`;}
+function externalTrend(samples){
+  const values=(samples||[]).slice(-60).map(row=>Number(row[externalsView.trendKey])).filter(Number.isFinite);if(values.length<2)return '<span class="muted">—</span>';
+  const max=Math.max(1,...values),points=values.map((value,index)=>`${(index/(values.length-1)*100).toFixed(2)},${(20-value/max*18).toFixed(2)}`).join(' ');
+  return `<svg class="external-trend" viewBox="0 0 100 22" preserveAspectRatio="none" aria-label="${values.length} vzorků"><polyline points="${points}"></polyline></svg>`;
+}
+function renderExternalsTable(){
+  const query=$('externals-filter').value.trim().toLowerCase(),status=$('externals-state').value,labelOnly=$('externals-label-only').checked;
+  const rows=externalsView.rows.filter(row=>{const labels=row.service_labels||[],labelValues=[...labels,...labels.map(label=>'0x'+BigInt(label).toString(16))],good=row.ok&&row.available&&row.tls?.trusted,haystack=(labelOnly?labelValues:[row.service_name,row.service_kind,row.service_description,row.url,...labelValues]).join(' ').toLowerCase();return (!query||haystack.includes(query))&&(!status||(status==='ok'&&good)||(status==='problem'&&!good)||(status==='trusted'&&row.tls?.trusted===true)||(status==='untrusted'&&row.tls?.trusted===false));});
+  const up=rows.filter(row=>row.available).length,trusted=rows.filter(row=>row.tls?.trusted).length;
+  $('externals-summary').innerHTML=`<article><span>TARGETY</span><strong>${rows.length}</strong></article><article><span>DOSTUPNÉ</span><strong>${up}/${rows.length}</strong></article><article><span>TRUSTED TLS</span><strong>${trusted}/${rows.length}</strong></article>`;
+  const groups=new Map();for(const row of rows){if(!groups.has(row.service_id))groups.set(row.service_id,[]);groups.get(row.service_id).push(row);}
+  const arrow=key=>externalsView.sortBy===key?(externalsView.sortDir>0?' ↑':' ↓'):'';
+  const head=(key,label)=>`<button data-external-sort="${key}">${label}${arrow(key)}</button>`;
+  if(!$('externals-group-services').checked){
+    if(!rows.length){$('externals-list').innerHTML=`<div class="service-empty">${externalsView.rows.length?'Filtru neodpovídají žádné externals.':'Žádná Managed Service nemá Peek target.'}</div>`;return;}
+    rows.sort((a,b)=>{const av=externalSortValue(a,externalsView.sortBy),bv=externalSortValue(b,externalsView.sortBy);return (typeof av==='string'?av.localeCompare(bv):av-bv)*externalsView.sortDir;});
+    $('externals-list').innerHTML=`<section class="external-service external-global"><header><div><span class="eyebrow">ALL MANAGED SERVICES</span><h3>Externals</h3></div><div class="external-service-tools"><span class="tag">${rows.length} TARGETS</span>${externalTrendSelect()}</div></header><div class="table-scroll"><table class="external-table"><thead><tr><th>${head('service_name','Service Name')}</th><th>${head('service_label','Service Label')}</th><th>${head('url','Target')}</th><th>${head('status','Stav')}</th><th>${head('http_status','HTTP')}</th><th>${head('connect_ms','Connect')}</th><th>${head('tls_handshake_ms','TLS RTT')}</th><th>${head('total_ms','Total RTT')}</th><th>${head('expiry','Cert')}</th><th>${head('trust','Trust')}</th><th>TREND (${externalTrendLabel()})</th></tr></thead><tbody>${rows.map(row=>{const expiry=externalExpiry(row),good=row.ok&&row.available&&row.tls?.trusted;return `<tr class="${good?'ok':'bad'}"><td><strong>${esc(row.service_name)}</strong></td><td>${(row.service_labels||[]).map(label=>`<span class="tag">${esc(label)} · 0x${BigInt(label).toString(16)}</span>`).join(' ')||'—'}</td><td><strong>${esc(row.url)}</strong><details><summary>Detail</summary><pre>${esc(JSON.stringify({tls:row.tls,error:row.error,address:row.address,interval:row.interval},null,2))}</pre></details></td><td class="${good?'ok':'bad'}">${good?'● OK':'● PROBLÉM'}</td><td class="${externalHttpTone(row.http_status)}">${esc(row.http_status??'—')}</td><td class="${externalLatencyTone(row.connect_ms,300,1000)}">${esc(row.connect_ms??'—')} ms</td><td class="${externalLatencyTone(row.tls_handshake_ms,300,1000)}">${esc(row.tls_handshake_ms??'—')} ms</td><td class="${externalLatencyTone(row.total_ms,1000,3000)}">${esc(row.total_ms??'—')} ms</td><td class="${expiry[1]}">${esc(expiry[0])}</td><td class="${row.tls?.trusted===true?'ok':'bad'}">${row.tls?.trusted===true?'trusted':'untrusted'}</td><td>${externalTrend(externalsView.history[row.id])}</td></tr>`}).join('')}</tbody></table></div></section>`;
+    return;
+  }
+  $('externals-list').innerHTML=[...groups.values()].map(group=>{group.sort((a,b)=>{const av=externalSortValue(a,externalsView.sortBy),bv=externalSortValue(b,externalsView.sortBy);return (typeof av==='string'?av.localeCompare(bv):av-bv)*externalsView.sortDir;});const service=group[0];return `<section class="external-service"><header><div><h3>${esc(service.service_name)}</h3></div><div>${(service.service_labels||[]).map(label=>`<span class="tag">${esc(label)} · 0x${BigInt(label).toString(16)}</span>`).join('')}</div></header><div class="table-scroll"><table class="external-table"><thead><tr><th>${head('url','Target')}</th><th>${head('status','Stav')}</th><th>${head('http_status','HTTP')}</th><th>${head('connect_ms','Connect')}</th><th>${head('tls_handshake_ms','TLS RTT')}</th><th>${head('total_ms','Total RTT')}</th><th>${head('expiry','Cert')}</th><th>${head('trust','Trust')}</th><th>TREND (${externalTrendLabel()})</th></tr></thead><tbody>${group.map(row=>{const expiry=externalExpiry(row),good=row.ok&&row.available&&row.tls?.trusted;return `<tr class="${good?'ok':'bad'}"><td><strong>${esc(row.url)}</strong><details><summary>Detail</summary><pre>${esc(JSON.stringify({tls:row.tls,error:row.error,address:row.address,interval:row.interval},null,2))}</pre></details></td><td class="${good?'ok':'bad'}">${good?'● OK':'● PROBLÉM'}</td><td class="${externalHttpTone(row.http_status)}">${esc(row.http_status??'—')}</td><td class="${externalLatencyTone(row.connect_ms,300,1000)}">${esc(row.connect_ms??'—')} ms</td><td class="${externalLatencyTone(row.tls_handshake_ms,300,1000)}">${esc(row.tls_handshake_ms??'—')} ms</td><td class="${externalLatencyTone(row.total_ms,1000,3000)}">${esc(row.total_ms??'—')} ms</td><td class="${expiry[1]}">${esc(expiry[0])}</td><td class="${row.tls?.trusted===true?'ok':'bad'}">${row.tls?.trusted===true?'trusted':'untrusted'}</td><td>${externalTrend(externalsView.history[row.id])}</td></tr>`}).join('')}</tbody></table></div></section>`}).join('')||`<div class="service-empty">${externalsView.rows.length?'Filtru neodpovídají žádné externals.':'Žádná Managed Service nemá Peek target.'}</div>`;
+  document.querySelectorAll('#externals-list .external-service:not(.external-global)>header>div:last-child').forEach(container=>{container.classList.add('external-service-tools');container.insertAdjacentHTML('beforeend',externalTrendSelect());});
+}
+async function loadExternals(){
+  if(externalsView.busy)return;clearTimeout(externalsTimer);externalsTimer=null;externalsView.busy=true;$('externals-read').disabled=true;$('externals-status').textContent='Peek měří externí targety…';
+  try{const data=await api('/api/v1/externals');externalsView.rows=data.observations || [];externalsView.history=data.history || {};externalsView.sampledAt=data.sampled_at;renderExternalsTable();$('externals-status').textContent=`Živé měření${data.sampled_at?' · '+new Date(data.sampled_at).toLocaleString(locale()):''} · historii drží Peek`;}
+  catch(error){$('externals-status').textContent=diagnostic(error.message);}
+  finally{externalsView.busy=false;$('externals-read').disabled=false;const intervals=externalsView.rows.map(row=>row.interval).filter(Number.isFinite);if(state.view==='services'&&!$('services-externals').hidden&&intervals.length)externalsTimer=setTimeout(loadExternals,Math.min(...intervals)*1000);}
+}
+$('services-tab-managed').addEventListener('click',()=>showServicesTab('managed'));
+$('services-tab-externals').addEventListener('click',()=>showServicesTab('externals'));
+$('externals-read').addEventListener('click',loadExternals);
+$('externals-filter').addEventListener('input',renderExternalsTable);
+$('externals-label-only').addEventListener('change',renderExternalsTable);
+$('externals-state').addEventListener('change',renderExternalsTable);
+$('externals-group-services').addEventListener('change',renderExternalsTable);
+$('externals-list').addEventListener('click',event=>{const button=event.target.closest('[data-external-sort]');if(!button)return;const key=button.dataset.externalSort;if(externalsView.sortBy===key)externalsView.sortDir*=-1;else{externalsView.sortBy=key;externalsView.sortDir=1;}renderExternalsTable();});
+$('externals-list').addEventListener('change',event=>{if(!event.target.matches('[data-external-trend]'))return;externalsView.trendKey=event.target.value;renderExternalsTable();});
 function serviceBusy(value){
   servicesView.busy=value;
   document.querySelectorAll('#view-services button,#service-form input,#service-form select,#service-form textarea').forEach(element=>element.disabled=value || (element.id==='service-new' && state.auth?.role!=='admin'));
@@ -2224,6 +2315,7 @@ $('journal-rows').addEventListener('click',event=>{
 setInterval(()=>{if(state.view==='journal' && !document.hidden && !journalView.older && !$('journal-rows').querySelector('details[open]'))loadJournal();},5000);
 
 function showView(view) {
+  if(view!=='services'&&typeof externalsTimer!=='undefined'){clearTimeout(externalsTimer);externalsTimer=null;}
   cancelProcessHover();processHovered=null;
   state.view=view;
   render();
@@ -2234,6 +2326,7 @@ function showView(view) {
   if(view === "users") loadUsers();
   if(view === "journal") loadJournal();
   if(view === "services") loadServices();
+  if(view === "syspiper") loadPeekProbes();
   if(view === "labels") {renderLabelTopology();refreshMapRules(!labelTopologyReady);}
   $("view-"+view).scrollIntoView({block:"start"});
   if (view === "overview") drawChart();
