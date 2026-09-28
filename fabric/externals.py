@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import hashlib
 from urllib.error import HTTPError, URLError
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 from syspiper import PATHS, clean_snapshot
 
@@ -87,3 +88,24 @@ def peek_syspiper(base_url: str | None, token: str | None) -> dict:
     try:values=clean_snapshot(results)
     except (ValueError,TypeError,AttributeError,OverflowError):values={};errors["response"]="invalid_response"
     return {**health,"syspiper":{"status":"ok" if results and not errors else "partial" if results else "unavailable","values":values,"errors":errors}}
+
+
+def peek_history(services: list[dict], target_id: str, base_url: str | None, token: str | None,
+                 after: float, before: float, metric: str, points: int = 900) -> dict:
+    valid_ids={service["id"]+":"+hashlib.sha256(target["url"].encode()).hexdigest()[:16]
+               for service in services for target in service.get("peek_targets",[])}
+    if target_id not in valid_ids:raise PeekError("Neznámý Peek target")
+    if not base_url or not token:raise PeekError("Peek není nakonfigurovaný ve Fabric serveru")
+    query=urlencode({"after":after,"before":before,"metric":metric,"points":points})
+    request=Request(base_url.rstrip("/")+"/v1/history/"+quote(target_id,safe="")+"?"+query,
+                    headers={"Authorization":"Bearer "+token,"Accept":"application/json"})
+    try:
+        with urlopen(request,timeout=15) as response:raw=response.read(MAX_REPLY+1)
+    except HTTPError as error:raise PeekError(f"Peek odmítl historii (HTTP {error.code})") from error
+    except (URLError,TimeoutError,OSError) as error:raise PeekError(f"Peek historie není dostupná: {error}") from error
+    if len(raw)>MAX_REPLY:raise PeekError("historie Peek překročila 2 MiB")
+    try:
+        result=json.loads(raw)
+        if not isinstance(result.get("samples"),list):raise ValueError
+        return result
+    except (ValueError,TypeError,json.JSONDecodeError) as error:raise PeekError("Peek vrátil neplatnou historii") from error

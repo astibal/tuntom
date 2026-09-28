@@ -2,6 +2,8 @@
 """Leased external HTTPS observer for the Tuntom Fabric management plane."""
 from __future__ import annotations
 
+from peek_dns import target_config, make_query, parse_response, stream_exchange
+
 import argparse
 import concurrent.futures
 import datetime as dt
@@ -19,7 +21,7 @@ import sqlite3
 import tempfile
 import threading
 import time
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit, parse_qs
 
 
 MAX_BODY = 64 * 1024
@@ -46,6 +48,10 @@ class PeekHistory:
         CREATE INDEX IF NOT EXISTS observation_target_at ON observation(target_id,at);""")
     def renew(self, targets):
         now=time.time()
+        for item in targets:
+            if not isinstance(item,dict) or not isinstance(item.get('id'),str) or not 1<=len(item['id'])<=128:
+                raise ValueError('invalid target id')
+            target_config(item.get('url'))
         with self.lock,self.db:
             for item in targets:
                 interval=item.get("interval",60)
@@ -55,8 +61,38 @@ class PeekHistory:
     def record(self, result):
         with self.lock,self.db:self.db.execute("INSERT INTO observation(target_id,at,payload) VALUES(?,?,?)",(result["id"],time.time(),json.dumps(result,separators=(",",":"))))
     def history(self, target_ids, limit=1000):
+        # Inline history is only a sparkline preview; full charts use /v1/history.
+        budget=512*1024//max(1,len(target_ids))
+        result={}
         with self.lock:
-            return {target_id:[json.loads(row[0]) for row in reversed(self.db.execute("SELECT payload FROM observation WHERE target_id=? ORDER BY at DESC LIMIT ?",(target_id,limit)).fetchall())] for target_id in target_ids}
+            for target_id in target_ids:
+                samples=[];size=0
+                for row in self.db.execute("SELECT payload FROM observation WHERE target_id=? ORDER BY at DESC,seq DESC LIMIT ?",(target_id,min(limit,120))):
+                    size+=len(row[0].encode('utf-8'))+1
+                    if size>budget:break
+                    samples.append(json.loads(row[0]))
+                result[target_id]=list(reversed(samples))
+        return result
+    def series(self, target_id, after, before, metric, points=900):
+        """Return bounded time buckets while retaining each bucket's extrema."""
+        if metric not in ("total_ms","connect_ms","tls_handshake_ms","http_response_ms","dns_response_ms"):
+            raise ValueError("unsupported metric")
+        if not 60 <= before-after <= self.retention_seconds+DAY or not 100 <= points <= 2000:
+            raise ValueError("invalid history range")
+        with self.lock:
+            rows=self.db.execute("SELECT at,payload FROM observation WHERE target_id=? AND at>=? AND at<=? ORDER BY at",(target_id,after,before)).fetchall()
+        buckets=[];width=max(1,(before-after)/points)
+        for row in rows:
+            try:
+                payload=json.loads(row["payload"]);value=float(payload[metric])
+            except (ValueError,TypeError,KeyError,json.JSONDecodeError):
+                continue
+            index=min(points-1,max(0,int((row["at"]-after)/width)))
+            if not buckets or buckets[-1][0]!=index:buckets.append([index,row["at"],value,value,value,1,bool(payload.get("ok"))])
+            else:
+                bucket=buckets[-1];bucket[1]=row["at"];bucket[2]+=value;bucket[3]=min(bucket[3],value);bucket[4]=max(bucket[4],value);bucket[5]+=1;bucket[6]=bucket[6] and bool(payload.get("ok"))
+        return [{"at":dt.datetime.fromtimestamp(item[1],dt.timezone.utc).isoformat(timespec="milliseconds"),
+                 "value":round(item[2]/item[5],2),"min":round(item[3],2),"max":round(item[4],2),"samples":item[5],"ok":item[6]} for item in buckets]
     def due(self):
         now=time.time()
         with self.lock,self.db:
@@ -200,6 +236,67 @@ def read_http_status(sock: ssl.SSLSocket, host_header: str, path: str) -> int:
     return int(parts[1])
 
 
+def probe_dns(config, timeout):
+    protocol=config['protocol'];host=config['host'];port=config['port']
+    addresses=public_addresses(host,port)
+    ident,packet=make_query(config);started=time.monotonic();deadline=started+timeout
+    metrics={'protocol':protocol,'server':host,'port':port}
+    sock=None
+    try:
+        if protocol=='dns':
+            family,sockaddr,address=addresses[0]
+            sock=socket.socket(family,socket.SOCK_DGRAM);sock.settimeout(timeout);sock.connect(sockaddr)
+            sock.send(packet);data=sock.recv(65535)
+            answer=parse_response(data,ident,config)
+            metrics['transport']='udp'
+            if answer.get('truncated'):
+                sock.close();sock,address,connect_s=connect(addresses,max(.001,deadline-time.monotonic()))
+                metrics.update(transport='tcp',connect_ms=milliseconds(connect_s))
+                data=stream_exchange(sock,packet,deadline)
+        else:
+            # DNS queries must never be sent over a connection whose identity failed verification.
+            raw,address,connect_s=connect(addresses,timeout)
+            tls_started=time.monotonic()
+            try:
+                context=ssl.create_default_context()
+                if protocol=='doh':context.set_alpn_protocols(['http/1.1'])
+                sock=context.wrap_socket(raw,server_hostname=host)
+            except Exception:
+                raw.close();raise
+            metrics.update(connect_ms=milliseconds(connect_s),tls_handshake_ms=milliseconds(time.monotonic()-tls_started),
+                tls={'trusted':True,'version':sock.version(),'cipher':sock.cipher()[0],
+                     'certificate':certificate_result(sock.getpeercert(binary_form=True),decode_certificate(sock.getpeercert(binary_form=True)))})
+            if protocol=='dot':
+                data=stream_exchange(sock,packet,deadline);metrics['transport']='tls'
+            else:
+                authority=('['+host+']') if ':' in host else host
+                if port!=443:authority+=':'+str(port)
+                headers=(f"POST {config['path']} HTTP/1.1\r\nHost: {authority}\r\n"
+                    f"Content-Type: application/dns-message\r\nAccept: application/dns-message\r\n"
+                    f"Content-Length: {len(packet)}\r\nConnection: close\r\n\r\n").encode('ascii')
+                sock.settimeout(max(.001,deadline-time.monotonic()));sock.sendall(headers+packet)
+                response=http.client.HTTPResponse(sock);response.begin();metrics['http_status']=response.status
+                if response.status!=200:raise ProbeError('doh_http',f'DoH HTTP status {response.status}')
+                if response.getheader('Content-Type','').split(';')[0].strip().lower()!='application/dns-message':
+                    raise ProbeError('doh_content_type','DoH response is not application/dns-message')
+                data=response.read(65536)
+                if len(data)>65535:raise ProbeError('dns','DNS reply exceeds 65535 bytes')
+                metrics['transport']='https'
+        answer=parse_response(data,ident,config)
+        if answer.get('truncated'):raise ProbeError('dns','truncated DNS response after stream transport')
+        metrics.update(address=address,dns=answer,dns_response_ms=milliseconds(time.monotonic()-started),available=True,ok=answer['ok'])
+        if not answer['ok']:
+            reasons=[]
+            if answer['rcode_number']:reasons.append(answer['rcode'])
+            if not answer['values']:reasons.append('no records of requested type')
+            if not answer['matches_expected']:reasons.append('expected answer missing')
+            if config['require_ad'] and not answer['ad']:reasons.append('resolver did not assert AD')
+            metrics['error']={'kind':'dns_check','message':'; '.join(reasons)}
+        return metrics
+    finally:
+        if sock is not None:sock.close()
+
+
 def probe(target: dict, timeout: float = DEFAULT_TIMEOUT) -> dict:
     started_at = utc_now()
     started = time.monotonic()
@@ -211,9 +308,12 @@ def probe(target: dict, timeout: float = DEFAULT_TIMEOUT) -> dict:
             raise ProbeError("invalid_target", "id must be a non-empty string of at most 128 characters")
         if not isinstance(url, str) or len(url) > 2048:
             raise ProbeError("invalid_target", "url must be a string of at most 2048 characters")
+        try:config=target_config(url)
+        except ValueError as error:raise ProbeError('invalid_target',str(error)) from error
+        if config['protocol']!='https':
+            result=probe_dns(config,timeout)
+            return {**base,**result,'total_ms':milliseconds(time.monotonic()-started)}
         parsed = urlsplit(url)
-        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
-            raise ProbeError("invalid_target", "only https URLs without credentials or fragments are supported")
         try:
             port = parsed.port or 443
         except ValueError as error:
@@ -256,7 +356,7 @@ def probe(target: dict, timeout: float = DEFAULT_TIMEOUT) -> dict:
     except ProbeError as error:
         return {**base, "ok": False, "available": False, "total_ms": milliseconds(time.monotonic() - started),
                 "error": {"kind": error.kind, "message": str(error)}}
-    except (OSError, ValueError, KeyError) as error:
+    except (OSError, ValueError, KeyError, http.client.HTTPException) as error:
         return {**base, "ok": False, "available": False, "total_ms": milliseconds(time.monotonic() - started),
                 "error": {"kind": "probe", "message": str(error)}}
 
@@ -309,6 +409,18 @@ class PeekHandler(http.server.BaseHTTPRequestHandler):
         if self.path == "/healthz":
             return self.respond(200, {"status": "ok", "time": utc_now(),"history":self.server.history.status() if self.server.history else None,
                 "capabilities":{"syspiper_self":bool(self.server.syspiper_key)}})
+        parsed=urlsplit(self.path)
+        history_prefix="/v1/history/"
+        if parsed.path.startswith(history_prefix):
+            supplied=self.headers.get("Authorization","")
+            if not secrets.compare_digest(supplied.encode(),("Bearer "+self.server.token).encode()):return self.respond(401,{"error":"unauthorized"})
+            if not self.server.history:return self.respond(503,{"error":"history unavailable"})
+            try:
+                params=parse_qs(parsed.query,strict_parsing=True);after=float(params["after"][0]);before=float(params["before"][0])
+                points=int(params.get("points",["900"])[0]);metric=params.get("metric",["total_ms"])[0]
+                samples=self.server.history.series(unquote(parsed.path[len(history_prefix):]),after,before,metric,points)
+            except (ValueError,KeyError):return self.respond(400,{"error":"invalid history query"})
+            return self.respond(200,{"metric":metric,"after":after,"before":before,"samples":samples})
         prefix="/syspiper/self/"
         if self.path.startswith(prefix):
             supplied=self.headers.get("Authorization","")

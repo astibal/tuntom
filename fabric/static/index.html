@@ -102,7 +102,20 @@
             <label for="service-kind" data-i18n="serviceKind">Typ</label><select id="service-kind"><option value="external">External</option><option value="internal">Internal</option><option value="via">VIA</option><option value="network">Network</option><option value="other">Other</option></select>
             <label for="service-description" data-i18n="serviceDescription">Popis / proč službu sledujeme</label><textarea id="service-description" maxlength="4096"></textarea>
             <label for="service-labels" data-i18n="serviceLabels">Labely</label><textarea id="service-labels" class="compact-textarea" spellcheck="false" placeholder="42, 0x2b"></textarea><p class="muted" data-i18n="serviceLabelsHint">Jeden label může vlastnit jen jedna MS. Pozice ve stacku nehraje roli.</p>
-            <label for="service-peek" data-i18n="servicePeek">Peek HTTPS targety</label><textarea id="service-peek" class="compact-textarea" spellcheck="false" placeholder="https://github.com 60"></textarea><p class="muted" data-i18n="servicePeekHint">Jeden target na řádek: URL a volitelný interval v sekundách.</p>
+            <label for="service-peek" data-i18n="servicePeek">Peek targety</label><textarea id="service-peek" class="compact-textarea" spellcheck="false" placeholder="https://github.com 60"></textarea><p class="muted" data-i18n="servicePeekHint">Jeden target na řádek: URL a volitelný interval v sekundách.</p>
+            <details class="dns-builder"><summary>+ Test DNS služby (DNS / DoT / DoH)</summary>
+              <div class="dns-builder-grid">
+                <label>Protokol<select id="service-dns-protocol"><option value="dns">DNS (UDP → TCP)</option><option value="dot">DoT (TLS)</option><option value="doh">DoH (HTTPS)</option></select></label>
+                <label>Server<input id="service-dns-server" placeholder="resolver.example" autocomplete="off"></label>
+                <label>Port<input id="service-dns-port" type="number" min="1" max="65535" value="53"></label>
+                <label>DoH cesta<input id="service-dns-path" value="/dns-query" disabled></label>
+                <label>Dotazované jméno<input id="service-dns-name" placeholder="some.domain.tld"></label>
+                <label>Typ<select id="service-dns-type"><option>A</option><option>AAAA</option><option>NS</option><option>CNAME</option><option>MX</option><option>TXT</option><option>PTR</option><option>SRV</option><option>SOA</option></select></label>
+                <label>Očekávaná hodnota (volitelně)<input id="service-dns-expect" placeholder="IPv4 pro A, IPv6 pro AAAA…"></label>
+              </div><label><input id="service-dns-ad" type="checkbox"> Vyžadovat DNSSEC validaci potvrzenou resolverem (AD)</label>
+              <p class="muted">Testuje se tento server a port. AD je tvrzení resolveru, nikoli nezávislá DNSSEC validace v Peeku. Očekávaná hodnota musí být alespoň v jedné odpovědi požadovaného typu.</p>
+              <button id="service-dns-add" type="button" class="quiet-button">Přidat DNS test do návrhu</button>
+            </details>
             <div class="button-row"><button id="service-save" class="primary" data-i18n="save">Uložit</button><button id="service-delete" type="button" class="danger-button" hidden data-i18n="delete">Smazat</button><span id="service-form-status" role="status"></span></div>
           </form>
         </div></div>
@@ -129,10 +142,14 @@
       <footer><span><i class="dot"></i> <span data-i18n="footerSource">Runtime discovery · /proc + control sockets</span></span><span data-i18n="footerState">Žádná databáze · žádné automatické změny</span></footer>
     </div>
   </main>
+  <dialog id="external-detail-dialog" class="external-detail-dialog" aria-labelledby="external-detail-title">
+    <div class="panel-heading"><h2 id="external-detail-title">Peek</h2><button id="external-detail-close" type="button" class="quiet-button" aria-label="Zavřít detail">×</button></div>
+    <p id="external-detail-target"></p><pre id="external-detail-content"></pre>
+  </dialog>
   <dialog id="chart-dialog" aria-labelledby="chart-dialog-title">
     <div class="chart-dialog-heading"><div><span id="chart-dialog-context" class="eyebrow"></span><h2 id="chart-dialog-title"></h2></div><form method="dialog"><button data-i18n-aria="chartClose" aria-label="Zavřít graf" autofocus>×</button></form></div>
-    <div class="chart-toolbar"><div id="chart-dialog-legend" class="chart-dialog-legend"></div><div class="chart-controls"><button id="chart-unpin" class="quiet-button" data-i18n="chartUnpin" disabled>Uvolnit bod</button><label><span class="sr-only" data-i18n="chartRange">Rozsah grafu</span><select id="chart-detail-range"><option value="300000">5m</option><option value="3600000">1h</option><option value="43200000">12h</option><option value="86400000">24h</option></select></label></div></div>
-    <p class="chart-instructions" data-i18n="chartInspect">Pohybem odečítáš vzorky · kliknutí připne bod · šipky přecházejí mezi vzorky</p>
+    <div class="chart-toolbar"><div id="chart-dialog-legend" class="chart-dialog-legend"></div><div class="chart-controls"><button id="chart-unpin" class="quiet-button" data-i18n="chartUnpin" disabled>Uvolnit bod</button><button id="chart-zoom-reset" class="quiet-button">Reset zoom</button><label><span class="sr-only" data-i18n="chartRange">Rozsah grafu</span><select id="chart-detail-range"><option value="300000">5m</option><option value="3600000">1h</option><option value="43200000">12h</option><option value="86400000">24h</option></select></label></div></div>
+    <p class="chart-instructions">Kolečko: zoom času · tažení: posun času · Shift+kolečko/tažení: Y osa · kliknutí: připnout bod · dvojklik: reset</p>
     <svg id="chart-detail" class="time-chart" role="group" tabindex="0" aria-label="Historie RX a TX vybraného procesu" data-i18n-aria="chartLabel" aria-describedby="chart-detail-readout"></svg>
     <div id="chart-detail-readout" class="chart-readout" aria-live="polite"></div>
     <p id="chart-dialog-note" class="chart-note"></p>
@@ -140,6 +157,14 @@
   <dialog id="metric-help" aria-labelledby="metric-help-key" aria-describedby="metric-help-text">
     <div class="metric-help-heading"><h2 id="metric-help-key"></h2><form method="dialog"><button data-i18n-aria="closeInfo" aria-label="Zavřít nápovědu" autofocus>×</button></form></div>
     <p id="metric-help-text"></p>
+  </dialog>
+  <dialog id="external-chart-dialog" aria-labelledby="external-chart-title">
+    <div class="chart-dialog-heading"><div><span id="external-chart-context" class="eyebrow">PEEK HISTORY</span><h2 id="external-chart-title">External target</h2></div><form method="dialog"><button aria-label="Zavřít graf">×</button></form></div>
+    <div class="chart-toolbar"><div class="chart-dialog-legend"><span><i class="dot"></i> <span id="external-chart-series">RTT</span></span><span id="external-chart-window"></span></div><div class="chart-controls"><select id="external-chart-metric" aria-label="Metrika"><option value="total_ms">Total RTT</option><option value="connect_ms">Connect</option><option value="tls_handshake_ms">TLS handshake</option><option value="http_response_ms">HTTP response</option><option value="dns_response_ms">DNS response</option></select><select id="external-chart-range" aria-label="Časový rozsah"><option value="3600000">1h</option><option value="21600000">6h</option><option value="86400000" selected>24h</option><option value="604800000">7d</option><option value="2592000000">30d</option></select><button id="external-chart-reset" class="quiet-button">Reset zoom</button></div></div>
+    <p class="chart-instructions">Kolečko: zoom času · tažení: posun času · Shift+kolečko/tažení: Y osa · dvojklik: reset</p>
+    <svg id="external-chart" class="time-chart" viewBox="0 0 1000 420" tabindex="0" aria-label="Historie měření Peek"></svg>
+    <div id="external-chart-readout" class="chart-readout" aria-live="polite">Načítám historii…</div>
+    <p id="external-chart-note" class="chart-note"></p>
   </dialog>
 </body>
 </html>

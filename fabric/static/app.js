@@ -77,7 +77,7 @@ const messages = {
   serviceDescription:["Popis / proč službu sledujeme","Description / why this service is observed","Description / raison de l’observation"],
   serviceLabels:["Labely","Labels","Labels"],
   serviceLabelsHint:["Jeden label může vlastnit jen jedna MS. Pozice ve stacku nehraje roli.","A label can belong to only one MS. Its stack position does not matter.","Un label ne peut appartenir qu’à un MS. Sa position dans la pile n’a pas d’importance."],
-  servicePeek:["Peek HTTPS targety","Peek HTTPS targets","Cibles HTTPS Peek"],
+  servicePeek:["Peek targety","Peek targets","Cibles Peek"],
   servicePeekHint:["Jeden target na řádek: URL a volitelný interval v sekundách.","One target per line: URL and optional interval in seconds.","Une cible par ligne : URL et intervalle facultatif en secondes."],
   save:["Uložit","Save","Enregistrer"],
   delete:["Smazat","Delete","Supprimer"],
@@ -991,6 +991,12 @@ async function loadHistory(id) {
   }
 }
 const chartViews = new WeakMap();
+function robustChartY(values,floor=0) {
+  values=values.filter(Number.isFinite).sort((a,b)=>a-b);if(!values.length)return [floor,floor+1];
+  const median=values[Math.floor(values.length/2)],deviations=values.map(value=>Math.abs(value-median)).sort((a,b)=>a-b),mad=deviations[Math.floor(deviations.length/2)];
+  const low=Math.max(floor,values[Math.floor(values.length*.02)]??floor),cap=Math.max(median*1.35,median+6*mad,floor+1),high=Math.max(low+1,Math.min(values.at(-1),cap)*1.08);
+  return [Math.max(floor,low-(high-low)*.08),high];
+}
 function chartValue(value, cpu = false) {
   if (!Number.isFinite(value)) return "—";
   const exact = value.toLocaleString(locale(),{maximumFractionDigits:3});
@@ -1009,22 +1015,24 @@ function drawTimeChart(svg, endpointId, worker = null, expanded = false) {
   const previous = chartViews.get(svg);
   const samples = state.history.get(endpointId)?.window(state.chartRange,state.chartNow) || [];
   const width = Math.max(320,svg.clientWidth), height = Math.max(200,svg.clientHeight);
-  const model = {endpointId,worker,samples,start:state.chartNow-state.chartRange,end:state.chartNow,
+  const fullStart=state.chartNow-state.chartRange,fullEnd=state.chartNow;
+  const model = {endpointId,worker,samples,fullStart,fullEnd,start:expanded&&previous?.endpointId===endpointId?previous.start:fullStart,end:expanded&&previous?.endpointId===endpointId?previous.end:fullEnd,
     width,height,left:76,right:width-18,top:24,bottom:height-66,
     gap:Math.max(15000,(endpointId?.startsWith("syspiper:") ? (state.data?.syspiper?.interval_seconds || 30) : (state.data?.poll_interval_seconds || 5))*3000),
     keys:worker === null ? ["rx","tx"] : [typeof worker === "string" ? worker : `cpu_${worker}`],expanded,
-    time:null,pinned:false,issue:false};
+    time:null,pinned:false,issue:false,yRange:expanded&&previous?.endpointId===endpointId?previous.yRange:null,drag:null,moved:false};
   if (previous && previous.endpointId === endpointId && previous.worker === worker) {
-    for (const key of ["time","pinned","issue"]) model[key] = previous[key];
+    for (const key of ["time","pinned","issue","drag","moved"]) model[key] = previous[key];
   }
-  model.max = samples.reduce((max,p)=>Math.max(max,...model.keys.map(key=>p[key] ?? 0)),worker === null ? 1 : 100);
+  const visible=samples.filter(sample=>sample.time>=model.start&&sample.time<=model.end),autoY=worker===null?robustChartY(visible.flatMap(sample=>model.keys.map(key=>sample[key])),0):[0,100];
+  [model.min,model.max]=model.yRange||autoY;
   model.x = time => model.left+(time-model.start)/Math.max(1,model.end-model.start)*(model.right-model.left);
-  model.y = value => model.bottom-value/model.max*(model.bottom-model.top);
-  model.groups = chartIssueBuckets(samples,model.start,model.end,model.right-model.left);
+  model.y = value => model.bottom-(Math.max(model.min,Math.min(model.max,value))-model.min)/Math.max(.0001,model.max-model.min)*(model.bottom-model.top);
+  model.groups = chartIssueBuckets(visible,model.start,model.end,model.right-model.left);
   chartViews.set(svg,model);
   svg.setAttribute("viewBox",`0 0 ${width} ${height}`);
   const axes = Array.from({length:4},(_,i)=>{
-    const value = model.max*i/3, y=model.y(value);
+    const value = model.min+(model.max-model.min)*i/3, y=model.y(value);
     return `<path class="grid" d="M${model.left},${y} H${model.right}"/><text x="${model.left-9}" y="${y+4}" text-anchor="end">${esc(worker === null ? bps(value) : value.toLocaleString(locale(),{maximumFractionDigits:1})+" %")}</text>`;
   }).join("");
   const ticks = width > 700 ? 4 : state.chartRange >= 43200000 ? 1 : 2;
@@ -1044,12 +1052,13 @@ function drawTimeChart(svg, endpointId, worker = null, expanded = false) {
     const latest = samples.at(-1), color=index ? "tx" : "rx";
     return `<path class="${color}" d="${d}"/>`+(Number.isFinite(latest?.[key]) ? `<circle class="chart-point ${color}" cx="${model.x(latest.time)}" cy="${model.y(latest[key])}" r="2.5"/>` : "");
   }).join("");
+  const outliers=visible.flatMap(sample=>model.keys.map((key,index)=>Number.isFinite(sample[key])&&(sample[key]>model.max||sample[key]<model.min)?`<path class="external-chart-outlier" d="M${model.x(sample.time)-4},${sample[key]>model.max?model.top+7:model.bottom-7} L${model.x(sample.time)+4},${sample[key]>model.max?model.top+7:model.bottom-7} L${model.x(sample.time)},${sample[key]>model.max?model.top:model.bottom} Z"><title>${esc(chartValue(sample[key],worker!==null))}</title></path>`:'')).join('');
   // A dedicated incident lane also shows warnings when throughput/CPU is missing.
   const issues = model.groups.map((group,index)=>{
     const x = model.x(group[0].time);
     return `<g data-chart-issue="${index}" class="chart-issue"><title>${esc(t("chartIssueCount",{count:group.length}))} · ${esc(new Date(group[0].time).toLocaleString(locale()))}</title><circle class="chart-issue-hit" cx="${x}" cy="${height-39}" r="11"/><circle cx="${x}" cy="${height-39}" r="${group.length > 1 ? 5 : 4}"/></g>`;
   }).join("");
-  svg.innerHTML = axes+times+paths+issues+'<g class="chart-cursor" hidden></g>';
+  svg.innerHTML = axes+times+paths+outliers+issues+'<g class="chart-cursor" hidden></g>';
   renderChartReadout(svg);
 }
 function renderChartReadout(svg) {
@@ -1143,14 +1152,22 @@ function changeChartRange(value) {
   drawChart();
 }
 for (const svg of [$("chart"),$("chart-detail")]) {
-  svg.addEventListener("pointermove",event=>inspectChartPointer(svg,event));
+  if(svg.id==="chart-detail"){
+    svg.addEventListener("wheel",event=>{event.preventDefault();const model=chartViews.get(svg);if(!model)return;const rect=svg.getBoundingClientRect(),ratio=Math.max(0,Math.min(1,(event.clientX-rect.left)/rect.width)),factor=event.deltaY>0?1.25:.8;if(event.shiftKey){const range=model.yRange||[model.min,model.max],center=(range[0]+range[1])/2,half=(range[1]-range[0])*factor/2;model.yRange=[Math.max(0,center-half),center+half];}else{const oldSpan=model.end-model.start,newSpan=Math.max(1000,Math.min(model.fullEnd-model.fullStart,oldSpan*factor)),anchor=model.start+ratio*oldSpan;model.start=Math.max(model.fullStart,Math.min(model.fullEnd-newSpan,anchor-ratio*newSpan));model.end=model.start+newSpan;model.yRange=null;}renderChartDialog();},{passive:false});
+    svg.addEventListener("pointerdown",event=>{const model=chartViews.get(svg);if(!model)return;svg.setPointerCapture(event.pointerId);model.drag={x:event.clientX,y:event.clientY,start:model.start,end:model.end,yrange:model.yRange||[model.min,model.max],vertical:event.shiftKey};model.moved=false;});
+    svg.addEventListener("pointerup",()=>{const model=chartViews.get(svg);if(model)model.drag=null;});
+    svg.addEventListener("pointercancel",()=>{const model=chartViews.get(svg);if(model)model.drag=null;});
+    svg.addEventListener("dblclick",event=>{event.preventDefault();const model=chartViews.get(svg);if(!model)return;model.start=model.fullStart;model.end=model.fullEnd;model.yRange=null;model.time=null;model.pinned=false;renderChartDialog();});
+  }
+  svg.addEventListener("pointermove",event=>{const model=chartViews.get(svg);if(model?.drag){const rect=svg.getBoundingClientRect();model.moved=model.moved||Math.abs(event.clientX-model.drag.x)>3||Math.abs(event.clientY-model.drag.y)>3;if(model.drag.vertical){const span=model.drag.yrange[1]-model.drag.yrange[0],delta=(event.clientY-model.drag.y)/rect.height*span;model.yRange=[Math.max(0,model.drag.yrange[0]+delta),model.drag.yrange[1]+delta];}else{const span=model.drag.end-model.drag.start,delta=-(event.clientX-model.drag.x)/rect.width*span;model.start=Math.max(model.fullStart,Math.min(model.fullEnd-span,model.drag.start+delta));model.end=model.start+span;model.yRange=null;}renderChartDialog();return;}inspectChartPointer(svg,event);});
   svg.addEventListener("pointerleave",()=>{
     const model=chartViews.get(svg);
-    if (model && !model.pinned) { model.time=null; renderChartReadout(svg); }
+    if (model && !model.pinned && !model.drag) { model.time=null; renderChartReadout(svg); }
   });
   svg.addEventListener("click",event=>{
-    inspectChartPointer(svg,event,true);
     const model=chartViews.get(svg);
+    if(model?.moved){model.moved=false;return;}
+    inspectChartPointer(svg,event,true);
     if (svg.id === "chart" && model) { openChart(model.endpointId,null,{time:model.time,pinned:true,issue:model.issue}); model.pinned=false; }
   });
   svg.addEventListener("keydown",event=>{
@@ -1173,6 +1190,8 @@ for (const svg of [$("chart"),$("chart-detail")]) {
 }
 $("chart-expand").addEventListener("click",()=>openChart(state.selected));
 $("chart-detail-range").addEventListener("change",event=>changeChartRange(event.target.value));
+$("chart-dialog").addEventListener("wheel",event=>{if(event.target.closest('#chart-detail'))event.preventDefault();},{capture:true,passive:false});
+$("chart-zoom-reset").addEventListener("click",()=>{const model=chartViews.get($("chart-detail"));if(!model)return;model.start=model.fullStart;model.end=model.fullEnd;model.yRange=null;model.time=null;model.pinned=false;renderChartDialog();});
 $("chart-unpin").addEventListener("click",()=>{
   const model=chartViews.get($("chart-detail"));
   if (model) { model.time=null; model.pinned=false; model.issue=false; renderChartReadout($("chart-detail")); }
@@ -2136,6 +2155,21 @@ function showServicesTab(name){
   $('services-tab-externals').classList.toggle('active',external);$('services-tab-externals').setAttribute('aria-selected',String(external));
   if(external)loadExternals();
 }
+$('externals-list').addEventListener('click',event=>{
+  const button=event.target.closest('[data-external-detail]');if(!button)return;
+  const row=externalsView.rows.find(item=>item.id===button.dataset.externalDetail);if(!row)return;
+  $('external-detail-title').textContent=row.service_name || 'Peek';
+  $('external-detail-target').textContent=row.url;
+  $('external-detail-content').textContent=JSON.stringify({protocol:externalProtocol(row),dns:row.dns,tls:row.tls,error:row.error,address:row.address,interval:row.interval},null,2);
+  $('external-detail-dialog').showModal();
+});
+$('external-detail-close').addEventListener('click',()=>$('external-detail-dialog').close());
+function externalProtocol(row){return row.protocol || (row.url || '').split(':')[0] || 'https';}
+function externalGood(row){return !!(row.ok && row.available && (externalProtocol(row)==='dns' || row.tls?.trusted));}
+function externalReply(row){return row.dns ? `${row.dns.rcode} · ${row.dns.type} · AD ${row.dns.ad?'✓':'—'}` : row.http_status ?? '—';}
+function externalTrust(row){return externalProtocol(row)==='dns'?'N/A':row.tls?.trusted===true?'trusted':row.tls?.trusted===false?'untrusted':'—';}
+function externalReplyTone(row){return row.dns?(row.dns.ok?'ok':'bad'):externalProtocol(row)==='https'?externalHttpTone(row.http_status):'unknown';}
+function externalDNSDetail(row){return row.dns?`<small class="dns-answer">${esc(row.dns.values.join(' · ') || row.dns.rcode)}${row.dns.expected?' · očekáváno: '+esc(row.dns.expected):''}${row.dns.require_ad?' · vyžadováno AD':''}</small>`:'';}
 function externalCert(row){return row.tls?.certificate || {};}
 function externalExpiry(row){
   const cert=externalCert(row),value=cert.not_after;if(!value)return ['—','unknown'];
@@ -2152,44 +2186,44 @@ function externalSparkline(samples){
 function renderExternals(){
   const query=$('externals-filter').value.trim().toLowerCase(),status=$('externals-state').value,labelOnly=$('externals-label-only').checked;
   const rows=externalsView.rows.filter(row=>{
-    const labels=row.service_labels||[],labelValues=[...labels,...labels.map(label=>'0x'+BigInt(label).toString(16))],good=row.ok&&row.available&&row.tls?.trusted,haystack=(labelOnly?labelValues:[row.service_name,row.service_kind,row.service_description,row.url,...labelValues]).join(' ').toLowerCase();
+    const labels=row.service_labels||[],labelValues=[...labels,...labels.map(label=>'0x'+BigInt(label).toString(16))],good=externalGood(row),haystack=(labelOnly?labelValues:[row.service_name,row.service_kind,row.service_description,row.url,...labelValues]).join(' ').toLowerCase();
     return (!query||haystack.includes(query))&&(!status||(status==='ok'&&good)||(status==='problem'&&!good)||(status==='trusted'&&row.tls?.trusted===true)||(status==='untrusted'&&row.tls?.trusted===false));
   }),up=rows.filter(row=>row.available).length,trusted=rows.filter(row=>row.tls?.trusted).length;
-  $('externals-summary').innerHTML=`<article><span>TARGETY</span><strong>${rows.length}</strong></article><article><span>DOSTUPNÉ</span><strong>${up}/${rows.length}</strong></article><article><span>TRUSTED TLS</span><strong>${trusted}/${rows.length}</strong></article>`;
-  $('externals-list').innerHTML=rows.map(row=>{const expiry=externalExpiry(row),good=row.ok&&row.available&&row.tls?.trusted;return `<article class="external-card ${good?'ok':'bad'}"><header><div><span class="eyebrow">${esc(row.service_name)} · ${esc(row.service_kind)} ${(row.service_labels||[]).map(label=>`· LABEL ${esc(label)}`).join(' ')}</span><h3>${esc(row.url)}</h3></div><span class="external-state">${good?'● OK':'● PROBLÉM'}</span></header><div class="external-metrics"><dl class="${externalHttpTone(row.http_status)}"><dt>HTTP</dt><dd>${esc(row.http_status ?? '—')}</dd></dl><dl class="${externalLatencyTone(row.connect_ms,300,1000)}"><dt>CONNECT</dt><dd>${esc(row.connect_ms ?? '—')} ms</dd></dl><dl class="${externalLatencyTone(row.tls_handshake_ms,300,1000)}"><dt>TLS HANDSHAKE</dt><dd>${esc(row.tls_handshake_ms ?? '—')} ms</dd></dl><dl class="${externalLatencyTone(row.total_ms,1000,3000)}"><dt>CELKEM</dt><dd>${esc(row.total_ms ?? '—')} ms</dd></dl><dl class="${expiry[1]}"><dt>CERT EXPIRY</dt><dd>${esc(expiry[0])}</dd></dl><dl class="${row.tls?.trusted===true?'ok':'bad'}"><dt>TRUST</dt><dd>${row.tls?.trusted===true?'trusted':'untrusted'}</dd></dl></div><details><summary>Certifikát a detail</summary><pre>${esc(JSON.stringify({tls:row.tls,error:row.error,address:row.address,interval:row.interval},null,2))}</pre></details></article>`}).join('') || `<div class="service-empty">${externalsView.rows.length?'Filtru neodpovídají žádné externals.':'Žádná Managed Service nemá Peek target.'}</div>`;
+  $('externals-summary').innerHTML=`<article><span>TARGETY</span><strong>${rows.length}</strong></article><article><span>DOSTUPNÉ</span><strong>${up}/${rows.length}</strong></article><article><span>TRUSTED TLS</span><strong>${trusted}/${rows.filter(row=>externalProtocol(row)!=='dns').length}</strong></article>`;
+  $('externals-list').innerHTML=rows.map(row=>{const expiry=externalExpiry(row),good=externalGood(row);return `<article class="external-card ${good?'ok':'bad'}"><header><div><span class="eyebrow">${esc(row.service_name)} · ${esc(row.service_kind)} ${(row.service_labels||[]).map(label=>`· LABEL ${esc(label)}`).join(' ')}</span><h3>${esc(row.url)}</h3></div><span class="external-state">${good?'● OK':'● PROBLÉM'}</span></header><div class="external-metrics"><dl class="${externalReplyTone(row)}"><dt>HTTP</dt><dd>${esc(row.http_status ?? '—')}</dd></dl><dl class="${externalProtocol(row)==='dns'&&row.connect_ms==null?'unknown':externalLatencyTone(row.connect_ms,300,1000)}"><dt>CONNECT</dt><dd>${esc(row.connect_ms ?? '—')} ms</dd></dl><dl class="${externalProtocol(row)==='dns'?'unknown':externalLatencyTone(row.tls_handshake_ms,300,1000)}"><dt>TLS HANDSHAKE</dt><dd>${esc(row.tls_handshake_ms ?? '—')} ms</dd></dl><dl class="${externalLatencyTone(row.total_ms,1000,3000)}"><dt>CELKEM</dt><dd>${esc(row.total_ms ?? '—')} ms</dd></dl><dl class="${expiry[1]}"><dt>CERT EXPIRY</dt><dd>${esc(expiry[0])}</dd></dl><dl class="${externalProtocol(row)==='dns'?'unknown':row.tls?.trusted===true?'ok':'bad'}"><dt>TRUST</dt><dd>${esc(externalTrust(row))}</dd></dl></div><details><summary>Certifikát a detail</summary><pre>${esc(JSON.stringify({protocol:externalProtocol(row),dns:row.dns,tls:row.tls,error:row.error,address:row.address,interval:row.interval},null,2))}</pre></details></article>`}).join('') || `<div class="service-empty">${externalsView.rows.length?'Filtru neodpovídají žádné externals.':'Žádná Managed Service nemá Peek target.'}</div>`;
   document.querySelectorAll('#externals-list .external-card').forEach((card,index)=>card.querySelector('details').insertAdjacentHTML('beforebegin',externalSparkline(externalsView.history[rows[index].id])));
 }
 function externalSortValue(row,key){
   if(key==='service_name')return row.service_name||'';
   if(key==='service_label')return (row.service_labels||[]).join(',');
-  if(key==='status')return row.ok&&row.available&&row.tls?.trusted?1:0;
+  if(key==='status')return externalGood(row)?1:0;
   if(key==='expiry')return Number(externalCert(row).days_remaining ?? -Infinity);
   if(key==='trust')return row.tls?.trusted===true?1:0;
   if(key==='url')return row.url||'';
   return Number(row[key] ?? Infinity);
 }
-function externalTrendLabel(){return {total_ms:'RTT',connect_ms:'CONNECT',tls_handshake_ms:'TLS',http_response_ms:'HTTP'}[externalsView.trendKey]||'RTT';}
-function externalTrendSelect(){return `<label class="external-trend-select"><span>Trend</span><select data-external-trend><option value="total_ms" ${externalsView.trendKey==='total_ms'?'selected':''}>RTT</option><option value="connect_ms" ${externalsView.trendKey==='connect_ms'?'selected':''}>Connect</option><option value="tls_handshake_ms" ${externalsView.trendKey==='tls_handshake_ms'?'selected':''}>TLS handshake</option><option value="http_response_ms" ${externalsView.trendKey==='http_response_ms'?'selected':''}>HTTP response</option></select></label>`;}
-function externalTrend(samples){
-  const values=(samples||[]).slice(-60).map(row=>Number(row[externalsView.trendKey])).filter(Number.isFinite);if(values.length<2)return '<span class="muted">—</span>';
+function externalTrendLabel(){return {total_ms:'RTT',connect_ms:'CONNECT',tls_handshake_ms:'TLS',http_response_ms:'HTTP',dns_response_ms:'DNS'}[externalsView.trendKey]||'RTT';}
+function externalTrendSelect(){return `<label class="external-trend-select"><span>Trend</span><select data-external-trend><option value="total_ms" ${externalsView.trendKey==='total_ms'?'selected':''}>RTT</option><option value="connect_ms" ${externalsView.trendKey==='connect_ms'?'selected':''}>Connect</option><option value="tls_handshake_ms" ${externalsView.trendKey==='tls_handshake_ms'?'selected':''}>TLS handshake</option><option value="http_response_ms" ${externalsView.trendKey==='http_response_ms'?'selected':''}>HTTP response</option><option value="dns_response_ms" ${externalsView.trendKey==='dns_response_ms'?'selected':''}>DNS response</option></select></label>`;}
+function externalTrend(samples,id){
+  const values=(samples||[]).slice(-60).map(row=>Number(row[externalsView.trendKey])).filter(Number.isFinite);if(values.length<2)return `<button class="external-trend-button muted" data-external-chart="${esc(id)}" title="Otevřít historii">—</button>`;
   const max=Math.max(1,...values),points=values.map((value,index)=>`${(index/(values.length-1)*100).toFixed(2)},${(20-value/max*18).toFixed(2)}`).join(' ');
-  return `<svg class="external-trend" viewBox="0 0 100 22" preserveAspectRatio="none" aria-label="${values.length} vzorků"><polyline points="${points}"></polyline></svg>`;
+  return `<button class="external-trend-button" data-external-chart="${esc(id)}" title="Otevřít historii"><svg class="external-trend" viewBox="0 0 100 22" preserveAspectRatio="none" aria-label="${values.length} vzorků"><polyline points="${points}"></polyline></svg></button>`;
 }
 function renderExternalsTable(){
   const query=$('externals-filter').value.trim().toLowerCase(),status=$('externals-state').value,labelOnly=$('externals-label-only').checked;
-  const rows=externalsView.rows.filter(row=>{const labels=row.service_labels||[],labelValues=[...labels,...labels.map(label=>'0x'+BigInt(label).toString(16))],good=row.ok&&row.available&&row.tls?.trusted,haystack=(labelOnly?labelValues:[row.service_name,row.service_kind,row.service_description,row.url,...labelValues]).join(' ').toLowerCase();return (!query||haystack.includes(query))&&(!status||(status==='ok'&&good)||(status==='problem'&&!good)||(status==='trusted'&&row.tls?.trusted===true)||(status==='untrusted'&&row.tls?.trusted===false));});
+  const rows=externalsView.rows.filter(row=>{const labels=row.service_labels||[],labelValues=[...labels,...labels.map(label=>'0x'+BigInt(label).toString(16))],good=externalGood(row),haystack=(labelOnly?labelValues:[row.service_name,row.service_kind,row.service_description,row.url,...labelValues]).join(' ').toLowerCase();return (!query||haystack.includes(query))&&(!status||(status==='ok'&&good)||(status==='problem'&&!good)||(status==='trusted'&&row.tls?.trusted===true)||(status==='untrusted'&&row.tls?.trusted===false));});
   const up=rows.filter(row=>row.available).length,trusted=rows.filter(row=>row.tls?.trusted).length;
-  $('externals-summary').innerHTML=`<article><span>TARGETY</span><strong>${rows.length}</strong></article><article><span>DOSTUPNÉ</span><strong>${up}/${rows.length}</strong></article><article><span>TRUSTED TLS</span><strong>${trusted}/${rows.length}</strong></article>`;
+  $('externals-summary').innerHTML=`<article><span>TARGETY</span><strong>${rows.length}</strong></article><article><span>DOSTUPNÉ</span><strong>${up}/${rows.length}</strong></article><article><span>TRUSTED TLS</span><strong>${trusted}/${rows.filter(row=>externalProtocol(row)!=='dns').length}</strong></article>`;
   const groups=new Map();for(const row of rows){if(!groups.has(row.service_id))groups.set(row.service_id,[]);groups.get(row.service_id).push(row);}
   const arrow=key=>externalsView.sortBy===key?(externalsView.sortDir>0?' ↑':' ↓'):'';
   const head=(key,label)=>`<button data-external-sort="${key}">${label}${arrow(key)}</button>`;
   if(!$('externals-group-services').checked){
     if(!rows.length){$('externals-list').innerHTML=`<div class="service-empty">${externalsView.rows.length?'Filtru neodpovídají žádné externals.':'Žádná Managed Service nemá Peek target.'}</div>`;return;}
     rows.sort((a,b)=>{const av=externalSortValue(a,externalsView.sortBy),bv=externalSortValue(b,externalsView.sortBy);return (typeof av==='string'?av.localeCompare(bv):av-bv)*externalsView.sortDir;});
-    $('externals-list').innerHTML=`<section class="external-service external-global"><header><div><span class="eyebrow">ALL MANAGED SERVICES</span><h3>Externals</h3></div><div class="external-service-tools"><span class="tag">${rows.length} TARGETS</span>${externalTrendSelect()}</div></header><div class="table-scroll"><table class="external-table"><thead><tr><th>${head('service_name','Service Name')}</th><th>${head('service_label','Service Label')}</th><th>${head('url','Target')}</th><th>${head('status','Stav')}</th><th>${head('http_status','HTTP')}</th><th>${head('connect_ms','Connect')}</th><th>${head('tls_handshake_ms','TLS RTT')}</th><th>${head('total_ms','Total RTT')}</th><th>${head('expiry','Cert')}</th><th>${head('trust','Trust')}</th><th>TREND (${externalTrendLabel()})</th></tr></thead><tbody>${rows.map(row=>{const expiry=externalExpiry(row),good=row.ok&&row.available&&row.tls?.trusted;return `<tr class="${good?'ok':'bad'}"><td><strong>${esc(row.service_name)}</strong></td><td>${(row.service_labels||[]).map(label=>`<span class="tag">${esc(label)} · 0x${BigInt(label).toString(16)}</span>`).join(' ')||'—'}</td><td><strong>${esc(row.url)}</strong><details><summary>Detail</summary><pre>${esc(JSON.stringify({tls:row.tls,error:row.error,address:row.address,interval:row.interval},null,2))}</pre></details></td><td class="${good?'ok':'bad'}">${good?'● OK':'● PROBLÉM'}</td><td class="${externalHttpTone(row.http_status)}">${esc(row.http_status??'—')}</td><td class="${externalLatencyTone(row.connect_ms,300,1000)}">${esc(row.connect_ms??'—')} ms</td><td class="${externalLatencyTone(row.tls_handshake_ms,300,1000)}">${esc(row.tls_handshake_ms??'—')} ms</td><td class="${externalLatencyTone(row.total_ms,1000,3000)}">${esc(row.total_ms??'—')} ms</td><td class="${expiry[1]}">${esc(expiry[0])}</td><td class="${row.tls?.trusted===true?'ok':'bad'}">${row.tls?.trusted===true?'trusted':'untrusted'}</td><td>${externalTrend(externalsView.history[row.id])}</td></tr>`}).join('')}</tbody></table></div></section>`;
+    $('externals-list').innerHTML=`<section class="external-service external-global"><header><div><span class="eyebrow">ALL MANAGED SERVICES</span><h3>Externals</h3></div><div class="external-service-tools"><span class="tag">${rows.length} TARGETS</span>${externalTrendSelect()}</div></header><div class="table-scroll"><table class="external-table"><thead><tr><th>${head('service_name','Service Name')}</th><th>${head('service_label','Service Label')}</th><th>${head('url','Target')}</th><th>${head('status','Stav')}</th><th>${head('http_status','DNS / HTTP')}</th><th>${head('connect_ms','Connect')}</th><th>${head('tls_handshake_ms','TLS RTT')}</th><th>${head('total_ms','Total RTT')}</th><th>${head('expiry','Cert')}</th><th>${head('trust','Trust')}</th><th>TREND (${externalTrendLabel()})</th><th>Detail</th></tr></thead><tbody>${rows.map(row=>{const expiry=externalExpiry(row),good=externalGood(row);return `<tr class="${good?'ok':'bad'}"><td><strong>${esc(row.service_name)}</strong></td><td>${(row.service_labels||[]).map(label=>`<span class="tag">${esc(label)} · 0x${BigInt(label).toString(16)}</span>`).join(' ')||'—'}</td><td><strong><span class="tag">${esc(externalProtocol(row).toUpperCase())}</span> ${esc(row.url)}</strong>${externalDNSDetail(row)}</td><td class="${good?'ok':'bad'}">${good?'● OK':'● PROBLÉM'}</td><td class="${externalReplyTone(row)}">${esc(externalReply(row))}</td><td class="${externalProtocol(row)==='dns'&&row.connect_ms==null?'unknown':externalLatencyTone(row.connect_ms,300,1000)}">${esc(row.connect_ms??'—')} ms</td><td class="${externalProtocol(row)==='dns'?'unknown':externalLatencyTone(row.tls_handshake_ms,300,1000)}">${esc(row.tls_handshake_ms??'—')} ms</td><td class="${externalLatencyTone(row.total_ms,1000,3000)}">${esc(row.total_ms??'—')} ms</td><td class="${expiry[1]}">${esc(expiry[0])}</td><td class="${externalProtocol(row)==='dns'?'unknown':row.tls?.trusted===true?'ok':'bad'}">${esc(externalTrust(row))}</td><td>${externalTrend(externalsView.history[row.id],row.id)}</td><td class="external-detail-cell"><button type="button" class="quiet-button" data-external-detail="${esc(row.id)}" aria-label="Detail ${esc(row.url)}">Detail ↗</button></td></tr>`}).join('')}</tbody></table></div></section>`;
     return;
   }
-  $('externals-list').innerHTML=[...groups.values()].map(group=>{group.sort((a,b)=>{const av=externalSortValue(a,externalsView.sortBy),bv=externalSortValue(b,externalsView.sortBy);return (typeof av==='string'?av.localeCompare(bv):av-bv)*externalsView.sortDir;});const service=group[0];return `<section class="external-service"><header><div><h3>${esc(service.service_name)}</h3></div><div>${(service.service_labels||[]).map(label=>`<span class="tag">${esc(label)} · 0x${BigInt(label).toString(16)}</span>`).join('')}</div></header><div class="table-scroll"><table class="external-table"><thead><tr><th>${head('url','Target')}</th><th>${head('status','Stav')}</th><th>${head('http_status','HTTP')}</th><th>${head('connect_ms','Connect')}</th><th>${head('tls_handshake_ms','TLS RTT')}</th><th>${head('total_ms','Total RTT')}</th><th>${head('expiry','Cert')}</th><th>${head('trust','Trust')}</th><th>TREND (${externalTrendLabel()})</th></tr></thead><tbody>${group.map(row=>{const expiry=externalExpiry(row),good=row.ok&&row.available&&row.tls?.trusted;return `<tr class="${good?'ok':'bad'}"><td><strong>${esc(row.url)}</strong><details><summary>Detail</summary><pre>${esc(JSON.stringify({tls:row.tls,error:row.error,address:row.address,interval:row.interval},null,2))}</pre></details></td><td class="${good?'ok':'bad'}">${good?'● OK':'● PROBLÉM'}</td><td class="${externalHttpTone(row.http_status)}">${esc(row.http_status??'—')}</td><td class="${externalLatencyTone(row.connect_ms,300,1000)}">${esc(row.connect_ms??'—')} ms</td><td class="${externalLatencyTone(row.tls_handshake_ms,300,1000)}">${esc(row.tls_handshake_ms??'—')} ms</td><td class="${externalLatencyTone(row.total_ms,1000,3000)}">${esc(row.total_ms??'—')} ms</td><td class="${expiry[1]}">${esc(expiry[0])}</td><td class="${row.tls?.trusted===true?'ok':'bad'}">${row.tls?.trusted===true?'trusted':'untrusted'}</td><td>${externalTrend(externalsView.history[row.id])}</td></tr>`}).join('')}</tbody></table></div></section>`}).join('')||`<div class="service-empty">${externalsView.rows.length?'Filtru neodpovídají žádné externals.':'Žádná Managed Service nemá Peek target.'}</div>`;
+  $('externals-list').innerHTML=[...groups.values()].map(group=>{group.sort((a,b)=>{const av=externalSortValue(a,externalsView.sortBy),bv=externalSortValue(b,externalsView.sortBy);return (typeof av==='string'?av.localeCompare(bv):av-bv)*externalsView.sortDir;});const service=group[0];return `<section class="external-service"><header><div><h3>${esc(service.service_name)}</h3></div><div>${(service.service_labels||[]).map(label=>`<span class="tag">${esc(label)} · 0x${BigInt(label).toString(16)}</span>`).join('')}</div></header><div class="table-scroll"><table class="external-table"><thead><tr><th>${head('url','Target')}</th><th>${head('status','Stav')}</th><th>${head('http_status','DNS / HTTP')}</th><th>${head('connect_ms','Connect')}</th><th>${head('tls_handshake_ms','TLS RTT')}</th><th>${head('total_ms','Total RTT')}</th><th>${head('expiry','Cert')}</th><th>${head('trust','Trust')}</th><th>TREND (${externalTrendLabel()})</th><th>Detail</th></tr></thead><tbody>${group.map(row=>{const expiry=externalExpiry(row),good=externalGood(row);return `<tr class="${good?'ok':'bad'}"><td><strong><span class="tag">${esc(externalProtocol(row).toUpperCase())}</span> ${esc(row.url)}</strong>${externalDNSDetail(row)}</td><td class="${good?'ok':'bad'}">${good?'● OK':'● PROBLÉM'}</td><td class="${externalReplyTone(row)}">${esc(externalReply(row))}</td><td class="${externalProtocol(row)==='dns'&&row.connect_ms==null?'unknown':externalLatencyTone(row.connect_ms,300,1000)}">${esc(row.connect_ms??'—')} ms</td><td class="${externalProtocol(row)==='dns'?'unknown':externalLatencyTone(row.tls_handshake_ms,300,1000)}">${esc(row.tls_handshake_ms??'—')} ms</td><td class="${externalLatencyTone(row.total_ms,1000,3000)}">${esc(row.total_ms??'—')} ms</td><td class="${expiry[1]}">${esc(expiry[0])}</td><td class="${externalProtocol(row)==='dns'?'unknown':row.tls?.trusted===true?'ok':'bad'}">${esc(externalTrust(row))}</td><td>${externalTrend(externalsView.history[row.id],row.id)}</td><td class="external-detail-cell"><button type="button" class="quiet-button" data-external-detail="${esc(row.id)}" aria-label="Detail ${esc(row.url)}">Detail ↗</button></td></tr>`}).join('')}</tbody></table></div></section>`}).join('')||`<div class="service-empty">${externalsView.rows.length?'Filtru neodpovídají žádné externals.':'Žádná Managed Service nemá Peek target.'}</div>`;
   document.querySelectorAll('#externals-list .external-service:not(.external-global)>header>div:last-child').forEach(container=>{container.classList.add('external-service-tools');container.insertAdjacentHTML('beforeend',externalTrendSelect());});
 }
 async function loadExternals(){
@@ -2198,6 +2232,42 @@ async function loadExternals(){
   catch(error){$('externals-status').textContent=diagnostic(error.message);}
   finally{externalsView.busy=false;$('externals-read').disabled=false;const intervals=externalsView.rows.map(row=>row.interval).filter(Number.isFinite);if(state.view==='services'&&!$('services-externals').hidden&&intervals.length)externalsTimer=setTimeout(loadExternals,Math.min(...intervals)*1000);}
 }
+const externalChart={row:null,samples:[],loadedAfter:0,loadedBefore:0,viewAfter:0,viewBefore:0,y:null,drag:null,cursor:null};
+function externalMetricName(key){return {total_ms:'Total RTT',connect_ms:'Connect',tls_handshake_ms:'TLS handshake',http_response_ms:'HTTP response',dns_response_ms:'DNS response'}[key]||key;}
+function externalChartReset(){externalChart.viewAfter=externalChart.loadedAfter;externalChart.viewBefore=externalChart.loadedBefore;externalChart.y=null;externalChart.cursor=null;drawExternalChart();}
+function externalRobustY(samples){return robustChartY(samples.flatMap(sample=>[sample.min,sample.max]),0);}
+function drawExternalChart(){
+  const svg=$('external-chart'),left=72,right=25,top=24,bottom=46,width=1000-left-right,height=420-top-bottom;
+  const visible=externalChart.samples.filter(sample=>sample.time>=externalChart.viewAfter&&sample.time<=externalChart.viewBefore),yrange=externalChart.y||externalRobustY(visible),ymin=yrange[0],ymax=Math.max(yrange[1],ymin+.01),span=Math.max(1,externalChart.viewBefore-externalChart.viewAfter);
+  const x=time=>left+(time-externalChart.viewAfter)/span*width,y=value=>top+(1-(Math.max(ymin,Math.min(ymax,value))-ymin)/(ymax-ymin))*height;
+  let grid='';for(let i=0;i<=5;i++){const yy=top+i*height/5,value=ymax-i*(ymax-ymin)/5;grid+=`<line class="external-chart-grid" x1="${left}" y1="${yy}" x2="${left+width}" y2="${yy}"/><text class="external-chart-axis" x="${left-9}" y="${yy+4}" text-anchor="end">${value.toFixed(value<10?2:1)} ms</text>`;}
+  for(let i=0;i<=6;i++){const xx=left+i*width/6,time=externalChart.viewAfter+i*span/6;grid+=`<line class="external-chart-grid" x1="${xx}" y1="${top}" x2="${xx}" y2="${top+height}"/><text class="external-chart-axis" x="${xx}" y="${top+height+25}" text-anchor="middle">${esc(new Date(time).toLocaleString(locale(),{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}))}</text>`;}
+  const points=visible.map(sample=>`${x(sample.time).toFixed(1)},${y(sample.value).toFixed(1)}`).join(' '),band=visible.length>1?[...visible.map(sample=>`${x(sample.time).toFixed(1)},${y(sample.max).toFixed(1)}`),...visible.slice().reverse().map(sample=>`${x(sample.time).toFixed(1)},${y(sample.min).toFixed(1)}`)].join(' '):'';
+  const marks=visible.map(sample=>sample.max>ymax?`<path class="external-chart-outlier" d="M${x(sample.time)-5},${top+8} L${x(sample.time)+5},${top+8} L${x(sample.time)},${top} Z"/>`:!sample.ok?`<circle class="external-chart-failure" cx="${x(sample.time)}" cy="${y(sample.value)}" r="3"/>`:'').join('');
+  let cursor='';if(externalChart.cursor){const sample=externalChart.cursor;cursor=`<line class="external-chart-cursor" x1="${x(sample.time)}" y1="${top}" x2="${x(sample.time)}" y2="${top+height}"/><circle cx="${x(sample.time)}" cy="${y(sample.value)}" r="4" fill="var(--green)"/>`;}
+  svg.innerHTML=`${grid}<polygon class="external-chart-range" points="${band}"/><polyline class="external-chart-line" points="${points}"/>${marks}${cursor}`;
+  $('external-chart-window').textContent=`${visible.length} bodů · ${new Date(externalChart.viewAfter).toLocaleString(locale())} — ${new Date(externalChart.viewBefore).toLocaleString(locale())}`;
+  $('external-chart-note').textContent=`Y ${ymin.toFixed(2)}–${ymax.toFixed(2)} ms · trojúhelník označuje outlier nad viditelnou osou · pásmo je min/max agregovaných vzorků`;
+  if(!visible.length)$('external-chart-readout').textContent='Ve zvoleném výřezu nejsou data.';
+}
+async function loadExternalChart(reset=true){
+  const row=externalChart.row,range=Number($('external-chart-range').value),metric=$('external-chart-metric').value,before=Date.now(),after=before-range;
+  $('external-chart-readout').textContent='Načítám historii…';$('external-chart-note').textContent='';
+  try{const data=await api(`/api/v1/externals/${encodeURIComponent(row.id)}/history?after=${after/1000}&before=${before/1000}&points=1200&metric=${encodeURIComponent(metric)}`);externalChart.samples=(data.samples||[]).map(sample=>({...sample,time:Date.parse(sample.at)})).filter(sample=>Number.isFinite(sample.time));externalChart.loadedAfter=after;externalChart.loadedBefore=before;if(reset)externalChartReset();else drawExternalChart();$('external-chart-readout').textContent=externalChart.samples.length?'Přejeď graf pro přesnou hodnotu.':'Peek pro tento rozsah nemá měření.';}
+  catch(error){externalChart.samples=[];$('external-chart-readout').textContent=diagnostic(error.message);drawExternalChart();}
+}
+function openExternalChart(id){
+  const row=externalsView.rows.find(item=>item.id===id);if(!row)return;externalChart.row=row;$('external-chart-title').textContent=row.url;$('external-chart-context').textContent=`${row.service_name} · PEEK HISTORY`;$('external-chart-metric').value=externalsView.trendKey;$('external-chart-series').textContent=externalMetricName(externalsView.trendKey);$('external-chart-dialog').showModal();loadExternalChart();
+}
+$('external-chart-metric').addEventListener('change',()=>{$('external-chart-series').textContent=externalMetricName($('external-chart-metric').value);loadExternalChart();});
+$('external-chart-range').addEventListener('change',()=>loadExternalChart());$('external-chart-reset').addEventListener('click',externalChartReset);
+const externalChartSvg=$('external-chart');
+$('external-chart-dialog').addEventListener('wheel',event=>{if(event.target.closest('#external-chart'))event.preventDefault();},{capture:true,passive:false});
+externalChartSvg.addEventListener('dblclick',externalChartReset);
+externalChartSvg.addEventListener('wheel',event=>{event.preventDefault();if(!externalChart.samples.length)return;const rect=externalChartSvg.getBoundingClientRect(),ratio=Math.max(0,Math.min(1,(event.clientX-rect.left)/rect.width)),factor=event.deltaY>0?1.25:.8;if(event.shiftKey){const current=externalChart.y||externalRobustY(externalChart.samples.filter(sample=>sample.time>=externalChart.viewAfter&&sample.time<=externalChart.viewBefore)),center=(current[0]+current[1])/2,half=(current[1]-current[0])*factor/2;externalChart.y=[Math.max(0,center-half),center+half];}else{const span=(externalChart.viewBefore-externalChart.viewAfter)*factor,anchor=externalChart.viewAfter+ratio*(externalChart.viewBefore-externalChart.viewAfter);externalChart.viewAfter=Math.max(externalChart.loadedAfter,anchor-ratio*span);externalChart.viewBefore=Math.min(externalChart.loadedBefore,externalChart.viewAfter+span);externalChart.viewAfter=Math.max(externalChart.loadedAfter,externalChart.viewBefore-span);externalChart.y=null;}drawExternalChart();},{passive:false});
+externalChartSvg.addEventListener('pointerdown',event=>{externalChartSvg.setPointerCapture(event.pointerId);externalChart.drag={x:event.clientX,y:event.clientY,after:externalChart.viewAfter,before:externalChart.viewBefore,yrange:externalChart.y||externalRobustY(externalChart.samples.filter(sample=>sample.time>=externalChart.viewAfter&&sample.time<=externalChart.viewBefore)),vertical:event.shiftKey};});
+externalChartSvg.addEventListener('pointerup',()=>externalChart.drag=null);externalChartSvg.addEventListener('pointercancel',()=>externalChart.drag=null);
+externalChartSvg.addEventListener('pointermove',event=>{const rect=externalChartSvg.getBoundingClientRect();if(externalChart.drag){if(externalChart.drag.vertical){const span=externalChart.drag.yrange[1]-externalChart.drag.yrange[0],delta=(event.clientY-externalChart.drag.y)/rect.height*span;externalChart.y=[Math.max(0,externalChart.drag.yrange[0]+delta),externalChart.drag.yrange[1]+delta];}else{const span=externalChart.drag.before-externalChart.drag.after,delta=-(event.clientX-externalChart.drag.x)/rect.width*span;externalChart.viewAfter=Math.max(externalChart.loadedAfter,Math.min(externalChart.loadedBefore-span,externalChart.drag.after+delta));externalChart.viewBefore=externalChart.viewAfter+span;externalChart.y=null;}drawExternalChart();return;}const time=externalChart.viewAfter+Math.max(0,Math.min(1,(event.clientX-rect.left)/rect.width))*(externalChart.viewBefore-externalChart.viewAfter),visible=externalChart.samples.filter(sample=>sample.time>=externalChart.viewAfter&&sample.time<=externalChart.viewBefore);externalChart.cursor=visible.reduce((best,sample)=>!best||Math.abs(sample.time-time)<Math.abs(best.time-time)?sample:best,null);if(externalChart.cursor)$('external-chart-readout').innerHTML=`<div class="chart-readout-heading"><strong>${esc(new Date(externalChart.cursor.time).toLocaleString(locale()))}</strong><span>${esc(externalMetricName($('external-chart-metric').value))}</span></div><span class="chart-value"><strong>${esc(externalChart.cursor.value)} ms</strong> · min ${esc(externalChart.cursor.min)} · max ${esc(externalChart.cursor.max)} · ${esc(externalChart.cursor.samples)} vzorků</span>`;drawExternalChart();});
 $('services-tab-managed').addEventListener('click',()=>showServicesTab('managed'));
 $('services-tab-externals').addEventListener('click',()=>showServicesTab('externals'));
 $('externals-read').addEventListener('click',loadExternals);
@@ -2205,7 +2275,7 @@ $('externals-filter').addEventListener('input',renderExternalsTable);
 $('externals-label-only').addEventListener('change',renderExternalsTable);
 $('externals-state').addEventListener('change',renderExternalsTable);
 $('externals-group-services').addEventListener('change',renderExternalsTable);
-$('externals-list').addEventListener('click',event=>{const button=event.target.closest('[data-external-sort]');if(!button)return;const key=button.dataset.externalSort;if(externalsView.sortBy===key)externalsView.sortDir*=-1;else{externalsView.sortBy=key;externalsView.sortDir=1;}renderExternalsTable();});
+$('externals-list').addEventListener('click',event=>{const chart=event.target.closest('[data-external-chart]');if(chart){openExternalChart(chart.dataset.externalChart);return;}const button=event.target.closest('[data-external-sort]');if(!button)return;const key=button.dataset.externalSort;if(externalsView.sortBy===key)externalsView.sortDir*=-1;else{externalsView.sortBy=key;externalsView.sortDir=1;}renderExternalsTable();});
 $('externals-list').addEventListener('change',event=>{if(!event.target.matches('[data-external-trend]'))return;externalsView.trendKey=event.target.value;renderExternalsTable();});
 function serviceBusy(value){
   servicesView.busy=value;
@@ -2214,6 +2284,27 @@ function serviceBusy(value){
 function serviceLabels(text){
   return text.split(/[\s,]+/).map(value=>value.trim()).filter(Boolean);
 }
+function dnsTargetURL(protocol,server,port,path,name,type,ad,expected){
+  if(!['dns','dot','doh'].includes(protocol))throw new Error('Neplatný DNS protokol.');
+  if(!server || /[\s/@?#]/.test(server))throw new Error('Zadej server bez schématu a cesty.');
+  if(!Number.isInteger(port)||port<1||port>65535)throw new Error('Port musí být 1–65535.');
+  if(!name || /\s/.test(name))throw new Error('Zadej DNS jméno.');
+  const host=server.includes(':')&&!server.startsWith('[')?`[${server}]`:server;
+  if(protocol==='doh' && (!path.startsWith('/')||/[\s?#]/.test(path)))throw new Error('DoH cesta musí začínat / a být bez query parametrů.');
+  const params=new URLSearchParams({name,type});if(ad)params.set('ad','1');if(expected)params.set('expect',expected);
+  return `${protocol}://${host}:${port}${protocol==='doh'?path:'/'}?${params}`;
+}
+$('service-dns-protocol').addEventListener('change',()=>{
+  const protocol=$('service-dns-protocol').value;$('service-dns-port').value={dns:53,dot:853,doh:443}[protocol];
+  $('service-dns-path').disabled=protocol!=='doh';
+});
+$('service-dns-add').addEventListener('click',()=>{
+  try{
+    const url=dnsTargetURL($('service-dns-protocol').value,$('service-dns-server').value.trim(),Number($('service-dns-port').value),$('service-dns-path').value.trim(),$('service-dns-name').value.trim(),$('service-dns-type').value,$('service-dns-ad').checked,$('service-dns-expect').value.trim());
+    $('service-peek').value=[$('service-peek').value.trim(),url+' 60'].filter(Boolean).join('\n');
+    $('service-form-status').textContent='DNS test přidán do návrhu. Ulož službu pro aktivaci.';
+  }catch(error){$('service-form-status').textContent=error.message;}
+});
 function serviceTargets(text){
   return text.split('\n').map(line=>line.trim()).filter(Boolean).map(line=>{
     const parts=line.split(/\s+/);if(parts.length>2)throw new Error('Peek target: URL a volitelný interval.');
@@ -2411,8 +2502,13 @@ async function passwordRecord(password){
   const clientKey=await hmacRaw(salted,bytes("Client Key"));
   return {algorithm:"scram-sha-256",iterations:600000,salt:b64url(salt),stored_key:b64url(await sha256Raw(clientKey)),server_key:b64url(await hmacRaw(salted,bytes("Server Key")))};
 }
+let loginBusy=false;
+function setLoginBusy(value){loginBusy=value;document.querySelectorAll('#login-form input,#login-form button,#token-form input,#token-form button').forEach(element=>element.disabled=value);}
 async function submitLogin(username,password,bootstrap=false){
-  try{state.loginError="";await authenticate(username,password,bootstrap);}catch(error){state.loginError=error.message;$("login-error").textContent=diagnostic(error.message);$("login-error").hidden=false;}
+  if(loginBusy)return false;setLoginBusy(true);$("login-error").hidden=true;
+  try{state.loginError="";await authenticate(username,password,bootstrap);return true;}
+  catch(error){state.loginError=error.message;$("login-error").textContent=diagnostic(error.message);$("login-error").hidden=false;return false;}
+  finally{setLoginBusy(false);}
 }
 const usersEditor={users:[],editing:null,busy:false};
 function userBusy(value){
@@ -2467,8 +2563,8 @@ $("users-list").addEventListener("click",async event=>{
 $("users-read").addEventListener("click",()=>loadUsers());
 $("user-new").addEventListener("click",()=>editUser());
 $("user-cancel").addEventListener("click",closeUserEditor);
-$("login-form").addEventListener("submit",async event=>{event.preventDefault();const password=$("login-password").value;$("login-password").value="";await submitLogin($("login-username").value.trim(),password);});
-$("token-form").addEventListener("submit",async event=>{event.preventDefault();const token=$("token").value;$("token").value="";await submitLogin("bootstrap",token,true);});
+$("login-form").addEventListener("submit",async event=>{event.preventDefault();const input=$("login-password"),password=input.value;if(await submitLogin($("login-username").value.trim(),password))input.value="";});
+$("token-form").addEventListener("submit",async event=>{event.preventDefault();const input=$("token"),token=input.value;if(await submitLogin("bootstrap",token,true))input.value="";});
 $("logout").addEventListener("click",async()=>{
   try{if(state.auth)await api("/api/v1/auth/logout","POST",{});}catch{/* Local logout must still complete. */}
   state.auth=null;state.data=null;state.selected=null;state.paused=false;state.failure="";state.loginError="";

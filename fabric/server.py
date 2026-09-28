@@ -35,7 +35,7 @@ from telemetry import changes, health, switch_detail
 from syspiper import Syspiper
 from auth import AuthManager
 from services import Services, default_services_path
-from externals import PeekError, observe, peek_health, peek_syspiper
+from externals import PeekError, observe, peek_health, peek_syspiper, peek_history
 
 STATIC = Path(__file__).parent / "static"
 LOG = logging.getLogger("fabric")
@@ -662,6 +662,14 @@ class Handler(BaseHTTPRequestHandler):
                     raise APIError(502, str(error)) from error
             if path == "/api/v1/peek-probes" and self.command == "GET":
                 return self.respond(200,peek_syspiper(self.server.peek_url,self.server.peek_token))
+            match=re.fullmatch(r"/api/v1/externals/([^/]+)/history",path)
+            if match and self.command=="GET":
+                params=parse_qs(urlsplit(self.path).query)
+                try:
+                    after=float(params["after"][0]);before=float(params["before"][0]);points=int(params.get("points",["900"])[0]);metric=params.get("metric",["total_ms"])[0]
+                except (ValueError,KeyError,IndexError):raise APIError(400,"invalid history query")
+                try:return self.respond(200,peek_history(self.server.services.list()["services"],unquote(match[1]),self.server.peek_url,self.server.peek_token,after,before,metric,points))
+                except PeekError as error:raise APIError(502,str(error)) from error
             if path == "/api/v1/services" and self.command == "POST":
                 data = self.body()
                 try:

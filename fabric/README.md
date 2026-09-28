@@ -736,12 +736,14 @@ Podzáložka **Services / Externals** volá při otevření vzdálený Peek, po 
 zobrazení se obnovuje podle nejkratšího intervalu targetů a nabízí ruční měření.
 Zobrazuje dostupnost, HTTP status, latence a TLS/certifikát. Výsledky se ve Fabric
 neukládají. Připojení se nastavuje přes `--peek-url` a `--peek-token`
-(nebo `TUNTOM_PEEK_URL` a `TUNTOM_PEEK_TOKEN`). Pravidelný serverový scheduler,
-historie pozorování ani generování classifier rules z MS se zatím neprovádí.
+(nebo `TUNTOM_PEEK_URL` a `TUNTOM_PEEK_TOKEN`). Generování classifier rules z MS
+se zatím neprovádí.
 
 Peek drží aktivní zájem sedm dní od posledního requestu a historii třicet dní;
 obě hodnoty jsou volitelné argumenty serveru. Externals z historie vykreslí graf
-celkové latence. Expiraci certifikátu zvýrazní oranžově od 14 dnů a červeně od 7 dnů.
+zvolené latence. Detail podporuje rozsahy 1h až 30d, zoom a posun časové i hodnotové
+osy a robustní Y škálu se zachováním značek outlierů. Expiraci certifikátu zvýrazní
+oranžově od 14 dnů a červeně od 7 dnů.
 Stejné provozní barvy používá pro HTTP 4xx/5xx, nedůvěryhodné TLS a pomalé
 navázání nebo celkovou odezvu; konkrétní latence jsou pouze UI prahy, nikoli SLA.
 

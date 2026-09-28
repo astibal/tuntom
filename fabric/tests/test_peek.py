@@ -22,6 +22,27 @@ class PeekTests(unittest.TestCase):
             self.assertEqual(store.due(),[])
             store.close()
 
+    def test_inline_history_is_bounded_and_full_series_remains_available(self):
+        store=peek.PeekHistory(':memory:');self.addCleanup(store.close)
+        for i in range(130):
+            store.record({'id':'large','observed_at':peek.utc_now(),'ok':True,'total_ms':i,'detail':'x'*10000})
+        preview=store.history(['large'])['large']
+        self.assertLess(len(preview),120)
+        self.assertEqual(preview[-1]['total_ms'],129)
+        self.assertLess(len(json.dumps(preview).encode()),512*1024)
+        self.assertEqual(store.status()['observations'],130)
+
+    def test_history_series_downsamples_and_keeps_extrema(self):
+        with tempfile.TemporaryDirectory() as root:
+            store=peek.PeekHistory(root+"/peek.sqlite",7,30)
+            target={"id":"one","url":"https://example.com","interval":60};store.renew([target])
+            with mock.patch("peek.time.time",return_value=1000):store.record({"id":"one","observed_at":peek.utc_now(),"ok":True,"total_ms":10})
+            with mock.patch("peek.time.time",return_value=1001):store.record({"id":"one","observed_at":peek.utc_now(),"ok":True,"total_ms":900})
+            series=store.series("one",900,1100,"total_ms",100)
+            self.assertEqual(len(series),1);self.assertEqual(series[0]["value"],455);self.assertEqual(series[0]["max"],900)
+            with self.assertRaisesRegex(ValueError,"unsupported"):store.series("one",900,1100,"secret",100)
+            store.close()
+
     def test_rejects_non_https_and_private_destinations(self):
         result = peek.probe({"id": "plain", "url": "http://example.com"})
         self.assertEqual(result["error"]["kind"], "invalid_target")

@@ -46,6 +46,16 @@ class ExternalsTests(unittest.TestCase):
         with self.assertRaisesRegex(externals.PeekError, "nakonfigurovaný"):
             externals.observe(services, None, None)
 
+    def test_history_only_allows_configured_target(self):
+        services = [{"id":"abc", "name":"GitHub", "kind":"external",
+                     "peek_targets":[{"url":"https://github.com", "interval":60}]}]
+        target_id="abc:"+hashlib.sha256(b"https://github.com").hexdigest()[:16]
+        with mock.patch("externals.urlopen",return_value=Reply({"samples":[],"metric":"total_ms"})) as call:
+            value=externals.peek_history(services,target_id,"http://peek:8780","secret",1,2,"total_ms")
+        self.assertEqual(value["samples"],[]);self.assertIn("/v1/history/",call.call_args.args[0].full_url)
+        with self.assertRaisesRegex(externals.PeekError,"Neznámý"):
+            externals.peek_history(services,"other","http://peek:8780","secret",1,2,"total_ms")
+
 
 if __name__ == "__main__":
     unittest.main()

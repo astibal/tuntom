@@ -14,6 +14,7 @@ import secrets
 import sqlite3
 import threading
 from urllib.parse import urlsplit
+from peek_dns import target_config
 
 
 KINDS = {"external", "internal", "via", "network", "other"}
@@ -68,9 +69,7 @@ def validate(data: dict) -> dict:
         url, interval = item.get("url"), item.get("interval", 60)
         if not isinstance(url, str) or len(url) > 2048:
             raise ValueError("Peek target URL must be a string of at most 2048 characters")
-        parsed = urlsplit(url)
-        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
-            raise ValueError("Peek targets must be HTTPS URLs without credentials or fragments")
+        target_config(url)
         if not isinstance(interval, int) or isinstance(interval, bool) or not 10 <= interval <= 86400:
             raise ValueError("Peek interval must be 10..86400 seconds")
         if url not in seen_urls:
