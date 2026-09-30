@@ -12,7 +12,7 @@ existing key derivations. Version 5 is transmitted only in INIT/RESPONSE.
 
 | Offset | Bytes | Field |
 |---:|---:|---|
-| 0 | 1 | Type in bits 0–3; bits 4–5 reserved (zero), bit 6 = fragmented DATA, bit 7 = AEAD |
+| 0 | 1 | Base type in bits 0–3; bit 4 = V5 extension namespace, bit 5 reserved (zero), bit 6 = fragmented DATA, bit 7 = AEAD |
 | 1 | 8 | SEQ: upper 16 bits session hint, lower 48 bits counter |
 | 9 | variable | Type-specific extension below |
 | M | 16 | AMAC or Ascon-AEAD128 tag; M = 9 + extension size |
@@ -28,6 +28,7 @@ existing key derivations. Version 5 is transmitted only in INIT/RESPONSE.
 | MTU_PROBE (6), MTU_REPLY (7) | probe_id[8], outer_mtu[2] | 35 B |
 | INIT (8), RESPONSE (9) | version[1] = 5, exchange_id[8] | 34 B |
 | CONFIRM (10), CONFIRM_ACK (11) | exchange_id[8] | 33 B |
+| AUTH_CHALLENGE..CONFIG (EXT 0..5) | none | 25 B |
 
 
 The MAC construction is specified in [AMAC v1](AMAC_V1.md). Its input is
@@ -35,6 +36,69 @@ The MAC construction is specified in [AMAC v1](AMAC_V1.md). Its input is
 metadata as associated data. All flags and extensions are authenticated.
 Reserved bits, unknown types, wrong handshake versions and fragment flags on
 control packets are rejected.
+
+## Session AUTH, RELOCATE and CONFIG extension
+
+Bit 4 creates an extension type namespace. Its current types are
+AUTH_CHALLENGE (0), AUTH_RESPONSE (1), AUTH_OK (2), AUTH_FAILED (3), RELOCATE
+(4), CONFIG (5), RELOCATE_BIND (6), and RELOCATE_OK (7). They are ordinary replay-protected packets restricted to
+the active encrypted session. Older V5 implementations reject bit 4 and remain
+interoperable when the server does not request AUTH.
+
+AUTH is server-initiated. Immediately after confirmation a server either
+continues exactly as before or sends AUTH_CHALLENGE. Once challenged, application
+DATA is gated until the server verifies AUTH_RESPONSE. Every syntactically valid
+AUTH_RESPONSE must terminate in AUTH_OK or AUTH_FAILED; timing out without either
+is a communication failure. The initial method is PASSWORD_CHALLENGE (1).
+
+After AUTH_OK the server may continue the original session, or send RELOCATE.
+RELOCATE carries a UDP port, short lifetime, 256-bit random one-use token and a
+256-bit binder. Address family zero means the source address of the authenticated
+RELOCATE packet. The child consumes the binder while establishing the new V5
+session. RELOCATE is optional; sessions which stay on the original endpoint do
+not use binders.
+After the new V5 handshake the client sends RELOCATE_BIND as its first extension
+packet. The child gates DATA and CONTROL until it atomically consumes the token
+and binder, then replies RELOCATE_OK. A failed, expired or replayed binder leaves
+the child session gated.
+
+CONFIG is an optional, unacknowledged declarative snapshot. It may be sent in
+the original session, the relocated session, or both. A monotonically newer
+config ID replaces the complete older snapshot. TLVs describe IPv4/IPv6
+addresses, included/excluded routes, DNS servers, search domains and MTU. A
+required-bit instructs a client which cannot apply that item to close locally;
+there is deliberately no CONFIG acceptance report to the server.
+
+Exact bounded encodings are implemented in `src/v5_extension.hpp`. AUTH helper
+state is opaque to the peer. The relocation binder binds the original AUTH
+transcript, exchange, destination, expiry and random token and is compared in
+constant time.
+
+### External AUTH and OS configuration commands
+
+`--auth-command PATH` enables server AUTH. PATH is executed directly with
+`posix_spawn(PATH, [PATH, "verify"])`, never through a shell. A bounded binary
+`TTA\1` request on stdin contains method, challenge ID, username, numeric peer,
+challenge and response. The bounded `TTR\1` stdout result returns allow/deny,
+principal, child switch port, trusted ingress stack and an optional encoded
+CONFIG. Secrets are never placed in argv or the environment. Timeout, abnormal
+exit, malformed output and oversized fields fail closed.
+
+A client configured with `--auth-username` and `--auth-response-command PATH`
+executes `[PATH, "respond"]`; stdin is the encoded AUTH_CHALLENGE and stdout is
+the opaque bounded response. `--config-command PATH` executes `[PATH, "config"]`
+with the authenticated CONFIG snapshot on stdin. Its exit status is only a local
+diagnostic: no CONFIG acknowledgement is sent to the server. The configurator
+owns transactional address/route/DNS apply and cleanup, including preserving an
+underlay host route to the current tunnel endpoint.
+
+The server verifier runs outside the packet-processing loop. AUTH_CHALLENGE,
+AUTH_RESPONSE, AUTH_OK/AUTH_FAILED, RELOCATE, RELOCATE_BIND and RELOCATE_OK are
+retransmitted every 500 ms until their next state transition or `--auth-timeout`.
+Duplicate accepted RELOCATE_BIND packets only reproduce RELOCATE_OK; they never
+consume or activate a ticket twice. Relocated workers are reaped by the listener
+and bounded by `--auth-max-children` (default 256). A full worker set fails the
+new authentication closed without disturbing established children.
 
 Unfragmented DATA derives its length from the UDP payload; it carries no message
 ID or fragmentation fields. Internally its sequence supplies the nonzero ID for

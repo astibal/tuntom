@@ -20,6 +20,9 @@
 #include "remote_control.hpp"
 #include "routed_control.hpp"
 #include "runtime_recovery.hpp"
+#include "v5_auth_state.hpp"
+#include "auth_helper.hpp"
+#include "child_supervisor.hpp"
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -29,6 +32,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <memory>
 #include <sstream>
@@ -38,6 +42,7 @@
 #include <vector>
 #include <poll.h>
 #include <netdb.h>
+#include <sys/random.h>
 
 namespace tuntom {
 
@@ -48,7 +53,9 @@ public:
         bool server_mode,
         const std::string& interface_name,
         const std::string& remote_host,
-        const Options& options)
+        const Options& options,
+        int inherited_udp = -1,
+        const child::Bootstrap* bootstrap = nullptr)
         : tunnel_id_(tunnel_id),
           server_mode_(server_mode),
           options_(options),
@@ -57,17 +64,28 @@ public:
           protocol_v5_(tunnel_id, master_key_, server_mode, options.logical_limit(), options.encrypt_ascon, options.init_window, options.pfs) {
 
         options_.encrypt_ascon = options_.encrypt_ascon or options_.pfs;
+        auth_ = std::make_unique<v5ext::AuthState>(server_mode_ ? v5ext::AuthState::Role::server : v5ext::AuthState::Role::client,
+                                                   server_mode_ && !options_.auth_command.empty());
 
         const std::uint16_t port =
             static_cast<std::uint16_t>(40000 + tunnel_id_);
 
-        if (server_mode_) {
+        if (inherited_udp >= 0) {
+            if (!server_mode_) throw std::runtime_error("inherited UDP socket requires server mode");
+            udp_.adopt_server(inherited_udp);
+        } else if (server_mode_) {
             udp_.open_server(port);
         } else {
             udp_.open_client(remote_host, port);
         }
 
         udp_.configure_buffers(options_.udp_send_buffer, options_.udp_receive_buffer);
+        if (bootstrap) {
+            relocation_ticket_ = std::make_unique<relocation::Ticket>(bootstrap->secret,
+                bootstrap->auth_hash, bootstrap->exchange, udp_.local_port(),
+                bootstrap->expiry, bootstrap->token, bootstrap->peer);
+            relocation_config_ = bootstrap->config;
+        }
 
         if (!options_.relay_mode() && (options_.switch_socket.empty() or options_.switch_exit_node)) {
             tun_ = std::make_unique<TunDevice>(interface_name, options_.tun_mtu);
@@ -127,7 +145,9 @@ public:
         }
     }
 
-    virtual ~Tunnel() = default;
+    virtual ~Tunnel() {
+        for(auto& worker:children_)child::stop(worker);
+    }
 
     void run() {
         const auto started_now =
@@ -171,6 +191,8 @@ public:
                     continue;
                 }
                 sync_udp_tx_session();
+                reap_children();
+                tick_auth_job();
                 udp_tx_queue_.expire(UdpTxQueue::Clock::now());
                 update_stats_control();
                 prepare_remote_control();
@@ -200,6 +222,7 @@ public:
                 if (control_) timeout = control_->poll_timeout_ms(timeout_at, timeout);
                 if (relay_) { relay_->descriptors(descriptors); timeout = relay_->poll_timeout(timeout_at, std::min(timeout, 100)); }
                 if (remote_control_.active() || routed_control_.active()) timeout = std::min(timeout, 10);
+                if (auth_job_) timeout = std::min(timeout, 10);
                 timeout = udp_tx_queue_.poll_timeout(timeout_at, timeout);
                 const auto poll_started = AdaptivePolling::Clock::now();
                 const int rc = ::poll(descriptors.data(), descriptors.size(), timeout);
@@ -273,6 +296,7 @@ public:
                 const auto handshake = protocol_v5_.tick(now);
                 sync_udp_tx_session();
                 send_handshake(handshake);
+                tick_extensions(now);
 
                 if (
                     not server_mode_ and
@@ -525,8 +549,19 @@ private:
         send_handshake(protocol_v5_.encode(message));
     }
 
-    void session_activated() {
+    void session_activated(bool peer_changed=false) {
         log_info("V5 session confirmed");
+        if (server_mode_ && !options_.auth_command.empty() && !relocation_ticket_ &&
+            (relocating_original_ || auth_->terminal_failure() ||
+             (peer_changed && auth_->state()!=v5ext::AuthState::State::need_challenge))) {
+            auth_=std::make_unique<v5ext::AuthState>(v5ext::AuthState::Role::server,true);
+            reliable_.clear();
+            relocating_original_=false;
+        }
+        if (!server_mode_ && pending_relocate_) {
+            v5ext::RelocateBind bind;bind.token=pending_relocate_->token;bind.binder=pending_relocate_->binder;
+            send_reliable(PacketType::relocate_bind,v5ext::encode(bind));
+        }
         peer_info_.activated(relay_exchange_);
         if (info_worker_) info_worker_->request(protocol_v5_.transmit_generation());
         prepare_remote_control();
@@ -538,6 +573,178 @@ private:
             std::chrono::seconds(rtt_probe_interval_seconds);
         rtt_probe_schedule_active_ = true;
         if (options_.pmtud_auto) restart_pmtud("session confirmed");
+        if (server_mode_ && auth_->state() == v5ext::AuthState::State::need_challenge)
+            begin_session_auth();
+    }
+
+    void send_extension(PacketType type, const std::vector<std::uint8_t>& payload) {
+        if(payload.empty())return;
+        Packet packet;packet.type=type;packet.payload=payload;
+        send_handshake(protocol_v5_.encode(packet));
+    }
+    void reap_children() {
+        for(auto i=children_.begin();i!=children_.end();) {
+            int status=0;const auto result=::waitpid(i->pid,&status,WNOHANG);
+            if(result==i->pid){if(i->control>=0)::close(i->control);i=children_.erase(i);}
+            else ++i;
+        }
+    }
+    struct ReliableExtension {
+        PacketType type{};std::vector<std::uint8_t> payload;
+        std::chrono::steady_clock::time_point next{},deadline{};
+    };
+    struct AuthJobResult { bool valid=false;auth_helper::Result result; };
+    struct AuthJob {
+        v5ext::AuthResponse response;std::string peer;
+        std::future<AuthJobResult> future;
+    };
+    void tick_auth_job() {
+        if(!auth_job_||auth_job_->future.wait_for(std::chrono::seconds(0))!=std::future_status::ready)return;
+        auto job=std::move(auth_job_);auto result=job->future.get();
+        finish_auth_job(job->response,job->peer,result.valid,std::move(result.result));
+    }
+    void send_reliable(PacketType type,const std::vector<std::uint8_t>& payload) {
+        const auto now=std::chrono::steady_clock::now();
+        reliable_.erase(std::remove_if(reliable_.begin(),reliable_.end(),[&](const auto& p){return p.type==type;}),reliable_.end());
+        reliable_.push_back({type,payload,now+std::chrono::milliseconds(500),now+std::chrono::seconds(options_.auth_timeout_seconds)});
+        send_extension(type,payload);
+    }
+    void acknowledge(PacketType type) {
+        reliable_.erase(std::remove_if(reliable_.begin(),reliable_.end(),[&](const auto& p){return p.type==type;}),reliable_.end());
+    }
+    void tick_extensions(std::chrono::steady_clock::time_point now) {
+        for(auto i=reliable_.begin();i!=reliable_.end();) {
+            if(now>=i->deadline){i=reliable_.erase(i);continue;}
+            if(now>=i->next&&protocol_v5_.ready()){send_extension(i->type,i->payload);i->next=now+std::chrono::milliseconds(500);}
+            ++i;
+        }
+    }
+
+    void begin_session_auth() {
+        v5ext::AuthChallenge challenge;std::array<std::uint8_t,40> random{};
+        if(::getrandom(random.data(),random.size(),GRND_NONBLOCK)!=static_cast<ssize_t>(random.size()))return;
+        challenge.id=load_be64(random.data());if(!challenge.id)return;
+        challenge.lifetime_seconds=static_cast<std::uint32_t>(options_.auth_timeout_seconds);
+        challenge.challenge.assign(random.begin()+8,random.end());
+        if(!auth_->send_challenge(challenge.id))return;
+        auth_challenge_=challenge;
+        send_reliable(PacketType::auth_challenge,v5ext::encode(challenge));
+    }
+
+    std::string numeric_peer(const sockaddr_storage& source,socklen_t length) const {
+        char host[NI_MAXHOST]{},service[NI_MAXSERV]{};
+        if(::getnameinfo(reinterpret_cast<const sockaddr*>(&source),length,host,sizeof(host),service,sizeof(service),NI_NUMERICHOST|NI_NUMERICSERV))return {};
+        return std::string(host)+":"+service;
+    }
+    std::string numeric_host(const sockaddr_storage& source,socklen_t length) const {
+        char host[NI_MAXHOST]{};
+        if(::getnameinfo(reinterpret_cast<const sockaddr*>(&source),length,
+                         host,sizeof(host),nullptr,0,NI_NUMERICHOST))return {};
+        return host;
+    }
+    bool traffic_allowed() const {
+        return auth_->allows_data() && (!relocation_ticket_ || relocation_bound_) &&
+            !pending_relocate_ && !relocating_original_;
+    }
+
+    void handle_session_extension(const Packet& packet,const sockaddr_storage& source,socklen_t source_length) {
+        using namespace v5ext;
+        if(packet.type==PacketType::auth_challenge&&!server_mode_) {
+            AuthChallenge challenge;if(!decode(packet.payload,challenge)||!auth_->receive_challenge(challenge))return;
+            acknowledge(PacketType::auth_challenge);
+            if(options_.auth_response_command.empty())return;
+            const auto command=auth_helper::run(options_.auth_response_command,packet.payload,
+                std::chrono::seconds(options_.auth_timeout_seconds),"respond");
+            if(!command.completed||!WIFEXITED(command.status)||WEXITSTATUS(command.status)!=0||command.output.size()>max_auth_field)return;
+            AuthResponse response;response.id=challenge.id;response.method=challenge.method;response.username=options_.auth_username;response.response=command.output;
+            if(auth_->send_response(response.id))send_reliable(PacketType::auth_response,encode(response));
+            return;
+        }
+        if(packet.type==PacketType::auth_response&&server_mode_) {
+            AuthResponse response;if(!decode(packet.payload,response)||!auth_->receive_response(response))return;
+            acknowledge(PacketType::auth_challenge);
+            auth_helper::Verify request;request.method=response.method;request.challenge_id=response.id;request.username=response.username;
+            request.peer=numeric_peer(source,source_length);request.challenge=auth_challenge_.challenge;request.response=response.response;
+            const auto input=auth_helper::encode(request);
+            const auto path=options_.auth_command;
+            const auto timeout=options_.auth_timeout_seconds;
+            auto future=std::async(std::launch::async,[path,input,timeout]{
+                AuthJobResult out;const auto command=auth_helper::run(path,input,std::chrono::seconds(timeout));
+                out.valid=command.completed&&WIFEXITED(command.status)&&WEXITSTATUS(command.status)==0&&auth_helper::decode(command.output,out.result);return out;
+            });
+            auth_job_=std::make_unique<AuthJob>(AuthJob{response,numeric_host(source,source_length),std::move(future)});
+            return;
+        }
+        if(packet.type==PacketType::auth_ok&&!server_mode_){AuthOk ok;if(decode(packet.payload,ok)&&auth_->receive_ok(ok))acknowledge(PacketType::auth_response);return;}
+        if(packet.type==PacketType::auth_failed&&!server_mode_){AuthFailed failed;if(decode(packet.payload,failed)&&auth_->receive_failed(failed))acknowledge(PacketType::auth_response);return;}
+        // RELOCATE and CONFIG are decoded here so malformed authenticated
+        // extensions fail closed; platform/child consumers are connected next.
+        if(packet.type==PacketType::relocate){
+            Relocate value;if(server_mode_||!decode(packet.payload,value)||!auth_->allows_data())return;
+            // Family zero relocates to the authenticated sender address.
+            if(value.family!=0)return;
+            acknowledge(PacketType::auth_response);acknowledge(PacketType::auth_ok);
+            pending_relocate_=std::make_unique<Relocate>(value);
+            udp_.relocate_peer(source,source_length,value.port);udp_tx_queue_.discard();
+            send_handshake(protocol_v5_.restart(std::chrono::steady_clock::now()));return;
+        }
+        if(packet.type==PacketType::relocate_bind){
+            RelocateBind value;
+            if(!server_mode_||!relocation_ticket_||!decode(packet.payload,value))return;
+            if(relocation_bound_&&accepted_relocate_bind_&&
+               value.token==accepted_relocate_bind_->token&&value.binder==accepted_relocate_bind_->binder){
+                send_extension(PacketType::relocate_ok,encode(RelocateOk{value.token}));return;
+            }
+            const auto now=static_cast<std::uint64_t>(std::max<std::int64_t>(0,SessionProtocol::wall_seconds()));
+            if(!relocation_ticket_->consume(now,udp_.local_port(),value.token,value.binder,
+                                             numeric_host(source,source_length)))return;
+            relocation_bound_=true;accepted_relocate_bind_=std::make_unique<RelocateBind>(value);
+            send_reliable(PacketType::relocate_ok,encode(RelocateOk{value.token}));
+            if(!relocation_config_.empty())send_extension(PacketType::config,relocation_config_);
+            return;
+        }
+        if(packet.type==PacketType::relocate_ok){RelocateOk value;if(!server_mode_&&pending_relocate_&&decode(packet.payload,value)&&value.token==pending_relocate_->token){pending_relocate_.reset();acknowledge(PacketType::relocate_bind);}return;}
+        if(packet.type==PacketType::config){
+            Config value;if(!decode(packet.payload,value)||server_mode_||options_.config_command.empty())return;
+            // CONFIG is deliberately unacknowledged. Failure is local and the
+            // helper owns transactional OS apply/rollback semantics.
+            const auto applied=auth_helper::run(options_.config_command,packet.payload,
+                std::chrono::seconds(options_.auth_timeout_seconds),"config");
+            if(!applied.completed||!WIFEXITED(applied.status)||WEXITSTATUS(applied.status)!=0)
+                log_info("CONFIG helper failed for config_id=",value.id);
+            return;
+        }
+    }
+
+    void finish_auth_job(const v5ext::AuthResponse& response,const std::string& peer,
+                         bool valid,auth_helper::Result result) {
+            using namespace v5ext;
+            bool allow=valid&&result.status==auth_helper::Status::allow;
+            std::unique_ptr<Relocate> relocate;
+            if(allow&&!options_.switch_socket.empty())try {
+                reap_children();if(children_.size()>=options_.auth_max_children)throw std::runtime_error("AUTH child limit reached");
+                child::Bootstrap profile;profile.tunnel_id=tunnel_id_;profile.exchange=protocol_v5_.active_exchange();
+                profile.expiry=static_cast<std::uint64_t>(std::max<std::int64_t>(0,SessionProtocol::wall_seconds()))+10;
+                profile.peer=peer;
+                profile.switch_socket=options_.switch_socket;profile.ingress_stack=result.ingress_stack;profile.config=result.config;
+                std::array<std::uint8_t,48> random{};
+                if(::getrandom(random.data(),random.size(),GRND_NONBLOCK)!=static_cast<ssize_t>(random.size()))throw std::runtime_error("relocation entropy");
+                std::copy_n(random.begin(),16,profile.secret.begin());std::copy_n(random.begin()+16,32,profile.token.begin());
+                static constexpr char hex[]="0123456789abcdef";std::string suffix(17,'-');
+                for(unsigned i=0;i<8;++i){suffix[1+2*i]=hex[profile.token[i]>>4];suffix[2+2*i]=hex[profile.token[i]&15];}
+                profile.port_id=result.port_id.substr(0,63-suffix.size())+suffix;
+                auto challenge_wire=encode(auth_challenge_),response_wire=encode(response);challenge_wire.insert(challenge_wire.end(),response_wire.begin(),response_wire.end());
+                for(unsigned half=0;half<2;++half){std::string domain=half?"TUNTOM-V5-AUTH-TRANSCRIPT-1":"TUNTOM-V5-AUTH-TRANSCRIPT-0";std::vector<std::uint8_t> input(domain.begin(),domain.end());input.push_back(0);input.insert(input.end(),challenge_wire.begin(),challenge_wire.end());ascon::tag_type tag{};ascon::mac(master_key_,tunnel_id_,input.data(),input.size(),tag);std::copy(tag.begin(),tag.end(),profile.auth_hash.begin()+half*tag.size());}
+                auto worker=child::spawn("/proc/self/exe","access-worker",profile,std::chrono::seconds(options_.auth_timeout_seconds));
+                relocate=std::make_unique<Relocate>();relocate->port=worker.port;relocate->lifetime_seconds=10;relocate->token=profile.token;
+                relocate->binder=relocation::bind(profile.secret,profile.auth_hash,profile.exchange,worker.port,profile.expiry,profile.token,profile.peer);
+                children_.push_back(worker);
+            } catch(const std::exception& error) { log_info("AUTH child preparation failed: ",error.what());allow=false; }
+            auth_->verified(allow);
+            if(!allow){AuthFailed failed{response.id,valid&&result.status==auth_helper::Status::temporary_failure?AuthFailure::temporary_failure:AuthFailure::rejected,0};send_reliable(PacketType::auth_failed,encode(failed));return;}
+            options_.switch_stack=result.ingress_stack;send_reliable(PacketType::auth_ok,encode(AuthOk{response.id}));
+            if(relocate){send_reliable(PacketType::relocate,encode(*relocate));relocating_original_=true;}
+            else if(!result.config.empty()){Config config;if(decode(result.config,config))send_extension(PacketType::config,result.config);}
     }
 
     void reserve_hot_path_buffers() {
@@ -601,7 +808,7 @@ private:
         std::size_t size, PacketType type = PacketType::data) {
 
         sync_udp_tx_session();
-        if (not protocol_v5_.ready()) return;
+        if (not protocol_v5_.ready() || !traffic_allowed()) return;
         Packet& logical_packet = tx_logical_packet_;
         logical_packet.type = type;
         logical_packet.tunnel_id = tunnel_id_;
@@ -737,6 +944,7 @@ private:
         SessionProtocol::Session* receive_session = nullptr;
         bool session_update_peer = false;
         bool session_activated_now = false;
+        bool activation_peer_changed = false;
 
         {
             auto result = protocol_v5_.receive(data, size, packet, rx_mac_buffer_,
@@ -772,9 +980,10 @@ private:
             session_update_peer = result.update_peer;
             session_activated_now = result.activated;
             if (session_activated_now and session_update_peer) {
-                if (udp_.set_peer(source, source_length)) udp_tx_queue_.discard();
+                activation_peer_changed=udp_.set_peer(source, source_length);
+                if (activation_peer_changed) udp_tx_queue_.discard();
             }
-            if (session_activated_now) { relay_exchange_ = packet.message_id; session_activated(); }
+            if (session_activated_now) { relay_exchange_ = packet.message_id; session_activated(activation_peer_changed); }
             if (not result.data) {
                 if (result.replay_drop) ++stats_.drops_replay;
                 else if (not result.control) ++stats_.drops_protocol;
@@ -811,6 +1020,15 @@ private:
                 << " payload=" << packet.payload.size()
                 << "\n";
         }
+
+        if(packet.type==PacketType::auth_challenge||packet.type==PacketType::auth_response||
+           packet.type==PacketType::auth_ok||packet.type==PacketType::auth_failed||
+           packet.type==PacketType::relocate||packet.type==PacketType::config||
+           packet.type==PacketType::relocate_bind||packet.type==PacketType::relocate_ok) {
+            handle_session_extension(packet,source,source_length);return;
+        }
+
+        if(!traffic_allowed()){++stats_.drops_protocol;return;}
 
         if (packet.type == PacketType::control || packet.type == PacketType::control_challenge) {
             if(!options_.control_auth.enabled())return;
@@ -934,9 +1152,19 @@ private:
                 return;
             }
             const auto* labels = classifier_.classify(packet.payload.data(), packet.payload.size());
+            std::array<std::uint64_t,switch_max_labels> combined{};
+            std::size_t count=0;
+            if(!options_.switch_stack.empty()) {
+                for(const auto label:options_.switch_stack)combined[count++]=label;
+                if(labels) {
+                    if(count+labels->size()>combined.size()) { ++stats_.switch_drops; return; }
+                    for(const auto label:*labels)combined[count++]=label;
+                }
+            }
             account_switch_output(switch_->append_frame(
-                SwitchOpcode::switch_packet, labels ? labels->data() : &options_.switch_label,
-                labels ? labels->size() : 1,
+                SwitchOpcode::switch_packet,
+                options_.switch_stack.empty() ? (labels ? labels->data() : &options_.switch_label) : combined.data(),
+                options_.switch_stack.empty() ? (labels ? labels->size() : 1) : count,
                 packet.payload.data(), packet.payload.size()));
             return;
         }
@@ -1802,6 +2030,17 @@ private:
     std::uint16_t tunnel_id_ = 0;
     bool server_mode_ = false;
     Options options_;
+    std::unique_ptr<v5ext::AuthState> auth_;
+    v5ext::AuthChallenge auth_challenge_;
+    std::unique_ptr<relocation::Ticket> relocation_ticket_;
+    v5ext::Bytes relocation_config_;
+    bool relocation_bound_=false;
+    std::unique_ptr<v5ext::RelocateBind> accepted_relocate_bind_;
+    std::unique_ptr<v5ext::Relocate> pending_relocate_;
+    bool relocating_original_=false;
+    std::vector<child::Worker> children_;
+    std::vector<ReliableExtension> reliable_;
+    std::unique_ptr<AuthJob> auth_job_;
     std::unique_ptr<relay::Endpoint> relay_;
     std::uint64_t relay_exchange_ = 0;
     PacketClassifier classifier_;

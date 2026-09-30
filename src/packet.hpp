@@ -29,6 +29,16 @@ enum class PacketType : std::uint8_t {
     info = 13,
     control = 14,
     control_challenge = 15,
+    // V5 extension namespace (wire bit 4). Older V5 implementations reject
+    // these packets because bit 4 used to be reserved.
+    auth_challenge = 16,
+    auth_response = 17,
+    auth_ok = 18,
+    auth_failed = 19,
+    relocate = 20,
+    config = 21,
+    relocate_bind = 22,
+    relocate_ok = 23,
 };
 
 enum class Direction {
@@ -80,7 +90,16 @@ struct Options {
     std::string classifier_file;
     std::uint64_t switch_label = 0;
     bool switch_label_set = false;
+    // Trusted labels prepended to classifier output for every authenticated
+    // packet entering the switch from this tunnel.
+    std::vector<std::uint64_t> switch_stack;
     bool switch_exit_node = false;
+    std::string auth_command;
+    std::string auth_username;
+    std::string auth_response_command;
+    std::string config_command;
+    std::size_t auth_timeout_seconds = 10;
+    std::size_t auth_max_children = 256;
 };
 
 struct Stats {

@@ -39,6 +39,7 @@ inline void usage(const char* program_name) {
         << "  --switch-ipc <mode>    auto (default), v1, inline (V2 without mmap)\n"
         << "  --switch-ipc-batch <n> Maximum references per record, 1..16 (default 8)\n"
         << "  --switch-label <n>      Label assigned to DATA received from UDP\n"
+        << "  --switch-stack <a,b,..> Trusted ingress stack prepended to classifier labels\n"
         << "  --classifier-file <path> L3/L4 rules assigning stacks to received DATA\n"
         << "  --switch-exit-node      Allow IPC EXIT delivery through a local TUN\n"
         << "\n"
@@ -57,6 +58,12 @@ inline void usage(const char* program_name) {
         << "  --crypto-auth-only    Plaintext payload with AMAC authentication (suite 0)\n"
         << "\n"
         << "  --init-window <s>     Total INIT time window, even 2..86400 (default 300 = +/-150s)\n"
+        << "  --auth-command <path> Server-side external AUTH verifier\n"
+        << "  --auth-username <name> Client identity for PASSWORD_CHALLENGE\n"
+        << "  --auth-response-command <path> Client credential responder (secret on stdin/stdout)\n"
+        << "  --auth-timeout <s>    AUTH helper/result timeout, 1..60 (default 10)\n"
+        << "  --auth-max-children <n> Concurrent relocated workers, 1..4096 (default 256)\n"
+        << "  --config-command <path> Client OS configurator; CONFIG snapshot on stdin\n"
         << "Logging:\n"
         << "  default                informational drops/errors only\n"
         << "  --debug                packet/fragment protocol details\n"
@@ -105,7 +112,19 @@ inline void parse_options(
         const std::string option = argv[i];
 
         if(control_auth::option(options.control_auth,option,i,argc,argv))continue;
-        if (option == "--crypto-auth-only") {
+        if (option == "--auth-command" || option == "--auth-username" || option == "--auth-response-command" || option == "--config-command") {
+            if(++i>=argc||!argv[i][0])throw std::runtime_error(option+" requires a value");
+            auto& target=option=="--auth-command"?options.auth_command:option=="--auth-username"?options.auth_username:
+                option=="--auth-response-command"?options.auth_response_command:options.config_command;
+            if(!target.empty())throw std::runtime_error("duplicate "+option);
+            target=argv[i];
+        } else if (option == "--auth-timeout") {
+            if(++i>=argc)throw std::runtime_error("--auth-timeout requires a value");
+            options.auth_timeout_seconds=parse_size_option(option,argv[i],1,60);
+        } else if (option == "--auth-max-children") {
+            if(++i>=argc)throw std::runtime_error("--auth-max-children requires a value");
+            options.auth_max_children=parse_size_option(option,argv[i],1,4096);
+        } else if (option == "--crypto-auth-only") {
             options.pfs = options.encrypt_ascon = false;
         } else if (option == "--info-msg-enable") {
             options.info_msg_enable = true;
@@ -168,6 +187,20 @@ inline void parse_options(
             options.switch_label = std::stoull(argv[i], &used, 0);
             if (argv[i][used] != '\0') throw std::runtime_error("Invalid --switch-label");
             options.switch_label_set = true;
+        } else if (option == "--switch-stack") {
+            if (++i >= argc || !argv[i][0]) throw std::runtime_error("--switch-stack requires labels");
+            if (!options.switch_stack.empty()) throw std::runtime_error("duplicate --switch-stack");
+            std::string value=argv[i];std::size_t at=0;
+            while(at<value.size()) {
+                const auto comma=value.find(',',at);const auto part=value.substr(at,comma-at);
+                if(part.empty()||part.front()=='-')throw std::runtime_error("Invalid --switch-stack");
+                std::size_t used=0;const auto label=std::stoull(part,&used,0);
+                if(used!=part.size())throw std::runtime_error("Invalid --switch-stack");
+                options.switch_stack.push_back(label);
+                if(options.switch_stack.size()>switch_max_labels)throw std::runtime_error("--switch-stack exceeds 8 labels");
+                if(comma==std::string::npos)break;
+                at=comma+1;
+            }
         } else if (option == "--classifier-file") {
             if (++i >= argc) throw std::runtime_error("--classifier-file requires a value");
             options.classifier_file = argv[i];
@@ -256,18 +289,23 @@ inline void parse_options(
         if (!options.relay_port_id.empty()) (void)encode_switch_registration(options.relay_port_id);
     } else if (!options.relay_port_id.empty()) throw std::runtime_error("--relay-port-id requires --relay-connect");
     if (options.switch_socket.empty() and
-        (options.switch_label_set or options.switch_exit_node or
+        (options.switch_label_set or not options.switch_stack.empty() or options.switch_exit_node or
          not options.switch_port_id.empty() or not options.classifier_file.empty())) {
         throw std::runtime_error(
             "--switch-label, --switch-exit-node and --classifier-file require --switch-socket");
     }
-    if (not options.switch_socket.empty() and not options.switch_label_set) {
-        throw std::runtime_error("--switch-socket requires --switch-label");
+    if (options.switch_label_set and not options.switch_stack.empty()) {
+        throw std::runtime_error("--switch-label and --switch-stack are mutually exclusive");
+    }
+    if (not options.switch_socket.empty() and not options.switch_label_set and options.switch_stack.empty()) {
+        throw std::runtime_error("--switch-socket requires --switch-label or --switch-stack");
     }
     if (not options.switch_socket.empty() and options.switch_port_id.empty()) {
         throw std::runtime_error("--switch-socket requires --switch-port-id");
     }
     control_auth::validate(options.control_auth);
+    if(options.auth_username.empty()!=options.auth_response_command.empty())
+        throw std::runtime_error("--auth-username and --auth-response-command require each other");
     (void)info::encode_access({}, options.info_fields);
 
 }
