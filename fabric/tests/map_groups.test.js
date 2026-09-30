@@ -78,3 +78,14 @@ test('label topology presents verified sibling attachments as one logical port g
  assert.equal(result.find(group=>group.name==='admin').ports.length,1);
  assert.equal(result.length,2);
 });
+test('access workers group only with their explicitly identified listener',()=>{
+ const listener=endpoint(0,{access_role:'listener'});
+ const worker=endpoint(1,{name:'access-worker · 100',role:'access-worker',access_role:'worker',access_parent_id:listener.id});
+ const unrelated=endpoint(2,{name:'access-worker · 101',access_role:'worker'});
+ const result=groups([worker,unrelated,listener]);
+ const access=result.find(g=>g.key==='access:'+listener.id);
+ assert.deepEqual(Array.from(access.members,e=>e.id),[listener.id,worker.id]);
+ assert.equal(result.length,2);
+ assert.equal(groups([worker,unrelated]).length,2);
+ assert.equal(groups([listener,{...worker,source:'discovered'}]).length,2);
+});

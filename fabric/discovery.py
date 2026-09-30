@@ -13,7 +13,7 @@ VALUE_OPTIONS = set("""control-socket stats-file stats-format socket switch-sock
 switch-port-id switch-label switch-ipc switch-ipc-batch classifier-file rules-file
 divert-file divert-in-port divert-out-port mtu transport-mtu init-window workers
 pool-size queue-size ipc-mode ipc-batch reserve-cpus flow-capacity flow-idle-seconds
-admission-capacity default-back port-id label exit-port trunk-port relay-connect relay-listen relay-port-id""".split())
+admission-capacity default-back port-id label exit-port trunk-port relay-connect relay-listen relay-port-id auth-command auth-config auth-timeout auth-max-children config-command auth-response-command""".split())
 FLAG_OPTIONS = set("""no-stats crypto-auth-only pmtud no-pmtud no-ttl-compensate
 switch-exit-node quiet debug auto-pool""".split())
 
@@ -45,6 +45,9 @@ class Endpoint:
     notes: list = field(default_factory=list)
     source: str = "local"
     instance: str = ""
+    parent_pid: int = 0
+    access_role: str = ""
+    access_parent_id: str = ""
 
 
 def options(argv):
@@ -78,8 +81,12 @@ def kind_of(executable, argv, comm):
         return "switch"
     tunnel_name = any(re.fullmatch(r"tuntom(?:_[0-9]+(?:_[0-9]+)?[cs])?", n) for n in names)
     deployed_main = "main" in names and any("tuntom" in p for p in Path(executable).parts)
+    # The listener execs its own image via /proc/self/exe. Hardening may hide
+    # the resolved executable path, leaving that literal argv[0] and comm=exe.
+    if len(argv) == 2 and argv == ["/proc/self/exe", "access-worker"]:
+        return "tunnel"
     if tunnel_name or deployed_main:
-        if len(argv) > 1 and argv[1] in ("client", "server"):
+        if len(argv) > 1 and argv[1] in ("client", "server", "access-worker"):
             return "tunnel"
         if "--socket" in argv:
             return "switch"
@@ -139,8 +146,10 @@ def inspect_process(directory, *, host, boot, uptime, ticks, page_size):
     switch_socket = path_option("socket" if kind == "switch" else "switch-socket")
     if kind == "tunnel" and opts.get("relay-connect"):
         switch_socket = path_option("relay-connect")
+    access_role = "worker" if role == "access-worker" else "listener" if role == "server" and opts.get("auth-command") else "client" if role == "client" and opts.get("auth-response-command") else ""
     endpoint_name = (argv[2] + ("c" if role == "client" else "s")) if kind == "tunnel" and len(argv) > 2 else (
         Path(switch_socket).stem if kind == "switch" and switch_socket else interface or comm)
+    if access_role == "worker": endpoint_name = "access-worker · " + directory.name
     if not argv:
         notes.append("Process arguments are inaccessible")
     if not control:
@@ -161,7 +170,7 @@ def inspect_process(directory, *, host, boot, uptime, ticks, page_size):
         switch_socket=switch_socket, port_id=opts.get("relay-port-id", opts.get("switch-port-id", opts.get("port-id", ""))),
         interface=interface, role=role, peer=peer, unit=units[-1] if units else "",
         mount_namespace=read_link(directory / "ns/mnt"), net_namespace=read_link(directory / "ns/net"),
-        options=opts, notes=notes)
+        options=opts, notes=notes, parent_pid=int(after[1]), access_role=access_role)
 
 
 def discover(proc=Path("/proc")):
@@ -182,6 +191,14 @@ def discover(proc=Path("/proc")):
         except (OSError, ValueError, IndexError):
             # Exiting processes are expected during a scan.
             continue
+    parents = {endpoint.pid: endpoint for endpoint in result}
+    for endpoint in result:
+        parent = parents.get(endpoint.parent_pid)
+        if (endpoint.access_role == "worker" and parent and parent.access_role == "listener"
+                and parent.start_ticks <= endpoint.start_ticks and parent.uid == endpoint.uid
+                and (parent.executable == endpoint.executable or endpoint.executable == "/proc/self/exe")
+                and parent.mount_namespace == endpoint.mount_namespace and parent.net_namespace == endpoint.net_namespace):
+            endpoint.access_parent_id = parent.id
     return result, {"host": host, "source": "procfs", "permission_denied": denied,
                     "mount_namespace": read_link(proc / "self/ns/mnt")}
 

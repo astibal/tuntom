@@ -372,6 +372,44 @@ Object.assign(messages, {
   process_running:["Proces běží","Process is running","Processus actif"],
   process_blocked:["Proces je zastavený nebo čeká v I/O","Process is stopped or waiting in I/O","Processus arrêté ou en attente d’E/S"],
   telemetry_missing:["Metriky nejsou dostupné","Metrics are unavailable","Métriques indisponibles"],
+  accessRole:["Role přístupu", "Access role", "Rôle accès"],
+  accessRole_listener:["AUTH listener", "AUTH listener", "Listener AUTH"],
+  accessRole_worker:["Přístupová session", "Access session", "Session accès"],
+  accessRole_client:["AUTH klient", "AUTH client", "Client AUTH"],
+  accessTitle:["Přístupová session", "Access session", "Session accès"],
+  accessTransport:["Transport", "Transport", "Transport"],
+  accessData:["Datový provoz", "Data traffic", "Trafic de données"],
+  accessAllowed:["Povolen", "Allowed", "Autorisé"],
+  accessBlocked:["Blokován", "Blocked", "Bloqué"],
+  accessRelocation:["Předání workeru", "Worker handoff", "Transfert au worker"],
+  accessSessions:["Workery / limit", "Workers / limit", "Workers / limite"],
+  accessParent:["Listener", "Listener", "Listener"],
+  accessConfigHint:["CONFIG nemá potvrzení od klienta. Aplikaci lze doložit jen lokálním výsledkem klientského helperu; stav OS není ověřen.", "CONFIG has no client acknowledgement. Application is reported only by the local client helper; OS state is not verified.", "CONFIG sans accusé client. Résultat local du helper uniquement ; état OS non vérifié."],
+  check_access:["Přístup", "Access", "Accès"],
+  access_unknown:["Stav přístupu neznámý", "Access state unknown", "État accès inconnu"],
+  access_active:["Provoz povolen", "Traffic allowed", "Trafic autorisé"],
+  access_pending:["Čeká na povolení provozu", "Waiting for traffic authorization", "En attente autorisation"],
+  access_handoff:["Session předána workeru", "Session handed to worker", "Session transférée"],
+  access_listening:["Listener přijímá připojení", "Listener accepting connections", "Listener actif"],
+  access_capacity:["Dosažen limit workerů", "Worker limit reached", "Limite de workers atteinte"],
+  access_rejected:["Přístup zamítnut", "Access rejected", "Accès refusé"],
+  access_config_failed:["Klientský konfigurátor selhal", "Client configurator failed", "Échec configurateur client"],
+  authState_open:["AUTH nevyžadováno", "AUTH not required", "AUTH non requis"],
+  authState_need_challenge:["Čeká na klienta", "Waiting for client", "En attente client"],
+  authState_pending:["Čeká na odpověď", "Waiting for response", "En attente réponse"],
+  authState_verifying:["Ověřování", "Verifying", "Vérification"],
+  authState_waiting_result:["Čeká na výsledek", "Waiting for result", "En attente résultat"],
+  authState_authenticated:["Ověřeno", "Authenticated", "Authentifié"],
+  authState_rejected:["Zamítnuto", "Rejected", "Refusé"],
+  relocation_none:["Bez předání", "No handoff", "Sans transfert"],
+  relocation_pending:["Probíhá předání", "Handoff pending", "Transfert en cours"],
+  relocation_handed_off:["Předáno workeru", "Handed to worker", "Transféré au worker"],
+  relocation_waiting_bind:["Čeká na potvrzení vazby", "Waiting for binding", "En attente liaison"],
+  relocation_bound:["Vazba potvrzena", "Binding confirmed", "Liaison confirmée"],
+  configState_sent:["Odesláno; aplikace nepotvrzena","Sent; application unconfirmed","Envoyé ; application non confirmée"],
+  configState_applied:["Helper hlásí aplikováno", "Helper reports applied", "Helper : appliqué"],
+  configState_failed:["Helper selhal", "Helper failed", "Échec helper"],
+  configState_not_applied:["Přijato bez konfigurátoru", "Received without configurator", "Reçu sans configurateur"],
   session_down:["Session nebo spojení se switchem není navázané","Session or switch connection is down","Session ou connexion au switch non établie"],
   session_up:["Spojení je navázané","Connection established","Connexion établie"],
   session_unknown:["Chybí údaj o spojení","Connection status is unknown","État de connexion inconnu"],
@@ -957,7 +995,7 @@ function renderDetail() {
     [t("controlLastSeen"),e.discovered_at ? new Date(e.discovered_at).toLocaleString(locale()) : "—"]);
   const notes = [...e.notes, e.error].filter(Boolean).map(diagnostic);
   const wasOpen = $("detail").querySelector("details")?.open;
-  $("detail").innerHTML = `<dl>${values.map(([key,value])=>`<dt>${esc(key)}</dt><dd>${esc(value)}</dd>`).join("")}</dl>${notes.length ? `<div class="notice">${notes.map(esc).join("<br>")}</div>` : ""}<details ${wasOpen ? "open" : ""}><summary>${esc(t("publicArgs"))}</summary><pre>${esc(Object.entries(e.options).map(([k,v])=>`--${k}${v === true ? "" : " " + v}`).join("\n") || t("noArgs"))}</pre></details>`;
+  $("detail").innerHTML = `<dl>${values.map(([key,value])=>`<dt>${esc(key)}</dt><dd>${esc(value)}</dd>`).join("")}</dl>${accessDetail(e)}${notes.length ? `<div class="notice">${notes.map(esc).join("<br>")}</div>` : ""}<details ${wasOpen ? "open" : ""}><summary>${esc(t("publicArgs"))}</summary><pre>${esc(Object.entries(e.options).map(([k,v])=>`--${k}${v === true ? "" : " " + v}`).join("\n") || t("noArgs"))}</pre></details>`;
   drawChart();
 }
 function historyNote(id) {
@@ -1672,16 +1710,24 @@ function observedGroups(endpoints, links=[]) {
     const match=e.kind === "tunnel" && /^([1-9][0-9]{0,2})(?:_([1-9][0-9]?))?([sc])$/.exec(e.name);
     const group=match ? Number(match[1]) : 0, member=match ? Number(match[2] || 0) : 0;
     const mode=tunnelPayload(e);
-    const verified=e.source!=="discovered" && match && group<=255 && member<=63 && mode &&
+    const verified=!e.access_role && !e.access?.role && e.source!=="discovered" && match && group<=255 && member<=63 && mode &&
       e.metrics?.tunnel_id === String(group+256*member) && e.role === (match[3]==="s"?"server":"client") && e.net_namespace && e.mount_namespace;
     const key=verified ? JSON.stringify([e.host,e.net_namespace,e.mount_namespace,group,e.role,mode,e.switch_socket || "",e.peer || "",e.metrics?.peer_info_access || ""]) : "single:"+e.id;
     if(!grouped.has(key)) grouped.set(key,{key,name:verified?match[1]+match[3]:e.name,members:[]});
     grouped.get(key).members.push(e);
   }
+  const accessListeners=new Map(endpoints.filter(e=>(e.access?.role||e.access_role)==='listener').map(e=>[e.id,e]));
+  for(const e of endpoints){
+    const parent=accessListeners.get(e.access?.parent_id||e.access_parent_id);
+    if(!parent || (e.access?.role||e.access_role)!=='worker' || e.source==='discovered')continue;
+    const key='access:'+parent.id;
+    if(!grouped.has(key)){grouped.set(key,{key,name:parent.name+' / AUTH',members:[parent]});grouped.delete('single:'+parent.id);}
+    grouped.get(key).members.push(e);grouped.delete('single:'+e.id);
+  }
   // Visual peer bundles inherit only a proven local stack, not remote identity.
   if(links.length) {
     const owners=new Map(), parents=new Map(), peers=new Map();
-    for(const g of grouped.values())if(g.members.length>1 && !g.key.startsWith("single:"))
+    for(const g of grouped.values())if(g.members.length>1 && !g.key.startsWith("single:") && !g.key.startsWith("access:"))
       for(const e of g.members)owners.set(e.id,g);
     for(const l of controlTopology(endpoints,links))if(l.kind==="control" && l.port_id==="peer") {
       if(!parents.has(l.target))parents.set(l.target,new Set());
@@ -1724,7 +1770,7 @@ function observedGroups(endpoints, links=[]) {
       grouped.delete("single:"+e.id);
     }
   }
-  for(const group of grouped.values()) group.members.sort((a,b)=>Number(a.metrics?.tunnel_id || 0)-Number(b.metrics?.tunnel_id || 0) || a.id.localeCompare(b.id));
+  for(const group of grouped.values()) group.members.sort((a,b)=> (group.key.startsWith('access:') ? Number((b.access?.role||b.access_role)==='listener')-Number((a.access?.role||a.access_role)==='listener') : 0) || Number(a.metrics?.tunnel_id || 0)-Number(b.metrics?.tunnel_id || 0) || a.id.localeCompare(b.id));
   return [...grouped.values()];
 }
 function mapPortBadge(members){
@@ -1834,7 +1880,7 @@ function renderObserved() {
   }
   for(const wrapper of previous.values()){if(mapHoverPending===wrapper)cancelMapHover();wrapper.remove();}
   const e=selected(),detail=$("observed-detail");
-  detail.innerHTML=e?`<span class="kind ${payloadClass(e)}">${payloadMark(e)}${esc(endpointType(e))}</span><h3>${esc(e.name)}${authorityBadge(e)}</h3><p>${esc(processIdentity(e))} · ${esc(duration(e.uptime_seconds))}</p>${peerNodes(e,state.data?.syspiper?.nodes || []).map(nodeSystemSummary).join("")}<dl><dt>RTT</dt><dd>${esc(lastRTT(e))}</dd><dt>RX / TX</dt><dd>${esc(bps(rate(e,"rx")))} / ${esc(bps(rate(e,"tx")))}</dd><dt>Peer access</dt><dd>${esc(e.metrics?.peer_info_access || "—")}</dd><dt>${esc(t("port"))}</dt><dd>${esc(e.port_id || "—")}</dd></dl>${attentionReasons(e).map(r=>`<p class="map-issue">${esc(r.text)}</p>`).join("")}<button class="quiet-button" data-map-open>${esc(t("mapOpen"))}</button>`:`<p>${esc(t("chooseProcess"))}</p>`;
+  detail.innerHTML=e?`<span class="kind ${payloadClass(e)}">${payloadMark(e)}${esc(endpointType(e))}</span><h3>${esc(e.name)}${authorityBadge(e)}</h3><p>${esc(processIdentity(e))} · ${esc(duration(e.uptime_seconds))}</p>${peerNodes(e,state.data?.syspiper?.nodes || []).map(nodeSystemSummary).join("")}<dl><dt>RTT</dt><dd>${esc(lastRTT(e))}</dd><dt>RX / TX</dt><dd>${esc(bps(rate(e,"rx")))} / ${esc(bps(rate(e,"tx")))}</dd><dt>Peer access</dt><dd>${esc(e.metrics?.peer_info_access || "—")}</dd><dt>${esc(t("port"))}</dt><dd>${esc(e.port_id || "—")}</dd></dl>${accessDetail(e)}${attentionReasons(e).map(r=>`<p class="map-issue">${esc(r.text)}</p>`).join("")}<button class="quiet-button" data-map-open>${esc(t("mapOpen"))}</button>`:`<p>${esc(t("chooseProcess"))}</p>`;
 }
 $("observed-canvas").addEventListener("click",event=>{
   const labels=event.target.closest("[data-map-labels]");
@@ -3215,7 +3261,28 @@ function controlState(e) {
       enabled && discovery && initiate && e?.control ? "controlAvailable" : "controlNoDiscover"};
 }
 function authorityBadge(e) {
-  return controlState(e).authority ? ` <span class="authority-badge" title="${esc(t("controlAuthorityHint"))}">⚿ ${esc(t("controlAuthority"))}</span>` : "";
+  return (controlState(e).authority ? ` <span class="authority-badge" title="${esc(t("controlAuthorityHint"))}">⚿ ${esc(t("controlAuthority"))}</span>` : "")+accessBadge(e);
+}
+function accessBadge(e){
+  const role=e?.access?.role || e?.access_role;
+  if(!['listener','worker','client'].includes(role))return '';
+  const label=role==='listener'?'AUTH':role==='worker'?'SESSION':'AUTH client';
+  const a=e?.access,capacity=role==='listener'&&a?.children!=null?` ${a.children}/${a.limit??'?'}`:'';
+  return ` <span class="access-badge" title="${esc(t('accessRole_'+role))}">${esc(label+capacity)}</span>`;
+}
+function accessDetail(e){
+  const a=e?.access,role=a?.role||e?.access_role;if(!['listener','worker','client'].includes(role))return '';
+  const label=(prefix,value)=>messages[prefix+value]?t(prefix+value):t('access_unknown');
+  const rows=[[t('accessRole'),t('accessRole_'+role)],
+    [t('accessTransport'),e.status==='reachable'?(e.metrics?.session_ready==='1'?t('session_up'):e.metrics?.session_ready==='0'?t('session_down'):t('access_unknown')):t('access_unknown')],
+    ['AUTH',label('authState_',a?.auth)],
+    [t('accessData'),a?.data_allowed===true?t('accessAllowed'):a?.data_allowed===false?t('accessBlocked'):t('access_unknown')],
+    [t('accessRelocation'),label('relocation_',a?.relocation)],
+    ['CONFIG',label('configState_',a?.config)]];
+  if(a?.config_id&&a.config_id!=='0')rows.push(['CONFIG ID',a.config_id]);
+  if(role==='listener')rows.push([t('accessSessions'),a?.children!=null?`${a.children} / ${a.limit??'?'}`:'—']);
+  if(a?.parent_id||e.access_parent_id){const id=a?.parent_id||e.access_parent_id;rows.push([t('accessParent'),state.data?.endpoints?.find(row=>row.id===id)?.name||id]);}
+  return `<section class="access-detail"><h4>${esc(t('accessTitle'))}</h4><dl>${rows.map(([key,value])=>`<dt>${esc(key)}</dt><dd>${esc(value)}</dd>`).join('')}</dl><p class="muted">${esc(t('accessConfigHint'))}</p></section>`;
 }
 function renderControlSettings(e) {
   const fields=["control_access","control_trusted_keys","control_authority_keys","control_enabled",
