@@ -35,6 +35,8 @@ from telemetry import changes, health, switch_detail
 from syspiper import Syspiper
 from auth import AuthManager
 from services import Services, default_services_path
+from controlled_endpoints import ControlledEndpoints, SSHDiscovery
+from tunnel_deployments import TunnelDeployments
 from externals import PeekError, observe, peek_health, peek_syspiper, peek_history
 
 STATIC = Path(__file__).parent / "static"
@@ -333,20 +335,37 @@ class Fabric:
                 return endpoint
         raise APIError(404, "process no longer exists; refresh discovery")
 
+    def switch_deployment(self, body):
+        from switch_deployments import execute
+        if not isinstance(body, dict): raise APIError(400, "invalid switch deployment request")
+        action = body.get("action")
+        if action not in {"inspect", "prepare", "start", "rollback", "undeploy"}: raise APIError(400, "invalid switch deployment action")
+        if action != "inspect" and (not self.allow_write or audit_actor.get().get("role") != "admin"):
+            raise APIError(403, "switch deployment requires an admin and writes enabled")
+        target = body.get("deployment_id", "")
+        if action != "inspect": self.journal.append("tunnel_deployments.local." + str(action), target, "started")
+        try:
+            result = execute(self, body)
+        except Exception as error:
+            if action != "inspect": self.journal.append("tunnel_deployments.local." + str(action), target, "failed", {"error": str(error)[:2048]})
+            raise APIError(409, str(error)) from error
+        if action != "inspect": self.journal.append("tunnel_deployments.local." + action, target, "succeeded")
+        return result
+
     def journal_entries(self, params=None):
         return self.journal.page(params)
 
     def audit_event(self, body):
         if not isinstance(body,dict) or set(body)-{'action','target','outcome','details'}:
             raise APIError(400,'invalid audit event')
-        if body.get('action') not in {'auth.login','auth.logout','users.save','users.delete','services.save','services.delete','http.denied'}:
+        if body.get('action') not in {'auth.login','auth.logout','users.save','users.delete','services.save','services.delete','http.denied','controlled_endpoints.probe','controlled_endpoints.discover','controlled_endpoints.refresh','tunnel_deployments.create','tunnel_deployments.deploy','tunnel_deployments.undeploy','tunnel_deployments.delete','binary_bundles.create','binary_bundles.build'}:
             raise APIError(400,'invalid audit action')
         details=body.get('details',{})
-        if not isinstance(details,dict) or set(details)-{'role','enabled','password_changed','status','name','kind','label_count','peek_target_count'}:
+        if not isinstance(details,dict) or set(details)-{'role','enabled','password_changed','status','name','kind','label_count','peek_target_count','tunnel_id','count','address','port'}:
             raise APIError(400,'invalid audit metadata')
-        if any(k in details and not isinstance(details[k],bool) for k in ('enabled','password_changed')) or ('role' in details and not isinstance(details['role'],str)) or ('status' in details and not isinstance(details['status'],int)):
+        if any(k in details and not isinstance(details[k],bool) for k in ('enabled','password_changed')) or ('role' in details and not isinstance(details['role'],str)) or ('status' in details and not isinstance(details['status'],(int,str))):
             raise APIError(400,'invalid audit metadata types')
-        if any(k in details and not isinstance(details[k],str) for k in ('name','kind')) or any(k in details and (not isinstance(details[k],int) or isinstance(details[k],bool)) for k in ('label_count','peek_target_count')):
+        if any(k in details and not isinstance(details[k],str) for k in ('name','kind','address')) or any(k in details and (not isinstance(details[k],int) or isinstance(details[k],bool)) for k in ('label_count','peek_target_count','tunnel_id','count','port')):
             raise APIError(400,'invalid audit metadata types')
         if body.get('outcome') not in {'started','succeeded','failed'}:raise APIError(400,'invalid audit outcome')
         return {'id':self.journal.append(body['action'],str(body.get('target',''))[:128],body['outcome'],details)}
@@ -468,17 +487,24 @@ class Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address, fabric, token, users_file=None, services_path=None, peek_url=None, peek_token=None):
+    def __init__(self, address, fabric, token, users_file=None, services_path=None, peek_url=None, peek_token=None,
+                 controlled_ssh_user="root", controlled_ssh_key=None,
+                 controlled_git_url="https://github.com/astibal/tuntom.git"):
         self.fabric, self.token = fabric, token
         self.auth = AuthManager(token, users_file)
         self.services = Services(services_path)
+        self.controlled_endpoints = ControlledEndpoints(services_path, SSHDiscovery(controlled_ssh_user, controlled_ssh_key))
+        self.tunnel_deployments = TunnelDeployments(services_path, self.controlled_endpoints, controlled_git_url, fabric=fabric)
         self.peek_url, self.peek_token = peek_url, peek_token
         self.slots = threading.BoundedSemaphore(24)
         super().__init__(address, Handler)
 
     def server_close(self):
         try:
-            self.services.close()
+            try: self.tunnel_deployments.close()
+            finally:
+                try: self.controlled_endpoints.close()
+                finally: self.services.close()
         finally:
             super().server_close()
 
@@ -510,12 +536,13 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass  # Request URLs and bearer tokens never enter access logs.
 
-    def respond(self, status, data, content_type="application/json; charset=utf-8"):
+    def respond(self, status, data, content_type="application/json; charset=utf-8", headers=None):
         if not isinstance(data, bytes):
             data = json.dumps(data, ensure_ascii=False).encode()
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
+        for key, value in (headers or {}).items(): self.send_header(key, value)
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
@@ -569,7 +596,8 @@ class Handler(BaseHTTPRequestHandler):
         if len(lengths) != 1 or not re.fullmatch(r"[0-9]{1,8}", lengths[0]):
             raise APIError(400, "invalid Content-Length")
         length = int(lengths[0])
-        if length > MAX_BODY * 6 + 4096:
+        limit = 90 * 1024 * 1024 if urlsplit(self.path).path == "/api/v1/binary-bundles" else MAX_BODY * 6 + 4096
+        if length > limit:
             raise APIError(413, "request too large")
         self._body_raw = self.rfile.read(length)
         if len(self._body_raw) != length:
@@ -608,6 +636,11 @@ class Handler(BaseHTTPRequestHandler):
                 re.fullmatch(r"/api/v1/users(?:/[^/]+/delete)?", path) or
                 (path == "/api/v1/services" and self.command == "POST") or
                 re.fullmatch(r"/api/v1/services/[0-9a-f]{32}/delete", path) or
+                (path == "/api/v1/controlled-endpoints" and self.command == "POST") or
+                re.fullmatch(r"/api/v1/controlled-endpoints/[0-9a-f]{32}/(?:confirm|refresh)", path) or
+                (path in {"/api/v1/binary-bundles", "/api/v1/binary-bundles/build"} and self.command == "POST") or
+                (path == "/api/v1/tunnel-deployments" and self.command == "POST") or
+                re.fullmatch(r"/api/v1/tunnel-deployments/[0-9a-f]{32}/(?:deploy|undeploy|delete)", path) or
                 re.fullmatch(r"/api/v1/endpoints/[^/]+/(?:rules/load|classifier/(?:load|load-flush|disable))", path)))
             if path == "/api/v1/auth/logout" and self.command == "POST":
                 self.server.fabric.audit_event({'action':'auth.logout','target':principal['username'],'outcome':'succeeded'})
@@ -654,6 +687,120 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(200,self.server.fabric.journal_entries({k:v[0] for k,v in values.items()}))
             if path == "/api/v1/services" and self.command == "GET":
                 return self.respond(200, self.server.services.list())
+            if path == "/api/v1/controlled-endpoints" and self.command == "GET":
+                return self.respond(200, self.server.controlled_endpoints.list())
+            if path == "/api/v1/tunnel-deployment-hints" and self.command == "GET":
+                params = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+                if set(params) != {"endpoint_id", "switch_id"} or any(len(value) != 1 for value in params.values()):
+                    raise APIError(400, "expected endpoint_id and switch_id")
+                try: endpoint = self.server.controlled_endpoints.get(params["endpoint_id"][0])
+                except KeyError as error: raise APIError(404, str(error)) from error
+                if endpoint["status"] != "supported": raise APIError(409, "unsupported endpoint")
+                return self.respond(200, self.server.fabric.switch_deployment({"action": "inspect",
+                    "switch_id": params["switch_id"][0], "route_to": endpoint["address"]}))
+            if path == "/api/v1/binary-bundles/build" and self.command == "POST":
+                if not self.server.fabric.snapshot()["allow_write"]: raise APIError(403, "writes are disabled")
+                data = self.body()
+                target = data.get('endpoint_id', '') if isinstance(data, dict) else ''
+                self.server.fabric.audit_event({'action':'binary_bundles.build','target':target,'outcome':'started'})
+                try:
+                    result = self.server.tunnel_deployments.binary_bundles.build(data, self.server.controlled_endpoints, self.server.tunnel_deployments.git_url)
+                except (ValueError, KeyError, RuntimeError, OSError) as error:
+                    self.server.fabric.audit_event({'action':'binary_bundles.build','target':target,'outcome':'failed'})
+                    raise APIError(409, str(error)) from error
+                self.server.fabric.audit_event({'action':'binary_bundles.build','target':result['id'],'outcome':'succeeded','details':{'name':result['name']}})
+                return self.respond(200, result)
+            if path == "/api/v1/binary-bundles" and self.command == "GET":
+                return self.respond(200, self.server.tunnel_deployments.binary_bundles.list())
+            if path == "/api/v1/binary-bundles" and self.command == "POST":
+                try: result = self.server.tunnel_deployments.binary_bundles.create(self.body())
+                except ValueError as error: raise APIError(400, str(error)) from error
+                self.server.fabric.audit_event({'action':'binary_bundles.create','target':result['id'],'outcome':'succeeded','details':{'name':result['name']}})
+                return self.respond(200, result)
+            match = re.fullmatch(r"/api/v1/binary-bundles/([0-9a-f]{32})/archive", path)
+            if match and self.command == "GET":
+                try: filename, content = self.server.tunnel_deployments.binary_bundles.archive(match[1])
+                except KeyError as error: raise APIError(404, str(error)) from error
+                return self.respond(200, content, "application/gzip", {"Content-Disposition": f'attachment; filename="{filename}"'})
+            if path == "/api/v1/tunnel-deployments" and self.command == "GET":
+                return self.respond(200, self.server.tunnel_deployments.list())
+            if path == "/api/v1/tunnel-deployments" and self.command == "POST":
+                data = self.body()
+                try: result = self.server.tunnel_deployments.create(data)
+                except KeyError as error: raise APIError(404, str(error)) from error
+                except RuntimeError as error: raise APIError(409, str(error)) from error
+                except (ValueError, sqlite3.IntegrityError) as error: raise APIError(400, str(error)) from error
+                self.server.fabric.audit_event({'action':'tunnel_deployments.create','target':result['id'],'outcome':'succeeded',
+                    'details':{'name':result['name'],'tunnel_id':result['config']['tunnel_id'],'count':result['config']['count']}})
+                return self.respond(200, result)
+            match = re.fullmatch(r"/api/v1/tunnel-deployments/([0-9a-f]{32})/delete", path)
+            if match and self.command == "POST":
+                try: result = self.server.tunnel_deployments.delete(match[1])
+                except KeyError as error: raise APIError(404, str(error)) from error
+                except RuntimeError as error: raise APIError(409, str(error)) from error
+                self.server.fabric.audit_event({'action':'tunnel_deployments.delete','target':match[1],'outcome':'succeeded'})
+                return self.respond(200, result)
+            match = re.fullmatch(r"/api/v1/tunnel-deployments/([0-9a-f]{32})/archive/(deploy|undeploy)", path)
+            if match and self.command == "GET":
+                try: filename, content = self.server.tunnel_deployments.archive(match[1], match[2])
+                except KeyError as error: raise APIError(404, str(error)) from error
+                return self.respond(200, content, "application/gzip", {"Content-Disposition": f'attachment; filename="{filename}"'})
+            match = re.fullmatch(r"/api/v1/tunnel-deployments/([0-9a-f]{32})/undeploy", path)
+            if match and self.command == "POST":
+                if not self.server.fabric.snapshot()["allow_write"]: raise APIError(403, "writes are disabled")
+                self.server.fabric.audit_event({'action':'tunnel_deployments.undeploy','target':match[1],'outcome':'started'})
+                try: result = self.server.tunnel_deployments.undeploy(match[1])
+                except (KeyError, RuntimeError, OSError, ValueError, APIError) as error:
+                    self.server.fabric.audit_event({'action':'tunnel_deployments.undeploy','target':match[1],'outcome':'failed'})
+                    raise APIError(409, str(error)) from error
+                self.server.fabric.audit_event({'action':'tunnel_deployments.undeploy','target':match[1],'outcome':'succeeded','details':{'status':result['status']}})
+                return self.respond(200, result)
+            match = re.fullmatch(r"/api/v1/tunnel-deployments/([0-9a-f]{32})/script", path)
+            if match and self.command == "GET":
+                params = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+                if set(params) != {"name"} or len(params["name"]) != 1: raise APIError(400, "expected one script name")
+                try: content = self.server.tunnel_deployments.script(match[1], params["name"][0])
+                except KeyError as error: raise APIError(404, str(error)) from error
+                return self.respond(200, {"name": params["name"][0], "content": content})
+            match = re.fullmatch(r"/api/v1/tunnel-deployments/([0-9a-f]{32})/deploy", path)
+            if match and self.command == "POST":
+                try: result = self.server.tunnel_deployments.deploy(match[1])
+                except KeyError as error: raise APIError(404, str(error)) from error
+                except RuntimeError as error: raise APIError(409, str(error)) from error
+                except (OSError, ValueError) as error: raise APIError(502, str(error)) from error
+                self.server.fabric.audit_event({'action':'tunnel_deployments.deploy','target':match[1],'outcome':'succeeded',
+                    'details':{'status':result['status']}})
+                return self.respond(200, result)
+            if path == "/api/v1/controlled-endpoints" and self.command == "POST":
+                data = self.body()
+                try:
+                    result = self.server.controlled_endpoints.probe(data)
+                except ValueError as error: raise APIError(400, str(error)) from error
+                except RuntimeError as error: raise APIError(409, str(error)) from error
+                except OSError as error: raise APIError(502, str(error)) from error
+                self.server.fabric.audit_event({'action':'controlled_endpoints.probe','target':result['id'],'outcome':'succeeded',
+                    'details':{'address':result['address'],'port':result['port']}})
+                return self.respond(200, result)
+            match = re.fullmatch(r"/api/v1/controlled-endpoints/([0-9a-f]{32})/confirm", path)
+            if match and self.command == "POST":
+                data = self.body()
+                try: result = self.server.controlled_endpoints.confirm(match[1], data.get("fingerprint", "") if isinstance(data, dict) else "")
+                except KeyError as error: raise APIError(404, str(error)) from error
+                except ValueError as error: raise APIError(400, str(error)) from error
+                except RuntimeError as error: raise APIError(409, str(error)) from error
+                self.server.fabric.audit_event({'action':'controlled_endpoints.discover','target':match[1],
+                    'outcome':'succeeded' if result['status'] in {'supported','unsupported'} else 'failed',
+                    'details':{'status':result['status']}})
+                return self.respond(200, result)
+            match = re.fullmatch(r"/api/v1/controlled-endpoints/([0-9a-f]{32})/refresh", path)
+            if match and self.command == "POST":
+                try: result = self.server.controlled_endpoints.refresh(match[1])
+                except KeyError as error: raise APIError(404, str(error)) from error
+                except RuntimeError as error: raise APIError(409, str(error)) from error
+                self.server.fabric.audit_event({'action':'controlled_endpoints.refresh','target':match[1],
+                    'outcome':'succeeded' if result['status'] in {'supported','unsupported'} else 'failed',
+                    'details':{'status':result['status']}})
+                return self.respond(200, result)
             if path == "/api/v1/externals" and self.command == "GET":
                 try:
                     services = self.server.services.list()["services"]
@@ -785,6 +932,9 @@ def main():
     parser.add_argument("--journal-db", type=Path, default=default_journal_path(), help="Persistent audit and component events")
     parser.add_argument("--journal-retention-days", type=int, default=90)
     parser.add_argument("--services-db", type=Path, default=default_services_path(), help="Optional managed-service metadata")
+    parser.add_argument("--controlled-ssh-user", default="root", help="SSH user for Controlled Endpoints (default: root)")
+    parser.add_argument("--controlled-ssh-key", type=Path, help="Private key for Controlled Endpoints (default: SSH agent/default keys)")
+    parser.add_argument("--controlled-git-url", default="https://github.com/astibal/tuntom.git", help="Fixed Git repository used by controlled Git builds")
     parser.add_argument("--peek-url", default=os.environ.get("TUNTOM_PEEK_URL"), help="Peek base URL (or TUNTOM_PEEK_URL)")
     parser.add_argument("--peek-token", default=os.environ.get("TUNTOM_PEEK_TOKEN"), help="Peek bearer token (or TUNTOM_PEEK_TOKEN)")
     parser.add_argument("--no-history", action="store_true", help="disable local telemetry cache")
@@ -812,7 +962,7 @@ def main():
         if bool(args.peek_url) != bool(args.peek_token):
             raise ValueError("Peek URL and token must be configured together")
         server = Server((str(args.host), args.port), fabric, token, args.users_file, args.services_db,
-                        args.peek_url, args.peek_token)
+                        args.peek_url, args.peek_token, args.controlled_ssh_user, args.controlled_ssh_key, args.controlled_git_url)
     except (ValueError, TypeError, OSError, sqlite3.Error, APIError) as error:
         parser.exit(1, f"Fabric: {error}\n")
     link_host = "127.0.0.1" if args.host.is_unspecified else str(args.host)

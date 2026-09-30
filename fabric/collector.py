@@ -75,6 +75,8 @@ class CollectorHandler(socketserver.BaseRequestHandler):
                 result=fabric.journal_entries(request.get('body'))
             elif operation == 'audit_event':
                 result=fabric.audit_event(request.get('body'))
+            elif operation == "switch_deployment":
+                result = fabric.switch_deployment(request.get("body"))
             elif operation == "snapshot":
                 result = fabric.snapshot()
                 result["collector"] = {"mode": "separate", "uid": os.geteuid()}
@@ -158,7 +160,7 @@ class RemoteFabric:
     def call(self, operation, key=None, body=None):
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-                sock.settimeout(180 if operation.startswith("classifier-") else 12)
+                sock.settimeout(900 if operation == "switch_deployment" else (180 if operation.startswith("classifier-") else 12))
                 sock.connect(self.path)
                 if peer_uid(sock) not in {0, os.geteuid()}:
                     raise OSError("unexpected collector UID")
@@ -186,6 +188,11 @@ class RemoteFabric:
         result = self.call("snapshot")
         result["allow_write"] = bool(result["allow_write"] and self.allow_write)
         return result
+
+    def switch_deployment(self, body):
+        if body.get("action") != "inspect" and not self.allow_write:
+            raise APIError(403, "writes are disabled")
+        return self.call("switch_deployment", body=body)
 
     def journal_entries(self, params=None):
         return self.call('journal',body=params)

@@ -36,6 +36,7 @@ python3 -B fabric/server.py --host 0.0.0.0    # všechna IPv4 rozhraní (výchoz
 python3 -B fabric/server.py --allow-write   # navíc ruční načítání pravidel
 python3 -B fabric/server.py --users-file ~/.config/tuntom/fabric-users.json
 python3 -B fabric/server.py --services-db ~/.local/state/tuntom-fabric/services.sqlite
+python3 -B fabric/server.py --controlled-ssh-user root --controlled-ssh-key ~/.ssh/fabric
 ```
 
 ### Lokální administrátoři
@@ -739,6 +740,48 @@ neukládají. Připojení se nastavuje přes `--peek-url` a `--peek-token`
 (nebo `TUNTOM_PEEK_URL` a `TUNTOM_PEEK_TOKEN`). Generování classifier rules z MS
 se zatím neprovádí.
 
+### Controlled Endpoints
+
+Podzáložka **Services / Controlled Endpoints** drží malý administrátorský
+inventář strojů dostupných přes SSH. Admin zadá pouze IP adresu a port. Backend
+nejprve provede `ssh-keyscan` a UI vyžaduje explicitní potvrzení SHA-256
+fingerprintu. Teprve potom se backend připojí s `StrictHostKeyChecking=yes`, bez
+terminálu a v batch režimu, a jednorázově načte `/etc/os-release` a architekturu.
+Snapshot se automaticky neobnovuje; admin jej může explicitně obnovit tlačítkem.
+
+SSH uživatel a privátní klíč jsou společnou konfigurací backendu přes
+`--controlled-ssh-user` a `--controlled-ssh-key`; klíč se do UI ani databáze
+neukládá. Bez explicitního klíče se použije SSH agent nebo standardní klientská
+konfigurace. Zápis a potvrzení host key vyžadují roli `admin` a jsou auditované.
+
+Podpora je záměrně vyhodnocena přes přesný allowlist distribuce, verze a
+architektury. První profil je `ubuntu/26.04/x86_64`; jen podporovaný snapshot
+nabídne operaci **Create tunnel**. Žádné obecné příkazy ani terminál API
+nepřijímá.
+
+Admin může ze dvou podporovaných endpointů vytvořit návrh tunnel deploymentu.
+Návrh určuje initiator/listener, TUN nebo switch attachment, počet paralelních
+členů 1..64, ruční či automatické tunnel ID, zdroj software a generate/provided
+PSK. V této fázi se renderuje pouze labový runtime `screen`; vytvoření návrhu
+na vzdálené stroje nic neposílá a nic nespouští.
+
+Každý návrh obsahuje čitelný runbook pro obě strany: preflight, instalaci
+závislostí, build nebo instalaci binary, kontrolu konfigurace, start, readiness,
+status, stop a rollback. UI dovoluje každý soubor otevřít a kopírovat pro ruční
+provedení. Automatizace bude používat stejné skripty, nikoli druhou skrytou
+implementaci. Skripty a veřejný deployment JSON nikdy neobsahují PSK; ten se
+ukládá odděleně s módem `0600` do `deployment-secrets` vedle services databáze.
+Git build používá pouze pevné repository z `--controlled-git-url`; uživatel
+volí validovanou revision, nikoliv libovolnou URL.
+
+Teprve explicitní **Deploy** nahraje stejný zobrazený bundle a odděleně uložený
+secret na oba endpointy. Provede kroky 00–30 na obou stranách, potom spustí a
+ověří listener a až následně initiator. SSH používá dříve potvrzený host key.
+Selhání nastaví stav `failed`, uloží krátkou netajnou chybu a pokusí se přes
+runbook zastavit pouze strany, jejichž start už začal. Opakování je dovoleno jen
+pro `draft`/`failed` a vzdálený adresář musí nést stejné deployment ID, takže
+operace nepřevezme cizí instalaci stejného jména.
+
 Peek drží aktivní zájem sedm dní od posledního requestu a historii třicet dní;
 obě hodnoty jsou volitelné argumenty serveru. Externals z historie vykreslí graf
 zvolené latence. Detail podporuje rozsahy 1h až 30d, zoom a posun časové i hodnotové
@@ -801,3 +844,72 @@ GET `/api/v1/journal?category=audit|event` podporuje `before` (ID), přesné fil
 `actor` a `target`. Vrací nejvýše 100 záznamů a 2 MiB na stránku. `active=1`
 vrací aktivní podmínky (nejvýše 500, s celkovým počtem). UI má filtr a načítání
 starších stránek; při prohlížení otevřeného detailu je samo nepřepisuje.
+
+### Tunel k existujícímu switchi
+
+V **Services → Controlled Endpoints → Create tunnel** lze místo druhého SSH
+endpointu vybrat **Existující switch u collectoru**. Stačí jeden podporovaný
+SSH host; host switche se nepřidává do Controlled Endpoints ani se přes SSH
+nediscoveruje. Side A je ve výchozím stavu vzdálený TUN/initiator, Side B lokální
+switch/listener. Zadej dosažitelnou transportní IP listeneru, port ID a label.
+
+Switch musí být lokálně pozorovaný proces ve stejném mount/network namespace
+jako collector. Socket pochází z aktuálního procesu, ne ze vstupu uživatele.
+Collector potřebuje root, povolené zápisy, `screen`, `flock`, `ss` a nainstalované
+`tuntom` + `tuntomctl` v `/var/lib/tuntom-fabric/bin` (preferované), případně vedle binárky switche. Binárky a jejich nadřazené adresáře
+musí patřit rootovi a nesmí být zapisovatelné jinými uživateli ani symlinky.
+Na hostu switche se neprovádí apt, Git checkout ani build.
+
+**Generate runbook** pouze uloží návrh; **Deploy** provede jeho nasazení. Lokální
+RPC přijímá validovaný záměr a pevně vyjmenované operace prepare/start/rollback,
+nikoli shell příkazy či uploadované skripty. Před nasazením se ověří aktuální
+identita switche a obsazené UDP porty. Restart switche vyžaduje nový návrh.
+Procesy běží v samostatných screen sessions; při chybě startu se zastaví jen
+nově startované strany. Lokální operace se zaznamenávají do auditu bez PSK.
+
+Formulář vybírá iniciátora podle názvů konců (u hostu bez známého názvu podle IP).
+Transportní IP je v Podrobnostech a vždy patří listeneru: výchozí je SSH adresa
+protistrany, u lokálního switche zdrojová IP vybraná routingem collectoru směrem
+k SSH hostu. Tento lokální UDP socket nic neposílá; nejde o test dostupnosti
+opačným směrem. Adresu lze přepsat. Port ID a vstupní label nemají vzorové hodnoty;
+vyžadují vědomou volbu. Známé obsazené porty včetně přípon skupiny se odmítnou,
+label se ale automaticky neodvozuje z pravidel. Tunnel ID je standardně přiděleno
+automaticky s vyloučením známých lokálních tunelů a uložených deploymentů;
+ruční ID začíná prázdné a prochází stejnou kontrolou kolize.
+
+### Runbook archivy a Undeploy
+
+Každý deployment nabízí nejprve `deploy_runbook_<name>.tar.gz`, potom
+`undeploy_runbook_<name>.tar.gz` a dále jednotlivé původní soubory. Archivy
+obsahují kontrolní součty a nikdy neobsahují PSK. Nový teardown skript dostanou
+i dříve uložené deploymenty. Ruční deploy vyžaduje bezpečné dodání PSK.
+
+Karty endpointů vypisují deploymenty spravované Fabricem a jejich tunnel IDs.
+Stav „Nasazeno“ znamená úspěšný poslední deploy, ne průběžně ověřené zdraví;
+to je vidět v topologii. Nové návrhy ukládají, zda bylo ID automatické nebo ruční;
+u starých návrhů tento původ nelze zpětně spolehlivě určit.
+
+Undeploy je admin operace s povolenými zápisy. Nejdřív zastaví iniciátora a pak
+listener; procesy identifikuje přes přesnou cestu binárky, roli, member ID a
+control socket. Linux pidfd zabraňuje zaslání signálu jinému procesu při recyklaci
+PID. Po ověření ukončení a uvolnění runtime zámků přepíše a odstraní soubory
+v `secrets/` a smaže celý markerem ověřený adresář konkrétního deploymentu.
+Balíčky, uživatelé, sdílené binárky a ostatní propojení se neodstraňují.
+Po dokončení obou stran se přepíše a odstraní i PSK soubor z úložiště Fabricu.
+Přepis je best-effort na úrovni souboru, nikoli záruka odstranění ze SSD,
+CoW snapshotů nebo dřívějších záloh. Klíče nedáváme do runbook archivů.
+
+Neúspěšný úklid ukládá výsledek každé strany; opakování dokončí pouze zbývající
+strany. Dokud úklid není kompletní, stav je „Undeploy nedokončen“. Po přerušené
+operaci/restartu se stav označí k ověření, nikoli jako úspěch. Záznam konfigurace
+a audit zůstávají bez PSK. Offline undeploy skripty uklidí dané hosty; následné
+Undeploy v UI dokončí vymazání kopie klíče Fabricu a aktualizuje jeho záznam.
+
+
+### Binary bundles
+
+Services → Binary bundles stores immutable pairs of `tuntom` and `tuntomctl` in the services database. Admins can upload both ELF binaries (32 MiB each) or build the configured Git repository on a supported Controlled Endpoint with `git`, `g++`, and `python3` already installed. Builds require `--allow-write`, run in a temporary directory, do not install packages, and use portable `-march=x86-64 -mtune=generic`. The resolved Git commit is recorded. One build runs at a time; the request can take up to 15 minutes. A failed build creates no bundle.
+
+Initially only Ubuntu 26.04 / x86-64 is supported, matching endpoint discovery. The ELF architecture is checked; platform compatibility remains declared, not proof that all runtime libraries or CPU requirements are satisfied. Bundles have SHA-256 digests for both executables, downloadable tar.gz files and manifests. Selecting a bundle in the tunnel form checks the discovered target platform at creation and again before deployment; both binaries are transferred in the deployment archive and verified before installation. Existing-switch sides continue using the collector's installed binaries. Manual “binaries already on host” mode requires both files in the deployment's `incoming/` directory and verifies the supplied `tuntom` SHA-256.
+
+Completed, undeployed connections can be deleted from the deployment list by an administrator. Active, failed, or incompletely removed connections cannot be deleted. Deletion removes the saved runbooks and frees the name, but preserves the separate audit journal. Binary bundles remain reusable after a connection is removed.
