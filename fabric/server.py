@@ -31,7 +31,7 @@ from discovery import discover, stat_fields
 from logs import read_logs
 from history import History, default_path
 from journal import Journal, actor as audit_actor, operation_id, audited, clipped, default_journal_path
-from telemetry import changes, health, switch_detail
+from telemetry import access_detail, changes, health, switch_detail
 from syspiper import Syspiper
 from auth import AuthManager
 from services import Services, default_services_path
@@ -267,6 +267,7 @@ class Fabric:
         with self.mutex:
             endpoints = [{**asdict(endpoint), **self.samples[endpoint.id],
                           "health": health(endpoint, self.samples[endpoint.id]),
+                          "access": access_detail(endpoint, self.samples[endpoint.id]),
                           "switch_detail": switch_detail(self.samples[endpoint.id].get("metrics", {}),
                                                          self.samples[endpoint.id].get("changes", {}))
                           if endpoint.kind == "switch" else None}

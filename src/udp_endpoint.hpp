@@ -84,6 +84,21 @@ public:
         outer_ip_header_size_ = ipv6_header_size;
     }
 
+    void adopt_server(int fd) {
+        if(fd_<0&&fd>=0){int type=0;socklen_t n=sizeof(type);sockaddr_storage address{};socklen_t an=sizeof(address);
+            if(::getsockopt(fd,SOL_SOCKET,SO_TYPE,&type,&n)<0||type!=SOCK_DGRAM||::getsockname(fd,reinterpret_cast<sockaddr*>(&address),&an)<0)
+                throw std::runtime_error("invalid inherited UDP socket");
+            fd_=fd;outer_ip_header_size_=address.ss_family==AF_INET?ipv4_header_min_size:ipv6_header_size;return;}
+        throw std::runtime_error("cannot adopt UDP socket");
+    }
+
+    std::uint16_t local_port() const {
+        sockaddr_storage address{};socklen_t n=sizeof(address);if(fd_<0||::getsockname(fd_,reinterpret_cast<sockaddr*>(&address),&n)<0)return 0;
+        if(address.ss_family==AF_INET)return ntohs(reinterpret_cast<const sockaddr_in*>(&address)->sin_port);
+        if(address.ss_family==AF_INET6)return ntohs(reinterpret_cast<const sockaddr_in6*>(&address)->sin6_port);
+        return 0;
+    }
+
     void open_client(const std::string& host, std::uint16_t port) {
         addrinfo hints {};
         hints.ai_family = AF_UNSPEC;
@@ -207,6 +222,15 @@ public:
         }
 
         return changed;
+    }
+
+    bool relocate_peer(const sockaddr_storage& source,socklen_t length,std::uint16_t port) {
+        if(!port)return false;
+        sockaddr_storage peer=source;
+        if(peer.ss_family==AF_INET)reinterpret_cast<sockaddr_in*>(&peer)->sin_port=htons(port);
+        else if(peer.ss_family==AF_INET6)reinterpret_cast<sockaddr_in6*>(&peer)->sin6_port=htons(port);
+        else return false;
+        return set_peer(peer,length);
     }
 
     ssize_t send_to(const std::uint8_t* buffer, std::size_t size,

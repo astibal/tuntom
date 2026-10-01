@@ -77,6 +77,22 @@ int main() {
     require(parse_fails({"--switch-socket", "/tmp/x", "--switch-port-id", "x",
                          "--switch-label", "-1"}),
             "negative label accepted");
+    require(!parse_fails({"--switch-socket", "/tmp/x", "--switch-port-id", "x",
+                          "--switch-stack", "1001,7,0x11"}),
+            "trusted ingress stack rejected");
+    require(parse_fails({"--switch-socket", "/tmp/x", "--switch-port-id", "x",
+                         "--switch-label", "1", "--switch-stack", "2"}),
+            "label and stack accepted together");
+    require(parse_fails({"--switch-socket", "/tmp/x", "--switch-port-id", "x",
+                         "--switch-stack", "1,2,3,4,5,6,7,8,9"}),
+            "oversize ingress stack accepted");
+    require(!parse_fails({"--auth-command", "/usr/libexec/tuntom-auth", "--auth-timeout", "5", "--auth-max-children", "64"}),
+            "server AUTH options rejected");
+    require(!parse_fails({"--auth-username", "alice", "--auth-response-command", "/usr/libexec/tuntom-credential",
+                          "--config-command", "/usr/libexec/tuntom-config"}),
+            "client AUTH/CONFIG options rejected");
+    require(parse_fails({"--auth-username", "alice"}), "username without responder accepted");
+    require(parse_fails({"--auth-response-command", "/tmp/respond"}), "responder without username accepted");
 
     require(!parse_fails({"--relay-connect", "/tmp/switch", "--relay-port-id", "proxy-link"}), "valid hub relay rejected");
     require(!parse_fails({"--relay-listen", "/tmp/adapters"}), "valid remote relay rejected");

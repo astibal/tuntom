@@ -12,7 +12,7 @@ from urllib.parse import unquote
 from control import encode_route
 from discovery import Endpoint
 from errors import APIError
-from telemetry import changes, health, switch_detail
+from telemetry import access_detail, changes, health, switch_detail
 
 
 def stamp():
@@ -297,7 +297,7 @@ class Network:
                 endpoints.append({**asdict(endpoint), **sample, 'discovery_stale':stale,
                     'discovered_at':node['last_seen'],
                     'control_routes':[{'origin':r['origin'],'path':r['path']} for r in node['routes'].values()],
-                    'health':health(endpoint, sample),
+                    'health':health(endpoint, sample), 'access':access_detail(endpoint, sample),
                     'switch_detail':switch_detail(sample['metrics'],sample.get('changes',{})) if endpoint.kind=='switch' else None})
             return endpoints, {'interval_seconds':self.discovery_interval,'origins':deepcopy(self.discovery_status),
                                'truncated':self.truncated,'limit':self.limit,'history_error':self.history_error}

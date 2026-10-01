@@ -64,6 +64,11 @@ offset  size       field
 
 After registration, a tuntom instance sends only `SWITCH` to the switch. It assigns its configured
 `--switch-label` to authenticated DATA received from its UDP peer.
+`--switch-stack` instead supplies a trusted multi-label ingress prefix. When a
+packet classifier matches, its per-flow labels are appended to this prefix;
+the combined stack remains limited to eight labels and overflow is dropped.
+This permits an authenticated child to attach tenant/role/session labels before
+untrusted client traffic reaches switch policy.
 
 The switch requires registration within five seconds of accepting a connection.
 Registered ports have no idle timeout. Registration of the same port ID replaces

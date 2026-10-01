@@ -127,6 +127,13 @@ public:
     bool ready() const {
         return active_ and active_->next_counter <= (encrypt_ ? 0xffffffffULL : counter_mask);
     }
+    std::uint64_t active_exchange() const { return active_ ? active_->exchange : 0; }
+    std::vector<std::uint8_t> restart(Time now,std::int64_t wall=wall_seconds()) {
+        if(server_)return {};
+        active_.reset();previous_.reset();pending_.reset();waiting_ack_=false;
+        flight_.clear();client_init_.clear();client_secret_.clear();++transmit_generation_;
+        return begin(now,wall);
+    }
 
     // Expansion is the existing AMAC with explicit, NUL-delimited domains.
     // init_hash is a 32-byte keyed commitment (two independent AMAC domains),
@@ -231,7 +238,7 @@ public:
         if (previous_ and now >= previous_until_) previous_.reset();
         expire_pending(now);
         if (size < protocol_header_v5_size) return result;
-        const auto type = static_cast<PacketType>(wire[0] & 0x0f);
+        const auto type = static_cast<PacketType>(wire[0] & 0x1f);
         if (not server_ and not flight_.empty() and
             now - flight_started_ >= pending_lifetime and
             (type == PacketType::response or type == PacketType::confirm_ack)) return result;
@@ -431,7 +438,13 @@ public:
         // to CONFIRM/ACK and is never inserted into the DATA replay window.
         if (matched == pending_.get()) return result;
         // Metadata belongs only to the current session, never the rekey grace period.
-        if ((type == PacketType::info || type == PacketType::control || type == PacketType::control_challenge) && matched != active_.get()) return result;
+        if ((type == PacketType::info || type == PacketType::control ||
+             type == PacketType::control_challenge ||
+             type == PacketType::auth_challenge || type == PacketType::auth_response ||
+             type == PacketType::auth_ok || type == PacketType::auth_failed ||
+             type == PacketType::relocate || type == PacketType::config ||
+             type == PacketType::relocate_bind || type == PacketType::relocate_ok) &&
+            matched != active_.get()) return result;
         if (not matched->replay.accept(packet.sequence & counter_mask)) {
             result.replay_drop = true;
             return result;

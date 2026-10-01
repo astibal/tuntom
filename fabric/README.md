@@ -913,3 +913,27 @@ Services → Binary bundles stores immutable pairs of `tuntom` and `tuntomctl` i
 Initially only Ubuntu 26.04 / x86-64 is supported, matching endpoint discovery. The ELF architecture is checked; platform compatibility remains declared, not proof that all runtime libraries or CPU requirements are satisfied. Bundles have SHA-256 digests for both executables, downloadable tar.gz files and manifests. Selecting a bundle in the tunnel form checks the discovered target platform at creation and again before deployment; both binaries are transferred in the deployment archive and verified before installation. Existing-switch sides continue using the collector's installed binaries. Manual “binaries already on host” mode requires both files in the deployment's `incoming/` directory and verifies the supplied `tuntom` SHA-256.
 
 Completed, undeployed connections can be deleted from the deployment list by an administrator. Active, failed, or incompletely removed connections cannot be deleted. Deletion removes the saved runbooks and frees the name, but preserves the separate audit journal. Binary bundles remain reusable after a connection is removed.
+
+### AUTH access observations
+
+Fabric detects AUTH listeners and clients from explicitly public command options,
+and `access-worker` children from process arguments. Local children group with an
+observed AUTH listener using the actual parent PID, process start order, UID,
+executable evidence and namespaces. Their names or tunnel IDs do not establish
+ownership. The `/proc/self/exe access-worker` launch form is supported even when
+process hardening hides the resolved executable path.
+
+The optional `access_telemetry_version=1` stats extend both local and routed
+observations with AUTH, application gate, relocation, worker capacity and the last
+local CONFIG helper result. Topology and component cards display access badges;
+the detail separates transport readiness from application permission. Missing
+stats remain unknown. Listener authentication denials are not service faults;
+worker saturation and client configuration failures feed existing health events.
+Diagnostics retains the ungrouped process view.
+
+This is an observation layer, not gatekeeper policy management. Workers currently
+started without a control socket have process identity and ownership only: no
+invented principal, assigned addresses, traffic measurements or access result.
+CONFIG sent by a server never means the client applied it. A successful client
+helper result does not independently verify the host OS configuration. Credentials,
+challenge responses, relocation tokens and binders are not exported.

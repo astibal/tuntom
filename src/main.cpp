@@ -8,6 +8,23 @@ int main(int argc, char** argv) {
     tuntom::logger.ignore_sigpipe();
     using namespace tuntom;
     try {
+        if (argc == 2 && std::string(argv[1]) == "access-worker") {
+            std::array<std::uint8_t, 65536> wire{};
+            const auto n = ::recv(child::bootstrap_fd, wire.data(), wire.size(), 0);
+            child::Bootstrap profile;
+            if (n <= 0 || !child::decode({wire.begin(), wire.begin() + n}, profile))
+                throw std::runtime_error("invalid access-worker bootstrap");
+            Options options;
+            options.switch_socket = profile.switch_socket;
+            options.switch_port_id = profile.port_id;
+            options.switch_stack = profile.ingress_stack;
+            Tunnel tunnel(profile.tunnel_id, true, "", "", options,
+                          child::udp_fd, &profile);
+            if (::send(child::bootstrap_fd, "READY", 5, MSG_NOSIGNAL) != 5)
+                throw std::runtime_error("access-worker readiness failed");
+            tunnel.run();
+            return 0;
+        }
         if (argc < 4) {
             usage(argv[0]);
             return 1;
@@ -25,6 +42,7 @@ int main(int argc, char** argv) {
                 argv,
                 4,
                 options);
+            if (!options.auth_username.empty() || !options.config_command.empty()) throw std::runtime_error("client AUTH/CONFIG options are invalid in server mode");
 
             StatsSignals stats_signals;
             Tunnel tunnel(
@@ -50,6 +68,7 @@ int main(int argc, char** argv) {
                 argv,
                 5,
                 options);
+            if (!options.auth_command.empty() || !options.auth_config.empty()) throw std::runtime_error("--auth-command/--auth-config are valid only in server mode");
 
             StatsSignals stats_signals;
             Tunnel tunnel(
@@ -67,6 +86,7 @@ int main(int argc, char** argv) {
         return 1;
     } catch (const std::exception& error) {
         log_fatal(error.what());
+        std::cerr << "FATAL: " << error.what() << '\n';
 
         return 1;
     }

@@ -1,5 +1,42 @@
 # Project TODO
 
+## Administrative VPN client (planned 2026-10-01)
+
+Build a small Linux client for direct administrative access to deployed tuntom
+infrastructure, avoiding dependence on an externally controlled VPN. Start with
+a robust CLI/daemon; add a thin Qt GUI after the privileged path is reliable.
+
+```text
+Qt GUI / CLI
+    | authenticated local IPC
+    v
+privileged client daemon
+    +-- tuntom AUTH + RELOCATE + CONFIG
+    +-- one Linux TUN and one active remote session
+    +-- routes, DNS and MTU with transactional rollback
+    +-- reconnect, network changes and suspend/resume
+    `-- status, bounded logs and watchdog
+```
+
+- Initial commands: `tuntom-vpn up PROFILE`, `status`, and `down PROFILE`.
+- Store profiles under `/etc/tuntom/client.d/`; do not store passwords directly
+  in profile files. Begin with interactive credentials, then integrate an OS
+  keyring. Keep transport keys in root-only provisioned files.
+- Preserve an underlay host route to the active VPN endpoint before applying
+  CONFIG, especially before installing a default route. Restore routes and DNS
+  after ordinary disconnect, helper failure, daemon crash and partial apply.
+- Test server restart, lost connectivity, address/network changes, DNS failure,
+  invalid credentials, expired sessions, suspend/resume and CONFIG rollback.
+- Keep the Qt process unprivileged. It controls and observes the daemon through
+  authenticated local IPC; it never owns the TUN or edits host networking.
+- Treat Windows/Wintun and Android `VpnService` as later ports. A true client
+  multiplexer (`one TUN -> multiple simultaneous remote tunnels`) needs a flow
+  stack and is outside the first administrative client.
+- During initial infrastructure deployments retain an independent emergency
+  access path until the client has passed field recovery tests.
+
+Status: TODO. First milestone is a field-usable Linux CLI client; Qt follows.
+
 ## Ingress source-IP pseudonymization (idea 2026-09-21)
 
 Explore optional classifier-controlled IPv4 L3 N:N NAT for forwarded traffic:

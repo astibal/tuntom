@@ -66,7 +66,11 @@ public:
     // Type-specific metadata follows the common type/flags + sequence prefix.
     static std::size_t metadata_size(PacketType type, bool fragment = false) {
         switch (type) {
-        case PacketType::hello: case PacketType::keepalive: case PacketType::info: case PacketType::control: case PacketType::control_challenge: return 9;
+        case PacketType::hello: case PacketType::keepalive: case PacketType::info: case PacketType::control: case PacketType::control_challenge:
+        case PacketType::auth_challenge: case PacketType::auth_response:
+        case PacketType::auth_ok: case PacketType::auth_failed:
+        case PacketType::relocate: case PacketType::config:
+        case PacketType::relocate_bind: case PacketType::relocate_ok: return 9;
         case PacketType::data: return fragment ? 21 : 9;
         case PacketType::ipc: return fragment ? 25 : 9;
         case PacketType::ping: case PacketType::pong:
@@ -137,8 +141,9 @@ public:
     bool decode_with_scratch(const std::uint8_t* data, std::size_t size,
                              Packet& packet, std::vector<std::uint8_t>& mac_input) const {
         if (size < protocol_header_v5_size) return false;
-        if (bool(data[0] & 0x80) != encrypt_ or (data[0] & 0x30)) return false;
-        const auto type = static_cast<PacketType>(data[0] & 0x0f);
+        // Bit 4 selects the V5 extension type namespace; bit 5 stays reserved.
+        if (bool(data[0] & 0x80) != encrypt_ or (data[0] & 0x20)) return false;
+        const auto type = static_cast<PacketType>(data[0] & 0x1f);
         const bool fragment = (data[0] & 0x40) != 0;
         if (fragment and type != PacketType::data and type != PacketType::ipc) return false;
         const auto meta = metadata_size(type, fragment);
@@ -198,6 +203,13 @@ public:
         } else if (type == PacketType::info) {
             info::Fields fields;
             if (!info::decode(packet.payload, fields)) return false;
+        } else if (type == PacketType::auth_challenge || type == PacketType::auth_response ||
+                   type == PacketType::auth_ok || type == PacketType::auth_failed ||
+                   type == PacketType::relocate || type == PacketType::config ||
+                   type == PacketType::relocate_bind || type == PacketType::relocate_ok) {
+            // Detailed, bounded extension decoding is performed by the owner
+            // of the authenticated active session.
+            if (packet.payload.empty()) return false;
         } else if (type == PacketType::confirm or type == PacketType::confirm_ack) {
             if (packet.message_id == 0 or packet.fragment_offset != 0 or
                 packet.original_length != 0 or not packet.payload.empty() or

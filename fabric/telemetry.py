@@ -42,6 +42,20 @@ def is_error(key):
                 or key in {"route_misses", "target_disconnected", "malformed_frames", "pool_stalls", "rtt_lost"})
 
 
+def access_detail(endpoint, sample):
+    metrics = sample.get("metrics", {}) if sample.get("status") == "reachable" else {}
+    role = metrics.get("access_role", getattr(endpoint, "access_role", ""))
+    if role not in {"listener", "worker", "client"}: return None
+    return {"role": role, "reported": metrics.get("access_telemetry_version") == "1",
+            "auth": metrics.get("access_auth_state", "unknown"),
+            "data_allowed": {"0": False, "1": True}.get(metrics.get("access_data_allowed")),
+            "relocation": metrics.get("access_relocation_state", "unknown"),
+            "config": metrics.get("access_config_state", "unknown"),
+            "config_id": metrics.get("access_config_id"),
+            "children": metrics.get("access_children"), "limit": metrics.get("access_children_limit"),
+            "parent_id": getattr(endpoint, "access_parent_id", "")}
+
+
 def health(endpoint, sample):
     metrics, delta = sample.get("metrics", {}), sample.get("changes", {})
     checks = [{"key": "process", "state": "warn" if endpoint.state in {"T", "t", "D"} else "ok",
@@ -79,6 +93,19 @@ def health(endpoint, sample):
         checks.append({"key": "errors", "state": "warn" if faults else "ok" if delta.get("ready") else "unknown",
                        "code": "errors_growing" if faults else "errors_clear" if delta.get("ready") else "delta_waiting",
                        "counters": faults})
+    access = access_detail(endpoint, sample)
+    if access:
+        auth = access["auth"]
+        check_state = "warn" if auth == "rejected" or access["config"] == "failed" else "unknown" if access["data_allowed"] is None or not access["data_allowed"] else "ok"
+        code = "access_rejected" if auth == "rejected" else "access_config_failed" if access["config"] == "failed" else "access_active" if access["data_allowed"] else "access_handoff" if access["relocation"] == "handed_off" else "access_pending" if access["data_allowed"] is False else "access_unknown"
+        # An idle listener is a service, not a disconnected user session.
+        if access["role"] == "listener":
+            checks = [check for check in checks if check["key"] != "session"]
+            check_state, code = "ok", "access_listening"
+            if access["children"] and access["limit"] and access["children"].isdigit() and access["limit"].isdigit() and int(access["limit"]) > 0 and int(access["children"]) >= int(access["limit"]):
+                check_state, code = "warn", "access_capacity"
+            elif not access["reported"]: check_state, code = "unknown", "access_unknown"
+        checks.append({"key": "access", "state": check_state, "code": code})
     level = "warn" if any(c["state"] == "warn" for c in checks) else (
         "unknown" if any(c["state"] == "unknown" for c in checks) else "ok")
     return {"level": level, "checks": checks}
