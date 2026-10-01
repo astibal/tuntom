@@ -59,6 +59,7 @@ public:
         : tunnel_id_(tunnel_id),
           server_mode_(server_mode),
           options_(options),
+          access_worker_(bootstrap != nullptr),
           classifier_(PacketClassifier::from_file(options.classifier_file)),
           master_key_(parse_master_key()),
           protocol_v5_(tunnel_id, master_key_, server_mode, options.logical_limit(), options.encrypt_ascon, options.init_window, options.pfs) {
@@ -90,7 +91,7 @@ public:
         if (!options_.relay_mode() && (options_.switch_socket.empty() or options_.switch_exit_node)) {
             tun_ = std::make_unique<TunDevice>(interface_name, options_.tun_mtu);
         }
-        if (not options_.switch_socket.empty()) {
+        if (not options_.switch_socket.empty() && !access_worker_) {
             switch_ = std::make_unique<SwitchClient>(
                 options_.switch_socket, options_.switch_port_id, options_.switch_ipc);
         }
@@ -223,6 +224,7 @@ public:
                 if (relay_) { relay_->descriptors(descriptors); timeout = relay_->poll_timeout(timeout_at, std::min(timeout, 100)); }
                 if (remote_control_.active() || routed_control_.active()) timeout = std::min(timeout, 10);
                 if (auth_job_) timeout = std::min(timeout, 10);
+                if (active_relocation_pid_ > 0) timeout = std::min(timeout, 50);
                 timeout = udp_tx_queue_.poll_timeout(timeout_at, timeout);
                 const auto poll_started = AdaptivePolling::Clock::now();
                 const int rc = ::poll(descriptors.data(), descriptors.size(), timeout);
@@ -285,6 +287,11 @@ public:
                 }
 
                 const auto now = std::chrono::steady_clock::now();
+                reap_children();
+                if (access_worker_ && now - last_access_activity_ >= access_worker_idle_timeout_) {
+                    log_info("Access worker idle for 60 seconds; exiting");
+                    return;
+                }
                 try_switch_reconnect(now, false, descriptors[2].revents);
                 throughput_.update(now, {
                     {stats_.tun_rx_packets, stats_.tun_rx_bytes},
@@ -572,7 +579,8 @@ private:
         next_rtt_probe_ = std::chrono::steady_clock::now() +
             std::chrono::seconds(rtt_probe_interval_seconds);
         rtt_probe_schedule_active_ = true;
-        if (options_.pmtud_auto) restart_pmtud("session confirmed");
+        if (options_.pmtud_auto && (!relocation_ticket_ || relocation_bound_))
+            restart_pmtud("session confirmed");
         if (server_mode_ && auth_->state() == v5ext::AuthState::State::need_challenge)
             begin_session_auth();
     }
@@ -584,8 +592,14 @@ private:
     }
     void reap_children() {
         for(auto i=children_.begin();i!=children_.end();) {
+            std::array<char,5> event{};
+            const auto n=::recv(i->control,event.data(),event.size(),MSG_DONTWAIT);
+            if(n==5&&!std::memcmp(event.data(),"BOUND",5)&&i->pid==active_relocation_pid_){
+                acknowledge(PacketType::auth_ok);acknowledge(PacketType::relocate);
+                active_relocation_pid_=-1;
+            }
             int status=0;const auto result=::waitpid(i->pid,&status,WNOHANG);
-            if(result==i->pid){if(i->control>=0)::close(i->control);i=children_.erase(i);}
+            if(result==i->pid){if(i->pid==active_relocation_pid_)active_relocation_pid_=-1;if(i->control>=0)::close(i->control);i=children_.erase(i);}
             else ++i;
         }
     }
@@ -647,6 +661,14 @@ private:
             !pending_relocate_ && !relocating_original_;
     }
 
+    void send_access_config(const v5ext::Bytes& payload) {
+        v5ext::Config value;
+        if (!v5ext::decode(payload, value)) return;
+        send_extension(PacketType::config, payload);
+        access_config_id_ = value.id;
+        access_config_state_ = "sent"; // No acknowledgement exists on the wire.
+    }
+
     void handle_session_extension(const Packet& packet,const sockaddr_storage& source,socklen_t source_length) {
         using namespace v5ext;
         if(packet.type==PacketType::auth_challenge&&!server_mode_) {
@@ -667,9 +689,10 @@ private:
             request.peer=numeric_peer(source,source_length);request.challenge=auth_challenge_.challenge;request.response=response.response;
             const auto input=auth_helper::encode(request);
             const auto path=options_.auth_command;
+            const auto config=options_.auth_config;
             const auto timeout=options_.auth_timeout_seconds;
-            auto future=std::async(std::launch::async,[path,input,timeout]{
-                AuthJobResult out;const auto command=auth_helper::run(path,input,std::chrono::seconds(timeout));
+            auto future=std::async(std::launch::async,[path,config,input,timeout]{
+                AuthJobResult out;const auto command=auth_helper::run(path,input,std::chrono::seconds(timeout),"verify",config);
                 out.valid=command.completed&&WIFEXITED(command.status)&&WEXITSTATUS(command.status)==0&&auth_helper::decode(command.output,out.result);return out;
             });
             auth_job_=std::make_unique<AuthJob>(AuthJob{response,numeric_host(source,source_length),std::move(future)});
@@ -698,18 +721,34 @@ private:
             const auto now=static_cast<std::uint64_t>(std::max<std::int64_t>(0,SessionProtocol::wall_seconds()));
             if(!relocation_ticket_->consume(now,udp_.local_port(),value.token,value.binder,
                                              numeric_host(source,source_length)))return;
+            // An unauthenticated or abandoned relocation must not reserve a
+            // switch port. The worker joins the switch only after the one-use
+            // binder has been consumed successfully.
+            switch_ = std::make_unique<SwitchClient>(
+                options_.switch_socket, options_.switch_port_id, options_.switch_ipc);
+            try_switch_reconnect(std::chrono::steady_clock::now(), true);
             relocation_bound_=true;accepted_relocate_bind_=std::make_unique<RelocateBind>(value);
-            send_reliable(PacketType::relocate_ok,encode(RelocateOk{value.token}));
-            if(!relocation_config_.empty())send_extension(PacketType::config,relocation_config_);
+            // A lost reply is recovered when the client's reliable
+            // RELOCATE_BIND is received again.
+            send_extension(PacketType::relocate_ok,encode(RelocateOk{value.token}));
+            if(!relocation_config_.empty())send_access_config(relocation_config_);
+            // The client only accepts ordinary traffic after RELOCATE_OK.
+            // Queue it before the first path probe so a valid full-size probe
+            // is not mistaken for loss during the handoff.
+            if(options_.pmtud_auto)restart_pmtud("relocation bound");
+            if(!child::notify_bound())log_info("Unable to notify AUTH listener that relocation is bound");
             return;
         }
         if(packet.type==PacketType::relocate_ok){RelocateOk value;if(!server_mode_&&pending_relocate_&&decode(packet.payload,value)&&value.token==pending_relocate_->token){pending_relocate_.reset();acknowledge(PacketType::relocate_bind);}return;}
         if(packet.type==PacketType::config){
-            Config value;if(!decode(packet.payload,value)||server_mode_||options_.config_command.empty())return;
+            Config value;if(!decode(packet.payload,value)||server_mode_)return;
+            access_config_id_ = value.id;
+            if(options_.config_command.empty()){access_config_state_="not_applied";return;}
             // CONFIG is deliberately unacknowledged. Failure is local and the
             // helper owns transactional OS apply/rollback semantics.
             const auto applied=auth_helper::run(options_.config_command,packet.payload,
                 std::chrono::seconds(options_.auth_timeout_seconds),"config");
+            access_config_state_ = applied.completed && WIFEXITED(applied.status) && WEXITSTATUS(applied.status)==0 ? "applied" : "failed";
             if(!applied.completed||!WIFEXITED(applied.status)||WEXITSTATUS(applied.status)!=0)
                 log_info("CONFIG helper failed for config_id=",value.id);
             return;
@@ -739,12 +778,20 @@ private:
                 relocate=std::make_unique<Relocate>();relocate->port=worker.port;relocate->lifetime_seconds=10;relocate->token=profile.token;
                 relocate->binder=relocation::bind(profile.secret,profile.auth_hash,profile.exchange,worker.port,profile.expiry,profile.token,profile.peer);
                 children_.push_back(worker);
+                active_relocation_pid_=worker.pid;
             } catch(const std::exception& error) { log_info("AUTH child preparation failed: ",error.what());allow=false; }
             auth_->verified(allow);
             if(!allow){AuthFailed failed{response.id,valid&&result.status==auth_helper::Status::temporary_failure?AuthFailure::temporary_failure:AuthFailure::rejected,0};send_reliable(PacketType::auth_failed,encode(failed));return;}
             options_.switch_stack=result.ingress_stack;send_reliable(PacketType::auth_ok,encode(AuthOk{response.id}));
-            if(relocate){send_reliable(PacketType::relocate,encode(*relocate));relocating_original_=true;}
-            else if(!result.config.empty()){Config config;if(decode(result.config,config))send_extension(PacketType::config,result.config);}
+            if(relocate){
+                send_reliable(PacketType::relocate,encode(*relocate));
+                relocating_original_=true;
+                // The authenticated client is handed to the worker. Pending
+                // probes on this listener describe the retired session and
+                // must never inflate active-tunnel RTT loss telemetry.
+                stop_rtt_tracking();
+            }
+            else if(!result.config.empty()){Config config;if(decode(result.config,config))send_access_config(result.config);}
     }
 
     void reserve_hot_path_buffers() {
@@ -989,6 +1036,7 @@ private:
                 else if (not result.control) ++stats_.drops_protocol;
                 return;
             }
+            if (access_worker_) last_access_activity_ = std::chrono::steady_clock::now();
             receive_session = result.session;
         }
 
@@ -1073,9 +1121,10 @@ private:
         }
 
         if (packet.type == PacketType::mtu_probe) {
-            if (options_.pmtud_auto) {
-                handle_mtu_probe(packet, size, source);
-            }
+            // Disabling local PMTUD must not make the peer's discovery fail.
+            // A fixed-MTU endpoint still authenticates and acknowledges probes;
+            // it merely does not initiate its own search.
+            handle_mtu_probe(packet, size, source);
             return;
         }
 
@@ -1467,6 +1516,11 @@ private:
                 ++it;
             }
         }
+    }
+
+    void stop_rtt_tracking() {
+        rtt_probe_schedule_active_ = false;
+        rtt_probes_.clear();
     }
 
     std::size_t pmtud_upper_bound() const {
@@ -1949,6 +2003,18 @@ private:
             << "switch_socket_other_errors=" << stats_.switch_socket_other_errors << "\n"
             << "switch_last_error_ts=" << stats_.switch_last_error_ts << "\n"
             << "switch_last_error_no=" << stats_.switch_last_error_no << "\n";
+        // Public access telemetry. Never export challenge material, tokens or binders.
+        const char* auth_states[] = {"open", "need_challenge", "pending", "verifying", "waiting_result", "authenticated", "rejected"};
+        output << "access_telemetry_version=1\n"
+               << "access_role=" << (access_worker_ ? "worker" : server_mode_ && !options_.auth_command.empty() ? "listener" : !options_.auth_response_command.empty() || auth_->challenged() ? "client" : "none") << "\n"
+               << "access_auth_state=" << auth_states[static_cast<unsigned>(auth_->state())] << "\n"
+               << "access_data_allowed=" << (traffic_allowed() ? 1 : 0) << "\n"
+               << "access_relocation_state=" << (pending_relocate_ ? "pending" : relocating_original_ ? "handed_off" : relocation_ticket_ ? (relocation_bound_ ? "bound" : "waiting_bind") : "none") << "\n"
+               << "access_config_state=" << access_config_state_ << "\n"
+               << "access_config_id=" << access_config_id_ << "\n"
+               << "access_children=" << children_.size() << "\n"
+               << "access_children_limit=" << options_.auth_max_children << "\n"
+               << "access_reliable_pending=" << reliable_.size() << "\n";
         udp_tx_queue_.stats(output);
         if (switch_) switch_->write_stats(output);
         if (relay_) relay_->write_stats(output);
@@ -1965,6 +2031,8 @@ private:
             << std::defaultfloat
             << "rtt_samples=" << stats_.rtt_samples << "\n"
             << "rtt_lost=" << stats_.rtt_lost << "\n"
+            << "rtt_probe_schedule_active=" << rtt_probe_schedule_active_ << "\n"
+            << "rtt_probes_pending=" << rtt_probes_.size() << "\n"
             << "pmtud=" << (options_.pmtud_auto ? "auto" : "off") << "\n"
             << "transport_mtu_configured=" << options_.transport_mtu << "\n"
             << "transport_mtu_active=" << active_transport_mtu_ << "\n"
@@ -2038,7 +2106,13 @@ private:
     std::unique_ptr<v5ext::RelocateBind> accepted_relocate_bind_;
     std::unique_ptr<v5ext::Relocate> pending_relocate_;
     bool relocating_original_=false;
+    std::string access_config_state_="unknown";
+    std::uint64_t access_config_id_=0;
+    bool access_worker_=false;
+    static constexpr auto access_worker_idle_timeout_=std::chrono::seconds(60);
+    std::chrono::steady_clock::time_point last_access_activity_=std::chrono::steady_clock::now();
     std::vector<child::Worker> children_;
+    pid_t active_relocation_pid_=-1;
     std::vector<ReliableExtension> reliable_;
     std::unique_ptr<AuthJob> auth_job_;
     std::unique_ptr<relay::Endpoint> relay_;

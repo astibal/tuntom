@@ -10,7 +10,7 @@ def wire(kind, payload=b"", seq=0, offset=0, original=0, version=5):
     if version != 5:
         return struct.pack("!IHBBQQII", 0x5554554E, 42, version, kind,
                            seq, 99, offset, original) + bytes(16) + payload
-    base_kind = kind & 15
+    base_kind = kind & 31
     extension = b""
     if base_kind in (3,12) and (offset or original != len(payload)):
         kind |= 0x40
@@ -120,6 +120,22 @@ with tempfile.TemporaryDirectory(prefix="tuntom-dissector-") as directory:
     v2_bad = [control_v2()[:51], control_v2(destination=b'\x03\x10short'),
               control_v2(destination=b'\x01\x01x'), control_v2(kind=6,state=1,command=b'')]
     records += [frame(wire(14,payload,hint|(150+i))) for i,payload in enumerate(v2_bad)]
+    access_start = len(records)
+    token, binder = bytes(range(32)), bytes(range(32,64))
+    challenge = struct.pack('!BBHQII',1,1,0,123,30,4)+b'salt'
+    response = struct.pack('!BBBBQI',1,1,5,0,123,6)+b'alice'+b'secret'
+    auth_ok = struct.pack('!BBBBQ',1,0,0,0,123)
+    auth_failed = struct.pack('!BBHQI',1,0,5,123,10)
+    relocate = struct.pack('!BBHIHH',1,4,41334,10,32,32)+token+binder+bytes([192,0,2,9])
+    config = struct.pack('!BBBBQHH',1,0,0,0,77,2,0)
+    config += struct.pack('!HHHH',1,1,4,0)+bytes([10,8,0,2])
+    config += struct.pack('!HHHH',10,0,2,0)+struct.pack('!H',1400)
+    relocate_bind = bytes([1,0,0,0])+token+binder
+    relocate_ok = bytes([1,0,0,0])+token
+    access_good = [challenge,response,auth_ok,auth_failed,relocate,config,relocate_bind,relocate_ok]
+    records += [frame(wire(16+i,payload,hint|(170+i))) for i,payload in enumerate(access_good)]
+    records += [frame(wire(0x90,challenge,hint|180)),  # encrypted AUTH is opaque
+                frame(wire(16,challenge[:-1],hint|181))]
     pcap = directory / "packets.pcap"
     pcap.write_bytes(struct.pack("<IHHIIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, 101) +
                      b"".join(struct.pack("<IIII", i, 0, len(p), len(p)) + p
@@ -132,7 +148,13 @@ with tempfile.TemporaryDirectory(prefix="tuntom-dissector-") as directory:
               "tuntom_test.info.entry", "tuntom_test.info.key", "tuntom_test.info.value",
               "tuntom_test.control.version", "tuntom_test.control.kind", "tuntom_test.control.state",
               "tuntom_test.control.request_id", "tuntom_test.control.offset", "tuntom_test.control.total",
-              "tuntom_test.control.command_length", "tuntom_test.control.command", "tuntom_test.control.data"]
+              "tuntom_test.control.command_length", "tuntom_test.control.command", "tuntom_test.control.data",
+              "tuntom_test.access.format", "tuntom_test.auth.method", "tuntom_test.auth.id",
+              "tuntom_test.auth.username", "tuntom_test.auth.failure", "tuntom_test.auth.retry_after",
+              "tuntom_test.relocate.family", "tuntom_test.relocate.port", "tuntom_test.relocate.lifetime",
+              "tuntom_test.relocate.token", "tuntom_test.relocate.binder", "tuntom_test.relocate.ipv4",
+              "tuntom_test.config.id", "tuntom_test.config.count", "tuntom_test.config.type",
+              "tuntom_test.config.required", "tuntom_test.config.length", "tuntom_test.config.value"]
     args = ["tshark", "-X", "lua_script:" + str(lua), "-r", str(pcap), "-T", "fields"]
     for field in fields:
         args.extend(["-e", field])
@@ -190,8 +212,23 @@ with tempfile.TemporaryDirectory(prefix="tuntom-dissector-") as directory:
         assert row[7] and not any(row[16:]), 'malformed CONTROL published fields: ' + repr(row)
     for row in rows[v2_start:v2_start+len(v2_good)]:
         assert not row[7] and row[16]=='2', row
-    for row in rows[v2_start+len(v2_good):]:
+    for row in rows[v2_start+len(v2_good):access_start]:
         assert row[7], row
+    access_rows = rows[access_start:]
+    for index,row in enumerate(access_rows[:8]):
+        assert row[1]==str(16+index) and row[25]=='1' and not row[7], row
+    assert access_rows[0][26:28]==['1','123'], access_rows[0]
+    assert access_rows[1][26:29]==['1','123','alice'], access_rows[1]
+    assert access_rows[2][27]=='123', access_rows[2]
+    assert access_rows[3][27]=='123' and access_rows[3][29:31]==['5','10'], access_rows[3]
+    assert access_rows[4][31:34]==['4','41334','10'], access_rows[4]
+    assert access_rows[4][34].replace(':','')==token.hex() and access_rows[4][36]=='192.0.2.9', access_rows[4]
+    assert access_rows[5][37:39]==['77','2'] and access_rows[5][39]=='1,10', access_rows[5]
+    assert access_rows[5][40]=='True,False' and access_rows[5][41]=='4,2', access_rows[5]
+    assert access_rows[6][34].replace(':','')==token.hex() and access_rows[6][35].replace(':','')==binder.hex(), access_rows[6]
+    assert access_rows[7][34].replace(':','')==token.hex(), access_rows[7]
+    assert not access_rows[8][25] and not access_rows[8][7], access_rows[8]
+    assert access_rows[9][7] and not access_rows[9][27], access_rows[9]
     raw_capture = directory / 'ipc.pcap'
     raw_capture.write_bytes(struct.pack('<IHHIIII',0xA1B2C3D4,2,4,0,0,70000,147) +
         b''.join(struct.pack('<IIII',i,0,len(p),len(p))+p for i,p in enumerate((ipc,data,snapshot,v2_good[0]),1)))
@@ -204,4 +241,4 @@ with tempfile.TemporaryDirectory(prefix="tuntom-dissector-") as directory:
     assert raw_rows[1][8] == '9' and raw_rows[2][12] == 'proxy-0', raw_rows
     assert raw_rows[3][16]=='2' and not raw_rows[3][7], raw_rows[3]
 
-print("PASS: Wireshark V5 handshakes, DATA/IPC reassembly, relay channels, VIA fields, ASCII INFO, CONTROL blocks/states and malformed messages")
+print("PASS: Wireshark V5 handshakes, access AUTH/RELOCATE/CONFIG, DATA/IPC reassembly, relay channels, VIA fields, ASCII INFO, CONTROL blocks/states and malformed messages")

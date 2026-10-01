@@ -84,6 +84,41 @@ principal, child switch port, trusted ingress stack and an optional encoded
 CONFIG. Secrets are never placed in argv or the environment. Timeout, abnormal
 exit, malformed output and oversized fields fail closed.
 
+`tuntom-gatekeeper` is the reference policy helper. Configure the listener with
+`--auth-command /path/to/tuntom-gatekeeper --auth-config /etc/tuntom/gatekeeper.conf`.
+It delegates the credential check to another executable, but takes all network
+authority from the administrator-owned configuration. The credential command
+receives the unchanged `TTA\1` request on stdin and returns zero to accept; its
+stdout is ignored, so it cannot select labels, addresses or routes.
+
+```ini
+auth-command=/usr/libexec/tuntom-auth-pam
+auth-timeout=10
+
+[users]
+label_prefix=1001,13
+
+[user alice]
+label=77
+port-id=vpn-alice
+address4=10.8.0.2/24
+dns4=10.8.0.1
+route4=0.0.0.0/0
+mtu=1400
+```
+
+Every user requires an explicit nonzero `label` and at least one `address4` or
+`address6`. The optional `[users] label_prefix` is an administrator-owned
+namespace shared by static and dynamic users. The per-user or dynamically
+allocated label is appended as its leaf, e.g. `[1001,13,77]`. Prefix plus leaf
+must fit the eight-label switch limit. This prevents a random dynamic leaf from
+colliding with labels elsewhere in the network. The resulting stack is the
+complete trusted ingress stack of the relocated switch port: this path has no
+packet classifier and no fallback/default label.
+Address and route values are encoded as network-order address bytes followed by
+one prefix byte; DNS is a raw address and MTU a network-order uint16. Route,
+exclude, DNS and search-domain keys may be repeated.
+
 A client configured with `--auth-username` and `--auth-response-command PATH`
 executes `[PATH, "respond"]`; stdin is the encoded AUTH_CHALLENGE and stdout is
 the opaque bounded response. `--config-command PATH` executes `[PATH, "config"]`
@@ -93,12 +128,32 @@ owns transactional address/route/DNS apply and cleanup, including preserving an
 underlay host route to the current tunnel endpoint.
 
 The server verifier runs outside the packet-processing loop. AUTH_CHALLENGE,
-AUTH_RESPONSE, AUTH_OK/AUTH_FAILED, RELOCATE, RELOCATE_BIND and RELOCATE_OK are
-retransmitted every 500 ms until their next state transition or `--auth-timeout`.
-Duplicate accepted RELOCATE_BIND packets only reproduce RELOCATE_OK; they never
-consume or activate a ticket twice. Relocated workers are reaped by the listener
-and bounded by `--auth-max-children` (default 256). A full worker set fails the
-new authentication closed without disturbing established children.
+AUTH_RESPONSE, AUTH_OK/AUTH_FAILED, RELOCATE and RELOCATE_BIND are retransmitted
+every 500 ms until their next state transition or `--auth-timeout`. RELOCATE_OK
+is the response to RELOCATE_BIND rather than an independent reliable stream: a
+lost response causes the client to repeat RELOCATE_BIND and the bound worker to
+repeat RELOCATE_OK. Duplicate accepted binds never consume or activate a ticket
+twice. Once the worker reports a successful bind, the listener stops the old
+session's AUTH_OK and RELOCATE retries. Relocated workers are reaped by the
+listener and bounded by `--auth-max-children` (default 256). A full worker set
+fails the new authentication closed without disturbing established children.
+
+### Public access telemetry
+
+`show stats` exports `access_telemetry_version=1`, `access_role` (`none`,
+`listener`, `client`, `worker`), `access_auth_state`, `access_data_allowed`,
+`access_relocation_state`, `access_children`, and `access_children_limit`.
+The data flag describes the application gate independently of `session_ready`.
+AUTH states are `open`, `need_challenge`, `pending`, `verifying`,
+`waiting_result`, `authenticated`, and `rejected`. Relocation is `none`,
+`pending`, `handed_off`, `waiting_bind`, or `bound`.
+
+`access_config_state` and `access_config_id` describe the last local CONFIG
+operation: `unknown`, `sent`, `not_applied` (no client helper), `applied`
+(helper exited successfully), or `failed`. `sent` never confirms client
+application; even `applied` is a helper result, not an independent OS audit.
+These fields contain no passwords, challenges, responses, relocation tokens
+or binders. Workers without a control socket remain process-only observations.
 
 Unfragmented DATA derives its length from the UDP payload; it carries no message
 ID or fragmentation fields. Internally its sequence supplies the nonzero ID for

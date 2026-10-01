@@ -39,6 +39,8 @@
 --   6 = MTU_PROBE
 --   7 = MTU_REPLY
 --   14 = CONTROL (V5; version/kind/state, request ID, offset/total, command, body block)
+--   16..23 = V5 access extension: AUTH_CHALLENGE, AUTH_RESPONSE, AUTH_OK,
+--             AUTH_FAILED, RELOCATE, CONFIG, RELOCATE_BIND, RELOCATE_OK
 --
 -- V3 PING/PONG use message_id as the probe_id. fragment_offset and
 -- original_length remain zero and there is no payload.
@@ -85,6 +87,14 @@ local packet_type_names = {
     [13] = "INFO",
     [14] = "CONTROL",
     [15] = "CONTROL_CHALLENGE",
+    [16] = "AUTH_CHALLENGE",
+    [17] = "AUTH_RESPONSE",
+    [18] = "AUTH_OK",
+    [19] = "AUTH_FAILED",
+    [20] = "RELOCATE",
+    [21] = "CONFIG",
+    [22] = "RELOCATE_BIND",
+    [23] = "RELOCATE_OK",
 }
 
 local f_magic = ProtoField.string(
@@ -214,6 +224,43 @@ local f_info_value = ProtoField.string("tuntom.info.value", "INFO Value")
 local e_info = ProtoExpert.new("tuntom.info.malformed", "Malformed INFO",
     expert.group.MALFORMED, expert.severity.ERROR)
 
+local auth_methods = {[1]="PASSWORD_CHALLENGE"}
+local auth_failures = {[1]="REJECTED",[2]="EXPIRED",[3]="UNSUPPORTED",
+    [4]="MALFORMED",[5]="TEMPORARY_FAILURE",[6]="SERVER_ERROR"}
+local config_types = {[1]="ADDRESS4",[2]="ADDRESS6",[3]="ROUTE4",[4]="ROUTE6",
+    [5]="EXCLUDE4",[6]="EXCLUDE6",[7]="DNS4",[8]="DNS6",
+    [9]="SEARCH_DOMAIN",[10]="MTU"}
+local f_access_format = ProtoField.uint8("tuntom.access.format", "Access Format", base.DEC)
+local f_auth_method = ProtoField.uint8("tuntom.auth.method", "AUTH Method", base.DEC, auth_methods)
+local f_auth_id = ProtoField.uint64("tuntom.auth.id", "AUTH Exchange ID", base.DEC)
+local f_auth_lifetime = ProtoField.uint32("tuntom.auth.lifetime", "AUTH Lifetime (seconds)", base.DEC)
+local f_auth_challenge_length = ProtoField.uint32("tuntom.auth.challenge_length", "Challenge Length", base.DEC)
+local f_auth_challenge = ProtoField.bytes("tuntom.auth.challenge", "Challenge")
+local f_auth_username_length = ProtoField.uint8("tuntom.auth.username_length", "Username Length", base.DEC)
+local f_auth_username = ProtoField.string("tuntom.auth.username", "Username")
+local f_auth_response_length = ProtoField.uint32("tuntom.auth.response_length", "Response Length", base.DEC)
+local f_auth_response = ProtoField.bytes("tuntom.auth.response", "Response")
+local f_auth_failure = ProtoField.uint16("tuntom.auth.failure", "AUTH Failure", base.DEC, auth_failures)
+local f_auth_retry_after = ProtoField.uint32("tuntom.auth.retry_after", "Retry After (seconds)", base.DEC)
+local f_relocate_family = ProtoField.uint8("tuntom.relocate.family", "Address Family", base.DEC, {[0]="SOURCE",[4]="IPv4",[6]="IPv6"})
+local f_relocate_port = ProtoField.uint16("tuntom.relocate.port", "UDP Port", base.DEC)
+local f_relocate_lifetime = ProtoField.uint32("tuntom.relocate.lifetime", "Ticket Lifetime (seconds)", base.DEC)
+local f_relocate_token_length = ProtoField.uint16("tuntom.relocate.token_length", "Token Length", base.DEC)
+local f_relocate_binder_length = ProtoField.uint16("tuntom.relocate.binder_length", "Binder Length", base.DEC)
+local f_relocate_token = ProtoField.bytes("tuntom.relocate.token", "One-use Token")
+local f_relocate_binder = ProtoField.bytes("tuntom.relocate.binder", "Binder")
+local f_relocate_ipv4 = ProtoField.ipv4("tuntom.relocate.ipv4", "Relocation Address")
+local f_relocate_ipv6 = ProtoField.ipv6("tuntom.relocate.ipv6", "Relocation Address")
+local f_config_id = ProtoField.uint64("tuntom.config.id", "CONFIG ID", base.DEC)
+local f_config_count = ProtoField.uint16("tuntom.config.count", "CONFIG Item Count", base.DEC)
+local f_config_item = ProtoField.bytes("tuntom.config.item", "CONFIG Item")
+local f_config_type = ProtoField.uint16("tuntom.config.type", "CONFIG Type", base.DEC, config_types)
+local f_config_required = ProtoField.bool("tuntom.config.required", "Required", 16, nil, 0x0001)
+local f_config_length = ProtoField.uint16("tuntom.config.length", "Value Length", base.DEC)
+local f_config_value = ProtoField.bytes("tuntom.config.value", "Value")
+local e_access = ProtoExpert.new("tuntom.access.malformed", "Malformed V5 access extension",
+    expert.group.MALFORMED, expert.severity.ERROR)
+
 -- CONTROL v1 envelope; this is separate from DATA fragmentation.
 local control_kinds = {[1]="PUT", [2]="STATUS", [3]="REPLY", [4]="FINISH", [5]="CONFIRMED", [6]="DISCOVER", [7]="FOUND", [8]="ALT_PATH", [9]="ROUTE_ERROR", [10]="CONTROL_CHALLENGE"}
 local control_states = {[1]="RECEIVING", [2]="READY", [3]="RUNNING", [4]="SUCCEEDED",
@@ -251,7 +298,7 @@ local f_dh_length = ProtoField.uint16("tuntom.dh_length", "DH Public Key Length"
 local f_dh = ProtoField.bytes("tuntom.dh", "DH Public Key")
 local e_handshake = ProtoExpert.new("tuntom.handshake_error", "Invalid/unsupported handshake",
     expert.group.MALFORMED, expert.severity.ERROR)
-tuntom.experts = {e_handshake, e_info, e_control}
+tuntom.experts = {e_handshake, e_info, e_control, e_access}
 
 tuntom.fields = {
     f_control_auth, f_control_n, f_control_authority, f_control_caps, f_control_level,
@@ -259,6 +306,14 @@ tuntom.fields = {
     f_control_version, f_control_kind, f_control_state, f_control_id,
     f_control_offset, f_control_total, f_control_command_length, f_control_command, f_control_data,
     f_info_entry, f_info_key, f_info_value,
+    f_access_format, f_auth_method, f_auth_id, f_auth_lifetime,
+    f_auth_challenge_length, f_auth_challenge, f_auth_username_length,
+    f_auth_username, f_auth_response_length, f_auth_response,
+    f_auth_failure, f_auth_retry_after, f_relocate_family, f_relocate_port,
+    f_relocate_lifetime, f_relocate_token_length, f_relocate_binder_length,
+    f_relocate_token, f_relocate_binder, f_relocate_ipv4, f_relocate_ipv6,
+    f_config_id, f_config_count, f_config_item, f_config_type,
+    f_config_required, f_config_length, f_config_value,
     f_session_hint, f_counter, f_init_timestamp, f_nonce, f_init_hash, f_suite, f_dh_length, f_dh,
     f_magic,
     f_tunnel_id,
@@ -1025,13 +1080,88 @@ dissect_control = function(buffer, header, pinfo, tree)
     if command_length > 0 then pinfo.cols.info:append(", " .. payload(start,command_length):string()) end
 end
 
+local function dissect_access(buffer, header, kind, pinfo, tree)
+    local length = buffer:len() - header
+    local payload = buffer(header):tvb()
+    local function bad(reason) tree:add_proto_expert_info(e_access, reason) end
+    local function zero(at, size) return payload(at,size):raw() == string.rep("\0",size) end
+    if length < 1 then bad("Missing access extension payload"); return end
+    tree:add(f_access_format,payload(0,1))
+    if payload(0,1):uint() ~= 1 then bad("Unsupported access extension format"); return end
+    if kind == 16 then
+        if length < 20 then bad("Truncated AUTH_CHALLENGE"); return end
+        local method, n = payload(1,1):uint(), payload(16,4):uint()
+        if not auth_methods[method] or not zero(2,2) or zero(4,8) or payload(12,4):uint()==0 or
+           n>4096 or length~=20+n then bad("Invalid AUTH_CHALLENGE metadata or length"); return end
+        tree:add(f_auth_method,payload(1,1)); tree:add(f_auth_id,payload(4,8))
+        tree:add(f_auth_lifetime,payload(12,4)); tree:add(f_auth_challenge_length,payload(16,4))
+        if n>0 then tree:add(f_auth_challenge,payload(20,n)) end
+        pinfo.cols.info:append(string.format(", id=%s, lifetime=%d",tostring(payload(4,8):uint64()),payload(12,4):uint()))
+    elseif kind == 17 then
+        if length < 16 then bad("Truncated AUTH_RESPONSE"); return end
+        local method, un, rn = payload(1,1):uint(), payload(2,1):uint(), payload(12,4):uint()
+        if not auth_methods[method] or payload(3,1):uint()~=0 or zero(4,8) or un==0 or rn>4096 or length~=16+un+rn then
+            bad("Invalid AUTH_RESPONSE metadata or length"); return
+        end
+        local username=payload(16,un):string()
+        if username:find("[^!-~]") then bad("Invalid AUTH_RESPONSE username"); return end
+        tree:add(f_auth_method,payload(1,1)); tree:add(f_auth_username_length,payload(2,1))
+        tree:add(f_auth_id,payload(4,8)); tree:add(f_auth_response_length,payload(12,4))
+        tree:add(f_auth_username,payload(16,un)); if rn>0 then tree:add(f_auth_response,payload(16+un,rn)) end
+        pinfo.cols.info:append(", user="..username..", id="..tostring(payload(4,8):uint64()))
+    elseif kind == 18 then
+        if length~=12 or not zero(1,3) or zero(4,8) then bad("Invalid AUTH_OK"); return end
+        tree:add(f_auth_id,payload(4,8)); pinfo.cols.info:append(", id="..tostring(payload(4,8):uint64()))
+    elseif kind == 19 then
+        if length~=16 or payload(1,1):uint()~=0 or zero(4,8) or not auth_failures[payload(2,2):uint()] then
+            bad("Invalid AUTH_FAILED"); return
+        end
+        tree:add(f_auth_failure,payload(2,2)); tree:add(f_auth_id,payload(4,8))
+        tree:add(f_auth_retry_after,payload(12,4))
+        pinfo.cols.info:append(", "..auth_failures[payload(2,2):uint()]..", id="..tostring(payload(4,8):uint64()))
+    elseif kind == 20 then
+        if length < 76 then bad("Truncated RELOCATE"); return end
+        local family, port, lifetime = payload(1,1):uint(), payload(2,2):uint(), payload(4,4):uint()
+        local address_length = family==0 and 0 or family==4 and 4 or family==6 and 16 or -1
+        if address_length<0 or port==0 or lifetime==0 or payload(8,2):uint()~=32 or
+           payload(10,2):uint()~=32 or length~=76+address_length then bad("Invalid RELOCATE metadata or length"); return end
+        tree:add(f_relocate_family,payload(1,1)); tree:add(f_relocate_port,payload(2,2))
+        tree:add(f_relocate_lifetime,payload(4,4)); tree:add(f_relocate_token_length,payload(8,2))
+        tree:add(f_relocate_binder_length,payload(10,2)); tree:add(f_relocate_token,payload(12,32))
+        tree:add(f_relocate_binder,payload(44,32))
+        if family==4 then tree:add(f_relocate_ipv4,payload(76,4)) elseif family==6 then tree:add(f_relocate_ipv6,payload(76,16)) end
+        pinfo.cols.info:append(string.format(", port=%d, lifetime=%d",port,lifetime))
+    elseif kind == 21 then
+        if length<16 or not zero(1,3) or zero(4,8) or not zero(14,2) then bad("Invalid CONFIG header"); return end
+        local count, at = payload(12,2):uint(), 16
+        tree:add(f_config_id,payload(4,8)); tree:add(f_config_count,payload(12,2))
+        for _=1,count do
+            if at+8>length then bad("Truncated CONFIG item header"); return end
+            local flags, n = payload(at+2,2):uint(), payload(at+4,2):uint()
+            if flags>1 or payload(at+6,2):uint()~=0 or at+8+n>length then bad("Invalid CONFIG item"); return end
+            local item=tree:add(f_config_item,payload(at,8+n))
+            item:add(f_config_type,payload(at,2)); item:add(f_config_required,payload(at+2,2))
+            item:add(f_config_length,payload(at+4,2)); if n>0 then item:add(f_config_value,payload(at+8,n)) end
+            at=at+8+n
+        end
+        if at~=length then bad("Trailing CONFIG bytes"); return end
+        pinfo.cols.info:append(string.format(", id=%s, items=%d",tostring(payload(4,8):uint64()),count))
+    elseif kind == 22 then
+        if length~=68 or not zero(1,3) then bad("Invalid RELOCATE_BIND"); return end
+        tree:add(f_relocate_token,payload(4,32)); tree:add(f_relocate_binder,payload(36,32))
+    elseif kind == 23 then
+        if length~=36 or not zero(1,3) then bad("Invalid RELOCATE_OK"); return end
+        tree:add(f_relocate_token,payload(4,32))
+    end
+end
+
 local function dissect_v5(buffer, pinfo, tree)
     if buffer:len() < 25 then return 0 end
     local flags = buffer(0, 1):uint()
-    local kind = flags % 16
+    local kind = flags % 32
     local encrypted = flags >= 128
     local fragment = math.floor(flags / 64) % 2 == 1
-    if math.floor(flags / 16) % 4 ~= 0 or not packet_type_names[kind] or
+    if math.floor(flags / 32) % 2 ~= 0 or not packet_type_names[kind] or
        (fragment and kind ~= 3 and kind ~= 12) then return 0 end
     local handshake = kind == 8 or kind == 9
     local meta = 9
@@ -1105,6 +1235,10 @@ local function dissect_v5(buffer, pinfo, tree)
     end
     if kind == 13 then
         dissect_info(buffer, header, subtree)
+        return buffer:len()
+    end
+    if kind >= 16 and kind <= 23 then
+        dissect_access(buffer, header, kind, pinfo, subtree)
         return buffer:len()
     end
     if length == 0 then return buffer:len() end

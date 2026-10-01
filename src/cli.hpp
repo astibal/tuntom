@@ -59,6 +59,7 @@ inline void usage(const char* program_name) {
         << "\n"
         << "  --init-window <s>     Total INIT time window, even 2..86400 (default 300 = +/-150s)\n"
         << "  --auth-command <path> Server-side external AUTH verifier\n"
+        << "  --auth-config <path>  Extra configuration argument for AUTH verifier\n"
         << "  --auth-username <name> Client identity for PASSWORD_CHALLENGE\n"
         << "  --auth-response-command <path> Client credential responder (secret on stdin/stdout)\n"
         << "  --auth-timeout <s>    AUTH helper/result timeout, 1..60 (default 10)\n"
@@ -112,9 +113,9 @@ inline void parse_options(
         const std::string option = argv[i];
 
         if(control_auth::option(options.control_auth,option,i,argc,argv))continue;
-        if (option == "--auth-command" || option == "--auth-username" || option == "--auth-response-command" || option == "--config-command") {
+        if (option == "--auth-command" || option == "--auth-config" || option == "--auth-username" || option == "--auth-response-command" || option == "--config-command") {
             if(++i>=argc||!argv[i][0])throw std::runtime_error(option+" requires a value");
-            auto& target=option=="--auth-command"?options.auth_command:option=="--auth-username"?options.auth_username:
+            auto& target=option=="--auth-command"?options.auth_command:option=="--auth-config"?options.auth_config:option=="--auth-username"?options.auth_username:
                 option=="--auth-response-command"?options.auth_response_command:options.config_command;
             if(!target.empty())throw std::runtime_error("duplicate "+option);
             target=argv[i];
@@ -306,6 +307,8 @@ inline void parse_options(
     control_auth::validate(options.control_auth);
     if(options.auth_username.empty()!=options.auth_response_command.empty())
         throw std::runtime_error("--auth-username and --auth-response-command require each other");
+    if(!options.auth_config.empty()&&options.auth_command.empty())
+        throw std::runtime_error("--auth-config requires --auth-command");
     (void)info::encode_access({}, options.info_fields);
 
 }

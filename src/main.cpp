@@ -68,7 +68,7 @@ int main(int argc, char** argv) {
                 argv,
                 5,
                 options);
-            if (!options.auth_command.empty()) throw std::runtime_error("--auth-command is valid only in server mode");
+            if (!options.auth_command.empty() || !options.auth_config.empty()) throw std::runtime_error("--auth-command/--auth-config are valid only in server mode");
 
             StatsSignals stats_signals;
             Tunnel tunnel(

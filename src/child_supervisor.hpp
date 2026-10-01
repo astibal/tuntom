@@ -21,6 +21,7 @@
 extern char **environ;
 namespace tuntom::child {
 inline constexpr int udp_fd=3,bootstrap_fd=4;
+inline bool notify_bound(){return ::send(bootstrap_fd,"BOUND",5,MSG_NOSIGNAL)==5;}
 struct Bootstrap {
     relocation::Secret secret{};relocation::Hash auth_hash{};std::uint16_t tunnel_id=0;std::uint64_t exchange=0,expiry=0;
     std::array<std::uint8_t,32> token{};std::string peer,port_id,switch_socket;

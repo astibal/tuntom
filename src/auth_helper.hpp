@@ -75,13 +75,14 @@ inline bool decode(const Bytes& b,Result& v){
 }
 
 struct CommandResult { bool completed=false;int status=-1;Bytes output; };
-inline CommandResult run(const std::string& path,const Bytes& input,std::chrono::milliseconds timeout,const char* operation="verify"){
+inline CommandResult run(const std::string& path,const Bytes& input,std::chrono::milliseconds timeout,const char* operation="verify",const std::string& argument={}){
     if(path.empty()||input.size()>max_frame)throw std::runtime_error("invalid auth helper invocation");
     int in[2]{-1,-1},out[2]{-1,-1};if(::pipe2(in,O_CLOEXEC)||::pipe2(out,O_CLOEXEC))throw std::runtime_error("auth helper pipe failed");
     posix_spawn_file_actions_t actions;posix_spawn_file_actions_init(&actions);
     posix_spawn_file_actions_adddup2(&actions,in[0],STDIN_FILENO);posix_spawn_file_actions_adddup2(&actions,out[1],STDOUT_FILENO);
     posix_spawn_file_actions_addclose(&actions,in[1]);posix_spawn_file_actions_addclose(&actions,out[0]);
-    char* argv[]{const_cast<char*>(path.c_str()),const_cast<char*>(operation),nullptr};pid_t pid=-1;
+    char* argv[]{const_cast<char*>(path.c_str()),const_cast<char*>(operation),
+        argument.empty()?nullptr:const_cast<char*>(argument.c_str()),nullptr};pid_t pid=-1;
     const int rc=::posix_spawn(&pid,path.c_str(),&actions,nullptr,argv,environ);posix_spawn_file_actions_destroy(&actions);::close(in[0]);::close(out[1]);
     if(rc){::close(in[1]);::close(out[0]);return {};}
     std::size_t sent=0;Bytes output;const auto deadline=std::chrono::steady_clock::now()+timeout;bool input_open=true,output_open=true;

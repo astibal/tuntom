@@ -95,6 +95,7 @@ struct Options {
     std::vector<std::uint64_t> switch_stack;
     bool switch_exit_node = false;
     std::string auth_command;
+    std::string auth_config;
     std::string auth_username;
     std::string auth_response_command;
     std::string config_command;

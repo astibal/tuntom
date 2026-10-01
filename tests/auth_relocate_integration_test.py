@@ -25,7 +25,8 @@ with tempfile.TemporaryDirectory(prefix="tuntom-auth-relocate.") as tmp:
         while time.monotonic()<deadline and not data.exists(): time.sleep(.02)
         if not data.exists(): raise AssertionError('switch did not start')
         tid=232
-        server=subprocess.Popen([tuntom,'server',str(tid),'-','--switch-socket',str(data),'--switch-port-id','listener','--switch-label','1','--auth-command',str(verifier),'--no-stats','--no-pmtud'],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE);processes.append(server)
+        server_log=open(root/'server.log','w+')
+        server=subprocess.Popen([tuntom,'server',str(tid),'-','--switch-socket',str(data),'--switch-port-id','listener','--switch-label','1','--auth-command',str(verifier),'--control-socket',str(root/'server.control'),'--no-stats','--no-pmtud'],env=env,stdout=subprocess.DEVNULL,stderr=server_log);processes.append(server)
         client_log=open(root/'client.log','w+')
         client=subprocess.Popen([tuntom,'client',str(tid),'-','127.0.0.1','--relay-listen',str(relay),'--auth-username','alice','--auth-response-command',str(responder),'--control-socket',str(root/'client.control'),'--no-stats','--no-pmtud'],env=env,stdout=client_log,stderr=client_log);processes.append(client)
         deadline=time.monotonic()+12;seen=False
@@ -38,7 +39,51 @@ with tempfile.TemporaryDirectory(prefix="tuntom-auth-relocate.") as tmp:
                 if client_log.read().count('V5 session confirmed')>=2: seen=True;break
             time.sleep(.05)
         if not seen: raise AssertionError('AUTH relocation child/session did not become active')
+        def access_stats(socket):
+            output=subprocess.run([ctl,str(socket),'show','stats'],capture_output=True,text=True,timeout=2,check=True).stdout
+            return dict(line.split('=',1) for line in output.splitlines() if '=' in line)
+        deadline=time.monotonic()+3
+        while True:
+            client_stats=access_stats(root/'client.control')
+            if client_stats.get('access_data_allowed')=='1': break
+            if time.monotonic()>=deadline: raise AssertionError('client traffic gate did not open')
+            time.sleep(.05)
+        deadline=time.monotonic()+3
+        while True:
+            server_stats=access_stats(root/'server.control')
+            if server_stats.get('access_reliable_pending')=='0': break
+            if time.monotonic()>=deadline: raise AssertionError('listener retained AUTH/RELOCATE retries after worker bind')
+            time.sleep(.05)
+        assert server_stats['access_role']=='listener'
+        assert server_stats['access_children']=='1'
+        assert server_stats['access_data_allowed']=='0'
+        assert server_stats['access_relocation_state']=='handed_off'
+        assert server_stats['access_reliable_pending']=='0'
+        assert server_stats['rtt_probe_schedule_active']=='0'
+        assert server_stats['rtt_probes_pending']=='0'
+        assert client_stats['access_role']=='client'
+        assert client_stats['access_auth_state']=='authenticated'
+        assert client_stats['access_telemetry_version']=='1'
+        deadline=time.monotonic()+3
+        while time.monotonic()<deadline:
+            server_log.flush()
+            if 'PMTUD complete: outer-mtu=1500' in (root/'server.log').read_text(): break
+            time.sleep(.05)
+        else:
+            server_log.flush()
+            raise AssertionError(
+                'relocated worker PMTUD failed against --no-pmtud client:\n' +
+                (root/'server.log').read_text())
+        sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'fabric'))
+        from discovery import discover
+        endpoints,_=discover()
+        observed_parent=next(e for e in endpoints if e.pid==server.pid)
+        assert observed_parent.access_role=='listener'
+        assert any(e.access_role=='worker' and e.access_parent_id==observed_parent.id for e in endpoints)
+        print('PASS: Fabric access stats and worker parent identity')
+        print('PASS: relocated worker PMTUD against fixed-MTU client')
         print('PASS: AUTH helper, child spawn, RELOCATE, binder and switch registration')
     finally:
         for p in reversed(processes): stop(p)
         if 'client_log' in locals(): client_log.close()
+        if 'server_log' in locals(): server_log.close()
