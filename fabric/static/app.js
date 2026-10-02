@@ -461,12 +461,315 @@ Object.assign(messages, {
   reason_divert_in_connected:["Vstupní spojení divertu je přerušené","Divert input connection is down","La connexion d’entrée divert est interrompue"],
   reason_divert_out_connected:["Výstupní spojení divertu je přerušené","Divert output connection is down","La connexion de sortie divert est interrompue"],
   warningHistory:["Poslední upozornění","Recent warnings","Alertes récentes"],
-  warningRetention:["Posledních 5 chybových vzorků · nejvýše 5 minut","Last 5 warning samples · up to 5 minutes","5 derniers relevés en alerte · pendant 5 minutes maximum"],
+  warningRetention:["Posledních 5 problémů · opakované výskyty sloučené · nejvýše 5 minut","Last 5 problems · repeated samples grouped · up to 5 minutes","5 derniers problèmes · relevés répétés regroupés · 5 minutes maximum"],
+  controlUnavailable:["Telemetrie není dostupná; oprávnění nelze ověřit.","Telemetry is unavailable; permissions cannot be verified.","Télémétrie indisponible ; les permissions ne peuvent pas être vérifiées."],
+  controlDisabled:["CONTROL je na tomto prvku vypnutý.","CONTROL is disabled on this component.","CONTROL est désactivé sur ce composant."],
+  controlDiscoveryDisabled:["DISCOVER je na tomto prvku vypnutý.","DISCOVER is disabled on this component.","DISCOVER est désactivé sur ce composant."],
+  controlCannotInitiate:["Prvek nemůže zahajovat CONTROL dotazy. Použij autoritu, například switch.","This component cannot initiate CONTROL requests. Use an authority, such as a switch.","Ce composant ne peut pas initier de requêtes CONTROL. Utilise une autorité, par exemple un switch."],
+  observationPolling:["Poslední úspěšný polling","Last successful poll","Dernier relevé réussi"],
+  observationDiscovery:["Poslední úspěšné discovery","Last successful discovery","Dernière découverte réussie"],
+  observationNever:["Zatím bez úspěšného vzorku","No successful sample yet","Aucun relevé réussi pour le moment"],
+  observationAge:["{seconds} s zpět","{seconds} s ago","il y a {seconds} s"],
+  observationNoResponse:["{count} cest bez odpovědi; příčinu nelze z odpovědi určit.","{count} paths without a reply; the response does not identify the cause.","{count} chemins sans réponse ; la réponse ne permet pas d’en déterminer la cause."],
+  warningResolved:["Vyřešeno","Resolved","Résolu"],
+  warningOccurrences:["{count} výskytů","{count} occurrences","{count} occurrences"],
+  warningFirst:["od","since","depuis"],
   recordedWarning:["Zachycené upozornění","Recorded warning","Alerte enregistrée"],
   secondsAgo:["Před {seconds} s","{seconds} s ago","Il y a {seconds} s"],
   clearWarnings:["Smazat vše","Clear all","Tout effacer"],
   dismissWarning:["Zavřít upozornění pro {name}","Dismiss warning for {name}","Fermer l’alerte pour {name}"],
   warningProcessGone:["Proces už není v přehledu","Process is no longer listed","Le processus n’est plus dans la liste"],
+});
+// Shared labels for services, deployment workflows and account management.
+Object.assign(messages, {
+  uiUnavailable:["Nedostupný","Unavailable","Indisponible"],
+  uiRunning:["Běží","Running","En cours"],
+  uiMode:["režim","mode","mode"],
+  uiNotConfigured:["Nenakonfigurováno","Not configured","Non configuré"],
+  uiAvailable:["Dostupná","Available","Disponible"],
+  uiUnavailable2:["Nedostupná","Unavailable","Indisponible"],
+  uiDays:["dní","days","jours"],
+  uiExpected:["očekáváno:","expected:","attendu :"],
+  uiADRequired:["vyžadováno AD","AD required","AD requis"],
+  uiSAMPLES:["VZORKŮ","SAMPLES","ÉCHANTILLONS"],
+  uiTotalLatencyHistory:["Historie celkové odezvy","Total latency history","Historique de latence totale"],
+  uiAVAILABLE:["DOSTUPNÉ","AVAILABLE","DISPONIBLES"],
+  uiTARGETS:["TARGETY","TARGETS","CIBLES"],
+  uiPROBLEM:["● PROBLÉM","● PROBLEM","● PROBLÈME"],
+  uiTOTAL:["CELKEM","TOTAL","TOTAL"],
+  uiCertificateAndDetails:["Certifikát a detail","Certificate and details","Certificat et détails"],
+  uiNoExternalTargetsMatchTheFilter:["Filtru neodpovídají žádné externals.","No external targets match the filter.","Aucune cible externe ne correspond au filtre."],
+  uiNoManagedServiceHasAPeekTarget:["Žádná Managed Service nemá Peek target.","No Managed Service has a Peek target.","Aucun service géré ne possède de cible Peek."],
+  uiOpenHistory:["Otevřít historii","Open history","Ouvrir l’historique"],
+  uiSamples:["vzorků","samples","échantillons"],
+  uiStatus:["Stav","Status","État"],
+  uiPeekIsMeasuringExternalTargets:["Peek měří externí targety…","Peek is measuring external targets…","Peek mesure les cibles externes…"],
+  uiLiveMeasurements:["Živé měření","Live measurements","Mesures en direct"],
+  uiHistoryIsStoredByPeek:["historii drží Peek","history is stored by Peek","l’historique est conservé par Peek"],
+  uiPoints:["bodů","points","points"],
+  uiTriangleMarksAnOutlierAboveTheVisible:["trojúhelník označuje outlier nad viditelnou osou · pásmo je min/max agregovaných vzorků","triangle marks an outlier above the visible axis · band shows min/max of aggregated samples","le triangle indique une valeur hors échelle · la bande indique le min/max des échantillons agrégés"],
+  uiNoDataInTheSelectedRange:["Ve zvoleném výřezu nejsou data.","No data in the selected range.","Aucune donnée dans la plage sélectionnée."],
+  uiLoadingHistory:["Načítám historii…","Loading history…","Chargement de l’historique…"],
+  uiHoverOverTheChartForAnExact:["Přejeď graf pro přesnou hodnotu.","Hover over the chart for an exact value.","Survole le graphique pour une valeur précise."],
+  uiPeekHasNoMeasurementsForThisRange:["Peek pro tento rozsah nemá měření.","Peek has no measurements for this range.","Peek n’a aucune mesure pour cette plage."],
+  uiInvalidDNSProtocol:["Neplatný DNS protokol.","Invalid DNS protocol.","Protocole DNS invalide."],
+  uiEnterAServerWithoutASchemeOr:["Zadej server bez schématu a cesty.","Enter a server without a scheme or path.","Saisis un serveur sans schéma ni chemin."],
+  uiPortMustBe165535:["Port musí být 1–65535.","Port must be 1–65535.","Le port doit être compris entre 1 et 65535."],
+  uiEnterADNSName:["Zadej DNS jméno.","Enter a DNS name.","Saisis un nom DNS."],
+  uiTheDoHPathMustStartWithAnd:["DoH cesta musí začínat / a být bez query parametrů.","The DoH path must start with / and contain no query parameters.","Le chemin DoH doit commencer par / et ne contenir aucun paramètre de requête."],
+  uiDNSTestAddedToTheDraftSave:["DNS test přidán do návrhu. Ulož službu pro aktivaci.","DNS test added to the draft. Save the service to activate it.","Test DNS ajouté au brouillon. Enregistre le service pour l’activer."],
+  uiPeekTargetURLAndOptionalInterval:["Peek target: URL a volitelný interval.","Peek target: URL and optional interval.","Cible Peek : URL et intervalle facultatif."],
+  uiPeekIntervalMustBeAnInteger:["Peek interval musí být celé číslo.","Peek interval must be an integer.","L’intervalle Peek doit être un entier."],
+  uiNoManagedServicesYet:["Zatím žádné Managed Services.","No Managed Services yet.","Aucun service géré pour le moment."],
+  uiUnknownLabelsRemainValidAndVisible:["Neznámé labely zůstávají platným a viditelným stavem.","Unknown labels remain valid and visible.","Les labels inconnus restent valides et visibles."],
+  uiMetadataDoNotDetermineNetworkState:["metadata nejsou autoritou síťového stavu","metadata do not determine network state","les métadonnées ne déterminent pas l’état du réseau"],
+  uiNewManagedService:["Nová Managed Service","New Managed Service","Nouveau service géré"],
+  uiEdit:["Upravit","Edit","Modifier"],
+  uiSaving:["Ukládám…","Saving…","Enregistrement…"],
+  uiWasSaved:["byla uložena.","was saved.","a été enregistré."],
+  uiDelete:["Smazat","Delete","Supprimer"],
+  uiTheActiveClassifierAndNetworkWillNot:["Aktivní classifier ani síť se nezmění.","The active classifier and network will not change.","Le classificateur actif et le réseau ne seront pas modifiés."],
+  uiWasDeletedNetworkStateWasNotChanged:["byla smazána. Síťový stav nebyl změněn.","was deleted. Network state was not changed.","a été supprimé. L’état du réseau n’a pas été modifié."],
+  uiAWAITINGHOSTKEYVERIFICATION:["ČEKÁ NA OVĚŘENÍ HOST KEY","AWAITING HOST KEY VERIFICATION","VÉRIFICATION DE CLÉ HÔTE REQUISE"],
+  uiDraftNotDeployed:["Návrh · nenasazeno","Draft · not deployed","Brouillon · non déployé"],
+  uiPreparing:["Probíhá příprava","Preparing","Préparation en cours"],
+  uiStarting:["Spouští se","Starting","Démarrage"],
+  uiDeployed:["Nasazeno","Deployed","Déployé"],
+  uiDeploymentFailedCheckState:["Deploy selhal · ověř stav","Deployment failed · check state","Échec du déploiement · vérifier l’état"],
+  uiRemovingDeployment:["Probíhá undeploy","Removing deployment","Retrait du déploiement"],
+  uiRemovalIncomplete:["Undeploy nedokončen","Removal incomplete","Retrait incomplet"],
+  uiRemovedKeysDeleted:["Odebráno · klíče smazány","Removed · keys deleted","Retiré · clés supprimées"],
+  uiConnectionsManagedByFabric:["Propojení spravovaná Fabricem","Connections managed by Fabric","Connexions gérées par Fabric"],
+  uiThisStopsTunnelsAtBothEndsAnd:["Na obou koncích zastaví tunely a odstraní jejich soubory i klíče. Sdílený switch a ostatní propojení zůstanou.","This stops tunnels at both ends and deletes their files and keys. The shared switch and other connections remain.","Les tunnels seront arrêtés aux deux extrémités et leurs fichiers et clés supprimés. Le switch partagé et les autres connexions seront conservés."],
+  uiRemoving:["Odebírám","Removing","Retrait de"],
+  uiRemovedKeysDeleted2:["odebráno, klíče smazány.","removed, keys deleted.","retiré, clés supprimées."],
+  uiVerifyTheSSHHostKeyOutsideFabric:["Ověř SSH host key mimo Fabric","Verify the SSH host key outside Fabric","Vérifie la clé hôte SSH en dehors de Fabric"],
+  uiConfirmAndRunDiscovery:["Potvrdit a spustit discovery","Confirm and run discovery","Confirmer et lancer la découverte"],
+  uiAnotherTunnel:["+ Další tunel","+ Another tunnel","+ Autre tunnel"],
+  uiNoControlledEndpointsYet:["Zatím žádné Controlled Endpoints.","No Controlled Endpoints yet.","Aucun endpoint contrôlé pour le moment."],
+  uiEndpointsDiscoverySnapshotsDoNotRefreshAutomatically:["endpointů · discovery snapshot se automaticky neobnovuje","endpoints · discovery snapshots do not refresh automatically","endpoints · les instantanés de découverte ne sont pas actualisés automatiquement"],
+  uiSelectASupportedControlledEndpointAndAn:["Vyber podporovaný Controlled Endpoint a existující switch, nebo dva Controlled Endpoints.","Select a supported Controlled Endpoint and an existing switch, or two Controlled Endpoints.","Sélectionne un endpoint contrôlé compatible et un switch existant, ou deux endpoints contrôlés."],
+  uiReadingSSHHostKey:["Načítám SSH host key…","Reading SSH host key…","Lecture de la clé hôte SSH…"],
+  uiHostKeyLoadedVerifyItsFingerprintBefore:["Host key byl načten. Před pokračováním ověř fingerprint.","Host key loaded. Verify its fingerprint before continuing.","Clé hôte chargée. Vérifie son empreinte avant de continuer."],
+  uiSelectAVerifiedFingerprint:["Vyber ověřený fingerprint.","Select a verified fingerprint.","Sélectionne une empreinte vérifiée."],
+  uiConnectingOverSSHAndRunningOneTime:["Připojuji se přes SSH a provádím jednorázové discovery…","Connecting over SSH and running one-time discovery…","Connexion SSH et découverte ponctuelle…"],
+  uiTheEndpointIsSupported:["Endpoint je podporovaný.","The endpoint is supported.","L’endpoint est compatible."],
+  uiDiscoveryCompleteNoSupportedTemplateIsAvailable:["Discovery dokončeno; pro tento systém nemáme podporovanou šablonu.","Discovery complete; no supported template is available for this system.","Découverte terminée ; aucun modèle compatible n’est disponible pour ce système."],
+  uiDeterminingLocalTransportIP:["Zjišťuji místní transportní IP…","Determining local transport IP…","Détermination de l’IP de transport locale…"],
+  uiCannotDetermineTransportIPEnterItManually:["Transportní IP nelze určit; vyplň ji ručně.","Cannot determine transport IP; enter it manually.","Impossible de déterminer l’IP de transport ; saisis-la manuellement."],
+  uiAppliesToTheSSHHostTheSwitch:["Platí pro host přes SSH. U switche se použije instalovaný software.","Applies to the SSH host. The switch uses its installed software.","S’applique à l’hôte SSH. Le switch utilise son logiciel installé."],
+  uiAppliesToBothSSHHosts:["Platí pro oba hosty přes SSH.","Applies to both SSH hosts.","S’applique aux deux hôtes SSH."],
+  uiFabricTransfersTheSelectedBundleToThe:["Vybraný balíček Fabric přenese na SSH hosty; platforma a SHA-256 obou binárek se ověří před spuštěním.","Fabric transfers the selected bundle to the SSH hosts; the platform and SHA-256 of both binaries are checked before launch.","Fabric transfère le paquet choisi aux hôtes SSH ; la plateforme et le SHA-256 des deux binaires sont vérifiés avant le lancement."],
+  uiTheSelectedGitRevisionIsBuiltOn:["Sestavení proběhne na cílovém hostu z vybrané Git revize.","The selected Git revision is built on the target host.","La révision Git sélectionnée est compilée sur l’hôte cible."],
+  uiPlaceTuntomAndTuntomctlInOptTuntom:["Binárky tuntom a tuntomctl musíš předem dodat do /opt/tuntom/deployments/<název>/incoming/ na každém SSH hostu. Fabric je nesestaví ani nestáhne; SHA-256 ověří soubor tuntom. Musí odpovídat systému a architektuře hostu.","Place tuntom and tuntomctl in /opt/tuntom/deployments/<name>/incoming/ on each SSH host beforehand. Fabric does not build or download them; SHA-256 verifies tuntom. They must match the host system and architecture.","Dépose tuntom et tuntomctl dans /opt/tuntom/deployments/<nom>/incoming/ sur chaque hôte SSH au préalable. Fabric ne les compile ni ne les télécharge ; SHA-256 vérifie tuntom. Ils doivent correspondre au système et à l’architecture de l’hôte."],
+  uiSwitchDestinationIPFromTheLocalRoute:["Cílová IP switche podle místní trasy k hostu; dostupnost z protistrany není ověřena.","Switch destination IP from the local route to the host; reachability from the peer is not verified.","IP cible du switch selon la route locale vers l’hôte ; l’accessibilité depuis le pair n’est pas vérifiée."],
+  uiEnterTheSwitchDestinationTransportIP:["Vyplň cílovou transportní IP switche.","Enter the switch destination transport IP.","Saisis l’IP de transport cible du switch."],
+  uiDestinationIPOfTheOtherHostDefaults:["Cílová IP druhého hostu; výchozí je jeho SSH adresa.","Destination IP of the other host; defaults to its SSH address.","IP cible de l’autre hôte ; son adresse SSH est utilisée par défaut."],
+  uiIsAlreadyInUseOnThisSwitch:["je na tomto switchi již obsazený.","is already in use on this switch.","est déjà utilisé sur ce switch."],
+  uiAutomatically:["automaticky","automatically","automatiquement"],
+  uiNotSpecified:["nezadané","not specified","non renseigné"],
+  uiAutomaticallyAssigned:["automaticky přiděleno","automatically assigned","attribué automatiquement"],
+  uiManuallySelected:["zvoleno ručně","manually selected","sélectionné manuellement"],
+  uiAllocationMethodNotRecorded:["způsob přidělení nezaznamenán","allocation method not recorded","méthode d’attribution non enregistrée"],
+  uiTarget:["Cíl","Target","Cible"],
+  uiDeleteRecord:["Smazat záznam","Delete record","Supprimer l’entrée"],
+  uiLastOperationStatus:["Stav poslední operace","Last operation status","État de la dernière opération"],
+  uiCheckLiveTrafficInTheTopology:["Živý provoz ověř v topologii.","Check live traffic in the topology.","Vérifie le trafic actuel dans la topologie."],
+  uiIndividualFiles:["Jednotlivé soubory","Individual files","Fichiers individuels"],
+  uiNoTunnelRunbooksYet:["Zatím žádné tunnel runbooky.","No tunnel runbooks yet.","Aucun guide de déploiement de tunnel pour le moment."],
+  uiGeneratingValidatedRunbook:["Generuji validovaný runbook…","Generating validated runbook…","Génération du guide de déploiement validé…"],
+  uiWasCreatedNothingWasSentToThe:["byl vytvořen; na endpointy se nic neposlalo.","was created; nothing was sent to the endpoints.","a été créé ; rien n’a été envoyé aux endpoints."],
+  uiDeleteTheRemovedConnectionRecord:["Smazat záznam odebraného spojení","Delete the removed connection record","Supprimer l’entrée de la connexion retirée"],
+  uiAuditHistoryWillBePreserved:["Auditní historie zůstane zachována.","Audit history will be preserved.","L’historique d’audit sera conservé."],
+  uiConnectionRecordDeleted:["Záznam spojení smazán.","Connection record deleted.","Entrée de connexion supprimée."],
+  uiTheSSHHostWillBePreparedUsing:["SSH host se připraví podle runbooku; u existujícího switche se použijí místní binárky bez apt/build.","The SSH host will be prepared using the runbook; the existing switch uses local binaries without apt/build.","L’hôte SSH sera préparé selon le guide ; le switch existant utilise les binaires locaux sans apt ni compilation."],
+  uiBothSSHEndpointsWillBePreparedUsing:["Oba SSH endpointy se připraví podle runbooku.","Both SSH endpoints will be prepared using the runbook.","Les deux endpoints SSH seront préparés selon le guide."],
+  uiScreenProcessesWillBeStarted:["Spustí se screen procesy.","Screen processes will be started.","Les processus screen seront démarrés."],
+  uiDeploying:["Deployuji","Deploying","Déploiement de"],
+  uiListenerFirstThenInitiator:["nejdřív listener, potom initiator…","listener first, then initiator…","le listener d’abord, puis l’initiateur…"],
+  uiIsRunning:["běží.","is running.","est en cours d’exécution."],
+  uiWorking:["Probíhá…","Working…","En cours…"],
+  uiBuildBundle:["Sestavit balíček","Build bundle","Compiler le paquet"],
+  uiUploadBundle:["Nahrát balíček","Upload bundle","Importer le paquet"],
+  uiSelectABundle:["Vyber balíček…","Select a bundle…","Sélectionne un paquet…"],
+  uiRevision:["Revize:","Revision:","Révision :"],
+  uiDeclaredPlatformELFArchitectureVerifiedLibrariesAnd:["Deklarovaná platforma; ELF architektura ověřena. Knihovny a CPU nejsou otestovány na každém cílovém hostu.","Declared platform; ELF architecture verified. Libraries and CPU are not tested on every target host.","Plateforme déclarée ; architecture ELF vérifiée. Les bibliothèques et le CPU ne sont pas testés sur chaque hôte cible."],
+  uiNoBundlesYetBuildOneFromGit:["Zatím žádné balíčky. Sestav nový z Gitu nebo nahraj hotové binárky.","No bundles yet. Build one from Git or upload existing binaries.","Aucun paquet pour le moment. Compile-en un depuis Git ou importe des binaires existants."],
+  uiSelectABinaryUpTo32MiB:["Vyber binárku do 32 MiB.","Select a binary up to 32 MiB.","Sélectionne un binaire de 32 Mio maximum."],
+  uiCannotReadTheFile:["Soubor nelze přečíst.","Cannot read the file.","Impossible de lire le fichier."],
+  uiBuildingOnTheSelectedSSHHost:["Sestavuji na vybraném SSH hostu…","Building on the selected SSH host…","Compilation sur l’hôte SSH sélectionné…"],
+  uiUploadingBinaries:["Nahrávám binárky…","Uploading binaries…","Importation des binaires…"],
+  uiBundle:["Balíček","Bundle","Paquet"],
+  uiSavedItIsAvailableWhenCreatingA:["uložen. Je dostupný při tvorbě tunelu.","saved. It is available when creating a tunnel.","enregistré. Il est disponible lors de la création d’un tunnel."],
+  uiEditAccount:["Upravit účet","Edit account","Modifier le compte"],
+  uiNewAccount:["Nový účet","New account","Nouveau compte"],
+  uiLeaveThePasswordEmptyToKeepIt:["Prázdné heslo zachová stávající. Změna účtu ukončí jeho stávající relace.","Leave the password empty to keep it. Updating the account ends its existing sessions.","Laisse le mot de passe vide pour le conserver. La modification du compte ferme ses sessions existantes."],
+  uiEnterAPasswordForTheNewAccount:["Zadej heslo pro nový účet. Do serveru se posílá pouze verifier.","Enter a password for the new account. Only a verifier is sent to the server.","Saisis un mot de passe pour le nouveau compte. Seul un vérificateur est envoyé au serveur."],
+  uiYourAccount:["Tvůj účet","Your account","Ton compte"],
+  uiCreatedBy:["Vytvořil","Created by","Créé par"],
+  uiFullAdministration:["Plná správa","Full administration","Administration complète"],
+  uiReadOnly:["Pouze prohlížení","Read-only","Lecture seule"],
+  uiActive:["● Aktivní","● Active","● Actif"],
+  uiInactive:["○ Neaktivní","○ Inactive","○ Inactif"],
+  uiNoLocalAccountsYetAddAnAccount:["Zatím žádné lokální účty. Přidej účet pro jmenný přístup a audit.","No local accounts yet. Add an account for named access and auditing.","Aucun compte local pour le moment. Ajoute un compte pour un accès nominatif et l’audit."],
+  uiTheAccountAlreadyExistsUseEdit:["Účet už existuje. Použij tlačítko Upravit.","The account already exists. Use Edit.","Le compte existe déjà. Utilise Modifier."],
+  uiSavingAccount:["Ukládám účet…","Saving account…","Enregistrement du compte…"],
+  uiAccount:["Účet","Account","Compte"],
+  uiWasSaved2:["byl uložen.","was saved.","a été enregistré."],
+  uiDeleteAccount:["Smazat účet","Delete account","Supprimer le compte"],
+  uiThisCannotBeUndoneYouCanDeactivate:["Tuto akci nelze vrátit. Účet můžeš místo toho deaktivovat přes Upravit.","This cannot be undone. You can deactivate the account using Edit instead.","Cette action est irréversible. Tu peux désactiver le compte via Modifier à la place."],
+  uiWasDeleted:["byl smazán.","was deleted.","a été supprimé."],
+  uiAdministrators:["Administrátoři","Administrators","Administrateurs"],
+  uiSignOut:["Odhlásit","Sign out","Se déconnecter"],
+  uiSignInWithALocalAccountThe:["Přihlas se lokálním účtem. Heslo se neposílá; prohlížeč a server ověří jednorázovou challenge.","Sign in with a local account. The password is not sent; the browser and server verify a one-time challenge.","Connecte-toi avec un compte local. Le mot de passe n’est pas envoyé ; le navigateur et le serveur vérifient un défi à usage unique."],
+  uiUsername:["Uživatel","Username","Utilisateur"],
+  uiPassword:["Heslo","Password","Mot de passe"],
+  uiSignIn:["Přihlásit","Sign in","Se connecter"],
+  uiExternalAndSystemSourcesOfPeriodicTelemetry:["Externí a systémové zdroje pravidelné telemetrie.","External and system sources of periodic telemetry.","Sources externes et système de télémétrie périodique."],
+  uiLivePeekInstancesTheirTargetsLeasesAnd:["Živé instance Peek, jejich targety, lease a stav historie.","Live Peek instances, their targets, leases and history status.","Instances Peek actives, leurs cibles, baux et état de l’historique."],
+  uiRefresh:["↻ Obnovit","↻ Refresh","↻ Actualiser"],
+  uiLoadingPeek:["Načítám Peek…","Loading Peek…","Chargement de Peek…"],
+  ui1stCascade:["1. kaskáda","1st cascade","1re cascade"],
+  ui2ndCascade:["2. kaskáda","2nd cascade","2e cascade"],
+  ui3rdCascade:["3. kaskáda","3rd cascade","3e cascade"],
+  ui4thCascade:["4. kaskáda","4th cascade","4e cascade"],
+  uiCompiledTunnelBinariesTuntomTuntomctlDownloadA:["Sestavené binárky pro tunely: tuntom + tuntomctl. Balíček můžeš stáhnout nebo vybrat při deployi na kompatibilní SSH host.","Compiled tunnel binaries: tuntom + tuntomctl. Download a bundle or select it when deploying to a compatible SSH host.","Binaires de tunnel compilés : tuntom + tuntomctl. Télécharge un paquet ou sélectionne-le pour un déploiement sur un hôte SSH compatible."],
+  uiSource:["Zdroj","Source","Source"],
+  uiBuildFromGitOnAnSSHHost:["Sestavit z Gitu na SSH hostu","Build from Git on an SSH host","Compiler depuis Git sur un hôte SSH"],
+  uiUploadExistingBinaries:["Nahrát hotové binárky","Upload existing binaries","Importer des binaires existants"],
+  uiBundleName:["Název balíčku","Bundle name","Nom du paquet"],
+  uiGitRevisionVersion:["Git revize / verze","Git revision / version","Révision Git / version"],
+  uiBuildHost:["Host pro sestavení","Build host","Hôte de compilation"],
+  uiRequiresWritesEnabledInFabricAndA:["Vyžaduje povolené zápisy ve Fabricu a podporovaný Controlled Endpoint. Host musí mít git, g++ a python3. Sestavení proběhne v dočasném adresáři bez instalace; může trvat několik minut. Použije se obecné x86-64, nikoli -march=native. Uloží se přesný Git commit.","Requires writes enabled in Fabric and a supported Controlled Endpoint. The host needs git, g++ and python3. The build runs in a temporary directory without installation and may take several minutes. It uses generic x86-64 rather than -march=native. The exact Git commit is recorded.","Nécessite les écritures activées dans Fabric et un endpoint contrôlé compatible. L’hôte doit disposer de git, g++ et python3. La compilation s’effectue dans un répertoire temporaire sans installation et peut prendre plusieurs minutes. Elle utilise x86-64 générique plutôt que -march=native. Le commit Git exact est enregistré."],
+  uiPlatformUbuntu2604LinuxX8664:["Platforma: Ubuntu 26.04 · Linux x86-64. Kompatibilitu knihoven a CPU potvrzuješ výběrem odpovídajících binárek.","Platform: Ubuntu 26.04 · Linux x86-64. Select binaries with compatible libraries and CPU requirements.","Plateforme : Ubuntu 26.04 · Linux x86-64. Sélectionne des binaires compatibles avec les bibliothèques et le CPU."],
+  uiELFX8664UpTo32MiB:["ELF x86-64 · nejvýše 32 MiB na soubor. Fabric soubory uloží a spočítá SHA-256; na observeru je nespouští.","ELF x86-64 · up to 32 MiB per file. Fabric stores the files and computes SHA-256; it does not execute them on the observer.","ELF x86-64 · 32 Mio maximum par fichier. Fabric stocke les fichiers et calcule SHA-256 ; il ne les exécute pas sur l’observateur."],
+  uiNewService:["Nová služba","New service","Nouveau service"],
+  uiDNSServiceTestDNSDoTDoH:["+ Test DNS služby (DNS / DoT / DoH)","+ DNS service test (DNS / DoT / DoH)","+ Test de service DNS (DNS / DoT / DoH)"],
+  uiProtocol:["Protokol","Protocol","Protocole"],
+  uiDoHPath:["DoH cesta","DoH path","Chemin DoH"],
+  uiQueryName:["Dotazované jméno","Query name","Nom demandé"],
+  uiType:["Typ","Type","Type"],
+  uiExpectedValueOptional:["Očekávaná hodnota (volitelně)","Expected value (optional)","Valeur attendue (facultatif)"],
+  uiIPv4ForAIPv6ForAAAA:["IPv4 pro A, IPv6 pro AAAA…","IPv4 for A, IPv6 for AAAA…","IPv4 pour A, IPv6 pour AAAA…"],
+  uiRequireResolverConfirmedDNSSECValidationAD:["Vyžadovat DNSSEC validaci potvrzenou resolverem (AD)","Require resolver-confirmed DNSSEC validation (AD)","Exiger la validation DNSSEC confirmée par le résolveur (AD)"],
+  uiTestsThisServerAndPortADIs:["Testuje se tento server a port. AD je tvrzení resolveru, nikoli nezávislá DNSSEC validace v Peeku. Očekávaná hodnota musí být alespoň v jedné odpovědi požadovaného typu.","Tests this server and port. AD is the resolver’s assertion, not independent DNSSEC validation by Peek. The expected value must appear in at least one answer of the requested type.","Teste ce serveur et ce port. AD est une affirmation du résolveur, pas une validation DNSSEC indépendante par Peek. La valeur attendue doit figurer dans au moins une réponse du type demandé."],
+  uiAddDNSTestToDraft:["Přidat DNS test do návrhu","Add DNS test to draft","Ajouter le test DNS au brouillon"],
+  uiLabelServiceURL:["Label, služba, URL…","Label, service, URL…","Label, service, URL…"],
+  uiFilterExternalTargets:["Filtrovat externals","Filter external targets","Filtrer les cibles externes"],
+  uiLabelOnly:["Jen label","Label only","Label uniquement"],
+  uiFilterByStatus:["Filtrovat podle stavu","Filter by status","Filtrer par état"],
+  uiAllStates:["Všechny stavy","All states","Tous les états"],
+  uiProblem:["Problém","Problem","Problème"],
+  uiLiveObservationsFromPeekAreNotStored:["Živá pozorování z Peek se neukládají.","Live observations from Peek are not stored here.","Les observations en direct de Peek ne sont pas stockées ici."],
+  uiMeasureNow:["↻ Změřit nyní","↻ Measure now","↻ Mesurer maintenant"],
+  uiNewEndpoint:["Nový endpoint","New endpoint","Nouvel endpoint"],
+  uiIPAddress:["IP adresa","IP address","Adresse IP"],
+  uiTheBackendReadsTheHostKeySSH:["Backend načte host key. SSH připojení a jednorázové discovery proběhnou až po potvrzení fingerprintu.","The backend reads the host key. SSH connection and one-time discovery run only after fingerprint confirmation.","Le backend lit la clé hôte. La connexion SSH et la découverte ponctuelle ne démarrent qu’après confirmation de l’empreinte."],
+  uiReadHostKey:["Načíst host key","Read host key","Lire la clé hôte"],
+  uiNEWCONNECTION:["NOVÉ PROPOJENÍ","NEW CONNECTION","NOUVELLE CONNEXION"],
+  uiConnectHost:["Připojit host","Connect host","Connecter un hôte"],
+  uiSelectBothTunnelEndpointsAndTheAddress:["Vyber oba konce tunelu a adresu, na které se mají spojit.","Select both tunnel endpoints and the address used to connect them.","Sélectionne les deux extrémités du tunnel et l’adresse utilisée pour les connecter."],
+  uiCloseTunnelDraft:["Zavřít návrh tunelu","Close tunnel draft","Fermer le brouillon du tunnel"],
+  uiConnectionName:["Název propojení","Connection name","Nom de la connexion"],
+  uiNumberOfParallelTunnels:["Počet paralelních tunelů","Number of parallel tunnels","Nombre de tunnels parallèles"],
+  ui1Host:["1 · Host","1 · Host","1 · Hôte"],
+  uiHostAttachment:["Připojení na hostu","Host attachment","Raccordement sur l’hôte"],
+  uiTUNNetworkInterface:["Síťové rozhraní TUN","TUN network interface","Interface réseau TUN"],
+  uiSwitchSocket:["Socket switche","Switch socket","Socket du switch"],
+  uiChooseANewPortName:["Zvol nové jméno portu","Choose a new port name","Choisis un nouveau nom de port"],
+  uiNewNameParallelPortsUseSuffixes1:["Nové jméno; paralelní porty mají přípony _1, _2…","New name; parallel ports use suffixes _1, _2…","Nouveau nom ; les ports parallèles portent les suffixes _1, _2…"],
+  uiIngressLabel:["Vstupní label","Ingress label","Label d’entrée"],
+  uiBasedOnTheIntendedRules:["Podle zamýšlených pravidel","Based on the intended rules","Selon les règles prévues"],
+  uiLabelForDataReceivedFromTheTunnel:["Label pro data přijatá z tunelu. Musí odpovídat pravidlům switche.","Label for data received from the tunnel. Must match the switch rules.","Label des données reçues du tunnel. Doit correspondre aux règles du switch."],
+  ui2Target:["2 · Cíl","2 · Target","2 · Cible"],
+  uiConnectTo:["Připojit k","Connect to","Connecter à"],
+  uiExistingSwitchOnTheCollector:["Existující switch u collectoru","Existing switch on the collector","Switch existant sur le collecteur"],
+  uiAnotherSSHHost:["Další host přes SSH","Another SSH host","Autre hôte SSH"],
+  uiTheSwitchIsAlreadyKnownFromThe:["Switch už známe z topologie.","The switch is already known from the topology.","Le switch est déjà connu dans la topologie."],
+  uiTargetAttachment:["Připojení na cíli","Target attachment","Raccordement sur la cible"],
+  ui3ConnectionSetup:["3 · Navázání spojení","3 · Connection setup","3 · Établissement de connexion"],
+  uiConnectionInitiator:["Kdo navazuje spojení","Connection initiator","Initiateur de la connexion"],
+  uiThePeerWaitsForTheIncomingConnection:["Protistrana čeká na příchozí spojení (listener).","The peer waits for the incoming connection (listener).","Le pair attend la connexion entrante (listener)."],
+  uiDetails:["Podrobnosti","Details","Détails"],
+  uiTransportIPTunnelIDSoftwareKey:["Transport IP · ID tunelu · software · klíč","Transport IP · tunnel ID · software · key","IP de transport · ID du tunnel · logiciel · clé"],
+  uiTransportIPForTheOutgoingConnection:["Transport IP pro navazující spojení","Transport IP for the outgoing connection","IP de transport pour la connexion sortante"],
+  uiEG1921688810:["např. 192.168.88.10","e.g. 192.168.88.10","p. ex. 192.168.88.10"],
+  uiEG1921688813:["např. 192.168.88.13","e.g. 192.168.88.13","p. ex. 192.168.88.13"],
+  uiListenerDestinationIPChangeItOnlyFor:["Cílová IP listeneru. Změň ji jen při jiné transportní adrese.","Listener destination IP. Change it only for a different transport address.","IP cible du listener. Modifie-la uniquement pour une autre adresse de transport."],
+  uiListenerDestinationIPDefaultsToTheHost:["Cílová IP listeneru. Výchozí je SSH adresa hostu.","Listener destination IP. Defaults to the host’s SSH address.","IP cible du listener. L’adresse SSH de l’hôte est utilisée par défaut."],
+  uiAssignAutomatically:["Přidělit automaticky","Assign automatically","Attribuer automatiquement"],
+  uiCustomID1255:["Vlastní ID (1–255)","Custom ID (1–255)","ID personnalisé (1–255)"],
+  uiCustomTunnelID:["Vlastní Tunnel ID","Custom tunnel ID","ID de tunnel personnalisé"],
+  uiSoftwareSource:["Zdroj softwaru","Software source","Source du logiciel"],
+  uiBuildFromGit:["Sestavit z Gitu","Build from Git","Compiler depuis Git"],
+  uiFromTheBinaryBundlesLibrary:["Z knihovny Binary bundles","From the Binary bundles library","Depuis la bibliothèque de paquets binaires"],
+  uiBinariesAlreadySuppliedOnTheHost:["Binárky předem dodané na host","Binaries already supplied on the host","Binaires déjà fournis sur l’hôte"],
+  uiAppliesToSSHHosts:["Platí pro SSH hosty.","Applies to SSH hosts.","S’applique aux hôtes SSH."],
+  uiGitRevision:["Git revize","Git revision","Révision Git"],
+  uiSHA256OfTheSuppliedBinary:["SHA-256 připravené binárky","SHA-256 of the supplied binary","SHA-256 du binaire fourni"],
+  uiPreSharedKeyPSK:["Sdílený klíč (PSK)","Pre-shared key (PSK)","Clé prépartagée (PSK)"],
+  uiGenerateNew:["Vygenerovat nový","Generate new","Générer une nouvelle clé"],
+  uiUseExisting:["Použít vlastní","Use existing","Utiliser une clé existante"],
+  uiPSK32HexCharacters:["PSK · 32 hex znaků","PSK · 32 hex characters","PSK · 32 caractères hexadécimaux"],
+  uiTheDraftSavesConfigurationAndScriptsFor:["Návrh uloží konfiguraci a skripty ke kontrole. Spuštění potvrdíš zvlášť tlačítkem Deploy.","The draft saves configuration and scripts for review. Confirm execution separately with Deploy.","Le brouillon enregistre la configuration et les scripts pour vérification. Confirme l’exécution séparément avec Déployer."],
+  uiCreateDraft:["Vytvořit návrh","Create draft","Créer le brouillon"],
+  uiDraftsAndDeployedTunnels:["Návrhy a nasazené tunely","Drafts and deployed tunnels","Brouillons et tunnels déployés"],
+  uiReviewTheScriptsThenDeployTheDraft:["Otevři skripty ke kontrole, potom návrh nasaď pomocí Deploy.","Review the scripts, then deploy the draft using Deploy.","Vérifie les scripts, puis déploie le brouillon avec Déployer."],
+  uiManageAccessToFabricAdminCanMake:["Správa přístupu do Fabric. Admin může provádět změny, admin-ro pouze prohlížet.","Manage access to Fabric. Admin can make changes; admin-ro is read-only.","Gère l’accès à Fabric. Admin peut effectuer des modifications ; admin-ro est en lecture seule."],
+  uiAddAccount:["+ Přidat účet","+ Add account","+ Ajouter un compte"],
+  uiPermissions:["Oprávnění","Permissions","Permissions"],
+  uiAdminRoReadOnly:["admin-ro — pouze prohlížení","admin-ro — read-only","admin-ro — lecture seule"],
+  uiAdminFullAdministration:["admin — plná správa","admin — full administration","admin — administration complète"],
+  uiAccountIsActive:["Účet je aktivní","Account is active","Le compte est actif"],
+  uiNewPasswordAtLeast12Characters:["Nové heslo (nejméně 12 znaků)","New password (at least 12 characters)","Nouveau mot de passe (au moins 12 caractères)"],
+  uiSaveAccount:["Uložit účet","Save account","Enregistrer le compte"],
+  uiCancel:["Zrušit","Cancel","Annuler"],
+  uiCloseDetails:["Zavřít detail","Close details","Fermer les détails"],
+  uiClose:["Zavřít","Close","Fermer"],
+  uiWheelTimeZoomDragPanTimeShift:["Kolečko: zoom času · tažení: posun času · Shift+kolečko/tažení: Y osa · kliknutí: připnout bod · dvojklik: reset","Wheel: time zoom · drag: pan time · Shift+wheel/drag: Y axis · click: pin point · double-click: reset","Molette : zoom temporel · glisser : décaler le temps · Maj+molette/glisser : axe Y · clic : fixer un point · double-clic : réinitialiser"],
+  uiWheelTimeZoomDragPanTimeShift2:["Kolečko: zoom času · tažení: posun času · Shift+kolečko/tažení: Y osa · dvojklik: reset","Wheel: time zoom · drag: pan time · Shift+wheel/drag: Y axis · double-click: reset","Molette : zoom temporel · glisser : décaler le temps · Maj+molette/glisser : axe Y · double-clic : réinitialiser"],
+  uiCloseChart:["Zavřít graf","Close chart","Fermer le graphique"],
+  uiMetric:["Metrika","Metric","Métrique"],
+  uiTimeRange:["Časový rozsah","Time range","Plage de temps"],
+  uiPeekMeasurementHistory:["Historie měření Peek","Peek measurement history","Historique des mesures Peek"],
+  uiCreateTunnel:["Create tunnel","Create tunnel","Créer un tunnel"],
+  uiCreateEndpoint:["Create endpoint","Create endpoint","Créer un endpoint"],
+  uiRefreshDiscovery:["Refresh discovery","Refresh discovery","Actualiser la découverte"],
+  uiRetryDeploy:["Retry deploy","Retry deploy","Réessayer le déploiement"],
+  uiDeploy:["Deploy","Deploy","Déployer"],
+  uiUndeploy:["Undeploy","Undeploy","Retirer le déploiement"],
+  uiSUPPORTED:["SUPPORTED","SUPPORTED","COMPATIBLE"],
+  uiUNSUPPORTED:["UNSUPPORTED","UNSUPPORTED","NON COMPATIBLE"],
+  uiDISCOVERYFAILED:["DISCOVERY FAILED","DISCOVERY FAILED","ÉCHEC DE LA DÉCOUVERTE"],
+  uiHost:["Host","Host","Hôte"],
+  uiCopy:["Copy","Copy","Copier"],
+  uiCopied:["Copied","Copied","Copié"],
+  uiResetZoom:["Reset zoom","Reset zoom","Réinitialiser le zoom"],
+  uiGroupServices:["Group Services","Group Services","Regrouper les services"],
+  uiJournalCategory:["Journal category","Journal category","Catégorie du journal"],
+  uiExternalTarget:["External target","External target","Cible externe"],
+  uiACTIVETARGETS:["ACTIVE TARGETS","ACTIVE TARGETS","CIBLES ACTIVES"],
+  uiLASTSAMPLE:["LAST SAMPLE","LAST SAMPLE","DERNIÈRE MESURE"],
+  uiUPTIME:["UPTIME","UPTIME","DURÉE DE FONCTIONNEMENT"],
+  uiOBSERVATIONS:["OBSERVATIONS","OBSERVATIONS","OBSERVATIONS"],
+  uiRETENTION:["RETENTION","RETENTION","RÉTENTION"],
+  uiLEASE:["LEASE","LEASE","BAIL"],
+  uiSYSTEMMETRICS:["SYSTEM METRICS","SYSTEM METRICS","MÉTRIQUES SYSTÈME"],
+  uiALLMANAGEDSERVICES:["ALL MANAGED SERVICES","ALL MANAGED SERVICES","TOUS LES SERVICES GÉRÉS"],
+  uiLATENCYHISTORY:["LATENCY HISTORY","LATENCY HISTORY","HISTORIQUE DE LATENCE"],
+  uiServiceName:["Service Name","Service Name","Nom du service"],
+  uiServiceLabel:["Service Label","Service Label","Label du service"],
+  uiTarget2:["Target","Target","Cible"],
+  uiTrust:["Trust","Trust","Confiance"],
+  uiDetail:["Detail","Detail","Détail"],
+  uiCERTEXPIRY:["CERT EXPIRY","CERT EXPIRY","EXPIRATION DU CERTIFICAT"],
+  uiHostUnknown:["Host unknown","Host unknown","Hôte inconnu"],
+  uiHOSTUNKNOWN:["HOST UNKNOWN","HOST UNKNOWN","HÔTE INCONNU"],
+  uiTotalRTT:["Total RTT","Total RTT","RTT total"],
+  uiConnect:["Connect","Connect","Connexion"],
+  uiTLSHandshake:["TLS handshake","TLS handshake","Négociation TLS"],
+  uiHTTPResponse:["HTTP response","HTTP response","Réponse HTTP"],
+  uiDNSResponse:["DNS response","DNS response","Réponse DNS"]
 });
 let language = "cs";
 try { const saved = localStorage.getItem("tuntom-fabric-language"); if (Object.hasOwn(languages,saved)) language=saved; } catch { /* Browser storage can be disabled. */ }
@@ -591,10 +894,32 @@ class WarningHistory {
     for (const sample of samples) {
       if (!sample.sampleId || this.seen.get(sample.endpointId) === sample.sampleId) continue;
       this.seen.set(sample.endpointId, sample.sampleId);
-      if (!sample.checks.length) continue;
-      this.items.unshift({...sample, id:String(++this.sequence), recordedAt:this.clock()});
+      const now=this.clock(), faults=[];
+      for(const check of sample.checks.filter(check=>check.state==='warn')) {
+        if(check.key==='errors') {
+          for(const [counter,value] of Object.entries(check.counters || {}))
+            faults.push({key:`errors:${counter}`,check:{...check,counters:{[counter]:value}}});
+        } else faults.push({key:check.key,check});
+      }
+      for(const item of this.items.filter(item=>item.endpointId===sample.endpointId && !item.resolved)) {
+        if(faults.some(fault=>fault.key===item.issueKey)) {item.healthySince=null;continue;}
+        const check=sample.checks.find(check=>check.key===item.checks[0].key);
+        // Missing/stale telemetry or a vanished process is not evidence of recovery.
+        if(now-(item.observedAt ?? item.recordedAt)>15000)item.healthySince=null;
+        item.observedAt=now;
+        const healthy=check?.state==='ok' || (check?.key==='errors' && check.state==='warn');
+        if(!healthy){item.healthySince=null;continue;}
+        item.healthySince ??= now;
+        if(now-item.healthySince>=30000){item.resolved=true;item.resolvedAt=sample.sampleId;}
+      }
+      for(const fault of faults) {
+        let item=this.items.find(item=>item.endpointId===sample.endpointId && item.issueKey===fault.key && !item.resolved);
+        if(item) Object.assign(item,{...sample,checks:[fault.check],recordedAt:now,observedAt:now,count:item.count+1,healthySince:null});
+        else this.items.push({...sample,checks:[fault.check],issueKey:fault.key,id:String(++this.sequence),recordedAt:now,observedAt:now,firstSampleId:sample.sampleId,count:1,resolved:false,healthySince:null});
+      }
     }
-    this.items = this.items.slice(0, 5);
+    this.items.sort((a,b)=>b.recordedAt-a.recordedAt || Number(b.id)-Number(a.id));
+    this.items=this.items.slice(0,5);
   }
   list() { this.prune(); return this.items; }
   age(item) { return Math.max(0, Math.floor((this.clock() - item.recordedAt) / 1000)); }
@@ -812,7 +1137,7 @@ async function refresh(force = false) {
     state.data = data;
     state.failure = "";
     state.warnings.observe(data.endpoints.map(e=>({endpointId:e.id, name:e.name, pid:e.pid,
-      sampleId:e.sampled_at, checks:warningChecks(e), changes:e.changes})));
+      sampleId:e.sampled_at, checks:outdated(e)?[]:(e.health?.checks || []), changes:e.changes})));
     $("login").hidden = true; $("workspace").hidden = false;
     $("login-error").hidden = true;
     state.loginError = "";
@@ -1276,7 +1601,7 @@ function updateSystemRows(card,values) {
 function renderSyspiper() {
   const info=state.data?.syspiper;
   const collector=state.data?.collector||{},discovery=state.data?.discovery||{};
-  $('collector-poller').innerHTML=`<span class="status"><i class="dot ${state.failure?'alert':''}"></i>${state.failure?'Nedostupný':'Běží'}</span><span><b>${esc(collector.mode||'—')}</b> režim</span><span>UID <b>${esc(collector.uid??'—')}</b></span><span>host <b>${esc(discovery.host||'—')}</b></span>`;
+  $('collector-poller').innerHTML=`<span class="status"><i class="dot ${state.failure?'alert':''}"></i>${state.failure?(t("uiUnavailable")):(t("uiRunning"))}</span><span><b>${esc(collector.mode||'—')}</b> ${esc(t("uiMode"))}</span><span>UID <b>${esc(collector.uid??'—')}</b></span><span>host <b>${esc(discovery.host||'—')}</b></span>`;
   const nodes=info?.nodes || [];
   $("syspiper-notice").textContent=!info?.enabled ? t("syspiperDisabled") :
     [t("syspiperScope"), !nodes.length ? t("syspiperEmpty") : "",info.discovery_error ? t("syspiperDiscovery") : "",
@@ -1317,7 +1642,7 @@ function renderSyspiper() {
 let peekProbesBusy=false;
 async function loadPeekProbes(){
   if(peekProbesBusy)return;peekProbesBusy=true;$('peek-probes-read').disabled=true;
-  try{const data=await api('/api/v1/peek-probes'),history=data.history||{},system=data.syspiper?.values||{},ok=data.status==='ok';$('peek-probes').innerHTML=`<article class="peek-probe ${ok?'ok':'bad'}"><header><div><span class="eyebrow">PEEK INSTANCE · ${esc(system.hostname||'HOST UNKNOWN')}</span><h3>${esc(data.endpoint||'Nenakonfigurováno')}</h3></div><span class="status"><i class="dot ${ok?'':'alert'}"></i>${ok?'Dostupná':'Nedostupná'}</span></header><div class="peek-probe-values"><dl><dt>ACTIVE TARGETS</dt><dd>${esc(history.active_targets??'—')}</dd></dl><dl><dt>OBSERVATIONS</dt><dd>${esc(history.observations??'—')}</dd></dl><dl><dt>LEASE</dt><dd>${history.lease_days!==undefined?esc(history.lease_days)+' dní':'—'}</dd></dl><dl><dt>RETENTION</dt><dd>${history.retention_days!==undefined?esc(history.retention_days)+' dní':'—'}</dd></dl><dl><dt>CPU</dt><dd>${Number.isFinite(system.cpu)?esc(system.cpu)+' %':'—'}</dd></dl><dl><dt>RAM</dt><dd>${Number.isFinite(system.ram)?esc(system.ram)+' %':'—'}</dd></dl><dl><dt>DISK</dt><dd>${Number.isFinite(system.disk)?esc(system.disk)+' %':'—'}</dd></dl><dl><dt>UPTIME</dt><dd>${Number.isFinite(system.uptime_seconds)?esc(duration(system.uptime_seconds)):'—'}</dd></dl><dl><dt>LAST SAMPLE</dt><dd>${history.newest_observation?esc(new Date(history.newest_observation).toLocaleString(locale())):'—'}</dd></dl></div>${data.syspiper?.errors&&Object.keys(data.syspiper.errors).length?`<p class="syspiper-error">Syspiper: ${esc(Object.entries(data.syspiper.errors).map(([path,error])=>path+' '+error).join(' · '))}</p>`:''}${data.error?`<p class="syspiper-error">${esc(data.error)}</p>`:''}</article>`;}
+  try{const data=await api('/api/v1/peek-probes'),history=data.history||{},system=data.syspiper?.values||{},ok=data.status==='ok';$('peek-probes').innerHTML=`<article class="peek-probe ${ok?'ok':'bad'}"><header><div><span class="eyebrow">PEEK INSTANCE · ${esc(system.hostname||(t("uiHOSTUNKNOWN")))}</span><h3>${esc(data.endpoint||(t("uiNotConfigured")))}</h3></div><span class="status"><i class="dot ${ok?'':'alert'}"></i>${ok?(t("uiAvailable")):(t("uiUnavailable2"))}</span></header><div class="peek-probe-values"><dl><dt>${esc(t("uiACTIVETARGETS"))}</dt><dd>${esc(history.active_targets??'—')}</dd></dl><dl><dt>${esc(t("uiOBSERVATIONS"))}</dt><dd>${esc(history.observations??'—')}</dd></dl><dl><dt>${esc(t("uiLEASE"))}</dt><dd>${history.lease_days!==undefined?esc(history.lease_days)+(" "+t("uiDays")):'—'}</dd></dl><dl><dt>${esc(t("uiRETENTION"))}</dt><dd>${history.retention_days!==undefined?esc(history.retention_days)+(" "+t("uiDays")):'—'}</dd></dl><dl><dt>CPU</dt><dd>${Number.isFinite(system.cpu)?esc(system.cpu)+' %':'—'}</dd></dl><dl><dt>RAM</dt><dd>${Number.isFinite(system.ram)?esc(system.ram)+' %':'—'}</dd></dl><dl><dt>DISK</dt><dd>${Number.isFinite(system.disk)?esc(system.disk)+' %':'—'}</dd></dl><dl><dt>${esc(t("uiUPTIME"))}</dt><dd>${Number.isFinite(system.uptime_seconds)?esc(duration(system.uptime_seconds)):'—'}</dd></dl><dl><dt>${esc(t("uiLASTSAMPLE"))}</dt><dd>${history.newest_observation?esc(new Date(history.newest_observation).toLocaleString(locale())):'—'}</dd></dl></div>${data.syspiper?.errors&&Object.keys(data.syspiper.errors).length?`<p class="syspiper-error">Syspiper: ${esc(Object.entries(data.syspiper.errors).map(([path,error])=>path+' '+error).join(' · '))}</p>`:''}${data.error?`<p class="syspiper-error">${esc(data.error)}</p>`:''}</article>`;}
   catch(error){$('peek-probes').innerHTML=`<p class="notice">${esc(diagnostic(error.message))}</p>`;}
   finally{peekProbesBusy=false;$('peek-probes-read').disabled=false;}
 }
@@ -2226,7 +2551,7 @@ function externalGood(row){return !!(row.ok && row.available && (externalProtoco
 function externalReply(row){return row.dns ? `${row.dns.rcode} · ${row.dns.type} · AD ${row.dns.ad?'✓':'—'}` : row.http_status ?? '—';}
 function externalTrust(row){return externalProtocol(row)==='dns'?'N/A':row.tls?.trusted===true?'trusted':row.tls?.trusted===false?'untrusted':'—';}
 function externalReplyTone(row){return row.dns?(row.dns.ok?'ok':'bad'):externalProtocol(row)==='https'?externalHttpTone(row.http_status):'unknown';}
-function externalDNSDetail(row){return row.dns?`<small class="dns-answer">${esc(row.dns.values.join(' · ') || row.dns.rcode)}${row.dns.expected?' · očekáváno: '+esc(row.dns.expected):''}${row.dns.require_ad?' · vyžadováno AD':''}</small>`:'';}
+function externalDNSDetail(row){return row.dns?`<small class="dns-answer">${esc(row.dns.values.join(' · ') || row.dns.rcode)}${row.dns.expected?(" · "+t("uiExpected")+" ")+esc(row.dns.expected):''}${row.dns.require_ad?(" · "+t("uiADRequired")):''}</small>`:'';}
 function externalCert(row){return row.tls?.certificate || {};}
 function externalExpiry(row){
   const cert=externalCert(row),value=cert.not_after;if(!value)return ['—','unknown'];
@@ -2238,7 +2563,7 @@ function externalLatencyTone(value,warn,bad){return !Number.isFinite(value)?'bad
 function externalSparkline(samples){
   const values=(samples||[]).slice(-120).map(row=>Number(row.total_ms)).filter(Number.isFinite);if(values.length<2)return '';
   const max=Math.max(1,...values),points=values.map((value,index)=>`${(index/(values.length-1)*100).toFixed(2)},${(30-value/max*28).toFixed(2)}`).join(' ');
-  return `<div class="external-history"><span>LATENCY HISTORY · ${values.length} VZORKŮ</span><svg viewBox="0 0 100 32" preserveAspectRatio="none" aria-label="Historie celkové odezvy"><polyline points="${points}"></polyline></svg></div>`;
+  return `<div class="external-history"><span>${esc(t("uiLATENCYHISTORY"))} · ${values.length} ${esc(t("uiSAMPLES"))}</span><svg viewBox="0 0 100 32" preserveAspectRatio="none" aria-label="${esc(t("uiTotalLatencyHistory"))}"><polyline points="${points}"></polyline></svg></div>`;
 }
 function renderExternals(){
   const query=$('externals-filter').value.trim().toLowerCase(),status=$('externals-state').value,labelOnly=$('externals-label-only').checked;
@@ -2246,8 +2571,8 @@ function renderExternals(){
     const labels=row.service_labels||[],labelValues=[...labels,...labels.map(label=>'0x'+BigInt(label).toString(16))],good=externalGood(row),haystack=(labelOnly?labelValues:[row.service_name,row.service_kind,row.service_description,row.url,...labelValues]).join(' ').toLowerCase();
     return (!query||haystack.includes(query))&&(!status||(status==='ok'&&good)||(status==='problem'&&!good)||(status==='trusted'&&row.tls?.trusted===true)||(status==='untrusted'&&row.tls?.trusted===false));
   }),up=rows.filter(row=>row.available).length,trusted=rows.filter(row=>row.tls?.trusted).length;
-  $('externals-summary').innerHTML=`<article><span>TARGETY</span><strong>${rows.length}</strong></article><article><span>DOSTUPNÉ</span><strong>${up}/${rows.length}</strong></article><article><span>TRUSTED TLS</span><strong>${trusted}/${rows.filter(row=>externalProtocol(row)!=='dns').length}</strong></article>`;
-  $('externals-list').innerHTML=rows.map(row=>{const expiry=externalExpiry(row),good=externalGood(row);return `<article class="external-card ${good?'ok':'bad'}"><header><div><span class="eyebrow">${esc(row.service_name)} · ${esc(row.service_kind)} ${(row.service_labels||[]).map(label=>`· LABEL ${esc(label)}`).join(' ')}</span><h3>${esc(row.url)}</h3></div><span class="external-state">${good?'● OK':'● PROBLÉM'}</span></header><div class="external-metrics"><dl class="${externalReplyTone(row)}"><dt>HTTP</dt><dd>${esc(row.http_status ?? '—')}</dd></dl><dl class="${externalProtocol(row)==='dns'&&row.connect_ms==null?'unknown':externalLatencyTone(row.connect_ms,300,1000)}"><dt>CONNECT</dt><dd>${esc(row.connect_ms ?? '—')} ms</dd></dl><dl class="${externalProtocol(row)==='dns'?'unknown':externalLatencyTone(row.tls_handshake_ms,300,1000)}"><dt>TLS HANDSHAKE</dt><dd>${esc(row.tls_handshake_ms ?? '—')} ms</dd></dl><dl class="${externalLatencyTone(row.total_ms,1000,3000)}"><dt>CELKEM</dt><dd>${esc(row.total_ms ?? '—')} ms</dd></dl><dl class="${expiry[1]}"><dt>CERT EXPIRY</dt><dd>${esc(expiry[0])}</dd></dl><dl class="${externalProtocol(row)==='dns'?'unknown':row.tls?.trusted===true?'ok':'bad'}"><dt>TRUST</dt><dd>${esc(externalTrust(row))}</dd></dl></div><details><summary>Certifikát a detail</summary><pre>${esc(JSON.stringify({protocol:externalProtocol(row),dns:row.dns,tls:row.tls,error:row.error,address:row.address,interval:row.interval},null,2))}</pre></details></article>`}).join('') || `<div class="service-empty">${externalsView.rows.length?'Filtru neodpovídají žádné externals.':'Žádná Managed Service nemá Peek target.'}</div>`;
+  $('externals-summary').innerHTML=`<article><span>${esc(t("uiTARGETS"))}</span><strong>${rows.length}</strong></article><article><span>${esc(t("uiAVAILABLE"))}</span><strong>${up}/${rows.length}</strong></article><article><span>TRUSTED TLS</span><strong>${trusted}/${rows.filter(row=>externalProtocol(row)!=='dns').length}</strong></article>`;
+  $('externals-list').innerHTML=rows.map(row=>{const expiry=externalExpiry(row),good=externalGood(row);return `<article class="external-card ${good?'ok':'bad'}"><header><div><span class="eyebrow">${esc(row.service_name)} · ${esc(row.service_kind)} ${(row.service_labels||[]).map(label=>`· LABEL ${esc(label)}`).join(' ')}</span><h3>${esc(row.url)}</h3></div><span class="external-state">${good?'● OK':(t("uiPROBLEM"))}</span></header><div class="external-metrics"><dl class="${externalReplyTone(row)}"><dt>HTTP</dt><dd>${esc(row.http_status ?? '—')}</dd></dl><dl class="${externalProtocol(row)==='dns'&&row.connect_ms==null?'unknown':externalLatencyTone(row.connect_ms,300,1000)}"><dt>CONNECT</dt><dd>${esc(row.connect_ms ?? '—')} ms</dd></dl><dl class="${externalProtocol(row)==='dns'?'unknown':externalLatencyTone(row.tls_handshake_ms,300,1000)}"><dt>TLS HANDSHAKE</dt><dd>${esc(row.tls_handshake_ms ?? '—')} ms</dd></dl><dl class="${externalLatencyTone(row.total_ms,1000,3000)}"><dt>${esc(t("uiTOTAL"))}</dt><dd>${esc(row.total_ms ?? '—')} ms</dd></dl><dl class="${expiry[1]}"><dt>${esc(t("uiCERTEXPIRY"))}</dt><dd>${esc(expiry[0])}</dd></dl><dl class="${externalProtocol(row)==='dns'?'unknown':row.tls?.trusted===true?'ok':'bad'}"><dt>TRUST</dt><dd>${esc(externalTrust(row))}</dd></dl></div><details><summary>${esc(t("uiCertificateAndDetails"))}</summary><pre>${esc(JSON.stringify({protocol:externalProtocol(row),dns:row.dns,tls:row.tls,error:row.error,address:row.address,interval:row.interval},null,2))}</pre></details></article>`}).join('') || `<div class="service-empty">${externalsView.rows.length?(t("uiNoExternalTargetsMatchTheFilter")):(t("uiNoManagedServiceHasAPeekTarget"))}</div>`;
   document.querySelectorAll('#externals-list .external-card').forEach((card,index)=>card.querySelector('details').insertAdjacentHTML('beforebegin',externalSparkline(externalsView.history[rows[index].id])));
 }
 function externalSortValue(row,key){
@@ -2260,37 +2585,37 @@ function externalSortValue(row,key){
   return Number(row[key] ?? Infinity);
 }
 function externalTrendLabel(){return {total_ms:'RTT',connect_ms:'CONNECT',tls_handshake_ms:'TLS',http_response_ms:'HTTP',dns_response_ms:'DNS'}[externalsView.trendKey]||'RTT';}
-function externalTrendSelect(){return `<label class="external-trend-select"><span>Trend</span><select data-external-trend><option value="total_ms" ${externalsView.trendKey==='total_ms'?'selected':''}>RTT</option><option value="connect_ms" ${externalsView.trendKey==='connect_ms'?'selected':''}>Connect</option><option value="tls_handshake_ms" ${externalsView.trendKey==='tls_handshake_ms'?'selected':''}>TLS handshake</option><option value="http_response_ms" ${externalsView.trendKey==='http_response_ms'?'selected':''}>HTTP response</option><option value="dns_response_ms" ${externalsView.trendKey==='dns_response_ms'?'selected':''}>DNS response</option></select></label>`;}
+function externalTrendSelect(){return `<label class="external-trend-select"><span>Trend</span><select data-external-trend><option value="total_ms" ${externalsView.trendKey==='total_ms'?'selected':''}>RTT</option><option value="connect_ms" ${externalsView.trendKey==='connect_ms'?'selected':''}>${esc(t("uiConnect"))}</option><option value="tls_handshake_ms" ${externalsView.trendKey==='tls_handshake_ms'?'selected':''}>${esc(t("uiTLSHandshake"))}</option><option value="http_response_ms" ${externalsView.trendKey==='http_response_ms'?'selected':''}>${esc(t("uiHTTPResponse"))}</option><option value="dns_response_ms" ${externalsView.trendKey==='dns_response_ms'?'selected':''}>${esc(t("uiDNSResponse"))}</option></select></label>`;}
 function externalTrend(samples,id){
-  const values=(samples||[]).slice(-60).map(row=>Number(row[externalsView.trendKey])).filter(Number.isFinite);if(values.length<2)return `<button class="external-trend-button muted" data-external-chart="${esc(id)}" title="Otevřít historii">—</button>`;
+  const values=(samples||[]).slice(-60).map(row=>Number(row[externalsView.trendKey])).filter(Number.isFinite);if(values.length<2)return `<button class="external-trend-button muted" data-external-chart="${esc(id)}" title="${esc(t("uiOpenHistory"))}">—</button>`;
   const max=Math.max(1,...values),points=values.map((value,index)=>`${(index/(values.length-1)*100).toFixed(2)},${(20-value/max*18).toFixed(2)}`).join(' ');
-  return `<button class="external-trend-button" data-external-chart="${esc(id)}" title="Otevřít historii"><svg class="external-trend" viewBox="0 0 100 22" preserveAspectRatio="none" aria-label="${values.length} vzorků"><polyline points="${points}"></polyline></svg></button>`;
+  return `<button class="external-trend-button" data-external-chart="${esc(id)}" title="${esc(t("uiOpenHistory"))}"><svg class="external-trend" viewBox="0 0 100 22" preserveAspectRatio="none" aria-label="${values.length} ${esc(t("uiSamples"))}"><polyline points="${points}"></polyline></svg></button>`;
 }
 function renderExternalsTable(){
   const query=$('externals-filter').value.trim().toLowerCase(),status=$('externals-state').value,labelOnly=$('externals-label-only').checked;
   const rows=externalsView.rows.filter(row=>{const labels=row.service_labels||[],labelValues=[...labels,...labels.map(label=>'0x'+BigInt(label).toString(16))],good=externalGood(row),haystack=(labelOnly?labelValues:[row.service_name,row.service_kind,row.service_description,row.url,...labelValues]).join(' ').toLowerCase();return (!query||haystack.includes(query))&&(!status||(status==='ok'&&good)||(status==='problem'&&!good)||(status==='trusted'&&row.tls?.trusted===true)||(status==='untrusted'&&row.tls?.trusted===false));});
   const up=rows.filter(row=>row.available).length,trusted=rows.filter(row=>row.tls?.trusted).length;
-  $('externals-summary').innerHTML=`<article><span>TARGETY</span><strong>${rows.length}</strong></article><article><span>DOSTUPNÉ</span><strong>${up}/${rows.length}</strong></article><article><span>TRUSTED TLS</span><strong>${trusted}/${rows.filter(row=>externalProtocol(row)!=='dns').length}</strong></article>`;
+  $('externals-summary').innerHTML=`<article><span>${esc(t("uiTARGETS"))}</span><strong>${rows.length}</strong></article><article><span>${esc(t("uiAVAILABLE"))}</span><strong>${up}/${rows.length}</strong></article><article><span>TRUSTED TLS</span><strong>${trusted}/${rows.filter(row=>externalProtocol(row)!=='dns').length}</strong></article>`;
   const groups=new Map();for(const row of rows){if(!groups.has(row.service_id))groups.set(row.service_id,[]);groups.get(row.service_id).push(row);}
   const arrow=key=>externalsView.sortBy===key?(externalsView.sortDir>0?' ↑':' ↓'):'';
   const head=(key,label)=>`<button data-external-sort="${key}">${label}${arrow(key)}</button>`;
   if(!$('externals-group-services').checked){
-    if(!rows.length){$('externals-list').innerHTML=`<div class="service-empty">${externalsView.rows.length?'Filtru neodpovídají žádné externals.':'Žádná Managed Service nemá Peek target.'}</div>`;return;}
+    if(!rows.length){$('externals-list').innerHTML=`<div class="service-empty">${externalsView.rows.length?(t("uiNoExternalTargetsMatchTheFilter")):(t("uiNoManagedServiceHasAPeekTarget"))}</div>`;return;}
     rows.sort((a,b)=>{const av=externalSortValue(a,externalsView.sortBy),bv=externalSortValue(b,externalsView.sortBy);return (typeof av==='string'?av.localeCompare(bv):av-bv)*externalsView.sortDir;});
-    $('externals-list').innerHTML=`<section class="external-service external-global"><header><div><span class="eyebrow">ALL MANAGED SERVICES</span><h3>Externals</h3></div><div class="external-service-tools"><span class="tag">${rows.length} TARGETS</span>${externalTrendSelect()}</div></header><div class="table-scroll"><table class="external-table"><thead><tr><th>${head('service_name','Service Name')}</th><th>${head('service_label','Service Label')}</th><th>${head('url','Target')}</th><th>${head('status','Stav')}</th><th>${head('http_status','DNS / HTTP')}</th><th>${head('connect_ms','Connect')}</th><th>${head('tls_handshake_ms','TLS RTT')}</th><th>${head('total_ms','Total RTT')}</th><th>${head('expiry','Cert')}</th><th>${head('trust','Trust')}</th><th>TREND (${externalTrendLabel()})</th><th>Detail</th></tr></thead><tbody>${rows.map(row=>{const expiry=externalExpiry(row),good=externalGood(row);return `<tr class="${good?'ok':'bad'}"><td><strong>${esc(row.service_name)}</strong></td><td>${(row.service_labels||[]).map(label=>`<span class="tag">${esc(label)} · 0x${BigInt(label).toString(16)}</span>`).join(' ')||'—'}</td><td><strong><span class="tag">${esc(externalProtocol(row).toUpperCase())}</span> ${esc(row.url)}</strong>${externalDNSDetail(row)}</td><td class="${good?'ok':'bad'}">${good?'● OK':'● PROBLÉM'}</td><td class="${externalReplyTone(row)}">${esc(externalReply(row))}</td><td class="${externalProtocol(row)==='dns'&&row.connect_ms==null?'unknown':externalLatencyTone(row.connect_ms,300,1000)}">${esc(row.connect_ms??'—')} ms</td><td class="${externalProtocol(row)==='dns'?'unknown':externalLatencyTone(row.tls_handshake_ms,300,1000)}">${esc(row.tls_handshake_ms??'—')} ms</td><td class="${externalLatencyTone(row.total_ms,1000,3000)}">${esc(row.total_ms??'—')} ms</td><td class="${expiry[1]}">${esc(expiry[0])}</td><td class="${externalProtocol(row)==='dns'?'unknown':row.tls?.trusted===true?'ok':'bad'}">${esc(externalTrust(row))}</td><td>${externalTrend(externalsView.history[row.id],row.id)}</td><td class="external-detail-cell"><button type="button" class="quiet-button" data-external-detail="${esc(row.id)}" aria-label="Detail ${esc(row.url)}">Detail ↗</button></td></tr>`}).join('')}</tbody></table></div></section>`;
+    $('externals-list').innerHTML=`<section class="external-service external-global"><header><div><span class="eyebrow">${esc(t("uiALLMANAGEDSERVICES"))}</span><h3>Externals</h3></div><div class="external-service-tools"><span class="tag">${rows.length} TARGETS</span>${externalTrendSelect()}</div></header><div class="table-scroll"><table class="external-table"><thead><tr><th>${head('service_name',(t("uiServiceName")))}</th><th>${head('service_label',(t("uiServiceLabel")))}</th><th>${head('url',(t("uiTarget2")))}</th><th>${head('status',(t("uiStatus")))}</th><th>${head('http_status','DNS / HTTP')}</th><th>${head('connect_ms',(t("uiConnect")))}</th><th>${head('tls_handshake_ms','TLS RTT')}</th><th>${head('total_ms',(t("uiTotalRTT")))}</th><th>${head('expiry','Cert')}</th><th>${head('trust',(t("uiTrust")))}</th><th>TREND (${externalTrendLabel()})</th><th>${esc(t("uiDetail"))}</th></tr></thead><tbody>${rows.map(row=>{const expiry=externalExpiry(row),good=externalGood(row);return `<tr class="${good?'ok':'bad'}"><td><strong>${esc(row.service_name)}</strong></td><td>${(row.service_labels||[]).map(label=>`<span class="tag">${esc(label)} · 0x${BigInt(label).toString(16)}</span>`).join(' ')||'—'}</td><td><strong><span class="tag">${esc(externalProtocol(row).toUpperCase())}</span> ${esc(row.url)}</strong>${externalDNSDetail(row)}</td><td class="${good?'ok':'bad'}">${good?'● OK':(t("uiPROBLEM"))}</td><td class="${externalReplyTone(row)}">${esc(externalReply(row))}</td><td class="${externalProtocol(row)==='dns'&&row.connect_ms==null?'unknown':externalLatencyTone(row.connect_ms,300,1000)}">${esc(row.connect_ms??'—')} ms</td><td class="${externalProtocol(row)==='dns'?'unknown':externalLatencyTone(row.tls_handshake_ms,300,1000)}">${esc(row.tls_handshake_ms??'—')} ms</td><td class="${externalLatencyTone(row.total_ms,1000,3000)}">${esc(row.total_ms??'—')} ms</td><td class="${expiry[1]}">${esc(expiry[0])}</td><td class="${externalProtocol(row)==='dns'?'unknown':row.tls?.trusted===true?'ok':'bad'}">${esc(externalTrust(row))}</td><td>${externalTrend(externalsView.history[row.id],row.id)}</td><td class="external-detail-cell"><button type="button" class="quiet-button" data-external-detail="${esc(row.id)}" aria-label="${esc(t("uiDetail"))} ${esc(row.url)}">${esc(t("uiDetail"))} ↗</button></td></tr>`}).join('')}</tbody></table></div></section>`;
     return;
   }
-  $('externals-list').innerHTML=[...groups.values()].map(group=>{group.sort((a,b)=>{const av=externalSortValue(a,externalsView.sortBy),bv=externalSortValue(b,externalsView.sortBy);return (typeof av==='string'?av.localeCompare(bv):av-bv)*externalsView.sortDir;});const service=group[0];return `<section class="external-service"><header><div><h3>${esc(service.service_name)}</h3></div><div>${(service.service_labels||[]).map(label=>`<span class="tag">${esc(label)} · 0x${BigInt(label).toString(16)}</span>`).join('')}</div></header><div class="table-scroll"><table class="external-table"><thead><tr><th>${head('url','Target')}</th><th>${head('status','Stav')}</th><th>${head('http_status','DNS / HTTP')}</th><th>${head('connect_ms','Connect')}</th><th>${head('tls_handshake_ms','TLS RTT')}</th><th>${head('total_ms','Total RTT')}</th><th>${head('expiry','Cert')}</th><th>${head('trust','Trust')}</th><th>TREND (${externalTrendLabel()})</th><th>Detail</th></tr></thead><tbody>${group.map(row=>{const expiry=externalExpiry(row),good=externalGood(row);return `<tr class="${good?'ok':'bad'}"><td><strong><span class="tag">${esc(externalProtocol(row).toUpperCase())}</span> ${esc(row.url)}</strong>${externalDNSDetail(row)}</td><td class="${good?'ok':'bad'}">${good?'● OK':'● PROBLÉM'}</td><td class="${externalReplyTone(row)}">${esc(externalReply(row))}</td><td class="${externalProtocol(row)==='dns'&&row.connect_ms==null?'unknown':externalLatencyTone(row.connect_ms,300,1000)}">${esc(row.connect_ms??'—')} ms</td><td class="${externalProtocol(row)==='dns'?'unknown':externalLatencyTone(row.tls_handshake_ms,300,1000)}">${esc(row.tls_handshake_ms??'—')} ms</td><td class="${externalLatencyTone(row.total_ms,1000,3000)}">${esc(row.total_ms??'—')} ms</td><td class="${expiry[1]}">${esc(expiry[0])}</td><td class="${externalProtocol(row)==='dns'?'unknown':row.tls?.trusted===true?'ok':'bad'}">${esc(externalTrust(row))}</td><td>${externalTrend(externalsView.history[row.id],row.id)}</td><td class="external-detail-cell"><button type="button" class="quiet-button" data-external-detail="${esc(row.id)}" aria-label="Detail ${esc(row.url)}">Detail ↗</button></td></tr>`}).join('')}</tbody></table></div></section>`}).join('')||`<div class="service-empty">${externalsView.rows.length?'Filtru neodpovídají žádné externals.':'Žádná Managed Service nemá Peek target.'}</div>`;
+  $('externals-list').innerHTML=[...groups.values()].map(group=>{group.sort((a,b)=>{const av=externalSortValue(a,externalsView.sortBy),bv=externalSortValue(b,externalsView.sortBy);return (typeof av==='string'?av.localeCompare(bv):av-bv)*externalsView.sortDir;});const service=group[0];return `<section class="external-service"><header><div><h3>${esc(service.service_name)}</h3></div><div>${(service.service_labels||[]).map(label=>`<span class="tag">${esc(label)} · 0x${BigInt(label).toString(16)}</span>`).join('')}</div></header><div class="table-scroll"><table class="external-table"><thead><tr><th>${head('url',(t("uiTarget2")))}</th><th>${head('status',(t("uiStatus")))}</th><th>${head('http_status','DNS / HTTP')}</th><th>${head('connect_ms',(t("uiConnect")))}</th><th>${head('tls_handshake_ms','TLS RTT')}</th><th>${head('total_ms',(t("uiTotalRTT")))}</th><th>${head('expiry','Cert')}</th><th>${head('trust',(t("uiTrust")))}</th><th>TREND (${externalTrendLabel()})</th><th>${esc(t("uiDetail"))}</th></tr></thead><tbody>${group.map(row=>{const expiry=externalExpiry(row),good=externalGood(row);return `<tr class="${good?'ok':'bad'}"><td><strong><span class="tag">${esc(externalProtocol(row).toUpperCase())}</span> ${esc(row.url)}</strong>${externalDNSDetail(row)}</td><td class="${good?'ok':'bad'}">${good?'● OK':(t("uiPROBLEM"))}</td><td class="${externalReplyTone(row)}">${esc(externalReply(row))}</td><td class="${externalProtocol(row)==='dns'&&row.connect_ms==null?'unknown':externalLatencyTone(row.connect_ms,300,1000)}">${esc(row.connect_ms??'—')} ms</td><td class="${externalProtocol(row)==='dns'?'unknown':externalLatencyTone(row.tls_handshake_ms,300,1000)}">${esc(row.tls_handshake_ms??'—')} ms</td><td class="${externalLatencyTone(row.total_ms,1000,3000)}">${esc(row.total_ms??'—')} ms</td><td class="${expiry[1]}">${esc(expiry[0])}</td><td class="${externalProtocol(row)==='dns'?'unknown':row.tls?.trusted===true?'ok':'bad'}">${esc(externalTrust(row))}</td><td>${externalTrend(externalsView.history[row.id],row.id)}</td><td class="external-detail-cell"><button type="button" class="quiet-button" data-external-detail="${esc(row.id)}" aria-label="${esc(t("uiDetail"))} ${esc(row.url)}">${esc(t("uiDetail"))} ↗</button></td></tr>`}).join('')}</tbody></table></div></section>`}).join('')||`<div class="service-empty">${externalsView.rows.length?(t("uiNoExternalTargetsMatchTheFilter")):(t("uiNoManagedServiceHasAPeekTarget"))}</div>`;
   document.querySelectorAll('#externals-list .external-service:not(.external-global)>header>div:last-child').forEach(container=>{container.classList.add('external-service-tools');container.insertAdjacentHTML('beforeend',externalTrendSelect());});
 }
 async function loadExternals(){
-  if(externalsView.busy)return;clearTimeout(externalsTimer);externalsTimer=null;externalsView.busy=true;$('externals-read').disabled=true;$('externals-status').textContent='Peek měří externí targety…';
-  try{const data=await api('/api/v1/externals');externalsView.rows=data.observations || [];externalsView.history=data.history || {};externalsView.sampledAt=data.sampled_at;renderExternalsTable();$('externals-status').textContent=`Živé měření${data.sampled_at?' · '+new Date(data.sampled_at).toLocaleString(locale()):''} · historii drží Peek`;}
+  if(externalsView.busy)return;clearTimeout(externalsTimer);externalsTimer=null;externalsView.busy=true;$('externals-read').disabled=true;$('externals-status').textContent=(t("uiPeekIsMeasuringExternalTargets"));
+  try{const data=await api('/api/v1/externals');externalsView.rows=data.observations || [];externalsView.history=data.history || {};externalsView.sampledAt=data.sampled_at;renderExternalsTable();$('externals-status').textContent=`${t("uiLiveMeasurements")}${data.sampled_at?' · '+new Date(data.sampled_at).toLocaleString(locale()):''} · ${t("uiHistoryIsStoredByPeek")}`;}
   catch(error){$('externals-status').textContent=diagnostic(error.message);}
   finally{externalsView.busy=false;$('externals-read').disabled=false;const intervals=externalsView.rows.map(row=>row.interval).filter(Number.isFinite);if(state.view==='services'&&!$('services-externals').hidden&&intervals.length)externalsTimer=setTimeout(loadExternals,Math.min(...intervals)*1000);}
 }
 const externalChart={row:null,samples:[],loadedAfter:0,loadedBefore:0,viewAfter:0,viewBefore:0,y:null,drag:null,cursor:null};
-function externalMetricName(key){return {total_ms:'Total RTT',connect_ms:'Connect',tls_handshake_ms:'TLS handshake',http_response_ms:'HTTP response',dns_response_ms:'DNS response'}[key]||key;}
+function externalMetricName(key){return {total_ms:(t("uiTotalRTT")),connect_ms:(t("uiConnect")),tls_handshake_ms:(t("uiTLSHandshake")),http_response_ms:(t("uiHTTPResponse")),dns_response_ms:(t("uiDNSResponse"))}[key]||key;}
 function externalChartReset(){externalChart.viewAfter=externalChart.loadedAfter;externalChart.viewBefore=externalChart.loadedBefore;externalChart.y=null;externalChart.cursor=null;drawExternalChart();}
 function externalRobustY(samples){return robustChartY(samples.flatMap(sample=>[sample.min,sample.max]),0);}
 function drawExternalChart(){
@@ -2303,14 +2628,14 @@ function drawExternalChart(){
   const marks=visible.map(sample=>sample.max>ymax?`<path class="external-chart-outlier" d="M${x(sample.time)-5},${top+8} L${x(sample.time)+5},${top+8} L${x(sample.time)},${top} Z"/>`:!sample.ok?`<circle class="external-chart-failure" cx="${x(sample.time)}" cy="${y(sample.value)}" r="3"/>`:'').join('');
   let cursor='';if(externalChart.cursor){const sample=externalChart.cursor;cursor=`<line class="external-chart-cursor" x1="${x(sample.time)}" y1="${top}" x2="${x(sample.time)}" y2="${top+height}"/><circle cx="${x(sample.time)}" cy="${y(sample.value)}" r="4" fill="var(--green)"/>`;}
   svg.innerHTML=`${grid}<polygon class="external-chart-range" points="${band}"/><polyline class="external-chart-line" points="${points}"/>${marks}${cursor}`;
-  $('external-chart-window').textContent=`${visible.length} bodů · ${new Date(externalChart.viewAfter).toLocaleString(locale())} — ${new Date(externalChart.viewBefore).toLocaleString(locale())}`;
-  $('external-chart-note').textContent=`Y ${ymin.toFixed(2)}–${ymax.toFixed(2)} ms · trojúhelník označuje outlier nad viditelnou osou · pásmo je min/max agregovaných vzorků`;
-  if(!visible.length)$('external-chart-readout').textContent='Ve zvoleném výřezu nejsou data.';
+  $('external-chart-window').textContent=`${visible.length} ${t("uiPoints")} · ${new Date(externalChart.viewAfter).toLocaleString(locale())} — ${new Date(externalChart.viewBefore).toLocaleString(locale())}`;
+  $('external-chart-note').textContent=`Y ${ymin.toFixed(2)}–${ymax.toFixed(2)} ms · ${t("uiTriangleMarksAnOutlierAboveTheVisible")}`;
+  if(!visible.length)$('external-chart-readout').textContent=(t("uiNoDataInTheSelectedRange"));
 }
 async function loadExternalChart(reset=true){
   const row=externalChart.row,range=Number($('external-chart-range').value),metric=$('external-chart-metric').value,before=Date.now(),after=before-range;
-  $('external-chart-readout').textContent='Načítám historii…';$('external-chart-note').textContent='';
-  try{const data=await api(`/api/v1/externals/${encodeURIComponent(row.id)}/history?after=${after/1000}&before=${before/1000}&points=1200&metric=${encodeURIComponent(metric)}`);externalChart.samples=(data.samples||[]).map(sample=>({...sample,time:Date.parse(sample.at)})).filter(sample=>Number.isFinite(sample.time));externalChart.loadedAfter=after;externalChart.loadedBefore=before;if(reset)externalChartReset();else drawExternalChart();$('external-chart-readout').textContent=externalChart.samples.length?'Přejeď graf pro přesnou hodnotu.':'Peek pro tento rozsah nemá měření.';}
+  $('external-chart-readout').textContent=(t("uiLoadingHistory"));$('external-chart-note').textContent='';
+  try{const data=await api(`/api/v1/externals/${encodeURIComponent(row.id)}/history?after=${after/1000}&before=${before/1000}&points=1200&metric=${encodeURIComponent(metric)}`);externalChart.samples=(data.samples||[]).map(sample=>({...sample,time:Date.parse(sample.at)})).filter(sample=>Number.isFinite(sample.time));externalChart.loadedAfter=after;externalChart.loadedBefore=before;if(reset)externalChartReset();else drawExternalChart();$('external-chart-readout').textContent=externalChart.samples.length?(t("uiHoverOverTheChartForAnExact")):(t("uiPeekHasNoMeasurementsForThisRange"));}
   catch(error){externalChart.samples=[];$('external-chart-readout').textContent=diagnostic(error.message);drawExternalChart();}
 }
 function openExternalChart(id){
@@ -2324,7 +2649,7 @@ externalChartSvg.addEventListener('dblclick',externalChartReset);
 externalChartSvg.addEventListener('wheel',event=>{event.preventDefault();if(!externalChart.samples.length)return;const rect=externalChartSvg.getBoundingClientRect(),ratio=Math.max(0,Math.min(1,(event.clientX-rect.left)/rect.width)),factor=event.deltaY>0?1.25:.8;if(event.shiftKey){const current=externalChart.y||externalRobustY(externalChart.samples.filter(sample=>sample.time>=externalChart.viewAfter&&sample.time<=externalChart.viewBefore)),center=(current[0]+current[1])/2,half=(current[1]-current[0])*factor/2;externalChart.y=[Math.max(0,center-half),center+half];}else{const span=(externalChart.viewBefore-externalChart.viewAfter)*factor,anchor=externalChart.viewAfter+ratio*(externalChart.viewBefore-externalChart.viewAfter);externalChart.viewAfter=Math.max(externalChart.loadedAfter,anchor-ratio*span);externalChart.viewBefore=Math.min(externalChart.loadedBefore,externalChart.viewAfter+span);externalChart.viewAfter=Math.max(externalChart.loadedAfter,externalChart.viewBefore-span);externalChart.y=null;}drawExternalChart();},{passive:false});
 externalChartSvg.addEventListener('pointerdown',event=>{externalChartSvg.setPointerCapture(event.pointerId);externalChart.drag={x:event.clientX,y:event.clientY,after:externalChart.viewAfter,before:externalChart.viewBefore,yrange:externalChart.y||externalRobustY(externalChart.samples.filter(sample=>sample.time>=externalChart.viewAfter&&sample.time<=externalChart.viewBefore)),vertical:event.shiftKey};});
 externalChartSvg.addEventListener('pointerup',()=>externalChart.drag=null);externalChartSvg.addEventListener('pointercancel',()=>externalChart.drag=null);
-externalChartSvg.addEventListener('pointermove',event=>{const rect=externalChartSvg.getBoundingClientRect();if(externalChart.drag){if(externalChart.drag.vertical){const span=externalChart.drag.yrange[1]-externalChart.drag.yrange[0],delta=(event.clientY-externalChart.drag.y)/rect.height*span;externalChart.y=[Math.max(0,externalChart.drag.yrange[0]+delta),externalChart.drag.yrange[1]+delta];}else{const span=externalChart.drag.before-externalChart.drag.after,delta=-(event.clientX-externalChart.drag.x)/rect.width*span;externalChart.viewAfter=Math.max(externalChart.loadedAfter,Math.min(externalChart.loadedBefore-span,externalChart.drag.after+delta));externalChart.viewBefore=externalChart.viewAfter+span;externalChart.y=null;}drawExternalChart();return;}const time=externalChart.viewAfter+Math.max(0,Math.min(1,(event.clientX-rect.left)/rect.width))*(externalChart.viewBefore-externalChart.viewAfter),visible=externalChart.samples.filter(sample=>sample.time>=externalChart.viewAfter&&sample.time<=externalChart.viewBefore);externalChart.cursor=visible.reduce((best,sample)=>!best||Math.abs(sample.time-time)<Math.abs(best.time-time)?sample:best,null);if(externalChart.cursor)$('external-chart-readout').innerHTML=`<div class="chart-readout-heading"><strong>${esc(new Date(externalChart.cursor.time).toLocaleString(locale()))}</strong><span>${esc(externalMetricName($('external-chart-metric').value))}</span></div><span class="chart-value"><strong>${esc(externalChart.cursor.value)} ms</strong> · min ${esc(externalChart.cursor.min)} · max ${esc(externalChart.cursor.max)} · ${esc(externalChart.cursor.samples)} vzorků</span>`;drawExternalChart();});
+externalChartSvg.addEventListener('pointermove',event=>{const rect=externalChartSvg.getBoundingClientRect();if(externalChart.drag){if(externalChart.drag.vertical){const span=externalChart.drag.yrange[1]-externalChart.drag.yrange[0],delta=(event.clientY-externalChart.drag.y)/rect.height*span;externalChart.y=[Math.max(0,externalChart.drag.yrange[0]+delta),externalChart.drag.yrange[1]+delta];}else{const span=externalChart.drag.before-externalChart.drag.after,delta=-(event.clientX-externalChart.drag.x)/rect.width*span;externalChart.viewAfter=Math.max(externalChart.loadedAfter,Math.min(externalChart.loadedBefore-span,externalChart.drag.after+delta));externalChart.viewBefore=externalChart.viewAfter+span;externalChart.y=null;}drawExternalChart();return;}const time=externalChart.viewAfter+Math.max(0,Math.min(1,(event.clientX-rect.left)/rect.width))*(externalChart.viewBefore-externalChart.viewAfter),visible=externalChart.samples.filter(sample=>sample.time>=externalChart.viewAfter&&sample.time<=externalChart.viewBefore);externalChart.cursor=visible.reduce((best,sample)=>!best||Math.abs(sample.time-time)<Math.abs(best.time-time)?sample:best,null);if(externalChart.cursor)$('external-chart-readout').innerHTML=`<div class="chart-readout-heading"><strong>${esc(new Date(externalChart.cursor.time).toLocaleString(locale()))}</strong><span>${esc(externalMetricName($('external-chart-metric').value))}</span></div><span class="chart-value"><strong>${esc(externalChart.cursor.value)} ms</strong> · min ${esc(externalChart.cursor.min)} · max ${esc(externalChart.cursor.max)} · ${esc(externalChart.cursor.samples)} ${esc(t("uiSamples"))}</span>`;drawExternalChart();});
 $('services-tab-managed').addEventListener('click',()=>showServicesTab('managed'));
 $('services-tab-externals').addEventListener('click',()=>showServicesTab('externals'));
 $('services-tab-controlled').addEventListener('click',()=>showServicesTab('controlled'));
@@ -2344,12 +2669,12 @@ function serviceLabels(text){
   return text.split(/[\s,]+/).map(value=>value.trim()).filter(Boolean);
 }
 function dnsTargetURL(protocol,server,port,path,name,type,ad,expected){
-  if(!['dns','dot','doh'].includes(protocol))throw new Error('Neplatný DNS protokol.');
-  if(!server || /[\s/@?#]/.test(server))throw new Error('Zadej server bez schématu a cesty.');
-  if(!Number.isInteger(port)||port<1||port>65535)throw new Error('Port musí být 1–65535.');
-  if(!name || /\s/.test(name))throw new Error('Zadej DNS jméno.');
+  if(!['dns','dot','doh'].includes(protocol))throw new Error((t("uiInvalidDNSProtocol")));
+  if(!server || /[\s/@?#]/.test(server))throw new Error((t("uiEnterAServerWithoutASchemeOr")));
+  if(!Number.isInteger(port)||port<1||port>65535)throw new Error((t("uiPortMustBe165535")));
+  if(!name || /\s/.test(name))throw new Error((t("uiEnterADNSName")));
   const host=server.includes(':')&&!server.startsWith('[')?`[${server}]`:server;
-  if(protocol==='doh' && (!path.startsWith('/')||/[\s?#]/.test(path)))throw new Error('DoH cesta musí začínat / a být bez query parametrů.');
+  if(protocol==='doh' && (!path.startsWith('/')||/[\s?#]/.test(path)))throw new Error((t("uiTheDoHPathMustStartWithAnd")));
   const params=new URLSearchParams({name,type});if(ad)params.set('ad','1');if(expected)params.set('expect',expected);
   return `${protocol}://${host}:${port}${protocol==='doh'?path:'/'}?${params}`;
 }
@@ -2361,14 +2686,14 @@ $('service-dns-add').addEventListener('click',()=>{
   try{
     const url=dnsTargetURL($('service-dns-protocol').value,$('service-dns-server').value.trim(),Number($('service-dns-port').value),$('service-dns-path').value.trim(),$('service-dns-name').value.trim(),$('service-dns-type').value,$('service-dns-ad').checked,$('service-dns-expect').value.trim());
     $('service-peek').value=[$('service-peek').value.trim(),url+' 60'].filter(Boolean).join('\n');
-    $('service-form-status').textContent='DNS test přidán do návrhu. Ulož službu pro aktivaci.';
+    $('service-form-status').textContent=(t("uiDNSTestAddedToTheDraftSave"));
   }catch(error){$('service-form-status').textContent=error.message;}
 });
 function serviceTargets(text){
   return text.split('\n').map(line=>line.trim()).filter(Boolean).map(line=>{
-    const parts=line.split(/\s+/);if(parts.length>2)throw new Error('Peek target: URL a volitelný interval.');
+    const parts=line.split(/\s+/);if(parts.length>2)throw new Error((t("uiPeekTargetURLAndOptionalInterval")));
     const interval=parts[1]===undefined?60:Number(parts[1]);
-    if(!Number.isInteger(interval))throw new Error('Peek interval musí být celé číslo.');
+    if(!Number.isInteger(interval))throw new Error((t("uiPeekIntervalMustBeAnInteger")));
     return {url:parts[0],interval};
   });
 }
@@ -2377,14 +2702,14 @@ function renderServices(message=''){
   $('services-list').innerHTML=rows.map(service=>`<button class="service-card" data-service-edit="${esc(service.id)}">
     <div><span class="eyebrow">${esc(service.kind.toUpperCase())}</span><h3>${esc(service.name)}</h3></div><span class="tag">${service.labels.length} LABEL${service.labels.length===1?'':'S'}</span>
     <p>${esc(service.description || 'Bez popisu.')}</p><div class="service-card-meta">${service.labels.map(label=>`<code class="tag">${esc(label)} · 0x${BigInt(label).toString(16)}</code>`).join('')}${service.peek_targets.map(target=>`<span class="tag">PEEK · ${esc(target.url)} · ${target.interval}s</span>`).join('')}</div>
-  </button>`).join('') || '<div class="service-empty">Zatím žádné Managed Services.<br>Neznámé labely zůstávají platným a viditelným stavem.</div>';
-  $('services-status').textContent=message || `${rows.length} Managed Services · metadata nejsou autoritou síťového stavu`;
+  </button>`).join('') || ("<div class=\"service-empty\">"+t("uiNoManagedServicesYet")+"<br>"+t("uiUnknownLabelsRemainValidAndVisible")+"</div>");
+  $('services-status').textContent=message || `${rows.length} Managed Services · ${t("uiMetadataDoNotDetermineNetworkState")}`;
   $('service-new').disabled=servicesView.busy || state.auth?.role!=='admin';
 }
 function editService(service=null){
   if(state.auth?.role!=='admin')return;
   servicesView.editing=service?structuredClone(service):null;
-  $('service-form').hidden=false;$('service-form-title').textContent=service?`Upravit ${service.name}`:'Nová Managed Service';
+  $('service-form').hidden=false;$('service-form-title').textContent=service?`${t("uiEdit")} ${service.name}`:(t("uiNewManagedService"));
   $('service-name').value=service?.name || '';$('service-kind').value=service?.kind || 'external';
   $('service-description').value=service?.description || '';
   $('service-labels').value=(service?.labels || []).join(', ');
@@ -2410,15 +2735,15 @@ $('service-form').addEventListener('submit',async event=>{
   try{body={name:$('service-name').value.trim(),kind:$('service-kind').value,description:$('service-description').value.trim(),labels:serviceLabels($('service-labels').value),peek_targets:serviceTargets($('service-peek').value)};}
   catch(error){$('service-form-status').textContent=error.message;return;}
   if(servicesView.editing){body.id=servicesView.editing.id;body.generation=servicesView.editing.generation;}
-  serviceBusy(true);$('service-form-status').textContent='Ukládám…';
-  try{const saved=await api('/api/v1/services','POST',body);serviceBusy(false);closeServiceEditor();await loadServices(`Managed Service ${saved.name} byla uložena.`);}
+  serviceBusy(true);$('service-form-status').textContent=(t("uiSaving"));
+  try{const saved=await api('/api/v1/services','POST',body);serviceBusy(false);closeServiceEditor();await loadServices(`Managed Service ${saved.name} ${t("uiWasSaved")}`);}
   catch(error){$('service-form-status').textContent=diagnostic(error.message);}
   finally{serviceBusy(false);}
 });
 $('service-delete').addEventListener('click',async()=>{
-  const service=servicesView.editing;if(!service || servicesView.busy || !window.confirm(`Smazat Managed Service ${service.name}? Aktivní classifier ani síť se nezmění.`))return;
+  const service=servicesView.editing;if(!service || servicesView.busy || !window.confirm(`${t("uiDelete")} Managed Service ${service.name}? ${t("uiTheActiveClassifierAndNetworkWillNot")}`))return;
   serviceBusy(true);
-  try{await api(`/api/v1/services/${encodeURIComponent(service.id)}/delete`,'POST',{generation:service.generation});serviceBusy(false);closeServiceEditor();await loadServices(`Managed Service ${service.name} byla smazána. Síťový stav nebyl změněn.`);}
+  try{await api(`/api/v1/services/${encodeURIComponent(service.id)}/delete`,'POST',{generation:service.generation});serviceBusy(false);closeServiceEditor();await loadServices(`Managed Service ${service.name} ${t("uiWasDeletedNetworkStateWasNotChanged")}`);}
   catch(error){$('service-form-status').textContent=diagnostic(error.message);}
   finally{serviceBusy(false);}
 });
@@ -2429,30 +2754,30 @@ function controlledBusy(value){
 }
 function supportedControlledEndpoints(){return controlledView.rows.filter(row=>row.status==='supported');}
 function controlledTone(row){return row.status==='supported'?'ok':row.status==='unsupported'||row.status==='discovery_failed'?'bad':'pending';}
-function controlledStatus(row){return {awaiting_host_key:'ČEKÁ NA OVĚŘENÍ HOST KEY',supported:'SUPPORTED',unsupported:'UNSUPPORTED',discovery_failed:'DISCOVERY FAILED'}[row.status]||row.status.toUpperCase();}
-function deploymentStatus(row){return {draft:'Návrh · nenasazeno',preparing:'Probíhá příprava',starting:'Spouští se',running:'Nasazeno',failed:'Deploy selhal · ověř stav',undeploying:'Probíhá undeploy',undeploy_failed:'Undeploy nedokončen',undeployed:'Odebráno · klíče smazány'}[row.status]||row.status;}
+function controlledStatus(row){return {awaiting_host_key:(t("uiAWAITINGHOSTKEYVERIFICATION")),supported:(t("uiSUPPORTED")),unsupported:(t("uiUNSUPPORTED")),discovery_failed:(t("uiDISCOVERYFAILED"))}[row.status]||row.status.toUpperCase();}
+function deploymentStatus(row){return {draft:(t("uiDraftNotDeployed")),preparing:(t("uiPreparing")),starting:(t("uiStarting")),running:(t("uiDeployed")),failed:(t("uiDeploymentFailedCheckState")),undeploying:(t("uiRemovingDeployment")),undeploy_failed:(t("uiRemovalIncomplete")),undeployed:(t("uiRemovedKeysDeleted"))}[row.status]||row.status;}
 function deploymentIDs(row){return Array.from({length:row.config.count},(_,i)=>String(row.config.tunnel_id)+(i?'_'+i:''));}
 function canUndeploy(row){return ['running','failed','undeploy_failed'].includes(row.status);}
 function endpointDeployments(id){return controlledView.deployments.filter(row=>['side_a','side_b'].some(side=>row.config[side].endpoint_id===id));}
 function endpointTunnelInfo(id){
   const rows=endpointDeployments(id);if(!rows.length)return '';
-  return `<div class="endpoint-tunnels"><strong>Propojení spravovaná Fabricem</strong>${rows.map(row=>`<div><span>${esc(row.name)} · <b>${esc(deploymentStatus(row))}</b><small title="${esc(deploymentIDs(row).join(', '))}">Tunnel IDs: ${esc(deploymentIDs(row).join(', '))}</small></span>${canUndeploy(row)?`<button class="danger-button" data-deployment-undeploy="${esc(row.id)}" ${state.auth?.role==='admin'?'':'disabled'}>Undeploy</button>`:''}</div>`).join('')}</div>`;
+  return `<div class="endpoint-tunnels"><strong>${esc(t("uiConnectionsManagedByFabric"))}</strong>${rows.map(row=>`<div><span>${esc(row.name)} · <b>${esc(deploymentStatus(row))}</b><small title="${esc(deploymentIDs(row).join(', '))}">Tunnel IDs: ${esc(deploymentIDs(row).join(', '))}</small></span>${canUndeploy(row)?`<button class="danger-button" data-deployment-undeploy="${esc(row.id)}" ${state.auth?.role==='admin'?'':'disabled'}>${esc(t("uiUndeploy"))}</button>`:''}</div>`).join('')}</div>`;
 }
 async function undeployFromUI(id){
   const row=controlledView.deployments.find(item=>item.id===id);
   if(controlledView.busy||state.auth?.role!=='admin'||!row)return;
-  if(!window.confirm(`Undeploy ${row.name} (IDs ${deploymentIDs(row).join(', ')})? Na obou koncích zastaví tunely a odstraní jejich soubory i klíče. Sdílený switch a ostatní propojení zůstanou.`))return;
-  controlledBusy(true);$('controlled-status').textContent=`Odebírám ${row.name}…`;
-  try{await api(`/api/v1/tunnel-deployments/${encodeURIComponent(id)}/undeploy`,'POST',{},300000);controlledBusy(false);await loadControlledEndpoints(`${row.name}: odebráno, klíče smazány.`);}
+  if(!window.confirm(`${t("uiUndeploy")} ${row.name} (IDs ${deploymentIDs(row).join(', ')})? ${t("uiThisStopsTunnelsAtBothEndsAnd")}`))return;
+  controlledBusy(true);$('controlled-status').textContent=`${t("uiRemoving")} ${row.name}…`;
+  try{await api(`/api/v1/tunnel-deployments/${encodeURIComponent(id)}/undeploy`,'POST',{},300000);controlledBusy(false);await loadControlledEndpoints(`${row.name}: ${t("uiRemovedKeysDeleted2")}`);}
   catch(error){controlledBusy(false);await loadControlledEndpoints();$('controlled-status').textContent=diagnostic(error.message);}
   finally{controlledBusy(false);}
 }
 function renderControlledEndpoints(message=''){
-  $('controlled-list').innerHTML=controlledView.rows.map(row=>{const system=row.snapshot?.system,keys=row.host_keys||[];return `<article class="controlled-card ${controlledTone(row)}"><header><div><span class="eyebrow">SSH · ${esc(row.address)}:${esc(row.port)}</span><h3>${system?`${esc(system.distribution)} ${esc(system.version)}`:'Controlled Endpoint'}</h3></div><span class="controlled-state">● ${esc(controlledStatus(row))}</span></header>${system?`<div class="controlled-facts"><span>${esc(system.os)}</span><span>${esc(system.architecture)}</span><span>snapshot ${esc(new Date(row.discovered_at).toLocaleString(locale()))}</span></div>`:''}${endpointTunnelInfo(row.id)}${row.error?`<p class="controlled-error">${esc(row.error)}</p>`:''}${row.status==='awaiting_host_key'?`<div class="host-key-review"><strong>Ověř SSH host key mimo Fabric</strong>${keys.map(key=>`<label><input type="radio" name="host-key-${esc(row.id)}" value="${esc(key.fingerprint)}" ${keys.length===1?'checked':''}><code>${esc(key.fingerprint)}</code><small>${esc(key.type)} · ${esc(key.bits)} bit</small></label>`).join('')}<button class="primary" data-controlled-confirm="${esc(row.id)}">Potvrdit a spustit discovery</button></div>`:`<div class="controlled-placeholder"><button class="quiet-button" data-controlled-refresh="${esc(row.id)}">↻ Refresh discovery</button>${row.status==='supported'?`<button class="primary" data-deployment-from="${esc(row.id)}">${endpointDeployments(row.id).some(item=>item.status!=='undeployed'&&item.status!=='draft')?'+ Další tunel':'Create tunnel'}</button>`:''}</div>`}</article>`}).join('')||'<div class="service-empty">Zatím žádné Controlled Endpoints.</div>';
-  $('controlled-status').textContent=message||`${controlledView.rows.length} endpointů · discovery snapshot se automaticky neobnovuje`;
+  $('controlled-list').innerHTML=controlledView.rows.map(row=>{const system=row.snapshot?.system,keys=row.host_keys||[];return `<article class="controlled-card ${controlledTone(row)}"><header><div><span class="eyebrow">SSH · ${esc(row.address)}:${esc(row.port)}</span><h3>${system?`${esc(system.distribution)} ${esc(system.version)}`:'Controlled Endpoint'}</h3></div><span class="controlled-state">● ${esc(controlledStatus(row))}</span></header>${system?`<div class="controlled-facts"><span>${esc(system.os)}</span><span>${esc(system.architecture)}</span><span>snapshot ${esc(new Date(row.discovered_at).toLocaleString(locale()))}</span></div>`:''}${endpointTunnelInfo(row.id)}${row.error?`<p class="controlled-error">${esc(row.error)}</p>`:''}${row.status==='awaiting_host_key'?`<div class="host-key-review"><strong>${esc(t("uiVerifyTheSSHHostKeyOutsideFabric"))}</strong>${keys.map(key=>`<label><input type="radio" name="host-key-${esc(row.id)}" value="${esc(key.fingerprint)}" ${keys.length===1?'checked':''}><code>${esc(key.fingerprint)}</code><small>${esc(key.type)} · ${esc(key.bits)} bit</small></label>`).join('')}<button class="primary" data-controlled-confirm="${esc(row.id)}">${esc(t("uiConfirmAndRunDiscovery"))}</button></div>`:`<div class="controlled-placeholder"><button class="quiet-button" data-controlled-refresh="${esc(row.id)}">↻ ${esc(t("uiRefreshDiscovery"))}</button>${row.status==='supported'?`<button class="primary" data-deployment-from="${esc(row.id)}">${endpointDeployments(row.id).some(item=>item.status!=='undeployed'&&item.status!=='draft')?(t("uiAnotherTunnel")):(t("uiCreateTunnel"))}</button>`:''}</div>`}</article>`}).join('')||("<div class=\"service-empty\">"+t("uiNoControlledEndpointsYet")+"</div>");
+  $('controlled-status').textContent=message||`${controlledView.rows.length} ${t("uiEndpointsDiscoverySnapshotsDoNotRefreshAutomatically")}`;
   $('controlled-new').disabled=controlledView.busy||state.auth?.role!=='admin';
   $('deployment-new').disabled=controlledView.busy||state.auth?.role!=='admin'||!canCreateDeployment();
-  $('deployment-new').title=!canCreateDeployment()?'Vyber podporovaný Controlled Endpoint a existující switch, nebo dva Controlled Endpoints.':'';
+  $('deployment-new').title=!canCreateDeployment()?(t("uiSelectASupportedControlledEndpointAndAn")):'';
 }
 async function loadControlledEndpoints(message=''){
   if(controlledView.busy)return;controlledBusy(true);
@@ -2464,8 +2789,8 @@ $('controlled-new').addEventListener('click',()=>{if(state.auth?.role!=='admin')
 $('controlled-cancel').addEventListener('click',()=>{$('controlled-form').hidden=true;$('controlled-form-status').textContent='';});
 $('controlled-read').addEventListener('click',()=>loadControlledEndpoints());
 $('controlled-form').addEventListener('submit',async event=>{
-  event.preventDefault();if(controlledView.busy||state.auth?.role!=='admin')return;controlledBusy(true);$('controlled-form-status').textContent='Načítám SSH host key…';
-  try{await api('/api/v1/controlled-endpoints','POST',{address:$('controlled-address').value.trim(),port:Number($('controlled-port').value)});$('controlled-form').hidden=true;controlledBusy(false);await loadControlledEndpoints('Host key byl načten. Před pokračováním ověř fingerprint.');}
+  event.preventDefault();if(controlledView.busy||state.auth?.role!=='admin')return;controlledBusy(true);$('controlled-form-status').textContent=(t("uiReadingSSHHostKey"));
+  try{await api('/api/v1/controlled-endpoints','POST',{address:$('controlled-address').value.trim(),port:Number($('controlled-port').value)});$('controlled-form').hidden=true;controlledBusy(false);await loadControlledEndpoints((t("uiHostKeyLoadedVerifyItsFingerprintBefore")));}
   catch(error){$('controlled-form-status').textContent=diagnostic(error.message);}finally{controlledBusy(false);}
 });
 $('controlled-list').addEventListener('click',async event=>{
@@ -2478,9 +2803,9 @@ $('controlled-list').addEventListener('click',async event=>{
     catch(error){$('controlled-status').textContent=diagnostic(error.message);}finally{controlledBusy(false);}return;
   }
   const button=event.target.closest('[data-controlled-confirm]');if(!button||controlledView.busy||state.auth?.role!=='admin')return;
-  const id=button.dataset.controlledConfirm,choice=document.querySelector(`input[name="host-key-${CSS.escape(id)}"]:checked`);if(!choice){$('controlled-status').textContent='Vyber ověřený fingerprint.';return;}
-  controlledBusy(true);$('controlled-status').textContent='Připojuji se přes SSH a provádím jednorázové discovery…';
-  try{const result=await api(`/api/v1/controlled-endpoints/${encodeURIComponent(id)}/confirm`,'POST',{fingerprint:choice.value});controlledBusy(false);await loadControlledEndpoints(result.status==='supported'?'Endpoint je podporovaný.':'Discovery dokončeno; pro tento systém nemáme podporovanou šablonu.');}
+  const id=button.dataset.controlledConfirm,choice=document.querySelector(`input[name="host-key-${CSS.escape(id)}"]:checked`);if(!choice){$('controlled-status').textContent=(t("uiSelectAVerifiedFingerprint"));return;}
+  controlledBusy(true);$('controlled-status').textContent=(t("uiConnectingOverSSHAndRunningOneTime"));
+  try{const result=await api(`/api/v1/controlled-endpoints/${encodeURIComponent(id)}/confirm`,'POST',{fingerprint:choice.value});controlledBusy(false);await loadControlledEndpoints(result.status==='supported'?(t("uiTheEndpointIsSupported")):(t("uiDiscoveryCompleteNoSupportedTemplateIsAvailable")));}
   catch(error){$('controlled-status').textContent=diagnostic(error.message);}finally{controlledBusy(false);}
 });
 function deploymentSwitches(){return (state.data?.endpoints||[]).filter(row=>row.kind==='switch'&&row.source!=='discovered'&&row.switch_socket);}
@@ -2488,7 +2813,7 @@ function canCreateDeployment(){const n=supportedControlledEndpoints().length;ret
 function endpointOption(row){return `<option value="${esc(row.id)}">${esc(row.address)}:${esc(row.port)} · ${esc(row.snapshot?.system?.distribution||'Unknown')} ${esc(row.snapshot?.system?.version||'')}</option>`;}
 let deploymentAddressHint={key:'',ip:'',error:''};
 function deploymentHost(id){return supportedControlledEndpoints().find(row=>row.id===id);}
-function deploymentHostName(row){return row?.name||row?.snapshot?.system?.hostname||row?.address||'Host';}
+function deploymentHostName(row){return row?.name||row?.snapshot?.system?.hostname||row?.address||(t("uiHost"));}
 function deploymentDefaultIP(input,address,key){
   if(input.dataset.targetKey!==key||!input.value||input.value===input.dataset.autoValue)input.value=address;
   input.dataset.targetKey=key;input.dataset.autoValue=address;
@@ -2497,12 +2822,12 @@ async function loadDeploymentAddressHint(){
   if($('deployment-mode').value!=='switch')return;
   const endpoint_id=$('deployment-a-endpoint').value,switch_id=$('deployment-existing-switch').value,key=endpoint_id+'|'+switch_id;
   if(deploymentAddressHint.key===key)return;
-  deploymentAddressHint={key,ip:'',error:'Zjišťuji místní transportní IP…'};updateDeploymentForm();
+  deploymentAddressHint={key,ip:'',error:(t("uiDeterminingLocalTransportIP"))};updateDeploymentForm();
   try{
     const data=await api('/api/v1/tunnel-deployment-hints?'+new URLSearchParams({endpoint_id,switch_id}));
     if(deploymentAddressHint.key!==key)return;
-    deploymentAddressHint={key,ip:data.transport_ip||'',error:data.transport_ip?'':'Transportní IP nelze určit; vyplň ji ručně.'};
-  }catch(error){if(deploymentAddressHint.key!==key)return;deploymentAddressHint={key,ip:'',error:'Transportní IP nelze určit; vyplň ji ručně. '+diagnostic(error.message)};}
+    deploymentAddressHint={key,ip:data.transport_ip||'',error:data.transport_ip?'':(t("uiCannotDetermineTransportIPEnterItManually"))};
+  }catch(error){if(deploymentAddressHint.key!==key)return;deploymentAddressHint={key,ip:'',error:(t("uiCannotDetermineTransportIPEnterItManually")+" ")+diagnostic(error.message)};}
   updateDeploymentForm();
 }
 function updateDeploymentForm(){
@@ -2525,7 +2850,7 @@ function updateDeploymentForm(){
   $('deployment-secret-wrap').hidden=$('deployment-secret-mode').value!=='provided';
   $('deployment-tunnel-id').disabled=$('deployment-auto-id').checked;
   $('deployment-tunnel-id').required=!$('deployment-auto-id').checked;
-  $('deployment-software-hint').textContent=(local?'Platí pro host přes SSH. U switche se použije instalovaný software.':'Platí pro oba hosty přes SSH.')+(bundle?' Vybraný balíček Fabric přenese na SSH hosty; platforma a SHA-256 obou binárek se ověří před spuštěním.':git?' Sestavení proběhne na cílovém hostu z vybrané Git revize.':' Binárky tuntom a tuntomctl musíš předem dodat do /opt/tuntom/deployments/<název>/incoming/ na každém SSH hostu. Fabric je nesestaví ani nestáhne; SHA-256 ověří soubor tuntom. Musí odpovídat systému a architektuře hostu.');
+  $('deployment-software-hint').textContent=(local?(t("uiAppliesToTheSSHHostTheSwitch")):(t("uiAppliesToBothSSHHosts")))+(bundle?(" "+t("uiFabricTransfersTheSelectedBundleToThe")):git?(" "+t("uiTheSelectedGitRevisionIsBuiltOn")):(" "+t("uiPlaceTuntomAndTuntomctlInOptTuntom")));
   const a=deploymentHost($('deployment-a-endpoint').value),b=deploymentHost($('deployment-b-endpoint').value);
   const sw=deploymentSwitches().find(row=>row.id===$('deployment-existing-switch').value);
   const host=deploymentHostName(a),target=local?(sw?[sw.name,sw.host].filter(Boolean).join(' · '):'Switch'):deploymentHostName(b);
@@ -2534,19 +2859,19 @@ function updateDeploymentForm(){
   const ip=local?(deploymentAddressHint.key===hintKey?deploymentAddressHint.ip:''):(b?.address||'');
   deploymentDefaultIP($('deployment-a-peer'),ip,local?hintKey:('ssh|'+(b?.id||'')));
   deploymentDefaultIP($('deployment-b-peer'),a?.address||'','ssh|'+(a?.id||''));
-  $('deployment-a-peer-hint').textContent=local?(ip?'Cílová IP switche podle místní trasy k hostu; dostupnost z protistrany není ověřena.':deploymentAddressHint.error||'Vyplň cílovou transportní IP switche.'):'Cílová IP druhého hostu; výchozí je jeho SSH adresa.';
+  $('deployment-a-peer-hint').textContent=local?(ip?(t("uiSwitchDestinationIPFromTheLocalRoute")):deploymentAddressHint.error||(t("uiEnterTheSwitchDestinationTransportIP"))):(t("uiDestinationIPOfTheOtherHostDefaults"));
   const port=$('deployment-b-port');
   const used=new Set((sw?.switch_detail?.ports||[]).map(item=>item.name));
   const count=Number($('deployment-count').value);
   const collision=local&&port.value&&Array.from({length:Math.min(64,Math.max(0,count||0))},(_,i)=>port.value+(i?'_'+i:'')).find(name=>used.has(name));
-  port.setCustomValidity(collision?'Port '+collision+' je na tomto switchi již obsazený.':'');
-  $('deployment-summary').textContent=`${$('deployment-count').value} × tunel · ${host} ↔ ${target} · ID ${$('deployment-auto-id').checked?'automaticky':$('deployment-tunnel-id').value||'nezadané'}`;
+  port.setCustomValidity(collision?'Port '+collision+(" "+t("uiIsAlreadyInUseOnThisSwitch")):'');
+  $('deployment-summary').textContent=`${$('deployment-count').value} × tunel · ${host} ↔ ${target} · ID ${$('deployment-auto-id').checked?(t("uiAutomatically")):$('deployment-tunnel-id').value||(t("uiNotSpecified"))}`;
 }
 function openDeploymentForm(endpointId=''){
   loadDeploymentBundles();
   if(state.auth?.role!=='admin')return;
   const supported=supportedControlledEndpoints();
-  if(!canCreateDeployment()){$('controlled-status').textContent='Vyber podporovaný Controlled Endpoint a existující switch, nebo dva Controlled Endpoints.';return;}
+  if(!canCreateDeployment()){$('controlled-status').textContent=(t("uiSelectASupportedControlledEndpointAndAn"));return;}
   const switches=deploymentSwitches();
   $('deployment-existing-switch').innerHTML=switches.map(row=>`<option value="${esc(row.id)}">${esc(row.name)} · ${esc(row.host)} · ${esc(row.switch_socket)}</option>`).join('');
   $('deployment-mode').value=switches.length?'switch':'ssh';
@@ -2562,10 +2887,10 @@ function openDeploymentForm(endpointId=''){
 function renderDeployments(){
   $('deployment-list').innerHTML=controlledView.deployments.map(row=>{
     const c=row.config,a=controlledView.rows.find(item=>item.id===c.side_a.endpoint_id),b=controlledView.rows.find(item=>item.id===c.side_b.endpoint_id),deployable=['draft','failed'].includes(row.status);
-    const allocation=c.id_allocation==='automatic'?'automaticky přiděleno':c.id_allocation==='manual'?'zvoleno ručně':'způsob přidělení nezaznamenán';
+    const allocation=c.id_allocation==='automatic'?(t("uiAutomaticallyAssigned")):c.id_allocation==='manual'?(t("uiManuallySelected")):(t("uiAllocationMethodNotRecorded"));
     const archives=['deploy','undeploy'].map(kind=>`<button class="quiet-button deployment-archive" data-deployment-archive="${esc(row.id)}" data-archive-kind="${kind}">↓ ${kind}_runbook_${esc(row.name)}.tar.gz</button>`).join('');
-    return `<article class="deployment-card ${esc(row.status)}"><header><div><span class="deployment-state">${esc(deploymentStatus(row))}</span><h3>${esc(row.name)}</h3></div><span class="tag">ID ${esc(c.tunnel_id)} · ${esc(allocation)}</span></header><p>${esc(a?.address||c.side_a.switch_name||c.side_a.endpoint_id)} <strong>${esc(c.side_a.role)}</strong> ↔ <strong>${esc(c.side_b.role)}</strong> ${esc(b?.address||c.side_b.switch_name||c.side_b.endpoint_id)}</p><p>Tunnel IDs: ${esc(deploymentIDs(row).join(', '))}</p><p class="muted">Stav poslední operace · ${esc(new Date(row.updated_at).toLocaleString(locale()))}. Živý provoz ověř v topologii.</p>${Object.entries(row.side_states||{}).map(([side,result])=>`<p>${side==='side_a'?'Host':'Cíl'}: ${esc(result.state)}${result.error?' · '+esc(result.error):''}</p>`).join('')}${row.last_error?`<p class="controlled-error">${esc(row.last_error)}</p>`:''}<div class="button-row">${deployable?`<button class="primary" data-deployment-run="${esc(row.id)}" ${state.auth?.role==='admin'?'':'disabled'}>${row.status==='failed'?'Retry deploy':'Deploy'}</button>`:''}${canUndeploy(row)?`<button class="danger-button" data-deployment-undeploy="${esc(row.id)}" ${state.auth?.role==='admin'?'':'disabled'}>Undeploy</button>`:''}</div>${row.status==='undeployed'?`<button class="danger-button" data-deployment-delete="${esc(row.id)}" ${state.auth?.role==='admin'?'':'disabled'}>Smazat záznam</button>`:''}<div class="deployment-archives">${archives}</div><details><summary>Jednotlivé soubory · ${esc(row.scripts.length)}</summary><div class="deployment-scripts">${row.scripts.map(name=>`<button class="quiet-button" data-deployment-script="${esc(row.id)}" data-script-name="${esc(name)}">${esc(name)}</button>`).join('')}</div></details></article>`;
-  }).join('')||'<div class="service-empty">Zatím žádné tunnel runbooky.</div>';
+    return `<article class="deployment-card ${esc(row.status)}"><header><div><span class="deployment-state">${esc(deploymentStatus(row))}</span><h3>${esc(row.name)}</h3></div><span class="tag">ID ${esc(c.tunnel_id)} · ${esc(allocation)}</span></header><p>${esc(a?.address||c.side_a.switch_name||c.side_a.endpoint_id)} <strong>${esc(c.side_a.role)}</strong> ↔ <strong>${esc(c.side_b.role)}</strong> ${esc(b?.address||c.side_b.switch_name||c.side_b.endpoint_id)}</p><p>Tunnel IDs: ${esc(deploymentIDs(row).join(', '))}</p><p class="muted">${esc(t("uiLastOperationStatus"))} · ${esc(new Date(row.updated_at).toLocaleString(locale()))}. ${esc(t("uiCheckLiveTrafficInTheTopology"))}</p>${Object.entries(row.side_states||{}).map(([side,result])=>`<p>${side==='side_a'?(t("uiHost")):(t("uiTarget"))}: ${esc(result.state)}${result.error?' · '+esc(result.error):''}</p>`).join('')}${row.last_error?`<p class="controlled-error">${esc(row.last_error)}</p>`:''}<div class="button-row">${deployable?`<button class="primary" data-deployment-run="${esc(row.id)}" ${state.auth?.role==='admin'?'':'disabled'}>${row.status==='failed'?(t("uiRetryDeploy")):(t("uiDeploy"))}</button>`:''}${canUndeploy(row)?`<button class="danger-button" data-deployment-undeploy="${esc(row.id)}" ${state.auth?.role==='admin'?'':'disabled'}>${esc(t("uiUndeploy"))}</button>`:''}</div>${row.status==='undeployed'?`<button class="danger-button" data-deployment-delete="${esc(row.id)}" ${state.auth?.role==='admin'?'':'disabled'}>${esc(t("uiDeleteRecord"))}</button>`:''}<div class="deployment-archives">${archives}</div><details><summary>${esc(t("uiIndividualFiles"))} · ${esc(row.scripts.length)}</summary><div class="deployment-scripts">${row.scripts.map(name=>`<button class="quiet-button" data-deployment-script="${esc(row.id)}" data-script-name="${esc(name)}">${esc(name)}</button>`).join('')}</div></details></article>`;
+  }).join('')||("<div class=\"service-empty\">"+t("uiNoTunnelRunbooksYet")+"</div>");
 }
 $('deployment-new').addEventListener('click',()=>openDeploymentForm());
 $('deployment-cancel').addEventListener('click',()=>{$('deployment-form').hidden=true;$('deployment-form-status').textContent='';});
@@ -2588,8 +2913,8 @@ $('deployment-form').addEventListener('submit',async event=>{
   event.preventDefault();if(controlledView.busy||state.auth?.role!=='admin')return;
   const initiator=$('deployment-initiator').value,source=$('deployment-software').value,mode=$('deployment-secret-mode').value;
   const body={name:$('deployment-name').value.trim(),tunnel_id:$('deployment-auto-id').checked?null:Number($('deployment-tunnel-id').value),count:Number($('deployment-count').value),side_a:deploymentSide('a',initiator==='a'?'initiator':'listener'),side_b:deploymentSide('b',initiator==='b'?'initiator':'listener'),software:source==='git_build'?{source,revision:$('deployment-revision').value.trim()}:source==='bundle'?{source,bundle_id:$('deployment-bundle').value}:{source,sha256:$('deployment-sha').value.trim()},secret:mode==='provided'?{mode,value:$('deployment-secret').value.trim()}:{mode}};
-  controlledBusy(true);$('deployment-form-status').textContent='Generuji validovaný runbook…';
-  try{await api('/api/v1/tunnel-deployments','POST',body);$('deployment-secret').value='';$('deployment-form').hidden=true;controlledBusy(false);await loadControlledEndpoints(`Runbook ${body.name} byl vytvořen; na endpointy se nic neposlalo.`);}
+  controlledBusy(true);$('deployment-form-status').textContent=(t("uiGeneratingValidatedRunbook"));
+  try{await api('/api/v1/tunnel-deployments','POST',body);$('deployment-secret').value='';$('deployment-form').hidden=true;controlledBusy(false);await loadControlledEndpoints(`Runbook ${body.name} ${t("uiWasCreatedNothingWasSentToThe")}`);}
   catch(error){$('deployment-form-status').textContent=diagnostic(error.message);}finally{controlledBusy(false);}
 });
 $('deployment-list').addEventListener('click',async event=>{
@@ -2597,9 +2922,9 @@ $('deployment-list').addEventListener('click',async event=>{
   if(remove){
     if(controlledView.busy||state.auth?.role!=='admin')return;
     const row=controlledView.deployments.find(item=>item.id===remove.dataset.deploymentDelete);
-    if(!row||row.status!=='undeployed'||!window.confirm(`Smazat záznam odebraného spojení ${row.name}? Auditní historie zůstane zachována.`))return;
+    if(!row||row.status!=='undeployed'||!window.confirm(`${t("uiDeleteTheRemovedConnectionRecord")} ${row.name}? ${t("uiAuditHistoryWillBePreserved")}`))return;
     controlledBusy(true);
-    try{await api(`/api/v1/tunnel-deployments/${encodeURIComponent(row.id)}/delete`,'POST',{});controlledBusy(false);await loadControlledEndpoints('Záznam spojení smazán.');}
+    try{await api(`/api/v1/tunnel-deployments/${encodeURIComponent(row.id)}/delete`,'POST',{});controlledBusy(false);await loadControlledEndpoints((t("uiConnectionRecordDeleted")));}
     catch(error){$('controlled-status').textContent=diagnostic(error.message);}finally{controlledBusy(false);}return;
   }
 
@@ -2613,12 +2938,12 @@ $('deployment-list').addEventListener('click',async event=>{
     }catch(error){$('controlled-status').textContent=diagnostic(error.message);}return;
   }
   const deploy=event.target.closest('[data-deployment-run]');
-  if(deploy){if(controlledView.busy||state.auth?.role!=='admin')return;const row=controlledView.deployments.find(item=>item.id===deploy.dataset.deploymentRun);if(!row||!window.confirm(`Deploy ${row.name}? ${row.config.side_a.switch_id||row.config.side_b.switch_id?"SSH host se připraví podle runbooku; u existujícího switche se použijí místní binárky bez apt/build.":"Oba SSH endpointy se připraví podle runbooku."} Spustí se screen procesy.`))return;controlledBusy(true);$('controlled-status').textContent=`Deployuji ${row.name}: nejdřív listener, potom initiator…`;try{await api(`/api/v1/tunnel-deployments/${encodeURIComponent(row.id)}/deploy`,'POST',{},1200000);controlledBusy(false);await loadControlledEndpoints(`Deployment ${row.name} běží.`);}catch(error){controlledBusy(false);await loadControlledEndpoints();$('controlled-status').textContent=diagnostic(error.message);}finally{controlledBusy(false);}return;}
+  if(deploy){if(controlledView.busy||state.auth?.role!=='admin')return;const row=controlledView.deployments.find(item=>item.id===deploy.dataset.deploymentRun);if(!row||!window.confirm(`${t("uiDeploy")} ${row.name}? ${row.config.side_a.switch_id||row.config.side_b.switch_id?(t("uiTheSSHHostWillBePreparedUsing")):(t("uiBothSSHEndpointsWillBePreparedUsing"))} ${t("uiScreenProcessesWillBeStarted")}`))return;controlledBusy(true);$('controlled-status').textContent=`${t("uiDeploying")} ${row.name}: ${t("uiListenerFirstThenInitiator")}`;try{await api(`/api/v1/tunnel-deployments/${encodeURIComponent(row.id)}/deploy`,'POST',{},1200000);controlledBusy(false);await loadControlledEndpoints(`Deployment ${row.name} ${t("uiIsRunning")}`);}catch(error){controlledBusy(false);await loadControlledEndpoints();$('controlled-status').textContent=diagnostic(error.message);}finally{controlledBusy(false);}return;}
   const button=event.target.closest('[data-deployment-script]');if(!button)return;
   try{const data=await api(`/api/v1/tunnel-deployments/${encodeURIComponent(button.dataset.deploymentScript)}/script?name=${encodeURIComponent(button.dataset.scriptName)}`);$('deployment-script-title').textContent=data.name;$('deployment-script-content').textContent=data.content;$('deployment-script-dialog').showModal();}
   catch(error){$('controlled-status').textContent=diagnostic(error.message);}
 });
-$('deployment-script-copy').addEventListener('click',async()=>{await navigator.clipboard.writeText($('deployment-script-content').textContent);$('deployment-script-copy').textContent='Copied';setTimeout(()=>$('deployment-script-copy').textContent='Copy',1200);});
+$('deployment-script-copy').addEventListener('click',async()=>{await navigator.clipboard.writeText($('deployment-script-content').textContent);$('deployment-script-copy').textContent=(t("uiCopied"));setTimeout(()=>$('deployment-script-copy').textContent=(t("uiCopy")),1200);});
 let bundleBusy=false;
 function updateBundleForm(){
   const build=$('bundle-source').value==='build',admin=state.auth?.role==='admin';
@@ -2626,11 +2951,11 @@ function updateBundleForm(){
   $('bundle-build-fields').hidden=!build;$('bundle-upload-fields').hidden=build;
   $('bundle-endpoint').required=build;$('bundle-endpoint').disabled=!build||bundleBusy||!admin;
   for(const name of ['tuntom','tuntomctl']){$(`bundle-${name}`).required=!build;$(`bundle-${name}`).disabled=build||bundleBusy||!admin;}
-  $('bundle-submit').disabled=bundleBusy||!admin||(build&&(!state.data?.allow_write||!$('bundle-endpoint').value));$('bundle-submit').textContent=bundleBusy?'Probíhá…':build?'Sestavit balíček':'Nahrát balíček';
+  $('bundle-submit').disabled=bundleBusy||!admin||(build&&(!state.data?.allow_write||!$('bundle-endpoint').value));$('bundle-submit').textContent=bundleBusy?(t("uiWorking")):build?(t("uiBuildBundle")):(t("uiUploadBundle"));
 }
 async function loadDeploymentBundles(){
   try{const data=await api('/api/v1/binary-bundles'),selected=$('deployment-bundle').value;
-    $('deployment-bundle').innerHTML='<option value="">Vyber balíček…</option>'+data.binary_bundles.map(row=>`<option value="${esc(row.id)}">${esc(row.name)} · ${esc(row.os)} ${esc(row.version)} · ${esc(row.architecture)} · ${esc(row.revision.slice(0,12))}</option>`).join('');
+    $('deployment-bundle').innerHTML=("<option value=\"\">"+t("uiSelectABundle")+"</option>")+data.binary_bundles.map(row=>`<option value="${esc(row.id)}">${esc(row.name)} · ${esc(row.os)} ${esc(row.version)} · ${esc(row.architecture)} · ${esc(row.revision.slice(0,12))}</option>`).join('');
     if(data.binary_bundles.some(row=>row.id===selected))$('deployment-bundle').value=selected;
   }catch(error){$('deployment-form-status').textContent=diagnostic(error.message);}
 }
@@ -2642,26 +2967,26 @@ async function loadBinaryBundles(){
     $('bundle-endpoint').innerHTML=endpoints.controlled_endpoints.filter(row=>row.status==='supported').map(row=>`<option value="${esc(row.id)}">${esc(row.address)} · ${esc(row.snapshot?.system?.distribution)} ${esc(row.snapshot?.system?.version)}</option>`).join('');
     if([...$('bundle-endpoint').options].some(option=>option.value===selected))$('bundle-endpoint').value=selected;
     updateBundleForm();
-    $('bundles-list').innerHTML=data.binary_bundles.map(row=>`<article class="controlled-card"><header><div><span class="eyebrow">TUNNEL · ${esc(row.os)} ${esc(row.version)} · ${esc(row.architecture)}</span><h3>${esc(row.name)}</h3></div></header><p>Revize: <code>${esc(row.revision)}</code> · ${esc(new Date(row.created_at).toLocaleString(locale()))}</p><p class="muted">Deklarovaná platforma; ELF architektura ověřena. Knihovny a CPU nejsou otestovány na každém cílovém hostu.</p>${Object.entries(row.files).map(([name,file])=>`<p>${esc(name)} · ${(file.size/1048576).toFixed(2)} MiB<br><small class="bundle-hash">SHA-256 ${esc(file.sha256)}</small></p>`).join('')}<button class="quiet-button" data-bundle-download="${esc(row.id)}">↓ Binary bundle .tar.gz</button></article>`).join('')||'<p class="service-empty">Zatím žádné balíčky. Sestav nový z Gitu nebo nahraj hotové binárky.</p>';
+    $('bundles-list').innerHTML=data.binary_bundles.map(row=>`<article class="controlled-card"><header><div><span class="eyebrow">TUNNEL · ${esc(row.os)} ${esc(row.version)} · ${esc(row.architecture)}</span><h3>${esc(row.name)}</h3></div></header><p>${esc(t("uiRevision"))} <code>${esc(row.revision)}</code> · ${esc(new Date(row.created_at).toLocaleString(locale()))}</p><p class="muted">${esc(t("uiDeclaredPlatformELFArchitectureVerifiedLibrariesAnd"))}</p>${Object.entries(row.files).map(([name,file])=>`<p>${esc(name)} · ${(file.size/1048576).toFixed(2)} MiB<br><small class="bundle-hash">SHA-256 ${esc(file.sha256)}</small></p>`).join('')}<button class="quiet-button" data-bundle-download="${esc(row.id)}">↓ Binary bundle .tar.gz</button></article>`).join('')||("<p class=\"service-empty\">"+t("uiNoBundlesYetBuildOneFromGit")+"</p>");
   }catch(error){$('bundles-status').textContent=diagnostic(error.message);}
 }
 $('bundles-read').addEventListener('click',loadBinaryBundles);
 $('bundle-source').addEventListener('change',updateBundleForm);
 $('bundle-endpoint').addEventListener('change',updateBundleForm);
 async function bundleFile(input){
-  const file=input.files[0];if(!file||file.size>32*1024*1024)throw new Error('Vyber binárku do 32 MiB.');
-  return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.onerror=()=>reject(new Error('Soubor nelze přečíst.'));reader.readAsDataURL(file);});
+  const file=input.files[0];if(!file||file.size>32*1024*1024)throw new Error((t("uiSelectABinaryUpTo32MiB")));
+  return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.onerror=()=>reject(new Error((t("uiCannotReadTheFile"))));reader.readAsDataURL(file);});
 }
 $('bundle-form').addEventListener('submit',async event=>{
   event.preventDefault();if(bundleBusy||state.auth?.role!=='admin')return;
   const build=$('bundle-source').value==='build';
   const body={name:$('bundle-name').value.trim(),revision:$('bundle-revision').value.trim()};
   if(build){if(!state.data?.allow_write||!$('bundle-endpoint').value)return;body.endpoint_id=$('bundle-endpoint').value;}
-  bundleBusy=true;updateBundleForm();$('bundles-status').textContent=build?'Sestavuji na vybraném SSH hostu…':'Nahrávám binárky…';
+  bundleBusy=true;updateBundleForm();$('bundles-status').textContent=build?(t("uiBuildingOnTheSelectedSSHHost")):(t("uiUploadingBinaries"));
   try{
     if(!build){body.os='ubuntu';body.version='26.04';body.architecture='x86_64';body.files={tuntom:await bundleFile($('bundle-tuntom')),tuntomctl:await bundleFile($('bundle-tuntomctl'))};}
     const row=await api('/api/v1/binary-bundles'+(build?'/build':''),'POST',body,build?960000:120000);
-    $('bundles-status').textContent=`Balíček ${row.name} uložen. Je dostupný při tvorbě tunelu.`;
+    $('bundles-status').textContent=`${t("uiBundle")} ${row.name} ${t("uiSavedItIsAvailableWhenCreatingA")}`;
     for(const name of ['tuntom','tuntomctl'])$(`bundle-${name}`).value='';
     await loadBinaryBundles();
   }catch(error){$('bundles-status').textContent=diagnostic(error.message);}finally{bundleBusy=false;updateBundleForm();}
@@ -2828,11 +3153,11 @@ function userBusy(value){
 function editUser(user=null){
   usersEditor.editing=user?.username ?? null;
   $("user-form").hidden=false;
-  $("user-form-title").textContent=user?`Upravit účet ${user.username}`:"Nový účet";
+  $("user-form-title").textContent=user?`${t("uiEditAccount")} ${user.username}`:(t("uiNewAccount"));
   $("user-name").value=user?.username || "";$("user-name").readOnly=!!user;
   $("user-role").value=user?.role || "admin-ro";$("user-enabled").checked=user?.enabled ?? true;
   $("user-password").value="";$("user-password").required=!user;
-  $("user-password-help").textContent=user?"Prázdné heslo zachová stávající. Změna účtu ukončí jeho stávající relace.":"Zadej heslo pro nový účet. Do serveru se posílá pouze verifier.";
+  $("user-password-help").textContent=user?(t("uiLeaveThePasswordEmptyToKeepIt")):(t("uiEnterAPasswordForTheNewAccount"));
   $("users-status").textContent="";
   $(user?"user-role":"user-name").focus();
   $("user-form").scrollIntoView({block:"nearest"});
@@ -2842,7 +3167,7 @@ async function loadUsers(message=""){
   if(state.auth?.role!=="admin")return;
   try{
     const result=await api("/api/v1/users");usersEditor.users=result.users;
-    $("users-list").innerHTML=result.users.map(user=>`<div class="user-row ${user.enabled?'':'user-inactive'}"><div><strong>${esc(user.username)}</strong>${user.username===state.auth?.username?'<small>Tvůj účet</small>':''}<small>${esc(user.created_by?`Vytvořil ${user.created_by}`:'')}${user.created_at?' · '+esc(new Date(user.created_at).toLocaleDateString(locale())):''}</small></div><span>${esc(user.role==='admin'?'Plná správa':'Pouze prohlížení')}</span><span class="user-state">${user.enabled?'● Aktivní':'○ Neaktivní'}</span><div class="button-row"><button class="quiet-button" data-user-edit="${esc(user.username)}">Upravit</button><button class="danger-button" data-user-delete="${esc(user.username)}">Smazat</button></div></div>`).join("")||`<p class="muted">Zatím žádné lokální účty. Přidej účet pro jmenný přístup a audit.</p>`;
+    $("users-list").innerHTML=result.users.map(user=>`<div class="user-row ${user.enabled?'':'user-inactive'}"><div><strong>${esc(user.username)}</strong>${user.username===state.auth?.username?("<small>"+t("uiYourAccount")+"</small>"):''}<small>${esc(user.created_by?`${t("uiCreatedBy")} ${user.created_by}`:'')}${user.created_at?' · '+esc(new Date(user.created_at).toLocaleDateString(locale())):''}</small></div><span>${esc(user.role==='admin'?(t("uiFullAdministration")):(t("uiReadOnly")))}</span><span class="user-state">${user.enabled?(t("uiActive")):(t("uiInactive"))}</span><div class="button-row"><button class="quiet-button" data-user-edit="${esc(user.username)}">${esc(t("uiEdit"))}</button><button class="danger-button" data-user-delete="${esc(user.username)}">${esc(t("uiDelete"))}</button></div></div>`).join("")||`<p class="muted">${esc(t("uiNoLocalAccountsYetAddAnAccount"))}</p>`;
     $("users-status").textContent=typeof message==='string'?message:"";
     if(usersEditor.busy)userBusy(true);
   }catch(error){$("users-status").textContent=diagnostic(error.message);}
@@ -2850,13 +3175,13 @@ async function loadUsers(message=""){
 $("user-form").addEventListener("submit",async event=>{
   event.preventDefault();if(usersEditor.busy)return;
   const username=$("user-name").value.trim(),password=$("user-password").value;
-  if(usersEditor.editing===null && usersEditor.users.some(user=>user.username===username)){$("users-status").textContent="Účet už existuje. Použij tlačítko Upravit.";return;}
+  if(usersEditor.editing===null && usersEditor.users.some(user=>user.username===username)){$("users-status").textContent=(t("uiTheAccountAlreadyExistsUseEdit"));return;}
   const body={username,role:$("user-role").value,enabled:$("user-enabled").checked};
-  $("user-password").value="";userBusy(true);$("users-status").textContent="Ukládám účet…";
+  $("user-password").value="";userBusy(true);$("users-status").textContent=(t("uiSavingAccount"));
   try{
     if(password)body.password=await passwordRecord(password);
     await api("/api/v1/users","POST",body,30000);closeUserEditor();
-    await loadUsers(`Účet ${username} byl uložen.`);
+    await loadUsers(`${t("uiAccount")} ${username} ${t("uiWasSaved2")}`);
   }catch(error){$("users-status").textContent=diagnostic(error.message);}
   finally{userBusy(false);}
 });
@@ -2864,9 +3189,9 @@ $("users-list").addEventListener("click",async event=>{
   if(usersEditor.busy)return;
   const edit=event.target.closest("[data-user-edit]");
   if(edit){const user=usersEditor.users.find(user=>user.username===edit.dataset.userEdit);if(user)editUser(user);return;}
-  const button=event.target.closest("[data-user-delete]");if(!button||!window.confirm(`Smazat účet ${button.dataset.userDelete}? Tuto akci nelze vrátit. Účet můžeš místo toho deaktivovat přes Upravit.`))return;
+  const button=event.target.closest("[data-user-delete]");if(!button||!window.confirm(`${t("uiDeleteAccount")} ${button.dataset.userDelete}? ${t("uiThisCannotBeUndoneYouCanDeactivate")}`))return;
   userBusy(true);
-  try{await api(`/api/v1/users/${encodeURIComponent(button.dataset.userDelete)}/delete`,"POST",{});if(usersEditor.editing===button.dataset.userDelete)closeUserEditor();await loadUsers(`Účet ${button.dataset.userDelete} byl smazán.`);}
+  try{await api(`/api/v1/users/${encodeURIComponent(button.dataset.userDelete)}/delete`,"POST",{});if(usersEditor.editing===button.dataset.userDelete)closeUserEditor();await loadUsers(`${t("uiAccount")} ${button.dataset.userDelete} ${t("uiWasDeleted")}`);}
   catch(error){$("users-status").textContent=diagnostic(error.message);}
   finally{userBusy(false);}
 });
@@ -2898,20 +3223,21 @@ function renderWarnings() {
   const items=state.warnings.list();
   $("warning-history").hidden=!items.length;
   const present=new Set(state.data?.endpoints.map(e=>e.id) || []);
-  const layout=JSON.stringify([language,items.map(item=>[item.id,present.has(item.endpointId)])]);
+  const layout=JSON.stringify([language,items.map(item=>[item.id,item.count,item.resolved,present.has(item.endpointId)])]);
   // Keep close buttons and keyboard focus stable while only the ages change.
   if (layout !== state.warningsLayout) {
     state.warningsLayout=layout;
     $("warning-list").innerHTML=items.map(item=>{
       const reasons=item.checks.flatMap(check=>checkReasons(item,check));
       const exists=present.has(item.endpointId);
-      return `<article class="warning-balloon"><div class="warning-balloon-heading"><span class="attention-mark" aria-hidden="true">!</span><span>${esc(t("recordedWarning"))}</span><time data-warning-age="${item.id}" datetime="${esc(item.sampleId)}"></time><button class="warning-dismiss" data-dismiss-warning="${item.id}" aria-label="${esc(t("dismissWarning",{name:item.name}))}">×</button></div><button class="warning-process" data-warning-process="${esc(item.endpointId)}" ${exists ? "" : "disabled"}>${esc(item.name)} <small>PID ${item.pid}</small>${exists ? " ↗" : ""}</button>${exists ? "" : `<p class="warning-gone">${esc(t("warningProcessGone"))}</p>`}<ul>${reasons.map(reason=>`<li>${esc(reason.text)}</li>`).join("")}</ul></article>`;
+      return `<article class="warning-balloon ${item.resolved?"warning-resolved":""}"><div class="warning-balloon-heading"><span class="attention-mark" aria-hidden="true">!</span><span>${esc(t(item.resolved?"warningResolved":"recordedWarning"))}</span><time data-warning-age="${item.id}" datetime="${esc(item.sampleId)}"></time><button class="warning-dismiss" data-dismiss-warning="${item.id}" aria-label="${esc(t("dismissWarning",{name:item.name}))}">×</button></div><button class="warning-process" data-warning-process="${esc(item.endpointId)}" ${exists ? "" : "disabled"}>${esc(item.name)} <small>PID ${item.pid}</small>${exists ? " ↗" : ""}</button>${exists ? "" : `<p class="warning-gone">${esc(t("warningProcessGone"))}</p>`}<p>${esc(t("warningOccurrences",{count:item.count}))} · ${esc(t("warningFirst"))} ${esc(new Date(item.firstSampleId).toLocaleTimeString(locale()))}</p><ul>${reasons.map(reason=>`<li>${esc(reason.text)}</li>`).join("")}</ul></article>`;
     }).join("");
   }
   for (const item of items) {
     const age=$("warning-list").querySelector(`[data-warning-age="${item.id}"]`), seconds=state.warnings.age(item).toLocaleString(locale());
     age.textContent=`−${seconds} s`;
     age.setAttribute("aria-label",t("secondsAgo",{seconds}));
+    age.title=new Date(item.sampleId).toLocaleString(locale());
   }
 }
 $("warning-clear").addEventListener("click",()=>{
@@ -3257,8 +3583,8 @@ function controlState(e) {
   const authority=available && typeof metrics.control_authority_keys==="string" &&
     /^[0-9a-f]{64}(,[0-9a-f]{64})*$/.test(metrics.control_authority_keys);
   return {authority, canDiscover:!!e?.control && available && enabled===true && discovery===true && initiate===true,
-    reason:!available || [enabled,discovery,initiate].includes(null) ? "controlUnknown" :
-      enabled && discovery && initiate && e?.control ? "controlAvailable" : "controlNoDiscover"};
+    reason:!available ? "controlUnavailable" : enabled===false ? "controlDisabled" : discovery===false ? "controlDiscoveryDisabled" : initiate===false ? "controlCannotInitiate" :
+      [enabled,discovery,initiate].includes(null) ? "controlUnknown" : e?.control ? "controlAvailable" : "controlNoDiscover"};
 }
 function authorityBadge(e) {
   return (controlState(e).authority ? ` <span class="authority-badge" title="${esc(t("controlAuthorityHint"))}">⚿ ${esc(t("controlAuthority"))}</span>` : "")+accessBadge(e);
@@ -3284,6 +3610,23 @@ function accessDetail(e){
   if(a?.parent_id||e.access_parent_id){const id=a?.parent_id||e.access_parent_id;rows.push([t('accessParent'),state.data?.endpoints?.find(row=>row.id===id)?.name||id]);}
   return `<section class="access-detail"><h4>${esc(t('accessTitle'))}</h4><dl>${rows.map(([key,value])=>`<dt>${esc(key)}</dt><dd>${esc(value)}</dd>`).join('')}</dl><p class="muted">${esc(t('accessConfigHint'))}</p></section>`;
 }
+function observationStatus(e) {
+  if(!e)return '';
+  const timestamp=value=>value?`${new Date(value).toLocaleString(locale())} (${t('observationAge',{seconds:Math.max(0,Math.floor((Date.now()-Date.parse(value))/1000))})})`:t('observationNever');
+  const lines=[`${t('observationPolling')}: ${timestamp(e.last_success_at || (e.status==='reachable'?e.sampled_at:null))}`];
+  if(e.error)lines.push(diagnostic(e.error));
+  const origins=state.data?.network_discovery?.origins || {};
+  const ids=e.source==='discovered'?[...new Set((e.control_routes || []).map(r=>r.origin))]:[e.id];
+  if(e.discovered_at)lines.push(`${t('observationDiscovery')}: ${timestamp(e.discovered_at)}`);
+  for(const id of ids){
+    const origin=origins[id];if(!origin)continue;
+    const name=state.data?.endpoints?.find(row=>row.id===id)?.name || id;
+    lines.push(`${name} · ${t('observationDiscovery')}: ${timestamp(origin.last_success_at || (origin.status==='ok'?origin.sampled_at:null))}`);
+    if(origin.error)lines.push(diagnostic(origin.error));
+    if(origin.no_response)lines.push(t('observationNoResponse',{count:origin.no_response}));
+  }
+  return lines.map(line=>`<p class="muted">${esc(line)}</p>`).join('');
+}
 function renderControlSettings(e) {
   const fields=["control_access","control_trusted_keys","control_authority_keys","control_enabled",
     "control_authentication_required","control_forward_enabled","control_discover_enabled","control_can_initiate",
@@ -3291,6 +3634,7 @@ function renderControlSettings(e) {
   const metrics=e?.status==="reachable" ? e.metrics || {} : {};
   $("control-settings-values").innerHTML=fields.map(key=>`<dt>${esc(key)}</dt><dd>${esc(metrics[key] ?? "—")}</dd>`).join("");
   $("control-discovery-availability").textContent=t(controlState(e).reason);
+  $("control-observation-status").innerHTML=observationStatus(e);
 }
 function parseDiscovery(text) {
   if (typeof text !== "string" || text.length > 1048576) throw new Error(t("discoveryInvalid"));
@@ -3407,12 +3751,23 @@ function applyLanguage() {
   document.title=t("title");
   document.querySelectorAll("[data-i18n]").forEach(element=>{element.textContent=t(element.dataset.i18n);});
   document.querySelectorAll("[data-i18n-placeholder]").forEach(element=>{element.placeholder=t(element.dataset.i18nPlaceholder);});
+  document.querySelectorAll("[data-i18n-title]").forEach(element=>{element.title=t(element.dataset.i18nTitle);});
   document.querySelectorAll("[data-i18n-aria]").forEach(element=>{element.setAttribute("aria-label",t(element.dataset.i18nAria));});
   document.querySelectorAll("[data-language]").forEach(button=>button.setAttribute("aria-pressed",String(button.dataset.language === language)));
   $("pause").textContent=t(state.paused ? "resume" : "pause");
   $("login-error").textContent=diagnostic(state.loginError);
   if (state.data) {render();if(state.view==="labels")renderLabelTopology();}
   else { renderDetail(); renderMetrics(); renderRules(); renderClassifier(); notice(); }
+  if(servicesView.loaded)renderServices();
+  if(!controlledView.busy){renderControlledEndpoints();renderDeployments();if(!$('deployment-form').hidden)updateDeploymentForm();}
+  if(!externalsView.busy){renderExternalsTable();if($('external-chart-dialog').open)drawExternalChart();}
+  updateBundleForm();
+  if(state.auth && !$('services-bundles').hidden && !bundleBusy)loadBinaryBundles();
+  if(state.auth && state.view==='syspiper')loadPeekProbes();
+  if(state.auth && state.view==='users' && !usersEditor.busy)loadUsers();
+  if(!$('service-form').hidden)$('service-form-title').textContent=servicesView.editing?`${t('uiEdit')} ${servicesView.editing.name}`:t('uiNewManagedService');
+  if(!$('user-form').hidden){$('user-form-title').textContent=usersEditor.editing?`${t('uiEditAccount')} ${usersEditor.editing}`:t('uiNewAccount');$('user-password-help').textContent=t(usersEditor.editing?'uiLeaveThePasswordEmptyToKeepIt':'uiEnterAPasswordForTheNewAccount');}
+
 }
 document.querySelectorAll("[data-language]").forEach(button=>button.addEventListener("click",()=>{
   language=button.dataset.language;

@@ -40,6 +40,36 @@ class NetworkTests(unittest.TestCase):
         network.update([origin()], samples())
         return network
 
+    def test_discovery_failure_preserves_success_and_counts_unanswered_paths(self):
+        n = self.make()
+        n.ingest('local', HEADER + row() + 'peer\tNO_RESPONSE\t-\t-\t-\n')
+        status = n.snapshot()[1]['origins']['local']
+        self.assertEqual(status['no_response'], 1)
+        success = status['last_success_at']
+        def fail(*args):
+            raise OSError('control access denied')
+        n.probe = fail
+        n._discover('local')
+        status = n.snapshot()[1]['origins']['local']
+        self.assertEqual(status['last_success_at'], success)
+        self.assertEqual(status['status'], 'unavailable')
+        self.assertEqual(status['error'], 'control access denied')
+
+    def test_poll_failure_preserves_last_success(self):
+        n = self.make()
+        n.ingest('local', HEADER + row())
+        token, route = next(iter(n.nodes[REMOTE]['routes'].items()))
+        n._poll_node(REMOTE, token, route)
+        success = n.snapshot()[0][0]['last_success_at']
+        self.assertIsNotNone(success)
+        def fail(*args):
+            raise OSError('timeout')
+        n.probe = fail
+        n._poll_node(REMOTE, token, route)
+        item = n.snapshot()[0][0]
+        self.assertEqual(item['last_success_at'], success)
+        self.assertEqual(item['status'], 'unavailable')
+
     def test_paths_limits_and_escaping(self):
         parsed = parse_discovery(HEADER+row(path='port:a%2Fb%25/peer'))
         self.assertEqual(parsed[0][3], [{'port':'a/b%'},{'peer':True}])

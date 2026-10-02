@@ -202,6 +202,7 @@ class Fabric:
             result["changes"] = changes(result["metrics"], previous, elapsed if previous else None)
             if result["status"] == "reachable":
                 self.baselines[endpoint.id] = (tick, result["metrics"])
+            result["last_success_at"] = result["sampled_at"] if result["status"] == "reachable" else self.samples.get(endpoint.id, {}).get("last_success_at")
             self.samples[endpoint.id] = result
         if self.history_store:
             try:

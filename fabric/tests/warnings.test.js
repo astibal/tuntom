@@ -11,7 +11,7 @@ const WarningHistory = runInNewContext(source.slice(source.indexOf("class Warnin
   source.indexOf("const $ =")) + "\nWarningHistory");
 const sample = (sampleId, endpointId = "process-a", warning = true) => ({
   endpointId, sampleId, name:endpointId, pid:123,
-  checks:warning ? [{key:"errors", state:"warn", counters:{queue_full_drops:"35"}}] : [],
+  checks:warning ? [{key:"errors", state:"warn", counters:{queue_full_drops:"35"}}] : [{key:"errors",state:"ok",counters:{}}],
   changes:{interval_seconds:5}
 });
 
@@ -36,7 +36,7 @@ test("keeps at most five warnings globally, newest first", () => {
   const history = new WarningHistory(() => now);
   for (let i = 0; i < 8; i++) {
     now += 5000;
-    history.observe([sample(String(i), "process-a"), sample(String(i), "process-b")]);
+    history.observe([sample(String(i), "process-"+i), sample(String(i), "other-"+i)]);
     assert.ok(history.list().length <= 5);
   }
   assert.equal(history.list().length, 5);
@@ -84,4 +84,26 @@ test("clear dismisses all existing warnings but allows new samples", () => {
   assert.equal(history.list().length, 0);
   history.observe([sample("two", "process-a")]);
   assert.equal(history.list().length, 1);
+});
+
+
+test("repeated increments are grouped by process and counter, with stable identity",()=>{
+ let now=0;const h=new WarningHistory(()=>now);
+ h.observe([sample('1')]);const id=h.list()[0].id;
+ now=5000;h.observe([sample('2')]);
+ assert.equal(h.list().length,1);assert.equal(h.list()[0].count,2);
+ assert.equal(h.list()[0].id,id);assert.equal(h.list()[0].firstSampleId,'1');
+ h.observe([{...sample('3'),checks:[{key:'errors',state:'warn',counters:{queue_full_drops:'2',rtt_lost:'1'}}]}]);
+ assert.equal(h.list().length,2);
+});
+test("recovery requires sustained healthy telemetry; missing telemetry cannot resolve",()=>{
+ let now=0;const h=new WarningHistory(()=>now);h.observe([sample('1')]);
+ now=5000;h.observe([sample('2','process-a',false)]);
+ now=35000;h.observe([{...sample('3'),checks:[{key:'errors',state:'unknown'}]}]);
+ assert.equal(h.list()[0].resolved,false);
+ now=40000;h.observe([sample('4','process-a',false)]);
+ for(now=45000;now<=70000;now+=5000)h.observe([sample(String(now),'process-a',false)]);
+ assert.equal(h.list()[0].resolved,true);
+ now=75000;h.observe([sample('6')]);assert.equal(h.list().length,2);
+ assert.equal(h.list()[0].resolved,false);assert.equal(h.list()[0].count,1);
 });

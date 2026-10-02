@@ -399,3 +399,8 @@ table:not(.process-table)>tbody>tr:is(.selected,[aria-selected="true"],:hover,:f
 
 .access-badge { display:inline-block; font:10px var(--mono,monospace); color:#a8c786; border:1px solid #5d7648; border-radius:3px; padding:1px 4px; vertical-align:middle; }
 .access-detail { border-top:1px solid var(--line,#394330); margin-top:12px; padding-top:8px; }
+
+.warning-balloon.warning-resolved{border-color:var(--green);background:var(--panel);opacity:.8}
+.warning-balloon.warning-resolved{box-shadow:inset 3px 0 var(--green)}
+.warning-resolved .warning-balloon-heading,.warning-resolved ul{color:var(--green)}
+.warning-balloon>p{font:10px/1.5 var(--mono)}

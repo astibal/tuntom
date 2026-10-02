@@ -148,7 +148,8 @@ class Network:
                         old['routes'].pop(token, None)
                 if token in node['routes'] or len(node['routes']) < 8:
                     node['routes'][token] = {'origin':origin,'path':path,'route':route,'seen':tick}
-            self.discovery_status[origin] = {'status':'ok','sampled_at':at,'responses':len(rows)}
+            self.discovery_status[origin] = {'status':'ok','sampled_at':at,'last_success_at':at,'responses':len(rows),
+                'no_response':sum(line.split('\t')[1:2] == ['NO_RESPONSE'] for line in text.splitlines()[1:])}
         self.wake.set()
 
     def _reserve(self, key, origin):
@@ -177,7 +178,9 @@ class Network:
             self.ingest(origin, self.probe(origin, 'discover', []))
         except Exception as error:
             with self.lock:
-                self.discovery_status[origin] = {'status':'unavailable','sampled_at':stamp(),'error':str(error)}
+                previous = self.discovery_status.get(origin, {})
+                self.discovery_status[origin] = {'status':'unavailable','sampled_at':stamp(),
+                    'last_success_at':previous.get('last_success_at'),'error':str(error)}
         finally:
             self._release(('discovery', origin), origin)
 
@@ -204,6 +207,7 @@ class Network:
                 elapsed = tick - previous[0] if previous else None
                 sample['changes'] = changes(sample['metrics'], previous[1] if previous and elapsed <= 15 else None,
                                              elapsed if previous else None)
+                sample['last_success_at'] = sample['sampled_at'] if sample['status'] == 'reachable' else node['sample'].get('last_success_at')
                 node['sample'] = sample
                 if sample['status'] == 'reachable':
                     node['baseline'] = (tick, sample['metrics'])

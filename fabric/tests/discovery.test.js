@@ -89,3 +89,11 @@ test('remote component marker distinguishes discovered items and does not invent
  assert.doesNotMatch(f.payloadMark({...remote,source:'local',pid:42}),/discovered-badge/);
  assert.match(f.payloadMark({...remote,discovery_stale:true}),/discoveryStale/);
 });
+
+
+test('discovery explains disabled CONTROL separately from missing initiation permission',()=>{
+ const f=fixture();
+ assert.equal(f.controlState({...capable,metrics:{...capable.metrics,control_enabled:'0'}}).reason,'controlDisabled');
+ assert.equal(f.controlState({...capable,metrics:{...capable.metrics,control_can_initiate:'0'}}).reason,'controlCannotInitiate');
+ assert.equal(f.controlState({...capable,metrics:{}}).reason,'controlUnknown');
+});

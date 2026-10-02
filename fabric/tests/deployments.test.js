@@ -4,10 +4,11 @@ const {runInNewContext}=require('node:vm');
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const source=readFileSync(join(__dirname,'../static/app.js'),'utf8');
+const t=runInNewContext(source.slice(0,source.indexOf('function diagnostic('))+';t');
 function harness(rows, endpoints){
  const fields=new Map();
  const $=id=>{if(!fields.has(id))fields.set(id,{value:'',checked:false,hidden:false,disabled:false,required:false,dataset:{},options:[{},{}],setCustomValidity(value){this.validationMessage=value;}});return fields.get(id);};
- const context={$,state:{data:{endpoints}},supportedControlledEndpoints:()=>rows};
+ const context={$,t,esc:String,state:{data:{endpoints}},supportedControlledEndpoints:()=>rows};
  const functions=source.slice(source.indexOf('function deploymentSwitches('),source.indexOf('function openDeploymentForm('))+
  source.slice(source.indexOf('function deploymentSide('),source.indexOf("$('deployment-form').addEventListener('submit'"));
  const api=runInNewContext(functions+';({deploymentSwitches,canCreateDeployment,updateDeploymentForm,deploymentSide})',context);
@@ -55,7 +56,7 @@ test('endpoint shows deployment state, IDs and undeploy; archives precede loose 
  const target={innerHTML:''};
  const helpers=source.slice(source.indexOf('function deploymentStatus('),source.indexOf('async function undeployFromUI('));
  const render=source.slice(source.indexOf('function renderDeployments('),source.indexOf("$('deployment-new').addEventListener"));
- const api=runInNewContext(helpers+render+';({endpointTunnelInfo,renderDeployments,canUndeploy})',{$:()=>target,esc:String,locale:()=> 'cs-CZ',state:{auth:{role:'admin'}},controlledView:{rows:[],deployments:[row]}});
+ const api=runInNewContext(helpers+render+';({endpointTunnelInfo,renderDeployments,canUndeploy})',{$:()=>target,t,esc:String,locale:()=> 'cs-CZ',state:{auth:{role:'admin'}},controlledView:{rows:[],deployments:[row]}});
  assert.match(api.endpointTunnelInfo('a'),/Nasazeno/);assert.match(api.endpointTunnelInfo('a'),/1, 1_1/);
  assert.match(api.endpointTunnelInfo('a'),/Undeploy/);api.renderDeployments();
  assert.ok(target.innerHTML.indexOf('deploy_runbook_vpn.tar.gz')<target.innerHTML.indexOf('undeploy_runbook_vpn.tar.gz'));
