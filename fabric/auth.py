@@ -55,6 +55,9 @@ def validate_record(record: dict) -> dict:
     return {key: record[key] for key in ("algorithm", "iterations", "salt", "stored_key", "server_key")}
 
 
+PALETTES = frozenset({"olive", "paper", "midnight", "linen"})
+
+
 class UserStore:
     def __init__(self, path: Path | None):
         self.path = Path(path) if path else None
@@ -84,6 +87,7 @@ class UserStore:
                 raise ValueError("invalid user entry")
             users[name] = {"username": name, "role": role, "enabled": item.get("enabled") is not False,
                            "password": validate_record(item.get("password")),
+                           "palette": item.get("palette") if item.get("palette") in PALETTES else "olive",
                            "created_at": str(item.get("created_at", "")), "created_by": str(item.get("created_by", ""))}
         self.generation = int(data.get("generation", 0))
         self.users = users
@@ -109,9 +113,28 @@ class UserStore:
                 raise ValueError("cannot disable or demote the last enabled admin")
             self.users[username] = {"username": username, "role": role, "enabled": enabled, "password": record,
                                     "created_at": existing["created_at"] if existing else time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                                    "created_by": existing["created_by"] if existing else actor}
+                                    "created_by": existing["created_by"] if existing else actor,
+                                    "palette": existing.get("palette", "olive") if existing else "olive"}
             self.generation += 1
             self._write()
+
+    def profile(self, username):
+        with self.lock:
+            user=self.users.get(username)
+            if not user:raise ValueError("unknown account")
+            return {"palette":user.get("palette","olive"),"persistent":bool(self.path)}
+
+    def save_profile(self, username, palette):
+        if not isinstance(palette,str) or palette not in PALETTES:raise ValueError("invalid palette")
+        with self.lock:
+            if not self.path or username not in self.users:raise ValueError("profile unavailable")
+            previous=self.users[username]
+            self.users[username]={**previous,"palette":palette}
+            try:self._write()
+            except Exception:
+                self.users[username]=previous
+                raise
+        return {"palette":palette,"persistent":True}
 
     def delete(self, username):
         with self.lock:

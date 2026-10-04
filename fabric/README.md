@@ -715,7 +715,7 @@ znovu načíst; UI zápisy automaticky neopakuje. Vypnutý export není validní
 
 Pohled **Services** přidává volitelnou sémantickou vrstvu nad živě objevenou
 Fabric. Managed Service má jméno, typ, popis, jeden nebo více uint64 labelů a
-HTTPS targety pro externí Peek. Jeden label smí vlastnit nejvýše jedna MS; jedna
+Síťové targety pro externí Peek. Jeden label smí vlastnit nejvýše jedna MS; jedna
 MS může vlastnit více labelů. Hexadecimální vstup se ukládá v kanonické desítkové
 podobě, UI zobrazuje oba tvary.
 
@@ -732,7 +732,7 @@ ztratí názvy, vazby a Peek plán a labely znovu ukáže jako neznámé.
 
 Zápisy vyžadují roli `admin`, používají optimistickou generaci a vstupují do
 auditu. Smazání MS nikdy samo nemaže ani nepřepisuje runtime classifier. Peek
-target musí být HTTPS URL bez credentials a fragmentu; interval je 10..86400 s.
+target musí být HTTP(S), TCP, TLS, DNS, DoT nebo DoH URL bez credentials a fragmentu; interval je 10..86400 s.
 Podzáložka **Services / Externals** volá při otevření vzdálený Peek, po dobu
 zobrazení se obnovuje podle nejkratšího intervalu targetů a nabízí ruční měření.
 Zobrazuje dostupnost, HTTP status, latence a TLS/certifikát. Výsledky se ve Fabric
@@ -937,3 +937,85 @@ invented principal, assigned addresses, traffic measurements or access result.
 CONFIG sent by a server never means the client applied it. A successful client
 helper result does not independently verify the host OS configuration. Credentials,
 challenge responses, relocation tokens and binders are not exported.
+
+
+### TCP, TLS a kontrola HTTP obsahu
+
+- `tcp://example.org:443`: jen navázání TCP, bez aplikačního payloadu; port je povinný.
+- `tls://example.org:443`: TLS handshake bez HTTP. Volitelné `?sni=service.example.org`
+  umožňuje oddělit adresu serveru a ověřované jméno. Profil obsahuje verzi, šifru,
+  SNI, ALPN (pokud sjednáno), hostname match, trust, certifikát a dostupný řetězec.
+  `chain_available=false` znamená, že runtime celý řetězec neposkytl. Samotná
+  shoda SAN není rozhodnutím o důvěře; důvěru určuje ověřený handshake.
+- HTTP(S) bez regexu používá HEAD. S `payload_regex` používá GET bez přesměrování,
+  kontroluje celé textové tělo do 256 KiB. Větší, komprimovaná nebo nedekódovatelná
+  odpověď není úspěšná shoda. Regex používá Python `re.search`, inline přepínače
+  jako `(?im)`; výraz má nejvýše 1024 znaků. Vyhodnocení probíhá v samostatném
+  procesu s timeoutem 0,5 s a paměťovým limitem 128 MiB. Tělo se neukládá.
+- HTTP 4xx/5xx, neshoda obsahu a nedůvěryhodné TLS znamenají `ok=false`.
+  Dokončené spojení s chybným obsahem má nadále `available=true`.
+- V editoru použij formulář TCP/TLS/HTTP(S). Textový zápis s regexem je např.
+  `https://example.org/health 60 "(?i)^ready$"`. Regex je JSON řetězec, takže
+  zpětná lomítka musí být escapována. Formulář je escapuje automaticky.
+- Regex se ukládá v metadatech služby i v lease Peek. Změna regexu vytvoří novou
+  identitu historie, aby se nemíchaly výsledky odlišných kontrol.
+- Stále platí omezení Peek na veřejné cílové IP adresy. Nasazení vyžaduje aktualizaci
+  Fabricu i samostatného Peek, včetně modulu `peek_payload.py`.
+
+
+### E-mailová abstrakce a Resend
+
+`mailer.py` poskytuje serverové rozhraní `Mailer.send(EmailMessage, *,
+idempotency_key=None) -> SendReceipt`. Zpráva obsahuje `sender`, `recipients`,
+`subject` a alespoň jednu variantu `text` / `html`. `SendReceipt.message_id`
+znamená přijetí providerem, nikoli potvrzené doručení do schránky.
+
+Adaptér `ResendMailer` používá standardní knihovnu Pythonu a pevný HTTPS endpoint
+Resend, timeout a omezenou odpověď. Nepřesměrovává požadavky, neloguje klíč ani
+obsah a neprovádí automatické retry. `MailError` obsahuje `code`, volitelný HTTP
+`status`, `retryable` a `uncertain`. Při timeoutu, chybě transportu nebo neplatné
+úspěšné odpovědi může provider zprávu už přijmout. Při opakování stejné operace
+proto použij stejný idempotency klíč i stejnou zprávu; nová zpráva potřebuje nový
+klíč. Resend platnost idempotency klíčů omezuje, nejde o trvalou deduplikaci.
+
+Volitelná továrna `mailer_from_env()` čte pouze serverové prostředí:
+
+- `TUNTOM_MAIL_PROVIDER=resend` (výchozí prázdné nebo `disabled` vrátí `None`).
+- `TUNTOM_RESEND_API_KEY` (tajný klíč; nepatří do UI ani repozitáře).
+
+Samotné vytvoření instance nic neodesílá. Modul zatím není připojen k serverovému
+startupu, alertům, UI ani žádné API routě. Odesílatele a adresáty dodá až budoucí
+volající. Limity abstrakce: 50 příjemců a 1 MiB JSON požadavku.
+
+API kontrakt: https://resend.com/docs/api-reference/emails/send-email
+Testy používají pouze mockovaný transport, bez kontaktování Resend.
+
+
+### Pozorované problémy
+
+V **Události a audit → Problémy** je jednoduchý seznam: začátek, poslední výskyt,
+problém, komponenta, konec/stav a počet chybových vzorků. Každý čítač (např.
+`rtt_lost`) je samostatný problém; opakované čtení stejného vzorku počet nezvyšuje.
+Zotavení potvrzuje 30 sekund průběžně zdravých vzorků. Chybějící či zastaralá
+telemetrie není zotavení. Zmizení komponenty nebo restart collectoru ponechá
+historický řádek jako „Pozorování přerušeno“, bez vymyšleného času konce.
+Další pozorování chyby pak začne nový řádek.
+
+Přehled používá stejnou SQLite databázi a retenci jako journal, API
+`GET /api/v1/journal?category=problem` se stejným filtrem `target` a stránkováním
+`before`. Je to historie pozorování, nikoli konfigurace sítě. Neobsahuje
+vlastníky, priority, ruční uzavírání ani workflow. E-maily zatím neposílá.
+
+### Osobní barevná paleta
+
+Tlačítko **Můj profil** u přihlášeného účtu otevře náhled palet Olive (původní),
+Paper (bílá), Midnight (tmavá modrošedá) a Linen (teplá šedá). Uložení mění
+pouze vlastní preferenci; zavření nebo Escape vrátí poslední uložený vzhled.
+Pojmenované účty ukládají `palette` do stávajícího privátního users souboru.
+Starší účty bez preference dostanou Olive. Úprava role či hesla paletu zachová.
+Bootstrap nemá osobní účet, proto ukládá vzhled pouze v prohlížeči.
+
+`GET /api/v1/profile` a `POST /api/v1/profile` se podepisují jako ostatní požadavky.
+POST přijímá výhradně `{"palette":"paper"}` a používá identitu relace, nikoli
+uživatelské jméno z těla požadavku. Vlastní vzhled může změnit i admin-ro.
+Volba palety nemění oprávnění ani neruší přihlášení.

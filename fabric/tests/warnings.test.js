@@ -107,3 +107,28 @@ test("recovery requires sustained healthy telemetry; missing telemetry cannot re
  now=75000;h.observe([sample('6')]);assert.equal(h.list().length,2);
  assert.equal(h.list()[0].resolved,false);assert.equal(h.list()[0].count,1);
 });
+
+test('recovery time and duration use the monotonic clock and stop growing after resolution',()=>{
+ let now=0;const h=new WarningHistory(()=>now);h.observe([sample('first')]);
+ now=5000;h.observe([sample('last')]);
+ for(now=10000;now<=40000;now+=5000)h.observe([sample(String(now),'process-a',false)]);
+ const item=h.list()[0];assert.equal(item.resolved,true);
+ assert.equal(item.resolvedAt,'40000');assert.equal(item.sampleId,'last');
+ assert.equal(h.incidentDuration(item),40);
+ now=65000;assert.equal(h.resolvedAge(item),25);assert.equal(h.incidentDuration(item),40);
+});
+
+test('diagnostic alert keeps captured evidence separate from current metrics and hides on another process',()=>{
+ const box={hidden:true,innerHTML:'',classList:{toggle(){}}};
+ let endpoint={id:'a',status:'reachable',metrics:{rtt_lost:'12'}};
+ const state={diagnosticWarning:{endpointId:'a',checks:[{}],sampleId:'2026-10-02T10:00:00Z',resolved:false}};
+ const render=runInNewContext(source.slice(source.indexOf('function warningResolution('),source.indexOf('function renderDiagnostics('))+';renderDiagnosticWarning',{
+  state,selected:()=>endpoint,$:()=>box,checkReasons:()=>[{metric:'rtt_lost',text:'rtt_lost: +1 in 5 s'}],
+  metricHelp:()=>'<explanation>',outdated:e=>!!e.stale,t:key=>key,locale:()=> 'en',
+  esc:value=>String(value).replaceAll('<','&lt;').replaceAll('>','&gt;')
+ });
+ render();assert.equal(box.hidden,false);assert.match(box.innerHTML,/rtt_lost: \+1 in 5 s/);
+ assert.match(box.innerHTML,/<code>12<\/code>/);assert.match(box.innerHTML,/&lt;explanation&gt;/);
+ endpoint.stale=true;render();assert.match(box.innerHTML,/<code>—<\/code>/);
+ endpoint={id:'b'};render();assert.equal(box.hidden,true);
+});

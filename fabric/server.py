@@ -648,6 +648,18 @@ class Handler(BaseHTTPRequestHandler):
                 self.server.fabric.audit_event({'action':'auth.logout','target':principal['username'],'outcome':'succeeded'})
                 self.server.auth.logout(self.headers.get("X-Tuntom-Session", ""))
                 return self.respond(200, {"result": "logged out"})
+            if path == "/api/v1/profile" and self.command in {"GET","POST"}:
+                if principal.get('auth_method')=='bootstrap':
+                    if self.command=='POST':raise APIError(403,'bootstrap profile is browser-local')
+                    return self.respond(200,{'palette':'olive','persistent':False})
+                try:
+                    if self.command=='GET':profile=self.server.auth.users.profile(principal['username'])
+                    else:
+                        data=self.body()
+                        if not isinstance(data,dict) or set(data)!={'palette'}:raise ValueError('only palette can be changed')
+                        profile=self.server.auth.users.save_profile(principal['username'],data['palette'])
+                except ValueError as error:raise APIError(400,str(error)) from error
+                return self.respond(200,profile)
             if path == "/api/v1/auth/me" and self.command == "GET":
                 return self.respond(200, principal)
             if path == "/api/v1/users" and self.command == "GET":
@@ -890,6 +902,7 @@ class Handler(BaseHTTPRequestHandler):
                   "/flow-filter.js": ("flow-filter.js", "text/javascript; charset=utf-8"),
                   "/app.js": ("app.js", "text/javascript; charset=utf-8"),
                   "/vendor/noble-auth.js": ("vendor/noble-auth.js", "text/javascript; charset=utf-8"),
+                  "/themes.css": ("themes.css", "text/css; charset=utf-8"),
                   "/style.css": ("style.css", "text/css; charset=utf-8"),
                   "/favicon.svg": ("favicon.svg", "image/svg+xml")}
         if self.command == "GET" and path in assets:

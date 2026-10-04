@@ -43,8 +43,8 @@ class PeekTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,"unsupported"):store.series("one",900,1100,"secret",100)
             store.close()
 
-    def test_rejects_non_https_and_private_destinations(self):
-        result = peek.probe({"id": "plain", "url": "http://example.com"})
+    def test_rejects_unsupported_protocols_and_private_destinations(self):
+        result = peek.probe({"id": "plain", "url": "ftp://example.com"})
         self.assertEqual(result["error"]["kind"], "invalid_target")
         with mock.patch("socket.getaddrinfo", return_value=[
                 (peek.socket.AF_INET, peek.socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443))]):

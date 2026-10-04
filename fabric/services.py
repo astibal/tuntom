@@ -15,6 +15,7 @@ import sqlite3
 import threading
 from urllib.parse import urlsplit
 from peek_dns import target_config
+from peek_payload import validate_pattern
 
 
 KINDS = {"external", "internal", "via", "network", "other"}
@@ -64,17 +65,21 @@ def validate(data: dict) -> dict:
     targets = []
     seen_urls = set()
     for item in raw_targets:
-        if not isinstance(item, dict) or set(item) - {"url", "interval"}:
+        if not isinstance(item, dict) or set(item) - {"url", "interval", "payload_regex"}:
             raise ValueError("invalid Peek target fields")
         url, interval = item.get("url"), item.get("interval", 60)
         if not isinstance(url, str) or len(url) > 2048:
             raise ValueError("Peek target URL must be a string of at most 2048 characters")
-        target_config(url)
+        config = target_config(url)
+        pattern = validate_pattern(item.get("payload_regex", ""))
+        if pattern and config["protocol"] not in ("http", "https"):raise ValueError("payload regex requires HTTP(S)")
         if not isinstance(interval, int) or isinstance(interval, bool) or not 10 <= interval <= 86400:
             raise ValueError("Peek interval must be 10..86400 seconds")
+        if url in seen_urls and any(t["url"]==url and t.get("payload_regex", "")!=pattern for t in targets):
+            raise ValueError("duplicate target URL with different payload regex")
         if url not in seen_urls:
             seen_urls.add(url)
-            targets.append({"url": url, "interval": interval})
+            targets.append({"url": url, "interval": interval, **({"payload_regex":pattern} if pattern else {})})
     service_id = data.get("id")
     if service_id is not None and (not isinstance(service_id, str) or not re.fullmatch(r"[0-9a-f]{32}", service_id)):
         raise ValueError("invalid managed service id")
@@ -113,6 +118,9 @@ class Services:
                 url TEXT NOT NULL, interval INTEGER NOT NULL,
                 PRIMARY KEY(service_id,url));
         """)
+        if "payload_regex" not in {r[1] for r in self.db.execute("PRAGMA table_info(peek_target)")}:
+            self.db.execute("ALTER TABLE peek_target ADD COLUMN payload_regex TEXT NOT NULL DEFAULT ''")
+            self.db.commit()
         if self.path != ":memory:":
             try:
                 os.chmod(self.path, 0o600)
@@ -127,8 +135,8 @@ class Services:
         service_id = row["id"]
         labels = [item[0] for item in self.db.execute(
             "SELECT label FROM service_label WHERE service_id=? ORDER BY length(label),label", (service_id,))]
-        targets = [{"url": item[0], "interval": item[1]} for item in self.db.execute(
-            "SELECT url,interval FROM peek_target WHERE service_id=? ORDER BY url", (service_id,))]
+        targets = [{"url": item[0], "interval": item[1], **({"payload_regex":item[2]} if item[2] else {})} for item in self.db.execute(
+            "SELECT url,interval,payload_regex FROM peek_target WHERE service_id=? ORDER BY url", (service_id,))]
         return {**dict(row), "labels": labels, "peek_targets": targets}
 
     def list(self) -> dict:
@@ -158,8 +166,8 @@ class Services:
                 self.db.execute("DELETE FROM peek_target WHERE service_id=?", (service_id,))
                 self.db.executemany("INSERT INTO service_label(service_id,label) VALUES(?,?)",
                                     ((service_id, label) for label in value["labels"]))
-                self.db.executemany("INSERT INTO peek_target(service_id,url,interval) VALUES(?,?,?)",
-                                    ((service_id, item["url"], item["interval"]) for item in value["peek_targets"]))
+                self.db.executemany("INSERT INTO peek_target(service_id,url,interval,payload_regex) VALUES(?,?,?,?)",
+                                    ((service_id, item["url"], item["interval"], item.get("payload_regex", "")) for item in value["peek_targets"]))
             except sqlite3.IntegrityError as error:
                 match = next((label for label in value["labels"] if self.db.execute(
                     "SELECT 1 FROM service_label WHERE label=? AND service_id<>?", (label, service_id)).fetchone()), None)

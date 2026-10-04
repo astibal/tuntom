@@ -21,8 +21,8 @@ def observe(services: list[dict], base_url: str | None, token: str | None, timeo
     targets, context = [], {}
     for service in services:
         for target in service.get("peek_targets", []):
-            target_id = service["id"]+":"+hashlib.sha256(target["url"].encode()).hexdigest()[:16]
-            targets.append({"id": target_id, "url": target["url"],"interval":target["interval"]})
+            target_id = service["id"]+":"+hashlib.sha256((target["url"]+("\0"+target["payload_regex"] if target.get("payload_regex") else "")).encode()).hexdigest()[:16]
+            targets.append({"id": target_id, "url": target["url"],"interval":target["interval"],**({"payload_regex":target["payload_regex"]} if target.get("payload_regex") else {})})
             context[target_id] = {
                 "service_id": service["id"], "service_name": service["name"],
                 "service_kind": service["kind"], "service_labels": service.get("labels", []),
@@ -92,7 +92,7 @@ def peek_syspiper(base_url: str | None, token: str | None) -> dict:
 
 def peek_history(services: list[dict], target_id: str, base_url: str | None, token: str | None,
                  after: float, before: float, metric: str, points: int = 900) -> dict:
-    valid_ids={service["id"]+":"+hashlib.sha256(target["url"].encode()).hexdigest()[:16]
+    valid_ids={service["id"]+":"+hashlib.sha256((target["url"]+("\0"+target["payload_regex"] if target.get("payload_regex") else "")).encode()).hexdigest()[:16]
                for service in services for target in service.get("peek_targets",[])}
     if target_id not in valid_ids:raise PeekError("Neznámý Peek target")
     if not base_url or not token:raise PeekError("Peek není nakonfigurovaný ve Fabric serveru")

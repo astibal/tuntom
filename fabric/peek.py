@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Leased external HTTPS observer for the Tuntom Fabric management plane."""
+"""Leased external TCP, TLS, HTTP(S) and DNS observer for the Tuntom Fabric management plane."""
 from __future__ import annotations
 
 from peek_dns import target_config, make_query, parse_response, stream_exchange
+from peek_payload import validate_pattern, match_payload, MAX_PAYLOAD
 
 import argparse
 import concurrent.futures
@@ -11,6 +12,7 @@ import hashlib
 import http.server
 import http.client
 import ipaddress
+import io
 import json
 import os
 from pathlib import Path
@@ -46,18 +48,23 @@ class PeekHistory:
         CREATE TABLE IF NOT EXISTS target(id TEXT PRIMARY KEY,url TEXT NOT NULL,interval INTEGER NOT NULL,lease_until REAL NOT NULL,next_probe REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS observation(seq INTEGER PRIMARY KEY AUTOINCREMENT,target_id TEXT NOT NULL,at REAL NOT NULL,payload TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS observation_target_at ON observation(target_id,at);""")
+        if "payload_regex" not in {r[1] for r in self.db.execute("PRAGMA table_info(target)")}:
+            self.db.execute("ALTER TABLE target ADD COLUMN payload_regex TEXT NOT NULL DEFAULT ''")
+            self.db.commit()
     def renew(self, targets):
         now=time.time()
         for item in targets:
             if not isinstance(item,dict) or not isinstance(item.get('id'),str) or not 1<=len(item['id'])<=128:
                 raise ValueError('invalid target id')
-            target_config(item.get('url'))
+            config=target_config(item.get('url'))
+            pattern=validate_pattern(item.get('payload_regex',''))
+            if pattern and config['protocol'] not in ('http','https'):raise ValueError('payload regex requires HTTP(S)')
         with self.lock,self.db:
             for item in targets:
                 interval=item.get("interval",60)
                 if not isinstance(interval,int) or isinstance(interval,bool) or not 10<=interval<=86400: raise ValueError("interval must be 10..86400 seconds")
-                self.db.execute("INSERT INTO target VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET url=excluded.url,interval=excluded.interval,lease_until=excluded.lease_until",
-                    (item["id"],item["url"],interval,now+self.lease_seconds,now+interval))
+                self.db.execute("INSERT INTO target(id,url,interval,lease_until,next_probe,payload_regex) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET url=excluded.url,interval=excluded.interval,lease_until=excluded.lease_until,payload_regex=excluded.payload_regex",
+                    (item["id"],item["url"],interval,now+self.lease_seconds,now+interval,item.get("payload_regex","")))
     def record(self, result):
         with self.lock,self.db:self.db.execute("INSERT INTO observation(target_id,at,payload) VALUES(?,?,?)",(result["id"],time.time(),json.dumps(result,separators=(",",":"))))
     def history(self, target_ids, limit=1000):
@@ -96,7 +103,7 @@ class PeekHistory:
     def due(self):
         now=time.time()
         with self.lock,self.db:
-            rows=self.db.execute("SELECT id,url,interval FROM target WHERE lease_until>? AND next_probe<=?",(now,now)).fetchall()
+            rows=self.db.execute("SELECT id,url,interval,payload_regex FROM target WHERE lease_until>? AND next_probe<=?",(now,now)).fetchall()
             for row in rows:self.db.execute("UPDATE target SET next_probe=? WHERE id=?",(now+row["interval"],row["id"]))
             self.db.execute("DELETE FROM target WHERE lease_until<=?",(now,));self.db.execute("DELETE FROM observation WHERE at<?",(now-self.retention_seconds,))
             return [dict(row) for row in rows]
@@ -197,6 +204,27 @@ def certificate_result(der: bytes, parsed: dict) -> dict:
     }
 
 
+def certificate_hostname_matches(parsed, host):
+    """SAN name observation; the verified TLS handshake remains the trust decision."""
+    try:
+        address=ipaddress.ip_address(host)
+    except ValueError:address=None
+    names=parsed.get('subjectAltName',())
+    if not names:return None
+    for kind,value in names:
+        if address is not None and kind=='IP Address':
+            try:
+                if address==ipaddress.ip_address(value):return True
+            except ValueError:pass
+        elif address is None and kind=='DNS':
+            expected=host.rstrip('.').encode('idna').decode().lower()
+            name=value.rstrip('.').lower()
+            if name==expected:return True
+            if name.startswith('*.') and name.count('*')==1 and len(name.split('.'))==len(expected.split('.')) and expected.split('.',1)[1:]==[name[2:]]:
+                return True
+    return False
+
+
 def tls_connection(host: str, port: int, addresses, timeout: float):
     """Prefer a verified handshake; reconnect without verification to report bad certs."""
     verification_error = None
@@ -234,6 +262,39 @@ def read_http_status(sock: ssl.SSLSocket, host_header: str, path: str) -> int:
     if len(parts) < 2 or not parts[0].startswith(b"HTTP/") or not parts[1].isdigit():
         raise ProbeError("http", "invalid HTTP response")
     return int(parts[1])
+
+
+class DeadlineReader(io.RawIOBase):
+    def __init__(self, sock, deadline):
+        self.sock, self.deadline = sock, deadline
+    def readable(self):return True
+    def readinto(self, buffer):
+        remaining=self.deadline-time.monotonic()
+        if remaining<=0:raise TimeoutError('HTTP response deadline exceeded')
+        self.sock.settimeout(remaining)
+        return self.sock.recv_into(buffer)
+
+
+class ResponseSocket:
+    def __init__(self, sock, timeout):self.sock,self.deadline=sock,time.monotonic()+timeout
+    def makefile(self, mode):return io.BufferedReader(DeadlineReader(self.sock,self.deadline))
+
+
+def read_http_payload(sock, host_header, path, pattern, timeout=DEFAULT_TIMEOUT):
+    sock.sendall((f"GET {path} HTTP/1.1\r\nHost: {host_header}\r\nUser-Agent: {USER_AGENT}\r\n"
+                  "Accept: */*\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n").encode('ascii'))
+    response=http.client.HTTPResponse(ResponseSocket(sock,timeout))
+    response.begin()
+    body=response.read(MAX_PAYLOAD+1)
+    info={'pattern':pattern,'bytes_read':len(body),'limit_bytes':MAX_PAYLOAD}
+    if len(body)>MAX_PAYLOAD:info.update(matched=False,status='too_large')
+    elif response.getheader('Content-Encoding','identity').lower() not in ('','identity'):info.update(matched=False,status='unsupported_encoding')
+    else:
+        charset=response.headers.get_content_charset() or 'utf-8'
+        try:text=body.decode(charset,errors='strict')
+        except (UnicodeError,LookupError):info.update(matched=False,status='invalid_text')
+        else:info.update(match_payload(pattern,text))
+    return response.status,info
 
 
 def probe_dns(config, timeout):
@@ -275,7 +336,7 @@ def probe_dns(config, timeout):
                     f"Content-Type: application/dns-message\r\nAccept: application/dns-message\r\n"
                     f"Content-Length: {len(packet)}\r\nConnection: close\r\n\r\n").encode('ascii')
                 sock.settimeout(max(.001,deadline-time.monotonic()));sock.sendall(headers+packet)
-                response=http.client.HTTPResponse(sock);response.begin();metrics['http_status']=response.status
+                response=http.client.HTTPResponse(ResponseSocket(sock,timeout));response.begin();metrics['http_status']=response.status
                 if response.status!=200:raise ProbeError('doh_http',f'DoH HTTP status {response.status}')
                 if response.getheader('Content-Type','').split(';')[0].strip().lower()!='application/dns-message':
                     raise ProbeError('doh_content_type','DoH response is not application/dns-message')
@@ -310,49 +371,61 @@ def probe(target: dict, timeout: float = DEFAULT_TIMEOUT) -> dict:
             raise ProbeError("invalid_target", "url must be a string of at most 2048 characters")
         try:config=target_config(url)
         except ValueError as error:raise ProbeError('invalid_target',str(error)) from error
-        if config['protocol']!='https':
+        if config['protocol'] in ('dns','dot','doh'):
             result=probe_dns(config,timeout)
             return {**base,**result,'total_ms':milliseconds(time.monotonic()-started)}
-        parsed = urlsplit(url)
+        pattern=validate_pattern(target.get('payload_regex',''))
+        protocol=config['protocol']
+        if pattern and protocol not in ('http','https'):raise ProbeError('invalid_target','payload regex requires HTTP(S)')
+        base['protocol']=protocol
+        host,port=config['host'],config['port']
+        addresses=public_addresses(host,port)
+        result={**base,'ok':True,'available':True}
+        if protocol in ('https','tls'):
+            sock,address,connect_s,handshake_s,trusted,verify_error=tls_connection(config.get('sni',host),port,addresses,timeout)
+        else:
+            sock,address,connect_s=connect(addresses,timeout)
         try:
-            port = parsed.port or 443
-        except ValueError as error:
-            raise ProbeError("invalid_target", str(error)) from error
-        host = parsed.hostname.rstrip(".")
-        addresses = public_addresses(host, port)
-        sock, address, connect_s, handshake_s, trusted, verify_error = tls_connection(
-            host, port, addresses, timeout)
-        try:
-            der = sock.getpeercert(binary_form=True)
-            certificate = certificate_result(der, decode_certificate(der))
-            path = parsed.path or "/"
-            if parsed.query:
-                path += "?" + parsed.query
-            host_header = host if port == 443 else f"{host}:{port}"
-            http_started = time.monotonic()
-            status = read_http_status(sock, host_header, path)
-            http_s = time.monotonic() - http_started
-            result = {
-                **base,
-                "ok": True,
-                "available": True,
-                "address": address,
-                "http_status": status,
-                "connect_ms": milliseconds(connect_s),
-                "tls_handshake_ms": milliseconds(handshake_s),
-                "http_response_ms": milliseconds(http_s),
-                "total_ms": milliseconds(time.monotonic() - started),
-                "tls": {
-                    "trusted": trusted,
-                    "verification_error": verify_error,
-                    "version": sock.version(),
-                    "cipher": sock.cipher()[0] if sock.cipher() else None,
-                    "certificate": certificate,
-                },
-            }
+            result.update(address=address,connect_ms=milliseconds(connect_s))
+            if protocol in ('https','tls'):
+                der=sock.getpeercert(binary_form=True)
+                parsed_cert=decode_certificate(der)
+                certificate=certificate_result(der,parsed_cert)
+                hostname_matches=True if trusted else certificate_hostname_matches(parsed_cert,config.get('sni',host))
+                chain=[]
+                get_chain=getattr(sock,'get_unverified_chain',None) or getattr(getattr(sock,'_sslobj',None),'get_unverified_chain',None)
+                if get_chain:
+                    for entry in get_chain()[:16]:
+                        if not isinstance(entry,bytes):entry=ssl.PEM_cert_to_DER_cert(entry.public_bytes())
+                        chain.append(certificate_result(entry,decode_certificate(entry)))
+                result['tls']={'trusted':trusted,'verification_error':verify_error,
+                    'sni':config.get('sni',host),'hostname_matches':hostname_matches,
+                    'version':sock.version(),'cipher':sock.cipher()[0] if sock.cipher() else None,
+                    'alpn':sock.selected_alpn_protocol(),'certificate':certificate,
+                    'chain':chain,'chain_available':bool(chain),'expires_soon':certificate['days_remaining']<=14}
+                result['tls_handshake_ms']=milliseconds(handshake_s)
+                result['ok']=trusted and certificate['time_valid']
+                if not result['ok']:result['error']={'kind':'tls_verification','message':verify_error or 'certificate is not time-valid'}
+            if protocol in ('http','https'):
+                parsed=urlsplit(url);path=parsed.path or '/'
+                if parsed.query:path+='?'+parsed.query
+                host_header=('['+host+']') if ':' in host else host
+                if port!=({'http':80,'https':443}[protocol]):host_header+=':'+str(port)
+                http_started=time.monotonic()
+                if pattern:
+                    status,payload=read_http_payload(sock,host_header,path,pattern,timeout)
+                    result['payload']=payload
+                    if not payload['matched']:
+                        result['ok']=False
+                        result['error']={'kind':'payload_'+payload['status'],'message':'HTTP payload check: '+payload['status']}
+                else:status=read_http_status(sock,host_header,path)
+                result.update(http_status=status,http_response_ms=milliseconds(time.monotonic()-http_started))
+                if not 200<=status<400:
+                    result['ok']=False;result['error']={'kind':'http_status','message':'HTTP status '+str(status)}
+            result['total_ms']=milliseconds(time.monotonic()-started)
             return result
-        finally:
-            sock.close()
+        finally:sock.close()
+
     except ProbeError as error:
         return {**base, "ok": False, "available": False, "total_ms": milliseconds(time.monotonic() - started),
                 "error": {"kind": error.kind, "message": str(error)}}

@@ -23,12 +23,20 @@ def target_config(url):
     if not isinstance(url,str) or len(url)>2048 or any(ord(c)<=32 or ord(c)==127 for c in url):
         raise ValueError('invalid Peek URL')
     p=urlsplit(url)
-    if p.scheme not in {'https','dns','dot','doh'} or not p.hostname or p.username is not None or p.password is not None or p.fragment:
-        raise ValueError('use HTTPS, DNS, DoT or DoH URL without credentials or fragment')
-    port=p.port if p.port is not None else {'https':443,'dns':53,'dot':853,'doh':443}[p.scheme]
+    if p.scheme not in {'http','https','tcp','tls','dns','dot','doh'} or not p.hostname or p.username is not None or p.password is not None or p.fragment:
+        raise ValueError('use HTTP(S), TCP, TLS, DNS, DoT or DoH URL without credentials or fragment')
+    port=p.port if p.port is not None else {'http':80,'https':443,'tls':443,'tcp':0,'dns':53,'dot':853,'doh':443}[p.scheme]
     if not 1<=port<=65535:raise ValueError('invalid server port')
     result={'protocol':p.scheme,'host':p.hostname,'port':port,'path':p.path or ('/dns-query' if p.scheme=='doh' else '/')}
-    if p.scheme=='https':return result
+    if p.scheme in ('http','https'):return result
+    if p.scheme in ('tcp','tls'):
+        params=parse_qs(p.query,keep_blank_values=True,strict_parsing=True)
+        if p.path not in ('','/') or set(params)-({'sni'} if p.scheme=='tls' else set()) or any(len(v)!=1 for v in params.values()):
+            raise ValueError('TCP/TLS targets accept only a host, port and optional TLS sni')
+        sni=params.get('sni',[p.hostname])[0]
+        if not sni or len(sni)>253 or any(c.isspace() or c in '/@?#' for c in sni):raise ValueError('invalid TLS SNI')
+        result['sni']=sni
+        return result
     params=parse_qs(p.query,keep_blank_values=True,strict_parsing=True)
     if set(params)-{'name','type','ad','expect'} or any(len(v)!=1 for v in params.values()):raise ValueError('invalid DNS probe parameters')
     name=params.get('name',[''])[0];wire_name(name)

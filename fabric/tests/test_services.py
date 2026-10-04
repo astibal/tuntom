@@ -44,8 +44,8 @@ class ServicesTests(unittest.TestCase):
                 normalize_label(value)
         store = Services(None)
         try:
-            with self.assertRaisesRegex(ValueError, "HTTPS"):
-                store.save({"name": "Bad", "peek_targets": [{"url": "http://example.com"}]})
+            with self.assertRaisesRegex(ValueError, "HTTP"):
+                store.save({"name": "Bad", "peek_targets": [{"url": "ftp://example.com"}]})
         finally:
             store.close()
 

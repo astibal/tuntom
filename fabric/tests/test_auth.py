@@ -24,6 +24,26 @@ def login(manager, username, password, *, bootstrap=False):
 
 
 class AuthTests(unittest.TestCase):
+    def test_own_palette_persists_without_changing_credentials_or_other_accounts(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            path=Path(root)/'users.json';store=UserStore(path)
+            record=password_record('long-profile-password')
+            store.save_user('alice','admin',True,record,'bootstrap')
+            store.save_user('bob','admin-ro',True,record,'bootstrap')
+            self.assertEqual(store.profile('alice')['palette'],'olive')
+            store.save_profile('alice','paper')
+            store.save_user('alice','admin',True,None,'bootstrap')
+            restored=UserStore(path)
+            self.assertEqual(restored.profile('alice')['palette'],'paper')
+            self.assertEqual(restored.profile('bob')['palette'],'olive')
+            self.assertEqual(restored.users['alice']['password'],record)
+            self.assertNotIn('password',restored.profile('alice'))
+            with self.assertRaises(ValueError):restored.save_profile('alice','unknown')
+            with patch.object(restored,'_write',side_effect=OSError('disk full')):
+                with self.assertRaises(OSError):restored.save_profile('alice','linen')
+            self.assertEqual(restored.profile('alice')['palette'],'paper')
+
     def test_edit_preserves_password_and_requires_it_for_creation(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "users.json"

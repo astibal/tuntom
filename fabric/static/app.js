@@ -339,6 +339,51 @@ Object.assign(messages, {
   fieldStatus:["RUNTIME / STAV","RUNTIME / STATUS","RUNTIME / ÉTAT"], fieldNotes:["RUNTIME / DIAGNOSTIKA","RUNTIME / DIAGNOSTICS","RUNTIME / DIAGNOSTIC"],
   switchRuntime:["Porty a workery","Ports and workers","Ports et workers"],
   discoveredHint:["Nalezeno přes CONTROL; vzdálená komponenta","Discovered through CONTROL; remote component","Découvert via CONTROL ; composant distant"],
+  fullscreenEnter:["Celá obrazovka","Full screen","Plein écran"],
+  fullscreenExit:["Ukončit celou obrazovku (Esc)","Exit full screen (Esc)","Quitter le plein écran (Échap)"],
+  fullscreenFailed:["Prohlížeč nepovolil změnu celé obrazovky.","The browser did not allow changing full-screen mode.","Le navigateur n’a pas autorisé le changement de mode plein écran."],
+  profileTitle:["Můj profil","My profile","Mon profil"],
+  profilePalette:["Barevná paleta","Color palette","Palette de couleurs"],
+  profileHint:["Náhled se mění ihned. Uložená volba platí jen pro tvůj účet.","Preview changes immediately. The saved choice applies only to your account.","L’aperçu change immédiatement. Le choix enregistré s’applique uniquement à ton compte."],
+  profileLocal:["Bootstrap: volba se uloží pouze v tomto prohlížeči.","Bootstrap: the choice is saved only in this browser.","Bootstrap : le choix est enregistré uniquement dans ce navigateur."],
+  profileSaved:["Paleta uložena.","Palette saved.","Palette enregistrée."],
+  palette_olive:["Olive · původní zelená","Olive · original green","Olive · vert d’origine"],
+  palette_paper:["Paper · čistá bílá","Paper · clean white","Paper · blanc épuré"],
+  palette_midnight:["Midnight · tmavá modrošedá","Midnight · dark blue-grey","Midnight · bleu-gris sombre"],
+  palette_linen:["Linen · jemná teplá šedá","Linen · soft warm grey","Linen · gris chaud et doux"],
+  problemsTitle:["Problémy","Problems","Problèmes"],
+  problemsHint:["Pozorované problémy; zotavení potvrzuje 30 s zdravých vzorků. Výpadek telemetrie není zotavení.","Observed problems; recovery requires 30 s of healthy samples. Missing telemetry is not recovery.","Problèmes observés ; le rétablissement exige 30 s de relevés sains. L’absence de télémétrie n’est pas un rétablissement."],
+  problemStart:["Začátek","Started","Début"],
+  problemSeen:["Poslední výskyt","Last occurrence","Dernière occurrence"],
+  problemEnd:["Konec / stav","End / state","Fin / état"],
+  problemCount:["Výskyty","Occurrences","Occurrences"],
+  problemActive:["Bez potvrzeného zotavení","No confirmed recovery","Rétablissement non confirmé"],
+  problemUnknown:["Pozorování přerušeno","Observation interrupted","Observation interrompue"],
+  tlsProfile:["TLS profil","TLS profile","Profil TLS"],
+  tlsHostname:["Shoda jména","Hostname match","Correspondance du nom"],
+  tlsChain:["Certifikáty v řetězci","Certificates in chain","Certificats de la chaîne"],
+  tlsUnknown:["Nezjištěno","Unknown","Inconnu"],
+  probeBuilder:["+ TCP / TLS / HTTP(S) test","+ TCP / TLS / HTTP(S) test","+ Test TCP / TLS / HTTP(S)"],
+  probeURL:["URL služby","Service URL","URL du service"],
+  probeRegex:["Regex obsahu (jen HTTP/S, volitelně)","Payload regex (HTTP/S only, optional)","Regex du contenu (HTTP/S uniquement, facultatif)"],
+  probeHint:["TCP vyžaduje port: tcp://host:443. TLS: tls://host:443?sni=example.org. Regex testuje celé tělo do 256 KiB, bez následování přesměrování. Přepínače např. (?im).","TCP requires a port: tcp://host:443. TLS: tls://host:443?sni=example.org. Regex checks the complete body up to 256 KiB, without following redirects. Inline flags e.g. (?im).","TCP nécessite un port : tcp://host:443. TLS : tls://host:443?sni=example.org. La regex vérifie le corps complet jusqu’à 256 Kio, sans suivre les redirections. Options intégrées : (?im)."],
+  probeAdd:["Přidat test do návrhu","Add test to draft","Ajouter le test au brouillon"],
+  probeAdded:["Test přidán. Ulož službu pro aktivaci.","Test added. Save the service to activate it.","Test ajouté. Enregistre le service pour l’activer."],
+  probePatternHTTP:["Regex je dostupný jen pro HTTP(S).","Regex is available only for HTTP(S).","La regex est disponible uniquement pour HTTP(S)."],
+  probeLineHint:["Jeden target na řádek: URL, interval v sekundách a případně regex jako JSON řetězec. Použij formulář níže pro sestavení.","One target per line: URL, interval in seconds and optional regex as a JSON string. Use the builder below.","Une cible par ligne : URL, intervalle en secondes et regex facultative sous forme de chaîne JSON. Utilise le formulaire ci-dessous."],
+  payload_matched:["Obsah odpovídá","Content matches","Contenu conforme"],
+  payload_mismatch:["Obsah neodpovídá","Content does not match","Contenu non conforme"],
+  payload_timeout:["Regex překročil časový limit","Regex time limit exceeded","Délai de regex dépassé"],
+  payload_too_large:["Obsah překročil 256 KiB","Content exceeds 256 KiB","Contenu supérieur à 256 Kio"],
+  payload_invalid_text:["Obsah nelze dekódovat jako text","Content cannot be decoded as text","Contenu impossible à décoder en texte"],
+  payload_unsupported_encoding:["Nepodporovaná komprese obsahu","Unsupported content compression","Compression du contenu non prise en charge"],
+  payload_error:["Chyba vyhodnocení regexu","Regex evaluation failed","Échec de l’évaluation de la regex"],
+  freshnessPoll:["Polling: {age}","Polling: {age}","Relevé : {age}"],
+  freshnessDiscovery:["Discovery: {age}","Discovery: {age}","Découverte : {age}"],
+  freshnessUnknown:["stáří neznámé","age unknown","ancienneté inconnue"],
+  freshnessUnavailable:["Telemetrie nedostupná","Telemetry unavailable","Télémétrie indisponible"],
+  freshnessHistorical:["Poslední známá data; nejde o aktuální stav.","Last known data; not the current state.","Dernières données connues ; ce n’est pas l’état actuel."],
+  freshnessCount:["{count} prvků se zpožděnými nebo chybějícími daty","{count} components with delayed or missing data","{count} composants avec des données retardées ou manquantes"],
   discoveryStale:["DISCOVER naposledy před více než 4 minutami","Last seen by DISCOVER over 4 minutes ago","Dernière découverte il y a plus de 4 minutes"],
   controlRoutes:["Cesty přes CONTROL","CONTROL routes","Chemins CONTROL"],
   controlLastSeen:["Naposledy v DISCOVER","Last seen in DISCOVER","Dernière découverte"],
@@ -471,6 +516,11 @@ Object.assign(messages, {
   observationNever:["Zatím bez úspěšného vzorku","No successful sample yet","Aucun relevé réussi pour le moment"],
   observationAge:["{seconds} s zpět","{seconds} s ago","il y a {seconds} s"],
   observationNoResponse:["{count} cest bez odpovědi; příčinu nelze z odpovědi určit.","{count} paths without a reply; the response does not identify the cause.","{count} chemins sans réponse ; la réponse ne permet pas d’en déterminer la cause."],
+  warningResolvedAgo:["Vyřešeno před {seconds} s","Resolved {seconds} s ago","Résolu il y a {seconds} s"],
+  warningDuration:["Pozorováno {duration} do potvrzení zotavení","Observed for {duration} until recovery was confirmed","Observé pendant {duration} jusqu’à confirmation du rétablissement"],
+  warningEvidence:["Zachycený problém","Recorded problem","Problème enregistré"],
+  warningCurrentValue:["Aktuální hodnota","Current value","Valeur actuelle"],
+  warningLastSeen:["Poslední výskyt","Last occurrence","Dernière occurrence"],
   warningResolved:["Vyřešeno","Resolved","Résolu"],
   warningOccurrences:["{count} výskytů","{count} occurrences","{count} occurrences"],
   warningFirst:["od","since","depuis"],
@@ -910,12 +960,12 @@ class WarningHistory {
         const healthy=check?.state==='ok' || (check?.key==='errors' && check.state==='warn');
         if(!healthy){item.healthySince=null;continue;}
         item.healthySince ??= now;
-        if(now-item.healthySince>=30000){item.resolved=true;item.resolvedAt=sample.sampleId;}
+        if(now-item.healthySince>=30000){item.resolved=true;item.resolvedAt=sample.sampleId;item.resolvedTick=now;}
       }
       for(const fault of faults) {
         let item=this.items.find(item=>item.endpointId===sample.endpointId && item.issueKey===fault.key && !item.resolved);
         if(item) Object.assign(item,{...sample,checks:[fault.check],recordedAt:now,observedAt:now,count:item.count+1,healthySince:null});
-        else this.items.push({...sample,checks:[fault.check],issueKey:fault.key,id:String(++this.sequence),recordedAt:now,observedAt:now,firstSampleId:sample.sampleId,count:1,resolved:false,healthySince:null});
+        else this.items.push({...sample,checks:[fault.check],issueKey:fault.key,id:String(++this.sequence),recordedAt:now,observedAt:now,firstSampleId:sample.sampleId,firstAt:now,count:1,resolved:false,healthySince:null});
       }
     }
     this.items.sort((a,b)=>b.recordedAt-a.recordedAt || Number(b.id)-Number(a.id));
@@ -923,6 +973,8 @@ class WarningHistory {
   }
   list() { this.prune(); return this.items; }
   age(item) { return Math.max(0, Math.floor((this.clock() - item.recordedAt) / 1000)); }
+  resolvedAge(item) { return item.resolved ? Math.max(0,Math.floor((this.clock()-item.resolvedTick)/1000)) : null; }
+  incidentDuration(item) { return Math.max(0,Math.floor(((item.resolvedTick ?? this.clock())-item.firstAt)/1000)); }
   clear() { this.items = []; }
   dismiss(id) { this.items = this.items.filter(item => item.id !== id); }
 }
@@ -931,7 +983,7 @@ const $ = id => document.getElementById(id);
 const state = {data: null, selected: null, view: "overview", paused: false, busy: false,
   flows: new Map(), flowBusy: false, flowPage: 0,
   history: new Map(), historyLoads: new Map(), chartRange: 300000, chartNow: Date.now(), drafts: new Map(), logs: new Map(), reports: new Map(), discoveries: new Map(), diagnosticBusy: false,
-  warnings: new WarningHistory(), warningsLayout: "", chartDialog: null,
+  warnings: new WarningHistory(), warningsLayout: "", diagnosticWarning: null, chartDialog: null,
   auth: null, failure: "", loginError: "", ruleBusy: false};
 const types = {tunnel:"typeTunnel", switch:"typeSwitch", adapter:"typeAdapter", divert:"typeDivert", process:"typeProcess"};
 const typeName = kind => types[kind] ? t(types[kind]) : kind || "—";
@@ -1073,6 +1125,31 @@ function duration(seconds) {
 }
 function sampleAge(e) { return e?.sampled_at ? Math.max(0, Math.floor((Date.now() - Date.parse(e.sampled_at)) / 1000)) : null; }
 function outdated(e) { return !!state.failure || sampleAge(e) > Math.max(15,(state.data?.poll_interval_seconds || 5)*3); }
+function endpointFreshness(e, now=Date.now()) {
+  const age=value=>{const stamp=Date.parse(value);return Number.isFinite(stamp)?Math.max(0,Math.floor((now-stamp)/1000)):null;};
+  const pollAge=age(e.last_success_at || (e.status==='reachable'?e.sampled_at:null));
+  const discoveryAge=e.source==='discovered'?age(e.discovered_at):null;
+  const unavailable=!!state.failure || e.status!=='reachable';
+  const pollStale=unavailable || pollAge===null || pollAge>Math.max(15,(state.data?.poll_interval_seconds || 5)*3);
+  const discoveryStale=e.source==='discovered' && (!!e.discovery_stale || discoveryAge===null || discoveryAge>(state.data?.network_discovery?.interval_seconds || 120)*2);
+  return {pollAge,discoveryAge,unavailable,pollStale,discoveryStale};
+}
+function mapFreshness(members) {
+  const affected=members.map(e=>({e,...endpointFreshness(e)})).filter(row=>row.pollStale || row.discoveryStale);
+  if(!affected.length)return {badge:'',hint:'',stale:false};
+  const ageLabel=age=>age===null?t('freshnessUnknown'):duration(age);
+  const hint=affected.map(row=>`${row.e.name}: `+[
+    row.pollStale?t('freshnessPoll',{age:ageLabel(row.pollAge)}):'',
+    row.discoveryStale?t('freshnessDiscovery',{age:ageLabel(row.discoveryAge)}):'',
+    row.unavailable?t('freshnessUnavailable'):'',
+    row.pollStale?t('freshnessHistorical'):'',
+    row.e.error?diagnostic(row.e.error):'',state.failure?diagnostic(state.failure):''
+  ].filter(Boolean).join(' · ')).join('\n');
+  const ages=affected.flatMap(row=>[row.pollStale?row.pollAge:null,row.discoveryStale?row.discoveryAge:null]).filter(Number.isFinite);
+  const label=members.length>1?'×'+affected.length:ages.length?duration(Math.max(...ages)):'?';
+  const description=(members.length>1?t('freshnessCount',{count:affected.length})+'\n':'')+hint;
+  return {hint:description,stale:affected.some(row=>row.pollStale),badge:`<span class="map-freshness" role="img" aria-label="${esc(description)}" title="${esc(description)}"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M8 4v4l3 2"/></svg><span>${esc(label)}</span></span>`};
+}
 function warningChecks(e) { return outdated(e) ? [] : (e?.health?.checks || []).filter(check=>check.state === "warn"); }
 function checkReasons(e,check) {
   if (check.key === "process") return [{text:check.value === "D" ? t("processWaitingIO") : t("processStopped",{state:check.value})}];
@@ -1178,6 +1255,7 @@ function render() {
   const data = state.data;
   $("users-nav").hidden=state.auth?.role!=="admin"||!state.auth?.usersEnabled;
   $("logout").hidden=!state.auth;
+  $("profile-open").hidden=!state.auth;
   $("logout").textContent=state.auth?`${state.auth.username} · ${state.auth.role} · ${t("logout")}`:t("logout");
   $("hostname").textContent = data.discovery.host || "—";
   $("write-mode").textContent = t(data.allow_write ? "writeEnabled" : "observing");
@@ -2181,14 +2259,15 @@ function renderObserved() {
     previous.delete(g.key);wrapper.dataset.stack=String(stack);wrapper.style.left=x+"px";wrapper.style.top=y+"px";wrapper.style.height=layout.height+"px";
     const focus=wrapper.contains(document.activeElement)?document.activeElement.dataset.mapLabels?"labels":document.activeElement.dataset.mapNode || "group":null;
     const header=stack && open?`<button class="map-stack-header ${payloadClass(g.members[0])}" data-map-toggle="${esc(g.key)}" aria-expanded="true" title="${esc(t("mapStackHint"))}">${esc(g.name)} · ×${g.members.length} ${mapPinned.has(g.key)||all?"▣":"◇"} ▴</button>`:"";
-    const aggregate=(members,dir)=>{const rates=members.map(e=>rate(e,dir));return rates.every(Number.isFinite)?rates.reduce((a,b)=>a+b,0):null;};
+    const aggregate=(members,dir)=>{const rates=members.map(e=>endpointFreshness(e).pollStale?null:rate(e,dir));return rates.every(Number.isFinite)?rates.reduce((a,b)=>a+b,0):null;};
     const policy=mapPolicyRows(g.members),hasPolicy=policy.rows.length>0 || policy.unknown;
     let html=header+cards.map(card=>{
       const e=card.members[0],issues=card.members.filter(e=>attentionReasons(e).length).length;
       const worst=card.members.find(e=>attentionReasons(e).length) || card.members.find(e=>status(e)[0]!=="") || e;
       const [color,label]=status(worst),compact=!full && size!=="full";
+      const freshness=mapFreshness(card.members);
       const attrs=card.stack?`data-map-toggle="${esc(g.key)}" aria-expanded="false"`:`data-map-node="${esc(e.id)}" aria-pressed="${state.selected===e.id}"`;
-      return `<button ${attrs} data-offset="${card.y-y}" data-height="${card.h}" class="map-node ${hasPolicy && card===cards[0]?"has-label-toggle":""} ${payloadClass(e)} ${color} ${issues?"map-problem":""} ${card.stack?"map-stack":""} ${compact?"map-"+size:""} ${!card.stack && state.selected===e.id?"selected":""}" title="${esc(card.stack?t("mapStackHint"):e.name+" · "+endpointType(e))}"><span class="map-node-kind">${payloadMark(e)}${esc(endpointType(e))}${card.stack?"":" · "+processIdentity(e)}<i class="dot ${color}"></i></span><strong class="map-node-title"><span class="map-node-name">${esc(card.stack?g.name:e.name)}${card.stack ? "" : authorityBadge(e)}</span>${mapPortBadge(card.members)}${card.stack?` <em>×${g.members.length}</em>`:""}</strong><span class="map-node-status">${card.stack?`${esc(t("mapMemberCount",{count:g.members.length}))} · <span class="${issues?"map-warning-count":""}">${esc(t("mapWarningCount",{issues}))}</span>`:esc(label+(e.kind==="tunnel"?" · RTT "+lastRTT(e):""))}</span><span class="map-node-rate">↓ ${esc(bps(aggregate(card.members,"rx")))} &nbsp; ↑ ${esc(bps(aggregate(card.members,"tx")))}</span></button>`;
+      return `<button ${attrs} data-offset="${card.y-y}" data-height="${card.h}" class="map-node ${freshness.stale?"map-telemetry-stale":""} ${hasPolicy && card===cards[0]?"has-label-toggle":""} ${payloadClass(e)} ${color} ${issues?"map-problem":""} ${card.stack?"map-stack":""} ${compact?"map-"+size:""} ${!card.stack && state.selected===e.id?"selected":""}" title="${esc((card.stack?t("mapStackHint"):e.name+" · "+endpointType(e))+(freshness.hint?"\n"+freshness.hint:""))}"><span class="map-node-kind">${payloadMark(e)}${esc(endpointType(e))}${card.stack?"":" · "+processIdentity(e)}<i class="dot ${color}"></i></span><strong class="map-node-title"><span class="map-node-name">${esc(card.stack?g.name:e.name)}${card.stack ? "" : authorityBadge(e)}</span>${freshness.badge}${mapPortBadge(card.members)}${card.stack?` <em>×${g.members.length}</em>`:""}</strong><span class="map-node-status">${card.stack?`${esc(t("mapMemberCount",{count:g.members.length}))} · <span class="${issues?"map-warning-count":""}">${esc(t("mapWarningCount",{issues}))}</span>`:esc(label+(e.kind==="tunnel"?" · RTT "+(freshness.stale?"—":lastRTT(e)):""))}</span><span class="map-node-rate">↓ ${esc(bps(aggregate(card.members,"rx")))} &nbsp; ↑ ${esc(bps(aggregate(card.members,"tx")))}</span></button>`;
     }).join("");
     if(hasPolicy && cards.length) {
       const card=cards[0];
@@ -2205,7 +2284,8 @@ function renderObserved() {
   }
   for(const wrapper of previous.values()){if(mapHoverPending===wrapper)cancelMapHover();wrapper.remove();}
   const e=selected(),detail=$("observed-detail");
-  detail.innerHTML=e?`<span class="kind ${payloadClass(e)}">${payloadMark(e)}${esc(endpointType(e))}</span><h3>${esc(e.name)}${authorityBadge(e)}</h3><p>${esc(processIdentity(e))} · ${esc(duration(e.uptime_seconds))}</p>${peerNodes(e,state.data?.syspiper?.nodes || []).map(nodeSystemSummary).join("")}<dl><dt>RTT</dt><dd>${esc(lastRTT(e))}</dd><dt>RX / TX</dt><dd>${esc(bps(rate(e,"rx")))} / ${esc(bps(rate(e,"tx")))}</dd><dt>Peer access</dt><dd>${esc(e.metrics?.peer_info_access || "—")}</dd><dt>${esc(t("port"))}</dt><dd>${esc(e.port_id || "—")}</dd></dl>${accessDetail(e)}${attentionReasons(e).map(r=>`<p class="map-issue">${esc(r.text)}</p>`).join("")}<button class="quiet-button" data-map-open>${esc(t("mapOpen"))}</button>`:`<p>${esc(t("chooseProcess"))}</p>`;
+  const detailFreshness=e?mapFreshness([e]):null;
+  detail.innerHTML=e?`<span class="kind ${payloadClass(e)}">${payloadMark(e)}${esc(endpointType(e))}</span><h3>${esc(e.name)}${authorityBadge(e)}</h3><p>${esc(processIdentity(e))} · ${esc(duration(e.uptime_seconds))}</p>${detailFreshness.hint?`<p class="map-freshness-detail">${esc(detailFreshness.hint)}</p>`:""}${peerNodes(e,state.data?.syspiper?.nodes || []).map(nodeSystemSummary).join("")}<dl><dt>RTT</dt><dd>${esc(detailFreshness.stale?"—":lastRTT(e))}</dd><dt>RX / TX</dt><dd>${esc(bps(detailFreshness.stale?null:rate(e,"rx")))} / ${esc(bps(detailFreshness.stale?null:rate(e,"tx")))}</dd><dt>Peer access</dt><dd>${esc(e.metrics?.peer_info_access || "—")}</dd><dt>${esc(t("port"))}</dt><dd>${esc(e.port_id || "—")}</dd></dl>${accessDetail(e)}${attentionReasons(e).map(r=>`<p class="map-issue">${esc(r.text)}</p>`).join("")}<button class="quiet-button" data-map-open>${esc(t("mapOpen"))}</button>`:`<p>${esc(t("chooseProcess"))}</p>`;
 }
 $("observed-canvas").addEventListener("click",event=>{
   const labels=event.target.closest("[data-map-labels]");
@@ -2542,16 +2622,23 @@ $('externals-list').addEventListener('click',event=>{
   const row=externalsView.rows.find(item=>item.id===button.dataset.externalDetail);if(!row)return;
   $('external-detail-title').textContent=row.service_name || 'Peek';
   $('external-detail-target').textContent=row.url;
-  $('external-detail-content').textContent=JSON.stringify({protocol:externalProtocol(row),dns:row.dns,tls:row.tls,error:row.error,address:row.address,interval:row.interval},null,2);
+  const tls=row.tls;
+  $('external-detail-profile').innerHTML=tls?`<h3>${esc(t('tlsProfile'))}</h3><dl>${[
+    ['SNI',tls.sni],['TLS',tls.version],['Cipher',tls.cipher],['ALPN',tls.alpn],
+    [t('tlsHostname'),tls.hostname_matches===true?'✓':tls.hostname_matches===false?'✗':t('tlsUnknown')],
+    [t('uiTrust'),externalTrust(row)],['Cert',externalExpiry(row)[0]],
+    [t('tlsChain'),tls.chain_available?tls.chain.length:t('tlsUnknown')]
+  ].map(([key,value])=>`<dt>${esc(key)}</dt><dd>${esc(value??'—')}</dd>`).join('')}</dl>`:'';
+  $('external-detail-content').textContent=JSON.stringify({protocol:externalProtocol(row),dns:row.dns,tls:row.tls,payload:row.payload,error:row.error,address:row.address,interval:row.interval},null,2);
   $('external-detail-dialog').showModal();
 });
 $('external-detail-close').addEventListener('click',()=>$('external-detail-dialog').close());
 function externalProtocol(row){return row.protocol || (row.url || '').split(':')[0] || 'https';}
-function externalGood(row){return !!(row.ok && row.available && (externalProtocol(row)==='dns' || row.tls?.trusted));}
+function externalGood(row){return !!(row.ok && row.available && (['dns','tcp','http'].includes(externalProtocol(row)) || row.tls?.trusted));}
 function externalReply(row){return row.dns ? `${row.dns.rcode} · ${row.dns.type} · AD ${row.dns.ad?'✓':'—'}` : row.http_status ?? '—';}
-function externalTrust(row){return externalProtocol(row)==='dns'?'N/A':row.tls?.trusted===true?'trusted':row.tls?.trusted===false?'untrusted':'—';}
-function externalReplyTone(row){return row.dns?(row.dns.ok?'ok':'bad'):externalProtocol(row)==='https'?externalHttpTone(row.http_status):'unknown';}
-function externalDNSDetail(row){return row.dns?`<small class="dns-answer">${esc(row.dns.values.join(' · ') || row.dns.rcode)}${row.dns.expected?(" · "+t("uiExpected")+" ")+esc(row.dns.expected):''}${row.dns.require_ad?(" · "+t("uiADRequired")):''}</small>`:'';}
+function externalTrust(row){return ['dns','tcp','http'].includes(externalProtocol(row))?'N/A':row.tls?.trusted===true?'trusted':row.tls?.trusted===false?'untrusted':'—';}
+function externalReplyTone(row){return row.dns?(row.dns.ok?'ok':'bad'):['https','http'].includes(externalProtocol(row))?externalHttpTone(row.http_status):'unknown';}
+function externalDNSDetail(row){if(row.payload)return `<small class="dns-answer ${row.payload.matched?'ok':'bad'}">${esc(t('payload_'+row.payload.status))}</small>`;return row.dns?`<small class="dns-answer">${esc(row.dns.values.join(' · ') || row.dns.rcode)}${row.dns.expected?(" · "+t("uiExpected")+" ")+esc(row.dns.expected):''}${row.dns.require_ad?(" · "+t("uiADRequired")):''}</small>`:'';}
 function externalCert(row){return row.tls?.certificate || {};}
 function externalExpiry(row){
   const cert=externalCert(row),value=cert.not_after;if(!value)return ['—','unknown'];
@@ -2572,7 +2659,7 @@ function renderExternals(){
     return (!query||haystack.includes(query))&&(!status||(status==='ok'&&good)||(status==='problem'&&!good)||(status==='trusted'&&row.tls?.trusted===true)||(status==='untrusted'&&row.tls?.trusted===false));
   }),up=rows.filter(row=>row.available).length,trusted=rows.filter(row=>row.tls?.trusted).length;
   $('externals-summary').innerHTML=`<article><span>${esc(t("uiTARGETS"))}</span><strong>${rows.length}</strong></article><article><span>${esc(t("uiAVAILABLE"))}</span><strong>${up}/${rows.length}</strong></article><article><span>TRUSTED TLS</span><strong>${trusted}/${rows.filter(row=>externalProtocol(row)!=='dns').length}</strong></article>`;
-  $('externals-list').innerHTML=rows.map(row=>{const expiry=externalExpiry(row),good=externalGood(row);return `<article class="external-card ${good?'ok':'bad'}"><header><div><span class="eyebrow">${esc(row.service_name)} · ${esc(row.service_kind)} ${(row.service_labels||[]).map(label=>`· LABEL ${esc(label)}`).join(' ')}</span><h3>${esc(row.url)}</h3></div><span class="external-state">${good?'● OK':(t("uiPROBLEM"))}</span></header><div class="external-metrics"><dl class="${externalReplyTone(row)}"><dt>HTTP</dt><dd>${esc(row.http_status ?? '—')}</dd></dl><dl class="${externalProtocol(row)==='dns'&&row.connect_ms==null?'unknown':externalLatencyTone(row.connect_ms,300,1000)}"><dt>CONNECT</dt><dd>${esc(row.connect_ms ?? '—')} ms</dd></dl><dl class="${externalProtocol(row)==='dns'?'unknown':externalLatencyTone(row.tls_handshake_ms,300,1000)}"><dt>TLS HANDSHAKE</dt><dd>${esc(row.tls_handshake_ms ?? '—')} ms</dd></dl><dl class="${externalLatencyTone(row.total_ms,1000,3000)}"><dt>${esc(t("uiTOTAL"))}</dt><dd>${esc(row.total_ms ?? '—')} ms</dd></dl><dl class="${expiry[1]}"><dt>${esc(t("uiCERTEXPIRY"))}</dt><dd>${esc(expiry[0])}</dd></dl><dl class="${externalProtocol(row)==='dns'?'unknown':row.tls?.trusted===true?'ok':'bad'}"><dt>TRUST</dt><dd>${esc(externalTrust(row))}</dd></dl></div><details><summary>${esc(t("uiCertificateAndDetails"))}</summary><pre>${esc(JSON.stringify({protocol:externalProtocol(row),dns:row.dns,tls:row.tls,error:row.error,address:row.address,interval:row.interval},null,2))}</pre></details></article>`}).join('') || `<div class="service-empty">${externalsView.rows.length?(t("uiNoExternalTargetsMatchTheFilter")):(t("uiNoManagedServiceHasAPeekTarget"))}</div>`;
+  $('externals-list').innerHTML=rows.map(row=>{const expiry=externalExpiry(row),good=externalGood(row);return `<article class="external-card ${good?'ok':'bad'}"><header><div><span class="eyebrow">${esc(row.service_name)} · ${esc(row.service_kind)} ${(row.service_labels||[]).map(label=>`· LABEL ${esc(label)}`).join(' ')}</span><h3>${esc(row.url)}</h3></div><span class="external-state">${good?'● OK':(t("uiPROBLEM"))}</span></header><div class="external-metrics"><dl class="${externalReplyTone(row)}"><dt>HTTP</dt><dd>${esc(row.http_status ?? '—')}</dd></dl><dl class="${externalProtocol(row)==='dns'&&row.connect_ms==null?'unknown':externalLatencyTone(row.connect_ms,300,1000)}"><dt>CONNECT</dt><dd>${esc(row.connect_ms ?? '—')} ms</dd></dl><dl class="${['dns','tcp','http'].includes(externalProtocol(row))?'unknown':externalLatencyTone(row.tls_handshake_ms,300,1000)}"><dt>TLS HANDSHAKE</dt><dd>${esc(row.tls_handshake_ms ?? '—')} ms</dd></dl><dl class="${externalLatencyTone(row.total_ms,1000,3000)}"><dt>${esc(t("uiTOTAL"))}</dt><dd>${esc(row.total_ms ?? '—')} ms</dd></dl><dl class="${expiry[1]}"><dt>${esc(t("uiCERTEXPIRY"))}</dt><dd>${esc(expiry[0])}</dd></dl><dl class="${['dns','tcp','http'].includes(externalProtocol(row))?'unknown':row.tls?.trusted===true?'ok':'bad'}"><dt>TRUST</dt><dd>${esc(externalTrust(row))}</dd></dl></div><details><summary>${esc(t("uiCertificateAndDetails"))}</summary><pre>${esc(JSON.stringify({protocol:externalProtocol(row),dns:row.dns,tls:row.tls,payload:row.payload,error:row.error,address:row.address,interval:row.interval},null,2))}</pre></details></article>`}).join('') || `<div class="service-empty">${externalsView.rows.length?(t("uiNoExternalTargetsMatchTheFilter")):(t("uiNoManagedServiceHasAPeekTarget"))}</div>`;
   document.querySelectorAll('#externals-list .external-card').forEach((card,index)=>card.querySelector('details').insertAdjacentHTML('beforebegin',externalSparkline(externalsView.history[rows[index].id])));
 }
 function externalSortValue(row,key){
@@ -2602,10 +2689,10 @@ function renderExternalsTable(){
   if(!$('externals-group-services').checked){
     if(!rows.length){$('externals-list').innerHTML=`<div class="service-empty">${externalsView.rows.length?(t("uiNoExternalTargetsMatchTheFilter")):(t("uiNoManagedServiceHasAPeekTarget"))}</div>`;return;}
     rows.sort((a,b)=>{const av=externalSortValue(a,externalsView.sortBy),bv=externalSortValue(b,externalsView.sortBy);return (typeof av==='string'?av.localeCompare(bv):av-bv)*externalsView.sortDir;});
-    $('externals-list').innerHTML=`<section class="external-service external-global"><header><div><span class="eyebrow">${esc(t("uiALLMANAGEDSERVICES"))}</span><h3>Externals</h3></div><div class="external-service-tools"><span class="tag">${rows.length} TARGETS</span>${externalTrendSelect()}</div></header><div class="table-scroll"><table class="external-table"><thead><tr><th>${head('service_name',(t("uiServiceName")))}</th><th>${head('service_label',(t("uiServiceLabel")))}</th><th>${head('url',(t("uiTarget2")))}</th><th>${head('status',(t("uiStatus")))}</th><th>${head('http_status','DNS / HTTP')}</th><th>${head('connect_ms',(t("uiConnect")))}</th><th>${head('tls_handshake_ms','TLS RTT')}</th><th>${head('total_ms',(t("uiTotalRTT")))}</th><th>${head('expiry','Cert')}</th><th>${head('trust',(t("uiTrust")))}</th><th>TREND (${externalTrendLabel()})</th><th>${esc(t("uiDetail"))}</th></tr></thead><tbody>${rows.map(row=>{const expiry=externalExpiry(row),good=externalGood(row);return `<tr class="${good?'ok':'bad'}"><td><strong>${esc(row.service_name)}</strong></td><td>${(row.service_labels||[]).map(label=>`<span class="tag">${esc(label)} · 0x${BigInt(label).toString(16)}</span>`).join(' ')||'—'}</td><td><strong><span class="tag">${esc(externalProtocol(row).toUpperCase())}</span> ${esc(row.url)}</strong>${externalDNSDetail(row)}</td><td class="${good?'ok':'bad'}">${good?'● OK':(t("uiPROBLEM"))}</td><td class="${externalReplyTone(row)}">${esc(externalReply(row))}</td><td class="${externalProtocol(row)==='dns'&&row.connect_ms==null?'unknown':externalLatencyTone(row.connect_ms,300,1000)}">${esc(row.connect_ms??'—')} ms</td><td class="${externalProtocol(row)==='dns'?'unknown':externalLatencyTone(row.tls_handshake_ms,300,1000)}">${esc(row.tls_handshake_ms??'—')} ms</td><td class="${externalLatencyTone(row.total_ms,1000,3000)}">${esc(row.total_ms??'—')} ms</td><td class="${expiry[1]}">${esc(expiry[0])}</td><td class="${externalProtocol(row)==='dns'?'unknown':row.tls?.trusted===true?'ok':'bad'}">${esc(externalTrust(row))}</td><td>${externalTrend(externalsView.history[row.id],row.id)}</td><td class="external-detail-cell"><button type="button" class="quiet-button" data-external-detail="${esc(row.id)}" aria-label="${esc(t("uiDetail"))} ${esc(row.url)}">${esc(t("uiDetail"))} ↗</button></td></tr>`}).join('')}</tbody></table></div></section>`;
+    $('externals-list').innerHTML=`<section class="external-service external-global"><header><div><span class="eyebrow">${esc(t("uiALLMANAGEDSERVICES"))}</span><h3>Externals</h3></div><div class="external-service-tools"><span class="tag">${rows.length} TARGETS</span>${externalTrendSelect()}</div></header><div class="table-scroll"><table class="external-table"><thead><tr><th>${head('service_name',(t("uiServiceName")))}</th><th>${head('service_label',(t("uiServiceLabel")))}</th><th>${head('url',(t("uiTarget2")))}</th><th>${head('status',(t("uiStatus")))}</th><th>${head('http_status','DNS / HTTP')}</th><th>${head('connect_ms',(t("uiConnect")))}</th><th>${head('tls_handshake_ms','TLS RTT')}</th><th>${head('total_ms',(t("uiTotalRTT")))}</th><th>${head('expiry','Cert')}</th><th>${head('trust',(t("uiTrust")))}</th><th>TREND (${externalTrendLabel()})</th><th>${esc(t("uiDetail"))}</th></tr></thead><tbody>${rows.map(row=>{const expiry=externalExpiry(row),good=externalGood(row);return `<tr class="${good?'ok':'bad'}"><td><strong>${esc(row.service_name)}</strong></td><td>${(row.service_labels||[]).map(label=>`<span class="tag">${esc(label)} · 0x${BigInt(label).toString(16)}</span>`).join(' ')||'—'}</td><td><strong><span class="tag">${esc(externalProtocol(row).toUpperCase())}</span> ${esc(row.url)}</strong>${externalDNSDetail(row)}</td><td class="${good?'ok':'bad'}">${good?'● OK':(t("uiPROBLEM"))}</td><td class="${externalReplyTone(row)}">${esc(externalReply(row))}</td><td class="${externalProtocol(row)==='dns'&&row.connect_ms==null?'unknown':externalLatencyTone(row.connect_ms,300,1000)}">${esc(row.connect_ms??'—')} ms</td><td class="${['dns','tcp','http'].includes(externalProtocol(row))?'unknown':externalLatencyTone(row.tls_handshake_ms,300,1000)}">${esc(row.tls_handshake_ms??'—')} ms</td><td class="${externalLatencyTone(row.total_ms,1000,3000)}">${esc(row.total_ms??'—')} ms</td><td class="${expiry[1]}">${esc(expiry[0])}</td><td class="${['dns','tcp','http'].includes(externalProtocol(row))?'unknown':row.tls?.trusted===true?'ok':'bad'}">${esc(externalTrust(row))}</td><td>${externalTrend(externalsView.history[row.id],row.id)}</td><td class="external-detail-cell"><button type="button" class="quiet-button" data-external-detail="${esc(row.id)}" aria-label="${esc(t("uiDetail"))} ${esc(row.url)}">${esc(t("uiDetail"))} ↗</button></td></tr>`}).join('')}</tbody></table></div></section>`;
     return;
   }
-  $('externals-list').innerHTML=[...groups.values()].map(group=>{group.sort((a,b)=>{const av=externalSortValue(a,externalsView.sortBy),bv=externalSortValue(b,externalsView.sortBy);return (typeof av==='string'?av.localeCompare(bv):av-bv)*externalsView.sortDir;});const service=group[0];return `<section class="external-service"><header><div><h3>${esc(service.service_name)}</h3></div><div>${(service.service_labels||[]).map(label=>`<span class="tag">${esc(label)} · 0x${BigInt(label).toString(16)}</span>`).join('')}</div></header><div class="table-scroll"><table class="external-table"><thead><tr><th>${head('url',(t("uiTarget2")))}</th><th>${head('status',(t("uiStatus")))}</th><th>${head('http_status','DNS / HTTP')}</th><th>${head('connect_ms',(t("uiConnect")))}</th><th>${head('tls_handshake_ms','TLS RTT')}</th><th>${head('total_ms',(t("uiTotalRTT")))}</th><th>${head('expiry','Cert')}</th><th>${head('trust',(t("uiTrust")))}</th><th>TREND (${externalTrendLabel()})</th><th>${esc(t("uiDetail"))}</th></tr></thead><tbody>${group.map(row=>{const expiry=externalExpiry(row),good=externalGood(row);return `<tr class="${good?'ok':'bad'}"><td><strong><span class="tag">${esc(externalProtocol(row).toUpperCase())}</span> ${esc(row.url)}</strong>${externalDNSDetail(row)}</td><td class="${good?'ok':'bad'}">${good?'● OK':(t("uiPROBLEM"))}</td><td class="${externalReplyTone(row)}">${esc(externalReply(row))}</td><td class="${externalProtocol(row)==='dns'&&row.connect_ms==null?'unknown':externalLatencyTone(row.connect_ms,300,1000)}">${esc(row.connect_ms??'—')} ms</td><td class="${externalProtocol(row)==='dns'?'unknown':externalLatencyTone(row.tls_handshake_ms,300,1000)}">${esc(row.tls_handshake_ms??'—')} ms</td><td class="${externalLatencyTone(row.total_ms,1000,3000)}">${esc(row.total_ms??'—')} ms</td><td class="${expiry[1]}">${esc(expiry[0])}</td><td class="${externalProtocol(row)==='dns'?'unknown':row.tls?.trusted===true?'ok':'bad'}">${esc(externalTrust(row))}</td><td>${externalTrend(externalsView.history[row.id],row.id)}</td><td class="external-detail-cell"><button type="button" class="quiet-button" data-external-detail="${esc(row.id)}" aria-label="${esc(t("uiDetail"))} ${esc(row.url)}">${esc(t("uiDetail"))} ↗</button></td></tr>`}).join('')}</tbody></table></div></section>`}).join('')||`<div class="service-empty">${externalsView.rows.length?(t("uiNoExternalTargetsMatchTheFilter")):(t("uiNoManagedServiceHasAPeekTarget"))}</div>`;
+  $('externals-list').innerHTML=[...groups.values()].map(group=>{group.sort((a,b)=>{const av=externalSortValue(a,externalsView.sortBy),bv=externalSortValue(b,externalsView.sortBy);return (typeof av==='string'?av.localeCompare(bv):av-bv)*externalsView.sortDir;});const service=group[0];return `<section class="external-service"><header><div><h3>${esc(service.service_name)}</h3></div><div>${(service.service_labels||[]).map(label=>`<span class="tag">${esc(label)} · 0x${BigInt(label).toString(16)}</span>`).join('')}</div></header><div class="table-scroll"><table class="external-table"><thead><tr><th>${head('url',(t("uiTarget2")))}</th><th>${head('status',(t("uiStatus")))}</th><th>${head('http_status','DNS / HTTP')}</th><th>${head('connect_ms',(t("uiConnect")))}</th><th>${head('tls_handshake_ms','TLS RTT')}</th><th>${head('total_ms',(t("uiTotalRTT")))}</th><th>${head('expiry','Cert')}</th><th>${head('trust',(t("uiTrust")))}</th><th>TREND (${externalTrendLabel()})</th><th>${esc(t("uiDetail"))}</th></tr></thead><tbody>${group.map(row=>{const expiry=externalExpiry(row),good=externalGood(row);return `<tr class="${good?'ok':'bad'}"><td><strong><span class="tag">${esc(externalProtocol(row).toUpperCase())}</span> ${esc(row.url)}</strong>${externalDNSDetail(row)}</td><td class="${good?'ok':'bad'}">${good?'● OK':(t("uiPROBLEM"))}</td><td class="${externalReplyTone(row)}">${esc(externalReply(row))}</td><td class="${externalProtocol(row)==='dns'&&row.connect_ms==null?'unknown':externalLatencyTone(row.connect_ms,300,1000)}">${esc(row.connect_ms??'—')} ms</td><td class="${['dns','tcp','http'].includes(externalProtocol(row))?'unknown':externalLatencyTone(row.tls_handshake_ms,300,1000)}">${esc(row.tls_handshake_ms??'—')} ms</td><td class="${externalLatencyTone(row.total_ms,1000,3000)}">${esc(row.total_ms??'—')} ms</td><td class="${expiry[1]}">${esc(expiry[0])}</td><td class="${['dns','tcp','http'].includes(externalProtocol(row))?'unknown':row.tls?.trusted===true?'ok':'bad'}">${esc(externalTrust(row))}</td><td>${externalTrend(externalsView.history[row.id],row.id)}</td><td class="external-detail-cell"><button type="button" class="quiet-button" data-external-detail="${esc(row.id)}" aria-label="${esc(t("uiDetail"))} ${esc(row.url)}">${esc(t("uiDetail"))} ↗</button></td></tr>`}).join('')}</tbody></table></div></section>`}).join('')||`<div class="service-empty">${externalsView.rows.length?(t("uiNoExternalTargetsMatchTheFilter")):(t("uiNoManagedServiceHasAPeekTarget"))}</div>`;
   document.querySelectorAll('#externals-list .external-service:not(.external-global)>header>div:last-child').forEach(container=>{container.classList.add('external-service-tools');container.insertAdjacentHTML('beforeend',externalTrendSelect());});
 }
 async function loadExternals(){
@@ -2689,12 +2776,27 @@ $('service-dns-add').addEventListener('click',()=>{
     $('service-form-status').textContent=(t("uiDNSTestAddedToTheDraftSave"));
   }catch(error){$('service-form-status').textContent=error.message;}
 });
+$('service-probe-add').addEventListener('click',()=>{
+  try{
+    const url=$('service-probe-url').value.trim(),pattern=$('service-probe-regex').value;
+    const parsed=new URL(url);
+    if(!['http:','https:','tcp:','tls:'].includes(parsed.protocol))throw new Error(t('probeHint'));
+    if(pattern&&!['http:','https:'].includes(parsed.protocol))throw new Error(t('probePatternHTTP'));
+    const line=url+' 60'+(pattern?' '+JSON.stringify(pattern):'');serviceTargets(line);
+    $('service-peek').value=[$('service-peek').value.trim(),line].filter(Boolean).join('\n');
+    $('service-form-status').textContent=t('probeAdded');
+  }catch(error){$('service-form-status').textContent=error.message;}
+});
 function serviceTargets(text){
   return text.split('\n').map(line=>line.trim()).filter(Boolean).map(line=>{
-    const parts=line.split(/\s+/);if(parts.length>2)throw new Error((t("uiPeekTargetURLAndOptionalInterval")));
+    const match=line.match(/^(\S+)(?:\s+(\d+))?(?:\s+(".*"))?$/);
+    if(!match)throw new Error(t('probeLineHint'));
+    const parts=[match[1],match[2]];
+    const pattern=match[3]?JSON.parse(match[3]):'';
+    if(typeof pattern!=='string'||pattern.length>1024)throw new Error(t('probeLineHint'));
     const interval=parts[1]===undefined?60:Number(parts[1]);
     if(!Number.isInteger(interval))throw new Error((t("uiPeekIntervalMustBeAnInteger")));
-    return {url:parts[0],interval};
+    return {url:parts[0],interval,...(pattern?{payload_regex:pattern}:{})};
   });
 }
 function renderServices(message=''){
@@ -2713,7 +2815,7 @@ function editService(service=null){
   $('service-name').value=service?.name || '';$('service-kind').value=service?.kind || 'external';
   $('service-description').value=service?.description || '';
   $('service-labels').value=(service?.labels || []).join(', ');
-  $('service-peek').value=(service?.peek_targets || []).map(target=>`${target.url} ${target.interval}`).join('\n');
+  $('service-peek').value=(service?.peek_targets || []).map(target=>`${target.url} ${target.interval}${target.payload_regex?" "+JSON.stringify(target.payload_regex):""}`).join('\n');
   $('service-delete').hidden=!service;$('service-form-status').textContent='';
   $('service-name').focus();$('service-form').scrollIntoView({block:'nearest'});
 }
@@ -3003,7 +3105,7 @@ async function loadJournal(older=false) {
   if(journalView.busy)return;
   const category=$('journal-category').value;
   $('journal-actor').disabled=category!=='audit';
-  const params=new URLSearchParams({category:category==='audit'?'audit':'event'});
+  const params=new URLSearchParams({category:category==='problem'?'problem':category==='audit'?'audit':'event'});
   if(category==='active')params.set('active','1');
   if($('journal-target').value.trim())params.set('target',$('journal-target').value.trim());
   if(category==='audit' && $('journal-actor').value.trim())params.set('actor',$('journal-actor').value.trim());
@@ -3012,14 +3114,21 @@ async function loadJournal(older=false) {
   journalView.busy=true;$('journal-status').textContent=t('working');
   try {
     const data=await api('/api/v1/journal?'+params);
-    const rows=data.entries || (data.conditions || []).map(c=>({at:c.since,target:c.target,actor:'collector',action:c.code,outcome:'active',details:{name:c.name,condition:c.details,since:c.since}}));
+    const rows=data.problems || data.entries || (data.conditions || []).map(c=>({at:c.since,target:c.target,actor:'collector',action:c.code,outcome:'active',details:{name:c.name,condition:c.details,since:c.since}}));
     journalView.rows=older && query===journalView.query?[...journalView.rows,...rows]:rows;
     journalView.query=query;journalView.before=data.before;journalView.older=older;
     $('journal-more').hidden=!data.before;
     $('journal-status').textContent=data.error || (data.persistent===false?t('journalTemporary'):t('journalRetention',{days:data.retention_days || state.data?.journal?.retention_days || 90}));
+    if(category==='problem')$('journal-status').textContent+=' · '+t('problemsHint');
+    document.querySelectorAll('.journal-table thead th').forEach((th,index)=>{th.textContent=t((category==='problem'?['problemStart','problemSeen','journalAction','journalTarget','problemEnd','problemCount']:['journalTime','journalActor','journalAction','journalTarget','journalOutcome','journalDetails'])[index]);});
     if(data.total!==undefined)$('journal-status').textContent+=' · '+rows.length+' / '+data.total;
     const html=journalView.rows.map(row=>{
       const endpoint=state.data?.endpoints.find(e=>e.id===row.target);
+      if(category==='problem'){
+        const date=value=>value==null?'—':new Date(value*1000).toLocaleString(locale());
+        const end=row.state==='resolved'?date(row.ended):t(row.state==='unknown'?'problemUnknown':'problemActive');
+        return `<tr><td>${esc(date(row.since))}</td><td>${esc(date(row.seen))}</td><td><strong>${esc(row.code.startsWith('errors:')?row.code.slice(7):t('check_'+row.code))}</strong></td><td>${endpoint?`<button class="quiet-button" data-journal-endpoint="${esc(row.target)}">${esc(row.name)}</button>`:esc(row.name)}</td><td>${esc(end)}</td><td>${esc(row.count)}</td></tr>`;
+      }
       const details={...row.details};delete details.diff;
       const error=['failed','unknown','raised','active'].includes(row.outcome);
       return `<tr><td>${esc(new Date(row.at*1000).toLocaleString(locale()))}</td><td>${esc(row.actor)}<small>${esc(row.role || '')}</small></td><td>${esc(row.action)}</td><td>${endpoint?`<button class="quiet-button" data-journal-endpoint="${esc(row.target)}">${esc(endpoint.name)}</button>`:esc(row.details?.name || row.target)}<small>${esc(row.target)}</small></td><td class="${error?'map-warning-count':''}">${esc(row.outcome)}</td><td><details><summary>${esc(t('journalDetails'))}</summary><pre>${esc(JSON.stringify({...details,operation_id:row.operation_id},null,2))}</pre>${row.details?.diff!==undefined?`<pre class="diff">${esc(row.details.diff)}</pre>`:''}</details></td></tr>`;
@@ -3059,7 +3168,7 @@ function showView(view) {
   if (view === "diagnostics" && selected() && selected().source!=="discovered" && !state.logs.has(state.selected)) readLogs();
 }
 function selectProcess(id, view) {
-  if (state.selected!==id) state.flowPage=0;
+  if (state.selected!==id) {state.flowPage=0;state.diagnosticWarning=null;}
   state.selected=id; if(view)state.view=view; render(); loadHistory(state.selected);
   if (view) showView(view);
   else if (state.view === "diagnostics" && selected()?.source!=="discovered" && !state.logs.has(id)) readLogs();
@@ -3128,7 +3237,8 @@ async function authenticate(username,password,bootstrap=false){
   const serverKey=await hmacRaw(salted,bytes("Server Key")),expected=b64url(await hmacRaw(serverKey,message));
   if(expected!==result.server_signature)throw new Error("Server authentication failed");
   const sessionKey=await hmacRaw(serverKey,new Uint8Array([...bytes("Session Key\0"),...message]));
-  state.auth={id:result.session_id,key:sessionKey,username:result.username,role:result.role,usersEnabled:result.users_enabled};
+  state.auth={id:result.session_id,key:sessionKey,username:result.username,role:result.role,usersEnabled:result.users_enabled,bootstrap};
+  await loadProfile();
   await refresh(true);
   await loadServices();
 }
@@ -3202,8 +3312,10 @@ $("login-form").addEventListener("submit",async event=>{event.preventDefault();c
 $("token-form").addEventListener("submit",async event=>{event.preventDefault();const input=$("token"),token=input.value;if(await submitLogin("bootstrap",token,true))input.value="";});
 $("logout").addEventListener("click",async()=>{
   try{if(state.auth)await api("/api/v1/auth/logout","POST",{});}catch{/* Local logout must still complete. */}
+  if($("profile-dialog").open)$("profile-dialog").close();
+  applyPalette("olive");$("profile-open").hidden=true;
   state.auth=null;state.data=null;state.selected=null;state.paused=false;state.failure="";state.loginError="";
-  state.flows.clear();state.history.clear();state.logs.clear();state.reports.clear();state.discoveries.clear();state.drafts.clear();
+  state.diagnosticWarning=null;state.flows.clear();state.history.clear();state.logs.clear();state.reports.clear();state.discoveries.clear();state.drafts.clear();
   $("workspace").hidden=true;$("login").hidden=false;$("login-error").hidden=true;$("logout").hidden=true;$("users-nav").hidden=true;
 });
 function readTokenLink() {
@@ -3230,14 +3342,19 @@ function renderWarnings() {
     $("warning-list").innerHTML=items.map(item=>{
       const reasons=item.checks.flatMap(check=>checkReasons(item,check));
       const exists=present.has(item.endpointId);
-      return `<article class="warning-balloon ${item.resolved?"warning-resolved":""}"><div class="warning-balloon-heading"><span class="attention-mark" aria-hidden="true">!</span><span>${esc(t(item.resolved?"warningResolved":"recordedWarning"))}</span><time data-warning-age="${item.id}" datetime="${esc(item.sampleId)}"></time><button class="warning-dismiss" data-dismiss-warning="${item.id}" aria-label="${esc(t("dismissWarning",{name:item.name}))}">×</button></div><button class="warning-process" data-warning-process="${esc(item.endpointId)}" ${exists ? "" : "disabled"}>${esc(item.name)} <small>PID ${item.pid}</small>${exists ? " ↗" : ""}</button>${exists ? "" : `<p class="warning-gone">${esc(t("warningProcessGone"))}</p>`}<p>${esc(t("warningOccurrences",{count:item.count}))} · ${esc(t("warningFirst"))} ${esc(new Date(item.firstSampleId).toLocaleTimeString(locale()))}</p><ul>${reasons.map(reason=>`<li>${esc(reason.text)}</li>`).join("")}</ul></article>`;
+      return `<article class="warning-balloon ${item.resolved?"warning-resolved":""}"><div class="warning-balloon-heading"><span class="attention-mark" aria-hidden="true">!</span><span>${esc(t(item.resolved?"warningResolved":"recordedWarning"))}</span><time data-warning-age="${item.id}" datetime="${esc(item.sampleId)}"></time><button class="warning-dismiss" data-dismiss-warning="${item.id}" aria-label="${esc(t("dismissWarning",{name:item.name}))}">×</button></div><button class="warning-process" data-warning-process="${esc(item.endpointId)}" data-warning-id="${item.id}" ${exists ? "" : "disabled"}>${esc(item.name)} <small>PID ${item.pid}</small>${exists ? " ↗" : ""}</button>${exists ? "" : `<p class="warning-gone">${esc(t("warningProcessGone"))}</p>`}<p>${esc(t("warningOccurrences",{count:item.count}))} · ${esc(t("warningFirst"))} ${esc(new Date(item.firstSampleId).toLocaleTimeString(locale()))}</p><p data-warning-resolution="${item.id}" ${item.resolved?"":"hidden"}></p><ul>${reasons.map(reason=>`<li><button class="warning-reason" data-warning-process="${esc(item.endpointId)}" data-warning-id="${item.id}" ${exists?"":"disabled"}>${esc(reason.text)}${exists?" ↗":""}</button></li>`).join("")}</ul></article>`;
     }).join("");
   }
   for (const item of items) {
     const age=$("warning-list").querySelector(`[data-warning-age="${item.id}"]`), seconds=state.warnings.age(item).toLocaleString(locale());
     age.textContent=`−${seconds} s`;
     age.setAttribute("aria-label",t("secondsAgo",{seconds}));
-    age.title=new Date(item.sampleId).toLocaleString(locale());
+    age.title=t('warningLastSeen')+': '+new Date(item.sampleId).toLocaleString(locale());
+    const resolution=$("warning-list").querySelector(`[data-warning-resolution="${item.id}"]`);
+    if(item.resolved){
+      resolution.textContent=warningResolution(item);
+      resolution.title=new Date(item.resolvedAt).toLocaleString(locale());
+    }
   }
 }
 $("warning-clear").addEventListener("click",()=>{
@@ -3250,7 +3367,14 @@ $("warning-list").addEventListener("click",event=>{
     const next=close.closest("article").nextElementSibling?.querySelector("[data-dismiss-warning]")?.dataset.dismissWarning;
     state.warnings.dismiss(close.dataset.dismissWarning); renderWarnings();
     if (focused) ($("warning-list").querySelector(`[data-dismiss-warning="${next}"]`) || $("warning-list").querySelector("[data-dismiss-warning]") || $("refresh")).focus({preventScroll:true});
-  } else if (process && !process.disabled) selectProcess(process.dataset.warningProcess,"overview");
+  } else if (process && !process.disabled) {
+    const item=state.warnings.list().find(item=>item.id===process.dataset.warningId);
+    if(!item)return;
+    selectProcess(item.endpointId,"diagnostics");
+    state.diagnosticWarning=item;renderDiagnosticWarning();
+    $("diagnostic-warning").focus({preventScroll:true});
+    $("diagnostic-warning").scrollIntoView({block:"center",behavior:"auto"});
+  }
 });
 function renderHealth() {
   const endpoints=state.data.endpoints, e=selected(), counts={ok:0,warn:0,unknown:0};
@@ -3676,7 +3800,23 @@ async function discoverNetwork() {
   } catch(error) { entry.error=error.message; }
   finally { entry.busy=false; renderDiscovery(); }
 }
+function warningResolution(item) {
+  return t('warningResolvedAgo',{seconds:state.warnings.resolvedAge(item).toLocaleString(locale())})+' · '+
+    t('warningDuration',{duration:duration(state.warnings.incidentDuration(item))});
+}
+function renderDiagnosticWarning() {
+  const item=state.diagnosticWarning,e=selected(),box=$("diagnostic-warning");
+  box.hidden=!item || item.endpointId!==e?.id;
+  if(box.hidden)return;
+  const reasons=item.checks.flatMap(check=>checkReasons(item,check));
+  box.classList.toggle('resolved',item.resolved);
+  box.innerHTML=`<h3>${esc(t('warningEvidence'))} · ${esc(t(item.resolved?'warningResolved':'recordedWarning'))}</h3>
+    <p>${esc(t('warningLastSeen'))}: ${esc(new Date(item.sampleId).toLocaleString(locale()))}</p>
+    ${item.resolved?`<p>${esc(warningResolution(item))}</p>`:''}
+    ${reasons.map(reason=>`<div><strong>${esc(reason.text)}</strong>${reason.metric?`<p>${esc(metricHelp(reason.metric))}</p><p>${esc(t('warningCurrentValue'))}: <code>${esc(e.status==='reachable'&&!outdated(e)?e.metrics?.[reason.metric]??'—':'—')}</code></p>`:''}</div>`).join('')}`;
+}
 function renderDiagnostics() {
+  renderDiagnosticWarning();
   renderDiscovery();
   const e=selected(), logs=state.logs.get(e?.id), report=state.reports.get(e?.id);
   $("diagnostic-title").innerHTML=e ? `${esc(e.name)}${authorityBadge(e)} · ${esc(processIdentity(e))}` : esc(t("diagnostics"));
@@ -3746,7 +3886,76 @@ $("discovery-read").addEventListener("click",discoverNetwork);
 $("diagnostics-copy").addEventListener("click",()=>diagnosticAction(true));
 $("diagnostics-save").addEventListener("click",()=>diagnosticAction(false));
 
+const palettes=['olive','paper','midnight','linen'];
+const profileView={saved:'olive',preview:'olive',persistent:false,busy:false,error:''};
+function applyPalette(palette){document.documentElement.dataset.theme=palettes.includes(palette)?palette:'olive';}
+async function loadProfile(){
+  profileView.saved='olive';profileView.preview='olive';profileView.error='';
+  try{
+    const data=await api('/api/v1/profile');profileView.persistent=data.persistent;
+    let palette=data.palette;
+    if(state.auth?.bootstrap){try{palette=localStorage.getItem('tuntom-fabric-bootstrap-palette')||palette;}catch{}}
+    profileView.saved=palettes.includes(palette)?palette:'olive';
+  }catch(error){profileView.error=diagnostic(error.message);profileView.persistent=false;}
+  profileView.preview=profileView.saved;applyPalette(profileView.saved);
+}
+function renderProfile(){
+  $('profile-identity').textContent=state.auth?`${state.auth.username} · ${state.auth.role}`:'';
+  $('profile-hint').textContent=t(state.auth?.bootstrap?'profileLocal':'profileHint');
+  $('profile-palettes').innerHTML=palettes.map(palette=>`<label class="palette-option"><input type="radio" name="palette" value="${palette}" ${profileView.preview===palette?'checked':''} ${profileView.busy?'disabled':''}><span class="palette-swatch palette-${palette}" aria-hidden="true"></span><span>${esc(t('palette_'+palette))}</span></label>`).join('');
+  $('profile-save').disabled=profileView.busy || !!profileView.error;
+  $('profile-close').disabled=profileView.busy;
+}
+$('profile-open').addEventListener('click',()=>{
+  profileView.preview=profileView.saved;renderProfile();$('profile-status').textContent=profileView.error;
+  $('profile-dialog').showModal();
+});
+$('profile-palettes').addEventListener('change',event=>{
+  if(event.target.name!=='palette'||profileView.busy)return;
+  profileView.preview=event.target.value;applyPalette(profileView.preview);$('profile-status').textContent='';
+});
+$('profile-close').addEventListener('click',()=>$('profile-dialog').close());
+$('profile-dialog').addEventListener('cancel',event=>{if(profileView.busy)event.preventDefault();});
+$('profile-dialog').addEventListener('close',()=>applyPalette(profileView.saved));
+$('profile-form').addEventListener('submit',async event=>{
+  event.preventDefault();if(profileView.busy||!state.auth)return;
+  profileView.busy=true;renderProfile();$('profile-status').textContent=t('working');
+  try{
+    if(state.auth.bootstrap)localStorage.setItem('tuntom-fabric-bootstrap-palette',profileView.preview);
+    else await api('/api/v1/profile','POST',{palette:profileView.preview});
+    profileView.saved=profileView.preview;$('profile-status').textContent=t('profileSaved');
+  }catch(error){$('profile-status').textContent=diagnostic(error.message);}
+  finally{profileView.busy=false;renderProfile();}
+});
+
+function renderFullscreen() {
+  const button=$('fullscreen-toggle'),active=!!document.fullscreenElement;
+  button.hidden=!document.fullscreenEnabled && !active;
+  button.setAttribute('aria-pressed',String(active));
+  button.setAttribute('aria-label',t(active?'fullscreenExit':'fullscreenEnter'));
+  button.title=t(active?'fullscreenExit':'fullscreenEnter');
+  button.querySelector('span').textContent=active?'⊡':'⛶';
+  if(!$('fullscreen-status').hidden)$('fullscreen-status').textContent=t('fullscreenFailed');
+}
+$('fullscreen-toggle').addEventListener('click',async()=>{
+  const button=$('fullscreen-toggle');button.disabled=true;
+  $('fullscreen-status').hidden=true;
+  try {
+    if(document.fullscreenElement)await document.exitFullscreen();
+    else await document.documentElement.requestFullscreen();
+  } catch {
+    $('fullscreen-status').textContent=t('fullscreenFailed');
+    $('fullscreen-status').hidden=false;
+  } finally {button.disabled=false;renderFullscreen();}
+});
+document.addEventListener('fullscreenchange',()=>{
+  $('fullscreen-status').hidden=true;
+  renderFullscreen();
+});
+
 function applyLanguage() {
+  if($("profile-dialog").open)renderProfile();
+  renderFullscreen();
   document.documentElement.lang=language;
   document.title=t("title");
   document.querySelectorAll("[data-i18n]").forEach(element=>{element.textContent=t(element.dataset.i18n);});
@@ -3787,3 +3996,6 @@ document.addEventListener("visibilitychange",resumeVisiblePage);
 window.addEventListener("pageshow",resumeVisiblePage);
 setInterval(()=>refresh(),2000);
 setInterval(()=>{ if (!document.hidden) renderWarnings(); },1000);
+
+// Age indicators must advance even when collection is paused or a request hangs.
+setInterval(()=>{if(!document.hidden && state.data && state.view==="observed" && (state.paused || state.busy))renderObserved();},5000);

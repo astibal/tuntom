@@ -1,6 +1,7 @@
 """Persistent operator audit and component condition transitions (not syslog)."""
 from contextvars import ContextVar
 from functools import wraps
+from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -53,8 +54,18 @@ class Journal:
           CREATE INDEX IF NOT EXISTS entries_category_id ON entries(category,id);
           CREATE TABLE IF NOT EXISTS conditions(target TEXT NOT NULL, code TEXT NOT NULL, name TEXT NOT NULL,
             details TEXT NOT NULL, since REAL NOT NULL, seen REAL NOT NULL, PRIMARY KEY(target,code));
+          CREATE TABLE IF NOT EXISTS problems(id INTEGER PRIMARY KEY, target TEXT NOT NULL,
+            code TEXT NOT NULL, name TEXT NOT NULL, since REAL NOT NULL, seen REAL NOT NULL,
+            ended REAL, state TEXT NOT NULL, count INTEGER NOT NULL, sample TEXT NOT NULL,
+            details TEXT NOT NULL);
+          CREATE UNIQUE INDEX IF NOT EXISTS problems_open ON problems(target,code) WHERE state='active';
           CREATE TABLE IF NOT EXISTS components(target TEXT PRIMARY KEY, name TEXT NOT NULL, seen REAL NOT NULL);
         ''')
+        # Restart breaks observation continuity; do not invent a recovery time.
+        with self.db:
+            self.db.execute("UPDATE problems SET state='unknown' WHERE state='active'")
+        self.problem_samples={}
+        self.problem_recovery={}
         self.retention_days=retention_days
         self.persistent=bool(path)
         self.error=None
@@ -82,6 +93,7 @@ class Journal:
     def observe(self, endpoints):
         tick=time.time()
         with self.lock,self.db:
+            self._observe_problems(endpoints, tick)
             known={r['target']:r['name'] for r in self.db.execute('SELECT target,name FROM components')}
             seen=set()
             for e in endpoints:
@@ -119,22 +131,86 @@ class Journal:
             if tick-self.pruned>3600:
                 cutoff=tick-self.retention_days*86400
                 self.db.execute('DELETE FROM entries WHERE at<?',(cutoff,))
+                self.db.execute('DELETE FROM problems WHERE seen<? AND state!=?',(cutoff,'active'))
                 self.db.execute('DELETE FROM conditions WHERE target IN (SELECT target FROM components WHERE seen<?)',(cutoff,))
                 self.db.execute('DELETE FROM components WHERE seen<?',(cutoff,))
                 self.pruned=tick
         self.error=None
+
+    def _observe_problems(self, endpoints, tick):
+        """A small projection of observed warnings, using the existing journal transaction."""
+        present={e['id'] for e in endpoints}
+        for target in set(self.problem_samples)-present:
+            self.problem_samples.pop(target,None)
+        for row in self.db.execute("SELECT id,target FROM problems WHERE state='active'").fetchall():
+            if row['target'] not in present:
+                self.db.execute("UPDATE problems SET state='unknown' WHERE id=?",(row['id'],))
+                self.problem_recovery.pop(row['id'],None)
+        for e in endpoints:
+            target=e['id'];sample=e.get('sampled_at')
+            rows={row['code']:dict(row) for row in self.db.execute("SELECT * FROM problems WHERE target=? AND state='active'",(target,))}
+            try:sample_time=datetime.fromisoformat(sample).timestamp()
+            except (TypeError,ValueError):sample_time=None
+            fresh=e.get('status')=='reachable' and sample_time is not None and -5<=tick-sample_time<=15
+            if not fresh:
+                for row in rows.values():self.problem_recovery.pop(row['id'],None)
+                continue
+            if self.problem_samples.get(target,float('-inf'))>=sample_time:continue
+            self.problem_samples[target]=sample_time
+            faults={};healthy=set()
+            for check in e.get('health',{}).get('checks',[]):
+                key=check['key']
+                if key=='errors' and check['state'] in ('ok','warn'):
+                    healthy.update(code for code in rows if code.startswith('errors:'))
+                    for counter,value in check.get('counters',{}).items():
+                        if check['state']=='warn':faults['errors:'+counter]={**check,'counters':{counter:value}}
+                elif check['state']=='warn':faults[key]=check
+                elif check['state']=='ok':healthy.add(key)
+            for code,detail in faults.items():
+                row=rows.get(code)
+                if row:
+                    self.problem_recovery.pop(row['id'],None)
+                    self.db.execute('UPDATE problems SET seen=?,sample=?,count=count+1,details=?,name=? WHERE id=?',
+                        (sample_time,sample,json.dumps(detail),e.get('name',target),row['id']))
+                else:
+                    self.db.execute("INSERT INTO problems(target,code,name,since,seen,state,count,sample,details) VALUES(?,?,?,?,?,'active',1,?,?)",
+                        (target,code,e.get('name',target),sample_time,sample_time,sample,json.dumps(detail)))
+            for code,row in rows.items():
+                if code in faults:continue
+                if code not in healthy:
+                    self.problem_recovery.pop(row['id'],None);continue
+                first,last=self.problem_recovery.get(row['id'],(sample_time,sample_time))
+                if not 0<sample_time-last<=15:first=sample_time
+                self.problem_recovery[row['id']]=(first,sample_time)
+                if sample_time-first>=30:
+                    self.db.execute("UPDATE problems SET state='resolved',ended=? WHERE id=?",(sample_time,row['id']))
+                    self.problem_recovery.pop(row['id'],None)
 
     def page(self, params=None):
         params=params or {}
         if not isinstance(params,dict) or set(params)-{'category','before','target','actor','active'}:
             raise APIError(400,'invalid journal query')
         category=params.get('category','audit')
-        if category not in {'audit','event'}:raise APIError(400,'invalid journal category')
+        if category not in {'audit','event','problem'}:raise APIError(400,'invalid journal category')
         if params.get('active') not in (None,'1'):raise APIError(400,'invalid active filter')
         try:before=int(params.get('before',2**63-1))
         except (ValueError,TypeError):raise APIError(400,'invalid journal cursor')
         if not 0<before<=2**63-1:raise APIError(400,'invalid journal cursor')
         with self.lock:
+            if category=='problem':
+                if params.get('active') or params.get('actor'):raise APIError(400,'invalid problem filter')
+                target=params.get('target')
+                if target and (not isinstance(target,str) or len(target)>1024):raise APIError(400,'invalid target')
+                rows=[dict(r) for r in self.db.execute('SELECT * FROM problems WHERE id<?'+(' AND target=?' if target else '')+' ORDER BY id DESC LIMIT 101',
+                    (before,target) if target else (before,))]
+                more=len(rows)>100;rows=rows[:100]
+                size=0;bounded=[]
+                for row in rows:
+                    size+=len(row['details'].encode())+2048
+                    if size>2*1024*1024:more=True;break
+                    row['details']=json.loads(row['details']);bounded.append(row)
+                return {'problems':bounded,'before':bounded[-1]['id'] if more and bounded else None,
+                    'persistent':self.persistent,'retention_days':self.retention_days,'error':self.error}
             if params.get('active')=='1':
                 target=params.get('target')
                 if target and (not isinstance(target,str) or len(target)>1024):raise APIError(400,'invalid target')
