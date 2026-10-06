@@ -1,3 +1,4 @@
+#include "version.hpp"
 #include "common.hpp"
 #include "tun_device.hpp"
 #include "tun_fd_socket.hpp"
@@ -67,6 +68,7 @@ void usage(const char* program) {
 } // namespace
 
 int main(int argc, char** argv) {
+    if (tuntom::print_version_if_requested(argc, argv, "tuntom-tun-helper")) return 0;
     try {
         if (argc == 2 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")) {
             usage(argv[0]);

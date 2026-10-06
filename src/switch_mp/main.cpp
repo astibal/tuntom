@@ -1,3 +1,4 @@
+#include "../version.hpp"
 #include "../routed_control.hpp"
 #include "../control_ports.hpp"
 #include "../common.hpp"
@@ -68,6 +69,7 @@ struct AdmissionStats {
 } // namespace
 
 int main(int argc, char **argv) {
+    if (tuntom::print_version_if_requested(argc, argv, "tomtom-switch-mp")) return 0;
     (void)::prctl(PR_SET_NAME, "tomtom-switch", 0UL, 0UL, 0UL);
     tuntom::logger.ignore_sigpipe();
     try {

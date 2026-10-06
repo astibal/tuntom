@@ -1,3 +1,4 @@
+#include "../version.hpp"
 #include "../routed_control.hpp"
 #include "../control_ports.hpp"
 #include "../ipc/retry_queue.hpp"
@@ -163,6 +164,7 @@ void close_connections(std::vector<Connection>& connections) {
 } // namespace
 
 int main(int argc, char** argv) {
+    if (tuntom::print_version_if_requested(argc, argv, "tuntom-switch")) return 0;
     // Deployment installs the executable as "main"; identify it in top/ps.
     // This is cosmetic, so failure must not prevent startup.
     (void)::prctl(PR_SET_NAME, "tuntom-switch", 0UL, 0UL, 0UL);

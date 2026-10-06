@@ -1,7 +1,9 @@
+#include "version.hpp"
 #include "gatekeeper.hpp"
 #include <iostream>
 
 int main(int argc,char** argv) {
+    if (tuntom::print_version_if_requested(argc, argv, "tuntom-gatekeeper")) return 0;
     try {
         if(argc!=3||std::string(argv[1])!="verify")throw std::runtime_error("usage: tuntom-gatekeeper verify <config>");
         tuntom::auth_helper::Bytes input((std::istreambuf_iterator<char>(std::cin)),{});tuntom::auth_helper::Verify request;

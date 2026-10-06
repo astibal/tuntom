@@ -1,3 +1,4 @@
+#include "../version.hpp"
 #include "../routed_control.hpp"
 #include "../common.hpp"
 #include "../runtime_recovery.hpp"
@@ -79,6 +80,7 @@ void usage(const char* program) {
 } // namespace
 
 int main(int argc, char** argv) {
+    if (tuntom::print_version_if_requested(argc, argv, "tuntom-switch-adapter")) return 0;
     // Linux comm allows 15 characters; the installed filename is just "main".
     // This is cosmetic, so failure must not prevent startup.
     (void)::prctl(PR_SET_NAME, "tuntom-adapter", 0UL, 0UL, 0UL);

@@ -34,6 +34,12 @@ target_compile_options(tuntom-divert-adapter PRIVATE -Wall -Wextra -Wconversion 
 
 include(CTest)
 if(BUILD_TESTING)
+    foreach(component tuntom tuntomctl tuntom-tun-helper tuntom-gatekeeper
+                      tuntom-switch tomtom-switch-mp tuntom-switch-adapter tuntom-divert-adapter)
+        add_test(NAME version_${component} COMMAND ${component} --version)
+        set_tests_properties(version_${component} PROPERTIES
+            PASS_REGULAR_EXPRESSION "${component} 5\\.1\\.123")
+    endforeach()
     add_executable(via_test tests/via_test.cpp)
     target_compile_options(via_test PRIVATE -Wall -Wextra -Wconversion -pedantic)
     add_test(NAME via_test COMMAND via_test)

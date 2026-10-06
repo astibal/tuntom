@@ -1,3 +1,4 @@
+#include "../version.hpp"
 #include "../routed_control.hpp"
 #include "flows.hpp"
 #include "paths.hpp"
@@ -69,6 +70,7 @@ struct Stats {
 }
 
 int main(int argc, char** argv) {
+    if (tuntom::print_version_if_requested(argc, argv, "tuntom-divert-adapter")) return 0;
     using namespace tuntom;
     using namespace tuntom::divert;
     (void)::prctl(PR_SET_NAME, "tuntom-divert", 0UL, 0UL, 0UL);

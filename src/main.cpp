@@ -1,9 +1,11 @@
+#include "version.hpp"
 #include "cli.hpp"
 #include "control_cli.hpp"
 #include "tunnel.hpp"
 #include "stats_control.hpp"
 
 int main(int argc, char** argv) {
+    if (tuntom::print_version_if_requested(argc, argv, "tuntom")) return 0;
     if (argc > 1 && std::string(argv[1]) == "ctl") return tuntom_control_main(argc - 1, argv + 1);
     tuntom::logger.ignore_sigpipe();
     using namespace tuntom;
