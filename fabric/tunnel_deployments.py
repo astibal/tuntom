@@ -1,4 +1,4 @@
-"""Validated tunnel deployment intents and human-readable screen runbooks."""
+"""Validated tunnel deployment intents and human-readable runtime runbooks."""
 from __future__ import annotations
 from binary_bundles import BinaryBundles
 
@@ -18,6 +18,25 @@ import tarfile
 
 from errors import APIError
 from deployment_cleanup import erase_secret
+from deployment_diagnostics import safe_output
+
+
+RUNTIME_ACCESS_CHECK = '''runuser -u tuntom -g tuntom -- python3 - "$root" <<'PYACCESS'
+import os
+import pathlib
+import sys
+root = pathlib.Path(sys.argv[1])
+for directory in reversed((root, *root.parents)):
+    if not os.access(directory, os.X_OK):
+        sys.exit("Runtime access denied: user tuntom cannot traverse " + str(directory) +
+                 ". Automatic ACL preparation did not make this directory accessible.")
+for name in ("run", "log"):
+    directory = root / name
+    if not os.access(directory, os.W_OK | os.X_OK):
+        sys.exit("Runtime access denied: user tuntom cannot write to " + str(directory))
+print("RUNTIME_ACCESS_READY")
+PYACCESS
+'''
 
 
 def timestamp():
@@ -47,7 +66,7 @@ def instance(base, index):
 
 
 def validate_side(value, field):
-    allowed = {"endpoint_id", "role", "peer_address", "attachment", "runtime", "switch_id"}
+    allowed = {"endpoint_id", "role", "peer_address", "attachment", "runtime", "switch_id", "autostart"}
     if not isinstance(value, dict) or set(value) - allowed:
         raise ValueError(f"invalid {field} fields")
     switch_id = value.get("switch_id")
@@ -87,21 +106,27 @@ def validate_side(value, field):
         raise ValueError(f"invalid {field}.attachment fields")
     if switch_id is not None and attachment["type"] != "switch": raise ValueError("existing switch requires switch attachment")
     runtime = value.get("runtime", "screen")
-    if runtime != "screen":
-        raise ValueError(f"{field}.runtime: only screen is implemented in this phase")
+    if runtime not in {"screen", "systemd"}:
+        raise ValueError(f"{field}.runtime must be screen or systemd")
+    autostart = value.get("autostart", False)
+    if not isinstance(autostart, bool) or (autostart and runtime != "systemd"):
+        raise ValueError(f"{field}.autostart requires systemd and a boolean")
     return {"endpoint_id": endpoint_id, "role": role, "peer_address": peer if role == "initiator" else None,
-            "attachment": dict(attachment), "runtime": runtime, **({"switch_id": switch_id} if switch_id else {})}
+            "attachment": dict(attachment), "runtime": runtime, **({"autostart": autostart} if runtime == "systemd" else {}), **({"switch_id": switch_id} if switch_id else {})}
 
 
-def check_switch_ports(side, count, ports):
+def check_switch_ports(side, count, ports, via=None):
     base = side["attachment"]["port_id"]
     requested = {base + (f"_{index}" if index else "") for index in range(count)}
+    if via:
+        from via_deployments import relay_port
+        requested = {relay_port(base, i, count, via) for i in range(count)}
     collisions = requested & set(ports)
     if collisions: raise ValueError("switch ports are already occupied: " + ", ".join(sorted(collisions)))
 
 
 def validate(data):
-    allowed = {"name", "tunnel_id", "count", "side_a", "side_b", "software", "secret"}
+    allowed = {"name", "tunnel_id", "count", "side_a", "side_b", "software", "secret", "via"}
     if not isinstance(data, dict) or set(data) - allowed:
         raise ValueError("invalid tunnel deployment fields")
     name = clean_name(data.get("name"), "name", 64)
@@ -146,7 +171,9 @@ def validate(data):
         raise ValueError("provided PSK must contain 32 hex characters")
     if secret["mode"] == "generate" and supplied:
         raise ValueError("generated PSK must not include a value")
-    return {"name": name, "tunnel_id": tunnel_id, "count": count, "side_a": a, "side_b": b,
+    from via_deployments import validate_via
+    via = validate_via(data.get("via"), a, b, count, software)
+    return {**({"via": via} if via else {}), "name": name, "tunnel_id": tunnel_id, "count": count, "side_a": a, "side_b": b,
             "software": software, "secret": {"mode": secret["mode"]}}, supplied.lower() if supplied else None
 
 
@@ -248,7 +275,7 @@ echo PREFLIGHT_OK
         if config["software"]["source"] == "git_build":
             revision = config["software"]["revision"]
             dependencies = '''apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y git g++ make screen iproute2
+DEBIAN_FRONTEND=noninteractive apt-get install -y git g++ make screen iproute2 acl
 '''
             install = f'''install -d -m 0755 "$root/source" "$root/bin"
 if test -d "$root/source/.git"; then git -C "$root/source" fetch --tags origin; else git clone {shell(git_url)} "$root/source"; fi
@@ -261,7 +288,7 @@ install -m 0755 "$root/bin/tuntomctl.new" "$root/bin/tuntomctl"
         else:
             digest = config["software"]["sha256"]
             dependencies = '''apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y screen iproute2
+DEBIAN_FRONTEND=noninteractive apt-get install -y screen iproute2 acl
 '''
             install = f'''test "$(sha256sum "$root/incoming/tuntom" | cut -d' ' -f1)" = {shell(digest)}
 install -D -m 0755 "$root/incoming/tuntom" "$root/bin/tuntom"
@@ -287,13 +314,16 @@ root={shlex.quote(root)}
 test -x "$root/bin/tuntom"
 test -x "$root/bin/tuntomctl"
 test -s "$root/secrets/master.env"
-install -d -m 0700 "$root/run" "$root/log"
+install -d -o tuntom -g tuntom -m 0770 "$root/run" "$root/log"
 chown root:tuntom "$root"
 chmod 0750 "$root" "$root/bin" "$root/runtime" "$root/scripts"
 chmod 0600 "$root/secrets/master.env"
 chmod 0755 "$root"/runtime/run-*.sh "$root"/scripts/*.sh
 echo CONFIG_READY
 '''
+        if not side.get("switch_id"):
+            scripts[f"{side_name}/scripts/deployment-access.py"] = Path(__file__).with_name("deployment_access.py").read_text()
+            scripts[f"{side_name}/scripts/30-install-config.sh"] = scripts[f"{side_name}/scripts/30-install-config.sh"].replace("echo CONFIG_READY", 'python3 "$root/scripts/deployment-access.py" "$root"\n' + RUNTIME_ACCESS_CHECK + "echo CONFIG_READY")
         if side.get("switch_id"):
             # Collector host uses its installed binaries; never apt/build here.
             prefix = f"{side_name}/"
@@ -320,6 +350,11 @@ Run in order as root:
 Inspect with scripts/80-status.sh and stop with scripts/90-stop.sh.
 The PSK is intentionally absent from this bundle; create secrets/master.env mode 0600.
 '''
+    if config.get("via"):
+        from via_deployments import extend_bundle
+        extend_bundle(scripts, config, root)
+    from systemd_deployments import extend_bundle as extend_systemd
+    extend_systemd(scripts, config, root)
     scripts.update(undeploy_bundle(config))
     scripts["deployment.json"] = json.dumps(config, indent=2, ensure_ascii=False) + "\n"
     scripts[".fabric-deployment-id"] = config["deployment_id"] + "\n"
@@ -394,7 +429,7 @@ class TunnelDeployments:
             if side.get("switch_id"):
                 if self.fabric is None: raise ValueError("collector switch deployment is unavailable")
                 resolved = self.fabric.switch_deployment({"action": "inspect", "switch_id": side["switch_id"]})
-                check_switch_ports(side, config["count"], resolved.get("ports", []))
+                check_switch_ports(side, config["count"], resolved.get("ports", []), config.get("via"))
                 side["attachment"]["switch_socket"] = resolved["switch_socket"]
                 side["local_binaries"] = resolved["binaries"]
                 side["switch_name"] = resolved["name"]
@@ -418,11 +453,25 @@ class TunnelDeployments:
             other = json.loads(row["config"])
             occupied = {other["side_a"]["endpoint_id"], other["side_b"]["endpoint_id"]}
             if requested & occupied: occupied_ids.add(other["tunnel_id"])
+            if config.get("via"):
+                target = config["side_b"]
+                for key in ("side_a", "side_b"):
+                    other_side = other[key]
+                    if other_side["endpoint_id"] != target["endpoint_id"] or other_side["attachment"]["type"] != "switch": continue
+                    other_base = other_side["attachment"]["port_id"]
+                    if other.get("via"):
+                        from via_deployments import relay_port
+                        ports = [relay_port(other_base, i, other["count"], other["via"]) for i in range(other["count"])]
+                    else:
+                        ports = [other_base + (f"_{i}" if i else "") for i in range(other["count"])]
+                    check_switch_ports(target, config["count"], ports, config["via"])
+
         if config["tunnel_id"] is None:
             config["tunnel_id"] = next((value for value in range(1, 256) if value not in occupied_ids), None)
             if config["tunnel_id"] is None: raise RuntimeError("no free tunnel ID remains for these Controlled Endpoints")
         elif config["tunnel_id"] in occupied_ids:
             raise RuntimeError("tunnel ID already belongs to a deployment on this Controlled Endpoint")
+        self._resolve_control_trust(config)
         secret = supplied or secrets.token_hex(16)
         deployment_id, now = secrets.token_hex(16), timestamp()
         config["schema"], config["deployment_id"] = 1, deployment_id
@@ -443,6 +492,18 @@ class TunnelDeployments:
             else: self.memory_secrets.pop(deployment_id, None)
             raise
         return self._public(row)
+
+    def _resolve_control_trust(self, config):
+        via = config.get("via")
+        if not via or not via.get("trust_key") or via.get("trust_public"): return
+        switch = next((config[k].get("switch_id") for k in ("side_a", "side_b") if config[k].get("switch_id")), None)
+        if switch and self.fabric is not None:
+            result = self.fabric.switch_deployment({"action": "inspect", "switch_id": switch, "trust_key": via["trust_key"]})
+            from via_deployments import public_key_records
+            via["trust_public"] = public_key_records(result.get("trust_public"))
+        else:
+            from via_deployments import read_public_key
+            via["trust_public"] = read_public_key(via["trust_key"])
 
     def delete(self, deployment_id):
         with self.lock, self.db:
@@ -481,11 +542,48 @@ class TunnelDeployments:
                 archive.addfile(info, io.BytesIO(data))
         return f"{kind}_runbook_{value['name']}.tar.gz", output.getvalue()
 
-    def _side_state(self, deployment_id, side, state, error=None):
+    def runtime_status(self, deployment_id):
+        value = self.get(deployment_id)
+        config = value["config"]
+        sides = {}
+        for side_name in ("side_a", "side_b"):
+            side = config[side_name]
+            if side["runtime"] != "systemd" or value["status"] in {"draft", "undeployed"}: continue
+            try:
+                if side.get("switch_id"):
+                    output = self._local(config, side_name, "status").get("output", "")
+                else:
+                    root = f"/opt/tuntom/deployments/{config['name']}"
+                    output = self.endpoints.run(side["endpoint_id"], shell("bash", root + "/scripts/80-status.sh"), timeout=45)
+                sides[side_name] = {"output": safe_output(output, 16384)}
+            except (OSError, RuntimeError, ValueError, KeyError, APIError) as error:
+                sides[side_name] = {"error": safe_output(error)}
+        return {"id": deployment_id, "sides": sides}
+
+    def _side_state(self, deployment_id, side, state, error=None, step=None, output=None):
         with self.lock, self.db:
             row = self.db.execute("SELECT side_states FROM tunnel_deployment WHERE id=?", (deployment_id,)).fetchone()
-            states = json.loads(row[0]); states[side] = {"state": state, "error": str(error)[:1024] if error else None}
+            states = json.loads(row[0]); previous = states.get(side, {})
+            record = {"state": state, "error": safe_output(error) if error else None, "at": timestamp()}
+            if step: record["step"] = step
+            if output: record["output"] = safe_output(output)
+            history = previous.get("history", [])
+            if step: history = (history + [record])[-40:]
+            states[side] = {**record, "history": history}
             self.db.execute("UPDATE tunnel_deployment SET side_states=?,updated_at=? WHERE id=?", (json.dumps(states), timestamp(), deployment_id))
+
+    def _step(self, deployment_id, side, step, operation):
+        self._side_state(deployment_id, side, "working", step=step)
+        try:
+            result = operation()
+        except (OSError, ValueError, RuntimeError, KeyError, APIError) as error:
+            self._side_state(deployment_id, side, "failed", error, step=step)
+            message = f"{side} / {step}: {safe_output(error)}"
+            if isinstance(error, APIError): raise APIError(error.status, message) from error
+            raise RuntimeError(message) from error
+        output = result if isinstance(result, str) else json.dumps(result) if result else ''
+        self._side_state(deployment_id, side, "succeeded", step=step, output=output)
+        return result
 
     def undeploy(self, deployment_id):
         value = self.get(deployment_id, include_bundle=True)
@@ -499,10 +597,10 @@ class TunnelDeployments:
             self._side_state(deployment_id, side_name, "undeploying")
             try:
                 if config[side_name].get("switch_id"):
-                    self._local(config, side_name, "undeploy")
+                    self._step(deployment_id, side_name, "collector.undeploy", lambda: self._local(config, side_name, "undeploy"))
                 else:
                     script = undeploy_bundle(config)[f"{side_name}/scripts/95-undeploy.sh"]
-                    self.endpoints.run(config[side_name]["endpoint_id"], "bash -s", script.encode(), 120)
+                    self._step(deployment_id, side_name, "95-undeploy.sh", lambda: self.endpoints.run(config[side_name]["endpoint_id"], "bash -s", script.encode(), 120))
                 self._side_state(deployment_id, side_name, "undeployed")
             except (OSError, ValueError, RuntimeError, KeyError, APIError) as error:
                 failures.append(side_name + ": " + str(error))
@@ -541,7 +639,7 @@ class TunnelDeployments:
     def _set_status(self, deployment_id, status, error=None):
         with self.lock, self.db:
             self.db.execute("UPDATE tunnel_deployment SET status=?,last_error=?,updated_at=? WHERE id=?",
-                            (status, error[:2048] if error else None, timestamp(), deployment_id))
+                            (status, safe_output(error) if error else None, timestamp(), deployment_id))
 
     def _claim(self, deployment_id):
         with self.lock, self.db:
@@ -553,13 +651,19 @@ class TunnelDeployments:
         value = self.get(deployment_id, include_bundle=True)
         if value["status"] not in {"draft", "failed"}: raise RuntimeError("deployment is not deployable from its current state")
         config, bundle, secret = value["config"], value["bundle"], self._secret(deployment_id)
+        if config.get("via", {}).get("trust_key") and not config["via"].get("trust_public"):
+            self._resolve_control_trust(config)
+        addresses = {config[k]["endpoint_id"]: config[k].get("switch_name") or self.endpoints.get(config[k]["endpoint_id"])["address"] for k in ("side_a", "side_b")}
+        bundle = render_bundle(config, addresses, self.git_url)
+        with self.lock, self.db:
+            self.db.execute("UPDATE tunnel_deployment SET config=?,bundle=?,updated_at=? WHERE id=?", (json.dumps(config),json.dumps(bundle),timestamp(),deployment_id))
         binaries = None
         if config["software"].get("bundle_id"):
             _, binaries = self.binary_bundles.get(config["software"]["bundle_id"], files=True)
         for side_name in ("side_a", "side_b"):
             if config[side_name].get("switch_id"):
                 resolved = self.fabric.switch_deployment({"action": "inspect", "switch_id": config[side_name]["switch_id"]})
-                check_switch_ports(config[side_name], config["count"], resolved.get("ports", []))
+                check_switch_ports(config[side_name], config["count"], resolved.get("ports", []), config.get("via"))
                 if resolved["switch_socket"] != config[side_name]["attachment"]["switch_socket"] or resolved["binaries"] != config[side_name]["local_binaries"]:
                     raise RuntimeError("switch runtime changed; generate a new runbook")
                 continue
@@ -580,12 +684,12 @@ class TunnelDeployments:
             for side_name in sorted(("side_a", "side_b"), key=lambda key: not bool(config[key].get("switch_id"))):
                 side = config[side_name]
                 if side.get("switch_id"):
-                    self._local(config, side_name, "prepare", secret)
+                    self._step(deployment_id, side_name, "collector.prepare", lambda: self._local(config, side_name, "prepare", secret))
                     continue
-                self.endpoints.run(side["endpoint_id"], install, self._archive(bundle, side_name, secret, binaries), 120)
+                self._step(deployment_id, side_name, "upload", lambda: self.endpoints.run(side["endpoint_id"], install, self._archive(bundle, side_name, secret, binaries), 120))
                 for step in ("00-preflight.sh", "10-install-dependencies.sh", "20-install-software.sh", "30-install-config.sh"):
                     command = f"cd {quoted_root} && ./scripts/{step}"
-                    self.endpoints.run(side["endpoint_id"], command, timeout=900)
+                    self._step(deployment_id, side_name, step, lambda: self.endpoints.run(side["endpoint_id"], command, timeout=900))
             listener = "side_a" if config["side_a"]["role"] == "listener" else "side_b"
             initiator = "side_b" if listener == "side_a" else "side_a"
             self._set_status(deployment_id, "starting")
@@ -593,26 +697,48 @@ class TunnelDeployments:
                 side = config[side_name]
                 started.append(side_name)
                 if side.get("switch_id"):
-                    self._local(config, side_name, "start")
+                    self._step(deployment_id, side_name, "collector.start", lambda: self._local(config, side_name, "start"))
                     self._side_state(deployment_id, side_name, "running")
                     continue
-                self.endpoints.run(side["endpoint_id"], f"cd {quoted_root} && ./scripts/40-start.sh", timeout=120)
-                self.endpoints.run(side["endpoint_id"], f"cd {quoted_root} && ./scripts/50-verify.sh", timeout=120)
+                self._step(deployment_id, side_name, "40-start.sh", lambda: self.endpoints.run(side["endpoint_id"], f"cd {quoted_root} && ./scripts/40-start.sh", timeout=120))
+                self._step(deployment_id, side_name, "50-verify.sh", lambda: self.endpoints.run(side["endpoint_id"], f"cd {quoted_root} && ./scripts/50-verify.sh", timeout=120))
                 self._side_state(deployment_id, side_name, "running")
+            for side_name in (listener, initiator):
+                side = config[side_name]
+                if side.get("autostart"):
+                    if side.get("switch_id"):
+                        self._step(deployment_id, side_name, "collector.enable", lambda: self._local(config, side_name, "enable"))
+                    else:
+                        self._step(deployment_id, side_name, "60-enable.sh", lambda: self.endpoints.run(side["endpoint_id"], f"cd {quoted_root} && ./scripts/60-enable.sh", timeout=120))
+                    self._side_state(deployment_id, side_name, "running")
             self._set_status(deployment_id, "running")
             return self.get(deployment_id)
         except (OSError, ValueError, RuntimeError, KeyError, APIError) as error:
+            rollback_errors = []
             for side_name in reversed(started):
                 try:
-                    if config[side_name].get("switch_id"): self._local(config, side_name, "rollback")
-                    else: self.endpoints.run(config[side_name]["endpoint_id"], f"cd {quoted_root} && ./scripts/99-rollback.sh", timeout=120)
-                except Exception: pass
-            self._set_status(deployment_id, "failed", str(error))
+                    if config[side_name].get("switch_id"):
+                        self._step(deployment_id, side_name, "collector.rollback", lambda: self._local(config, side_name, "rollback"))
+                    else:
+                        self._step(deployment_id, side_name, "99-rollback.sh", lambda: self.endpoints.run(config[side_name]["endpoint_id"], f"cd {quoted_root} && ./scripts/99-rollback.sh", timeout=120))
+                    self._side_state(deployment_id, side_name, "rolled_back")
+                except (OSError, ValueError, RuntimeError, KeyError, APIError) as rollback_error:
+                    rollback_errors.append(safe_output(rollback_error))
+                    self._side_state(deployment_id, side_name, "rollback_failed", rollback_error)
+            message = safe_output(error)
+            if rollback_errors: message += "\nRollback incomplete: " + "; ".join(rollback_errors)
+            self._set_status(deployment_id, "failed", message)
+            if rollback_errors:
+                if isinstance(error, APIError): raise APIError(error.status, message) from error
+                raise RuntimeError(message) from error
             raise
 
     def _local(self, config, side_name, action, secret=None):
         # Send only a typed intent, never scripts or arbitrary execution paths.
         intent = {k: config[k] for k in ("name", "tunnel_id", "count", "software", "secret")}
+        if intent["software"]["source"] == "binary":
+            intent["software"] = {key:intent["software"][key] for key in ("source","sha256")}
+        if config.get("via"): intent["via"] = config["via"]
         for key in ("side_a", "side_b"):
             side = dict(config[key]); side["attachment"] = dict(side["attachment"])
             if side.get("switch_id"):

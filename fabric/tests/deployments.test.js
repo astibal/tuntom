@@ -63,3 +63,60 @@ test('endpoint shows deployment state, IDs and undeploy; archives precede loose 
  assert.ok(target.innerHTML.indexOf('undeploy_runbook_vpn.tar.gz')<target.innerHTML.indexOf('95-undeploy.sh'));
  row.status='undeployed';assert.equal(api.canUndeploy(row),false);
 });
+
+test('VIA form uses relay-compatible attachments and validates split count and ports',()=>{
+ const h=harness([],[{id:'s',kind:'switch',source:'local',switch_socket:'/run/sw',switch_detail:{ports:[{name:'proxy-out_3'}]}}]),$=h.$;
+ $('deployment-type').value='via';$('deployment-via-mode').value='split';$('deployment-mode').value='switch';
+ $('deployment-existing-switch').value='s';$('deployment-b-port').value='proxy';$('deployment-count').value='8';
+ h.updateDeploymentForm();
+ assert.equal($('deployment-via').hidden,false);
+ assert.equal($('deployment-b-label-wrap').hidden,true);
+ assert.equal($('deployment-b-label').required,false);
+ assert.equal($('deployment-software').value,'git_build');
+ assert.equal(h.deploymentSide('b','listener').attachment.label,'0');
+ assert.match($('deployment-b-port').validationMessage,/proxy-out_3/);
+ $('deployment-count').value='3';h.updateDeploymentForm();assert.ok($('deployment-count').validationMessage);
+ $('deployment-type').value='data';h.updateDeploymentForm();
+ assert.equal($('deployment-software').disabled,false);
+ assert.equal($('deployment-b-label').required,true);
+});
+
+test('systemd runtime has an explicit optional boot setting; screen does not send it',()=>{
+ const h=harness([],[]),$=h.$;
+ $('deployment-runtime').value='systemd';$('deployment-autostart').checked=true;
+ h.updateDeploymentForm();
+ assert.equal($('deployment-autostart-wrap').hidden,false);
+ const side=h.deploymentSide('a','listener');
+ assert.equal(side.runtime,'systemd');assert.equal(side.autostart,true);
+ $('deployment-runtime').value='screen';h.updateDeploymentForm();
+ assert.equal($('deployment-autostart').disabled,true);
+ assert.equal(h.deploymentSide('a','listener').autostart,undefined);
+});
+
+test('systemd cards expose a read-only runtime status and journal action',()=>{
+ const row={id:'d',name:'systemd-test',status:'running',updated_at:'2026-10-05T00:00:00Z',config:{tunnel_id:1,count:1,side_a:{endpoint_id:'a',role:'initiator',runtime:'systemd',autostart:true},side_b:{endpoint_id:'b',role:'listener',runtime:'systemd'}},scripts:[]};
+ const target={innerHTML:''};
+ const helpers=source.slice(source.indexOf('function deploymentStatus('),source.indexOf('async function undeployFromUI('));
+ const render=source.slice(source.indexOf('function renderDeployments('),source.indexOf("$('deployment-new').addEventListener"));
+ const api=runInNewContext(helpers+render+';({renderDeployments})',{$:()=>target,t,esc:String,locale:()=> 'en-GB',state:{auth:{role:'admin-ro'}},controlledView:{rows:[],deployments:[row]}});
+ api.renderDeployments();assert.match(target.innerHTML,/data-deployment-runtime="d"/);assert.match(target.innerHTML,/systemd/);
+ row.status='undeployed';api.renderDeployments();assert.doesNotMatch(target.innerHTML,/data-deployment-runtime/);
+});
+
+test('reattempt rebuilds a removed deployment with fresh keys and re-resolved switch and trust',()=>{
+ const bodyFor=runInNewContext(source.slice(source.indexOf('function reattemptDeploymentBody('),source.indexOf('function renderDeployments('))+';reattemptDeploymentBody');
+ const config={name:'demo',tunnel_id:12,count:2,secret:{mode:'provided'},software:{source:'binary',bundle_id:'bundle',sha256:'old'},side_a:{endpoint_id:'host',role:'initiator',peer_address:'192.0.2.1',runtime:'systemd',autostart:true,attachment:{type:'tun'}},side_b:{endpoint_id:'switch:old',switch_id:'switch',switch_name:'Core',local_binaries:{},role:'listener',runtime:'systemd',attachment:{type:'switch',switch_socket:'/old.sock',port_id:'edge',label:'0'}},via:{trust_key:'/public.key',trust_public:'old grant'}};
+ const body=bodyFor(config,[{name:'demo-retry-1'}]);
+ assert.equal(body.name,'demo-retry-2');
+ assert.equal(bodyFor({...config,name:'demo-retry-2'},[{name:'demo-retry-1'}]).name,'demo-retry-3');
+ assert.equal(bodyFor({...config,name:'x'.repeat(64)}).name.length,64);
+ assert.equal(body.secret.mode,'generate');
+ assert.equal(body.side_b.endpoint_id,undefined);
+ assert.equal(body.side_b.attachment.switch_socket,undefined);
+ assert.equal(body.side_b.local_binaries,undefined);
+ assert.equal(body.side_a.autostart,true);
+ assert.equal(body.software.source,'bundle');
+ assert.equal(body.via.trust_public,undefined);
+ assert.equal(config.side_b.attachment.switch_socket,'/old.sock');
+ assert.equal(config.via.trust_public,'old grant');
+});

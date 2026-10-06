@@ -11,6 +11,7 @@ import threading
 
 from tunnel_deployments import validate, render_bundle, check_switch_ports
 from deployment_cleanup import undeploy
+from deployment_diagnostics import safe_output
 
 LOCK = threading.Lock()
 BASE = Path('/opt/tuntom/deployments')
@@ -65,16 +66,20 @@ def run_script(root, step, timeout=120):
                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             timeout=timeout, text=True, env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'HOME': '/root', 'LANG': 'C.UTF-8'})
     if result.returncode:
-        raise RuntimeError(f'{step} failed: {result.stdout[-2048:]}')
+        raise RuntimeError(f'{step} failed (exit {result.returncode}): {safe_output(result.stdout)}')
+    return safe_output(result.stdout, 16384)
 
 
 def execute(fabric, body):
     if not isinstance(body, dict): raise ValueError('invalid switch deployment request')
     action = body.get('action')
     if action == 'inspect':
-        if set(body) - {'action', 'switch_id', 'route_to'} or not isinstance(body.get('switch_id'), str):
+        if set(body) - {'action', 'switch_id', 'route_to', 'trust_key'} or not isinstance(body.get('switch_id'), str):
             raise ValueError('invalid switch inspection')
         result = inspect_switch(fabric, body['switch_id'])
+        if body.get('trust_key'):
+            from via_deployments import read_public_key
+            result['trust_public'] = read_public_key(body['trust_key'])
         if 'route_to' in body:
             address = ipaddress.ip_address(body['route_to'])
             try:
@@ -84,7 +89,7 @@ def execute(fabric, body):
             except OSError:
                 result['transport_ip'] = ''
         return result
-    if action not in {'prepare', 'start', 'rollback', 'undeploy'} or set(body) != ({'action', 'intent', 'deployment_id', 'secret'} if action == 'prepare' else {'action', 'intent', 'deployment_id'}):
+    if action not in {'prepare', 'start', 'rollback', 'undeploy', 'enable', 'status'} or set(body) != ({'action', 'intent', 'deployment_id', 'secret'} if action == 'prepare' else {'action', 'intent', 'deployment_id'}):
         raise ValueError('invalid switch deployment operation')
     ident = body['deployment_id']
     if not isinstance(ident, str) or not re.fullmatch('[0-9a-f]{32}', ident):
@@ -105,17 +110,26 @@ def execute(fabric, body):
             undeploy(root, ident, 'client' if side['role'] == 'initiator' else 'server',
                      [str(config['tunnel_id']) + (f'_{i}' if i else '') for i in range(config['count'])])
             return {'result': 'undeployed; deployment files and secrets removed'}
-        if action != 'rollback':
+        if action in {'prepare', 'start'}:
             resolved = inspect_switch(fabric, side['switch_id'])
-            check_switch_ports(side, config['count'], resolved.get('ports', []))
+            check_switch_ports(side, config['count'], resolved.get('ports', []), config.get('via'))
         if action == 'prepare':
             if os.geteuid() != 0: raise ValueError('local deployment requires a root collector')
             BASE.mkdir(parents=True, exist_ok=True, mode=0o755)
             trusted(BASE)
             if root.exists():
                 trusted(root)
-                if (root / '.fabric-deployment-id').read_text().strip() != ident or (root / '.fabric-intent').read_text() != intent:
+                if (root / '.fabric-deployment-id').read_text().strip() != ident:
                     raise ValueError('deployment directory belongs to a different intent')
+                previous = (root / '.fabric-intent').read_text()
+                if previous != intent:
+                    old_intent, new_intent = json.loads(previous), json.loads(intent)
+                    new_public = new_intent.get('via', {}).pop('trust_public', None)
+                    if not new_public or old_intent != new_intent:
+                        raise ValueError('deployment directory belongs to a different intent')
+                    # One-time migration: materialize the already-selected public
+                    # key in failed drafts generated before key provisioning.
+                    (root / '.fabric-intent').write_text(intent)
             else:
                 root.mkdir(mode=0o700)
                 (root / '.fabric-deployment-id').write_text(ident + '\n')
@@ -147,6 +161,9 @@ def execute(fabric, body):
             trusted(root)
             if (root / '.fabric-deployment-id').read_text().strip() != ident or (root / '.fabric-intent').read_text() != intent:
                 raise ValueError('deployment identity no longer matches')
-            for step in (('40-start.sh', '50-verify.sh') if action == 'start' else ('99-rollback.sh',)):
+            if action == 'status':
+                return {'output': run_script(root, '80-status.sh')}
+            steps = {'start': ('40-start.sh', '50-verify.sh'), 'enable': ('60-enable.sh',), 'rollback': ('99-rollback.sh',)}
+            for step in steps[action]:
                 run_script(root, step)
     return {'result': action + ' completed'}

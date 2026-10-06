@@ -1,5 +1,6 @@
 """Persistent SSH endpoint inventory and one-shot platform discovery."""
 from __future__ import annotations
+from deployment_diagnostics import safe_output
 
 from datetime import datetime, timezone
 import ipaddress
@@ -113,12 +114,16 @@ class SSHDiscovery:
             command += [f"{self.user}@{address}", remote_command]
             try:
                 result = subprocess.run(command, input=input_data, capture_output=True, timeout=timeout, check=False)
-            except (OSError, subprocess.TimeoutExpired) as error:
-                raise OSError(f"SSH operation failed: {error}") from error
+            except subprocess.TimeoutExpired as error:
+                output = safe_output((error.stdout or b'') + b'\n' + (error.stderr or b''))
+                raise OSError(f"SSH operation timed out after {timeout}s" + ("\n" + output if output else "")) from error
+            except OSError as error:
+                raise OSError(f"SSH operation failed: {safe_output(error)}") from error
+        output = safe_output(result.stdout + b'\n' + result.stderr)
         if result.returncode:
-            detail = result.stderr.decode(errors="replace").strip().splitlines()
-            raise OSError(f"SSH operation failed: {(detail[-1] if detail else 'remote command failed')[:1024]}")
+            raise OSError(f"SSH operation failed (exit {result.returncode})" + ("\n" + output if output else ": remote command produced no output"))
         return result.stdout.decode(errors="replace")
+
 
 
 class ControlledEndpoints:

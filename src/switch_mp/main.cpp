@@ -160,6 +160,7 @@ int main(int argc, char **argv) {
                 engine.write_stats(out);
                 if (config.ruleset) out << "ruleset_format=" << config.ruleset->format << "\nruleset_serial=" << config.ruleset->serial << '\n';
                 config.control_auth.write_stats(out);
+                routed_control.write_stats(out);
                 recovery.write_stats(out);
                 admission.write_stats(out, now);
                 if (control) control->write_stats(out);

@@ -4,6 +4,27 @@
 // process identities, metric keys, rule syntax and exported JSON stay intact.
 const languages = {cs:{index:0,locale:"cs-CZ"}, en:{index:1,locale:"en-GB"}, fr:{index:2,locale:"fr-FR"}};
 const messages = {
+deploymentRuntime:["Spouštění procesů", "Process runtime", "Exécution des processus"],
+deploymentAutostart:["Spouštět po startu hostu", "Start on host boot", "Démarrer au lancement de l’hôte"],
+deploymentSystemdHint:["Vlastní target a slice, service pro každý proces. Undeploy zruší autostart, zastaví služby a odstraní units i soubory a klíče deploymentu.", "Dedicated target and slice, one service per process. Undeploy disables autostart, stops services and removes units, deployment files and keys.", "Target et slice dédiés, un service par processus. Undeploy désactive le démarrage automatique, arrête les services et supprime les unités, fichiers et clés du déploiement."],
+deploymentSystemdStart:["Spustí se systemd služby deploymentu.", "The deployment’s systemd services will be started.", "Les services systemd du déploiement seront démarrés."],
+deploymentRuntimeLogs:["Stav služeb a journal", "Service status and journal", "État des services et journal"],
+deploymentReadingRuntime:["Načítám stav služeb a journal…", "Reading service status and journal…", "Lecture de l’état des services et du journal…"],
+
+  deploymentProgress:["Průběh deploymentu","Deployment progress","Progression du déploiement"],
+  deploymentWorking:["Probíhá","In progress","En cours"],
+  deploymentSucceeded:["Dokončeno","Completed","Terminé"],
+  deploymentFailed:["Selhalo","Failed","Échec"],
+  viaDeploymentPorts:["Prefix portů: IN používá -in_0… a OUT -out_0….","Port prefix: IN uses -in_0… and OUT -out_0….","Préfixe des ports : IN utilise -in_0… et OUT -out_0…."],
+  viaDeploymentType:["Typ propojení", "Connection type", "Type de connexion"],
+  viaDeploymentMode:["Režim", "Mode", "Mode"],
+  viaDeploymentPaired:["Společné relay tunely", "Paired relay tunnels", "Tunnels relais appariés"],
+  viaDeploymentService:["Služba switche", "Switch service", "Service du switch"],
+  viaDeploymentNamespace:["Existující namespace (volitelně)", "Existing namespace (optional)", "Namespace existant (facultatif)"],
+  viaDeploymentTrust:["Zdroj veřejného CONTROL klíče na collectoru (volitelně)", "CONTROL public key source on collector (optional)", "Source de clé publique CONTROL sur le collecteur (facultatif)"],
+  viaDeploymentHint:["Výchozí 4 IN + 4 OUT, osm workerů nad jednou sdílenou flow tabulkou. VIA vyžaduje Git build včetně divert adapteru. Pravidla, namespace, adresy, routy a proxy nakonfiguruj zvlášť; runbook obsahuje návrh definice služby a dodá veřejný CONTROL klíč.", "Default: 4 IN + 4 OUT, eight workers sharing one flow table. VIA requires a Git build including the divert adapter. Configure rules, namespace, addresses, routes and proxy separately; the runbook includes a proposed service definition and provisions the public CONTROL key.", "Par défaut : 4 IN + 4 OUT, huit workers partageant une table de flux. VIA nécessite une compilation Git incluant l’adaptateur divert. Configure séparément les règles, le namespace, les adresses, les routes et le proxy ; le runbook propose une définition du service et installe la clé publique CONTROL."],
+  viaDeploymentCount:["IN/OUT vyžaduje sudý počet 2–16 tunelů.", "IN/OUT requires an even number of tunnels, 2–16.", "IN/OUT nécessite un nombre pair de tunnels, de 2 à 16."],
+
   title:["Tuntom Fabric · Živý přehled","Tuntom Fabric · Live observer","Tuntom Fabric · Vue en direct"],
   workspace:["Pracovní prostor","Workspace","Espace de travail"],
   views:["Zobrazení","Views","Vues"],
@@ -622,6 +643,16 @@ Object.assign(messages, {
   uiManuallySelected:["zvoleno ručně","manually selected","sélectionné manuellement"],
   uiAllocationMethodNotRecorded:["způsob přidělení nezaznamenán","allocation method not recorded","méthode d’attribution non enregistrée"],
   uiTarget:["Cíl","Target","Cible"],
+  headlessType:["Typ endpointu","Endpoint type","Type de point de terminaison"],
+  headlessHint:["Offline balíček bez SSH. Obsahuje endpoint i protistranu pro switch. Stažení nerezervuje ID ani nespouští procesy. Secret dodáš zvlášť na obě strany; namespace a routování spravuje appliance.","Offline kit without SSH. Includes endpoint and switch counterpart. Downloading does not reserve IDs or start processes. Supply the same secret separately on both sides; the appliance manages namespaces and routing.","Kit hors ligne sans SSH, avec endpoint et contrepartie du switch. Le téléchargement ne réserve aucun ID et ne démarre aucun processus. Fournis le même secret séparément des deux côtés ; l’appliance gère les namespaces et le routage."],
+  headlessFormat:["Varianta","Format","Format"],
+  headlessSource:["Zdrojový balíček · make · aktuální Git HEAD Fabric hostu","Source bundle · make · Fabric host Git HEAD","Sources · make · HEAD Git de l’hôte Fabric"],
+  headlessPeer:["Transportní IP switche","Switch transport IP","IP de transport du switch"],
+  headlessCount:["Počet tunelů (VIA: sudý, půl IN / půl OUT)","Tunnel count (VIA: even, half IN / half OUT)","Nombre de tunnels (VIA : pair, moitié IN / moitié OUT)"],
+  headlessTrust:["Veřejné CONTROL granty (volitelné; pro discovery)","Public CONTROL grants (optional; for discovery)","Autorisations CONTROL publiques (facultatif ; pour discovery)"],
+  headlessDownload:["Stáhnout balíček","Download bundle","Télécharger le kit"],
+  headlessDownloaded:["Balíček stažen. Začni README; žádný proces nebyl spuštěn.","Bundle downloaded. Start with README; no process was started.","Kit téléchargé. Consulte README ; aucun processus n’a été démarré."],
+  uiReattempt:["Zkusit znovu","Reattempt","Réessayer"],
   uiDeleteRecord:["Smazat záznam","Delete record","Supprimer l’entrée"],
   uiLastOperationStatus:["Stav poslední operace","Last operation status","État de la dernière opération"],
   uiCheckLiveTrafficInTheTopology:["Živý provoz ověř v topologii.","Check live traffic in the topology.","Vérifie le trafic actuel dans la topologie."],
@@ -683,7 +714,7 @@ Object.assign(messages, {
   ui2ndCascade:["2. kaskáda","2nd cascade","2e cascade"],
   ui3rdCascade:["3. kaskáda","3rd cascade","3e cascade"],
   ui4thCascade:["4. kaskáda","4th cascade","4e cascade"],
-  uiCompiledTunnelBinariesTuntomTuntomctlDownloadA:["Sestavené binárky pro tunely: tuntom + tuntomctl. Balíček můžeš stáhnout nebo vybrat při deployi na kompatibilní SSH host.","Compiled tunnel binaries: tuntom + tuntomctl. Download a bundle or select it when deploying to a compatible SSH host.","Binaires de tunnel compilés : tuntom + tuntomctl. Télécharge un paquet ou sélectionne-le pour un déploiement sur un hôte SSH compatible."],
+  uiCompiledTunnelBinariesTuntomTuntomctlDownloadA:["Zdrojové a binární headless balíčky; binární sada obsahuje tuntom + tuntomctl a volitelně divert-adaptér. Balíček můžeš stáhnout nebo vybrat při deployi na kompatibilní SSH host.","Source and binary headless kits; binary sets contain tuntom + tuntomctl and optionally the divert adapter. Download a bundle or select it when deploying to a compatible SSH host.","Kits headless source et binaires : tuntom + tuntomctl, avec adaptateur divert en option. Télécharge un paquet ou sélectionne-le pour un déploiement sur un hôte SSH compatible."],
   uiSource:["Zdroj","Source","Source"],
   uiBuildFromGitOnAnSSHHost:["Sestavit z Gitu na SSH hostu","Build from Git on an SSH host","Compiler depuis Git sur un hôte SSH"],
   uiUploadExistingBinaries:["Nahrát hotové binárky","Upload existing binaries","Importer des binaires existants"],
@@ -2869,10 +2900,10 @@ async function undeployFromUI(id){
   const row=controlledView.deployments.find(item=>item.id===id);
   if(controlledView.busy||state.auth?.role!=='admin'||!row)return;
   if(!window.confirm(`${t("uiUndeploy")} ${row.name} (IDs ${deploymentIDs(row).join(', ')})? ${t("uiThisStopsTunnelsAtBothEndsAnd")}`))return;
-  controlledBusy(true);$('controlled-status').textContent=`${t("uiRemoving")} ${row.name}…`;
+  controlledBusy(true);const stopProgress=watchDeploymentProgress();$('controlled-status').textContent=`${t("uiRemoving")} ${row.name}…`;
   try{await api(`/api/v1/tunnel-deployments/${encodeURIComponent(id)}/undeploy`,'POST',{},300000);controlledBusy(false);await loadControlledEndpoints(`${row.name}: ${t("uiRemovedKeysDeleted2")}`);}
   catch(error){controlledBusy(false);await loadControlledEndpoints();$('controlled-status').textContent=diagnostic(error.message);}
-  finally{controlledBusy(false);}
+  finally{stopProgress();controlledBusy(false);}
 }
 function renderControlledEndpoints(message=''){
   $('controlled-list').innerHTML=controlledView.rows.map(row=>{const system=row.snapshot?.system,keys=row.host_keys||[];return `<article class="controlled-card ${controlledTone(row)}"><header><div><span class="eyebrow">SSH · ${esc(row.address)}:${esc(row.port)}</span><h3>${system?`${esc(system.distribution)} ${esc(system.version)}`:'Controlled Endpoint'}</h3></div><span class="controlled-state">● ${esc(controlledStatus(row))}</span></header>${system?`<div class="controlled-facts"><span>${esc(system.os)}</span><span>${esc(system.architecture)}</span><span>snapshot ${esc(new Date(row.discovered_at).toLocaleString(locale()))}</span></div>`:''}${endpointTunnelInfo(row.id)}${row.error?`<p class="controlled-error">${esc(row.error)}</p>`:''}${row.status==='awaiting_host_key'?`<div class="host-key-review"><strong>${esc(t("uiVerifyTheSSHHostKeyOutsideFabric"))}</strong>${keys.map(key=>`<label><input type="radio" name="host-key-${esc(row.id)}" value="${esc(key.fingerprint)}" ${keys.length===1?'checked':''}><code>${esc(key.fingerprint)}</code><small>${esc(key.type)} · ${esc(key.bits)} bit</small></label>`).join('')}<button class="primary" data-controlled-confirm="${esc(row.id)}">${esc(t("uiConfirmAndRunDiscovery"))}</button></div>`:`<div class="controlled-placeholder"><button class="quiet-button" data-controlled-refresh="${esc(row.id)}">↻ ${esc(t("uiRefreshDiscovery"))}</button>${row.status==='supported'?`<button class="primary" data-deployment-from="${esc(row.id)}">${endpointDeployments(row.id).some(item=>item.status!=='undeployed'&&item.status!=='draft')?(t("uiAnotherTunnel")):(t("uiCreateTunnel"))}</button>`:''}</div>`}</article>`}).join('')||("<div class=\"service-empty\">"+t("uiNoControlledEndpointsYet")+"</div>");
@@ -2933,11 +2964,22 @@ async function loadDeploymentAddressHint(){
   updateDeploymentForm();
 }
 function updateDeploymentForm(){
+  const systemd=$('deployment-runtime').value==='systemd';
+  $('deployment-autostart-wrap').hidden=!systemd;$('deployment-autostart').disabled=!systemd;$('deployment-systemd-hint').hidden=!systemd;
+
+  const via=$('deployment-type').value==='via';
+  $('deployment-via').hidden=!via;
+  $('deployment-a-attachment-wrap').hidden=via;$('deployment-b-label-wrap').hidden=via;
+  if(via){$('deployment-a-attachment').value='tun';$('deployment-b-attachment').value='switch';$('deployment-software').value='git_build';}
+  $('deployment-a-attachment').disabled=via;$('deployment-b-attachment').disabled=via;$('deployment-software').disabled=via;
+  $('deployment-count').max=via?'16':'64';
+  $('deployment-count').setCustomValidity(via&&$('deployment-via-mode').value==='split'&&(Number($('deployment-count').value)<2||Number($('deployment-count').value)%2)?t('viaDeploymentCount'):'');
+  for(const key of ['service','instance','in-tun','out-tun','in-port','out-port']){$('deployment-via-'+key).required=via;$('deployment-via-'+key).disabled=!via;}
   const local=$('deployment-mode').value==='switch';
   $('deployment-existing-switch-wrap').hidden=!local;
   $('deployment-existing-switch').disabled=!local;$('deployment-existing-switch').required=local;
   $('deployment-b-endpoint-wrap').hidden=local;$('deployment-b-endpoint').disabled=local;$('deployment-b-endpoint').required=!local;
-  $('deployment-b-attachment-wrap').hidden=local;
+  $('deployment-b-attachment-wrap').hidden=local||via;
   $('deployment-b-socket-wrap').hidden=local;
   if(local)$('deployment-b-attachment').value='switch';
   const initiator=$('deployment-initiator').value;
@@ -2948,6 +2990,7 @@ function updateDeploymentForm(){
     $(`deployment-${side}-switch`).hidden=!attached;
     for(const field of ['port','label']){$(`deployment-${side}-${field}`).required=attached;$(`deployment-${side}-${field}`).disabled=!attached;}
   }
+  if(via){$('deployment-b-label').required=false;$('deployment-b-label').disabled=true;}
   const git=$('deployment-software').value==='git_build',bundle=$('deployment-software').value==='bundle';$('deployment-revision-wrap').hidden=!git;$('deployment-sha-wrap').hidden=git||bundle;$('deployment-bundle-wrap').hidden=!bundle;$('deployment-bundle').required=bundle;
   $('deployment-secret-wrap').hidden=$('deployment-secret-mode').value!=='provided';
   $('deployment-tunnel-id').disabled=$('deployment-auto-id').checked;
@@ -2962,14 +3005,16 @@ function updateDeploymentForm(){
   deploymentDefaultIP($('deployment-a-peer'),ip,local?hintKey:('ssh|'+(b?.id||'')));
   deploymentDefaultIP($('deployment-b-peer'),a?.address||'','ssh|'+(a?.id||''));
   $('deployment-a-peer-hint').textContent=local?(ip?(t("uiSwitchDestinationIPFromTheLocalRoute")):deploymentAddressHint.error||(t("uiEnterTheSwitchDestinationTransportIP"))):(t("uiDestinationIPOfTheOtherHostDefaults"));
+  $('deployment-b-port-hint').textContent=t(via&&$('deployment-via-mode').value==='split'?'viaDeploymentPorts':'uiNewNameParallelPortsUseSuffixes1');
   const port=$('deployment-b-port');
   const used=new Set((sw?.switch_detail?.ports||[]).map(item=>item.name));
   const count=Number($('deployment-count').value);
-  const collision=local&&port.value&&Array.from({length:Math.min(64,Math.max(0,count||0))},(_,i)=>port.value+(i?'_'+i:'')).find(name=>used.has(name));
+  const collision=local&&port.value&&Array.from({length:Math.min(64,Math.max(0,count||0))},(_,i)=>(via&&$('deployment-via-mode').value==='split'?port.value+'-'+(i<count/2?'in':'out')+'_'+(i%(count/2)):port.value+(i?'_'+i:''))).find(name=>used.has(name));
   port.setCustomValidity(collision?'Port '+collision+(" "+t("uiIsAlreadyInUseOnThisSwitch")):'');
-  $('deployment-summary').textContent=`${$('deployment-count').value} × tunel · ${host} ↔ ${target} · ID ${$('deployment-auto-id').checked?(t("uiAutomatically")):$('deployment-tunnel-id').value||(t("uiNotSpecified"))}`;
+  $('deployment-summary').textContent=`${via?'VIA '+$('deployment-via-mode').value+' · ':''}${$('deployment-count').value} × tunel · ${host} ↔ ${target} · ID ${$('deployment-auto-id').checked?(t("uiAutomatically")):$('deployment-tunnel-id').value||(t("uiNotSpecified"))}`;
 }
 function openDeploymentForm(endpointId=''){
+  $('deployment-type').value='data';$('deployment-runtime').value='screen';$('deployment-autostart').checked=false;
   loadDeploymentBundles();
   if(state.auth?.role!=='admin')return;
   const supported=supportedControlledEndpoints();
@@ -2986,40 +3031,90 @@ function openDeploymentForm(endpointId=''){
   const alternative=supported.find(row=>row.id!==$('deployment-a-endpoint').value);if(alternative)$('deployment-b-endpoint').value=alternative.id;
   $('deployment-form').hidden=false;$('deployment-form-status').textContent='';updateDeploymentForm();$('deployment-form').scrollIntoView({block:'start',behavior:'smooth'});$('deployment-name').focus({preventScroll:true});loadDeploymentAddressHint();
 }
+function watchDeploymentProgress(){
+  let stopped=false,timer;
+  const poll=async()=>{
+    try{const data=await api('/api/v1/tunnel-deployments');if(!stopped){controlledView.deployments=data.tunnel_deployments||[];renderDeployments();}}
+    catch(_){}finally{if(!stopped)timer=setTimeout(poll,1500);}
+  };
+  timer=setTimeout(poll,300);
+  return ()=>{stopped=true;clearTimeout(timer);};
+}
+function reattemptDeploymentBody(config, existing=[]){
+  const names=new Set(existing.map(row=>row.name));
+  names.add(config.name);
+  const base=config.name.replace(/-retry-[0-9]+$/, '');
+  let name;
+  for(let attempt=1;;attempt++){
+    const suffix='-retry-'+attempt;
+    name=base.slice(0,64-suffix.length)+suffix;
+    if(!names.has(name))break;
+  }
+  const body={name,tunnel_id:config.tunnel_id,count:config.count,secret:{mode:'generate'}};
+  for(const key of ['side_a','side_b']){
+    const side=config[key];
+    body[key]=Object.fromEntries(['endpoint_id','switch_id','role','peer_address','attachment','runtime','autostart'].filter(k=>side[k]!==undefined).map(k=>[k,side[k]]));
+    body[key].attachment={...side.attachment};
+    if(side.switch_id){delete body[key].endpoint_id;delete body[key].attachment.switch_socket;}
+  }
+  body.software=config.software.bundle_id?{source:'bundle',bundle_id:config.software.bundle_id}:{...config.software};
+  if(config.via){body.via={...config.via};if(body.via.trust_key)delete body.via.trust_public;}
+  return body;
+}
 function renderDeployments(){
   $('deployment-list').innerHTML=controlledView.deployments.map(row=>{
-    const c=row.config,a=controlledView.rows.find(item=>item.id===c.side_a.endpoint_id),b=controlledView.rows.find(item=>item.id===c.side_b.endpoint_id),deployable=['draft','failed'].includes(row.status);
+    const c=row.config,a=controlledView.rows.find(item=>item.id===c.side_a.endpoint_id),b=controlledView.rows.find(item=>item.id===c.side_b.endpoint_id),deployable=['draft','failed','undeployed'].includes(row.status);
+    const progress=Object.entries(row.side_states||{}).map(([side,result])=>{
+      const title=side==='side_a'?t('uiHost'):t('uiTarget');
+      const entries=result.history||[];
+      const history=entries.map(entry=>`<li class="${entry.state==='failed'?'bad':''}"><time>${esc(new Date(entry.at).toLocaleTimeString(locale()))}</time> <strong>${esc(entry.step)}</strong> · ${esc(t({working:'deploymentWorking',succeeded:'deploymentSucceeded',failed:'deploymentFailed'}[entry.state])||entry.state)}${entry.error||entry.output?`<pre>${esc(entry.error||entry.output)}</pre>`:''}</li>`).join('');
+      return `<section class="deployment-progress"><p><strong>${esc(title)}</strong>: ${esc(result.state)}${result.step?' · '+esc(result.step):''}${result.error?' · '+esc(result.error):''}</p>${entries.length?`<details ${['preparing','starting','failed','undeploying','undeploy_failed'].includes(row.status)?'open':''}><summary>${esc(t('deploymentProgress'))} · ${entries.length}</summary><ol>${history}</ol></details>`:''}</section>`;
+    }).join('');
+    const runtimes=[...new Set(['side_a','side_b'].map(side=>(c[side].runtime||'screen')+(c[side].autostart?' · '+t('deploymentAutostart'):'')))].join(' / ');
+    const runtimeButton=['side_a','side_b'].some(side=>c[side].runtime==='systemd')&&!['draft','undeployed'].includes(row.status)?`<button class="quiet-button" data-deployment-runtime="${esc(row.id)}">${esc(t('deploymentRuntimeLogs'))}</button>`:'';
     const allocation=c.id_allocation==='automatic'?(t("uiAutomaticallyAssigned")):c.id_allocation==='manual'?(t("uiManuallySelected")):(t("uiAllocationMethodNotRecorded"));
     const archives=['deploy','undeploy'].map(kind=>`<button class="quiet-button deployment-archive" data-deployment-archive="${esc(row.id)}" data-archive-kind="${kind}">↓ ${kind}_runbook_${esc(row.name)}.tar.gz</button>`).join('');
-    return `<article class="deployment-card ${esc(row.status)}"><header><div><span class="deployment-state">${esc(deploymentStatus(row))}</span><h3>${esc(row.name)}</h3></div><span class="tag">ID ${esc(c.tunnel_id)} · ${esc(allocation)}</span></header><p>${esc(a?.address||c.side_a.switch_name||c.side_a.endpoint_id)} <strong>${esc(c.side_a.role)}</strong> ↔ <strong>${esc(c.side_b.role)}</strong> ${esc(b?.address||c.side_b.switch_name||c.side_b.endpoint_id)}</p><p>Tunnel IDs: ${esc(deploymentIDs(row).join(', '))}</p><p class="muted">${esc(t("uiLastOperationStatus"))} · ${esc(new Date(row.updated_at).toLocaleString(locale()))}. ${esc(t("uiCheckLiveTrafficInTheTopology"))}</p>${Object.entries(row.side_states||{}).map(([side,result])=>`<p>${side==='side_a'?(t("uiHost")):(t("uiTarget"))}: ${esc(result.state)}${result.error?' · '+esc(result.error):''}</p>`).join('')}${row.last_error?`<p class="controlled-error">${esc(row.last_error)}</p>`:''}<div class="button-row">${deployable?`<button class="primary" data-deployment-run="${esc(row.id)}" ${state.auth?.role==='admin'?'':'disabled'}>${row.status==='failed'?(t("uiRetryDeploy")):(t("uiDeploy"))}</button>`:''}${canUndeploy(row)?`<button class="danger-button" data-deployment-undeploy="${esc(row.id)}" ${state.auth?.role==='admin'?'':'disabled'}>${esc(t("uiUndeploy"))}</button>`:''}</div>${row.status==='undeployed'?`<button class="danger-button" data-deployment-delete="${esc(row.id)}" ${state.auth?.role==='admin'?'':'disabled'}>${esc(t("uiDeleteRecord"))}</button>`:''}<div class="deployment-archives">${archives}</div><details><summary>${esc(t("uiIndividualFiles"))} · ${esc(row.scripts.length)}</summary><div class="deployment-scripts">${row.scripts.map(name=>`<button class="quiet-button" data-deployment-script="${esc(row.id)}" data-script-name="${esc(name)}">${esc(name)}</button>`).join('')}</div></details></article>`;
+    return `<article class="deployment-card ${esc(row.status)}"><header><div><span class="deployment-state">${esc(deploymentStatus(row))}</span><h3>${esc(row.name)}${c.via?' · VIA '+esc(c.via.mode):''}</h3></div><span class="tag">ID ${esc(c.tunnel_id)} · ${esc(allocation)}</span></header><p>${esc(a?.address||c.side_a.switch_name||c.side_a.endpoint_id)} <strong>${esc(c.side_a.role)}</strong> ↔ <strong>${esc(c.side_b.role)}</strong> ${esc(b?.address||c.side_b.switch_name||c.side_b.endpoint_id)}</p><p>Tunnel IDs: ${esc(deploymentIDs(row).join(', '))} · ${esc(runtimes)}</p>${runtimeButton}<p class="muted">${esc(t("uiLastOperationStatus"))} · ${esc(new Date(row.updated_at).toLocaleString(locale()))}. ${esc(t("uiCheckLiveTrafficInTheTopology"))}</p>${progress}${row.last_error?`<p class="controlled-error">${esc(row.last_error)}</p>`:''}<div class="button-row">${deployable?`<button class="primary" data-deployment-run="${esc(row.id)}" ${state.auth?.role==='admin'?'':'disabled'}>${row.status==='undeployed'?t('uiReattempt'):row.status==='failed'?(t("uiRetryDeploy")):(t("uiDeploy"))}</button>`:''}${canUndeploy(row)?`<button class="danger-button" data-deployment-undeploy="${esc(row.id)}" ${state.auth?.role==='admin'?'':'disabled'}>${esc(t("uiUndeploy"))}</button>`:''}</div>${row.status==='undeployed'?`<button class="danger-button" data-deployment-delete="${esc(row.id)}" ${state.auth?.role==='admin'?'':'disabled'}>${esc(t("uiDeleteRecord"))}</button>`:''}<div class="deployment-archives">${archives}</div><details><summary>${esc(t("uiIndividualFiles"))} · ${esc(row.scripts.length)}</summary><div class="deployment-scripts">${row.scripts.map(name=>`<button class="quiet-button" data-deployment-script="${esc(row.id)}" data-script-name="${esc(name)}">${esc(name)}</button>`).join('')}</div></details></article>`;
   }).join('')||("<div class=\"service-empty\">"+t("uiNoTunnelRunbooksYet")+"</div>");
 }
 $('deployment-new').addEventListener('click',()=>openDeploymentForm());
+$('deployment-type').addEventListener('change',()=>{if($('deployment-type').value==='via'){$('deployment-count').value='8';$('deployment-via-mode').value='split';}updateDeploymentForm();});
+$('deployment-via-mode').addEventListener('change',updateDeploymentForm);
 $('deployment-cancel').addEventListener('click',()=>{$('deployment-form').hidden=true;$('deployment-form-status').textContent='';});
-for(const id of ['deployment-a-endpoint','deployment-b-endpoint','deployment-existing-switch','deployment-mode','deployment-initiator','deployment-a-attachment','deployment-b-attachment','deployment-software','deployment-secret-mode','deployment-auto-id'])$(id).addEventListener('change',updateDeploymentForm);
+for(const id of ['deployment-runtime','deployment-autostart','deployment-a-endpoint','deployment-b-endpoint','deployment-existing-switch','deployment-mode','deployment-initiator','deployment-a-attachment','deployment-b-attachment','deployment-software','deployment-secret-mode','deployment-auto-id'])$(id).addEventListener('change',updateDeploymentForm);
 for(const id of ['deployment-count','deployment-b-port','deployment-tunnel-id'])$(id).addEventListener('input',updateDeploymentForm);
 for(const id of ['deployment-a-endpoint','deployment-existing-switch','deployment-mode'])$(id).addEventListener('change',loadDeploymentAddressHint);
 $('deployment-form').addEventListener('invalid',event=>{const details=event.target.closest('details');if(details)details.open=true;},true);
 function deploymentSide(letter,role){
   const attachment=$(`deployment-${letter}-attachment`).value;
-  const result={endpoint_id:$(`deployment-${letter}-endpoint`).value,role,runtime:'screen',attachment:{type:attachment}};
+  const result={endpoint_id:$(`deployment-${letter}-endpoint`).value,role,runtime:$('deployment-runtime').value||'screen',attachment:{type:attachment}};
+  if(result.runtime==='systemd')result.autostart=$('deployment-autostart').checked;
   if(role==='initiator')result.peer_address=$(`deployment-${letter}-peer`).value.trim();
   if(attachment==='switch')result.attachment={type:'switch',switch_socket:$(`deployment-${letter}-socket`).value.trim(),port_id:$(`deployment-${letter}-port`).value.trim(),label:$(`deployment-${letter}-label`).value.trim()};
   if(letter==='b'&&$('deployment-mode').value==='switch'){
     delete result.endpoint_id;result.switch_id=$('deployment-existing-switch').value;
     delete result.attachment.switch_socket;
   }
+  if($('deployment-type').value==='via'&&letter==='b')result.attachment.label='0';
   return result;
 }
 $('deployment-form').addEventListener('submit',async event=>{
   event.preventDefault();if(controlledView.busy||state.auth?.role!=='admin')return;
   const initiator=$('deployment-initiator').value,source=$('deployment-software').value,mode=$('deployment-secret-mode').value;
   const body={name:$('deployment-name').value.trim(),tunnel_id:$('deployment-auto-id').checked?null:Number($('deployment-tunnel-id').value),count:Number($('deployment-count').value),side_a:deploymentSide('a',initiator==='a'?'initiator':'listener'),side_b:deploymentSide('b',initiator==='b'?'initiator':'listener'),software:source==='git_build'?{source,revision:$('deployment-revision').value.trim()}:source==='bundle'?{source,bundle_id:$('deployment-bundle').value}:{source,sha256:$('deployment-sha').value.trim()},secret:mode==='provided'?{mode,value:$('deployment-secret').value.trim()}:{mode}};
+  if($('deployment-type').value==='via')body.via={mode:$('deployment-via-mode').value,...Object.fromEntries(['service','instance','in_tun','out_tun','in_port','out_port','namespace','trust_key'].map(key=>[key,$('deployment-via-'+(key==='trust_key'?'trust':key.replace('_','-'))).value.trim()]))};
   controlledBusy(true);$('deployment-form-status').textContent=(t("uiGeneratingValidatedRunbook"));
   try{await api('/api/v1/tunnel-deployments','POST',body);$('deployment-secret').value='';$('deployment-form').hidden=true;controlledBusy(false);await loadControlledEndpoints(`Runbook ${body.name} ${t("uiWasCreatedNothingWasSentToThe")}`);}
   catch(error){$('deployment-form-status').textContent=diagnostic(error.message);}finally{controlledBusy(false);}
 });
 $('deployment-list').addEventListener('click',async event=>{
+  const runtime=event.target.closest('[data-deployment-runtime]');
+  if(runtime){
+    $('deployment-script-title').textContent=t('deploymentRuntimeLogs');$('deployment-script-content').textContent=t('deploymentReadingRuntime');$('deployment-script-dialog').showModal();
+    try{const data=await api(`/api/v1/tunnel-deployments/${encodeURIComponent(runtime.dataset.deploymentRuntime)}/runtime`,'GET',undefined,120000);$('deployment-script-content').textContent=Object.entries(data.sides||{}).map(([side,value])=>(side==='side_a'?t('uiHost'):t('uiTarget'))+'\n'+(value.error||value.output||'—')).join('\n\n')||'—';}
+    catch(error){$('deployment-script-content').textContent=diagnostic(error.message);}return;
+  }
+
   const remove=event.target.closest('[data-deployment-delete]');
   if(remove){
     if(controlledView.busy||state.auth?.role!=='admin')return;
@@ -3040,19 +3135,46 @@ $('deployment-list').addEventListener('click',async event=>{
     }catch(error){$('controlled-status').textContent=diagnostic(error.message);}return;
   }
   const deploy=event.target.closest('[data-deployment-run]');
-  if(deploy){if(controlledView.busy||state.auth?.role!=='admin')return;const row=controlledView.deployments.find(item=>item.id===deploy.dataset.deploymentRun);if(!row||!window.confirm(`${t("uiDeploy")} ${row.name}? ${row.config.side_a.switch_id||row.config.side_b.switch_id?(t("uiTheSSHHostWillBePreparedUsing")):(t("uiBothSSHEndpointsWillBePreparedUsing"))} ${t("uiScreenProcessesWillBeStarted")}`))return;controlledBusy(true);$('controlled-status').textContent=`${t("uiDeploying")} ${row.name}: ${t("uiListenerFirstThenInitiator")}`;try{await api(`/api/v1/tunnel-deployments/${encodeURIComponent(row.id)}/deploy`,'POST',{},1200000);controlledBusy(false);await loadControlledEndpoints(`Deployment ${row.name} ${t("uiIsRunning")}`);}catch(error){controlledBusy(false);await loadControlledEndpoints();$('controlled-status').textContent=diagnostic(error.message);}finally{controlledBusy(false);}return;}
+  if(deploy){if(controlledView.busy||state.auth?.role!=='admin')return;const row=controlledView.deployments.find(item=>item.id===deploy.dataset.deploymentRun);if(!row||!window.confirm(`${t("uiDeploy")} ${row.name}? ${row.config.side_a.switch_id||row.config.side_b.switch_id?(t("uiTheSSHHostWillBePreparedUsing")):(t("uiBothSSHEndpointsWillBePreparedUsing"))} ${t([row.config.side_a,row.config.side_b].some(side=>side.runtime==='systemd')?"deploymentSystemdStart":"uiScreenProcessesWillBeStarted")}`))return;controlledBusy(true);const stopProgress=watchDeploymentProgress();$('controlled-status').textContent=`${t("uiDeploying")} ${row.name}: ${t("uiListenerFirstThenInitiator")}`;try{const attempt=row.status==='undeployed'?await api('/api/v1/tunnel-deployments','POST',reattemptDeploymentBody(row.config,controlledView.deployments)):row;await api(`/api/v1/tunnel-deployments/${encodeURIComponent(attempt.id)}/deploy`,'POST',{},1200000);controlledBusy(false);await loadControlledEndpoints(`Deployment ${row.name} ${t("uiIsRunning")}`);}catch(error){controlledBusy(false);await loadControlledEndpoints();$('controlled-status').textContent=diagnostic(error.message);}finally{stopProgress();controlledBusy(false);}return;}
   const button=event.target.closest('[data-deployment-script]');if(!button)return;
   try{const data=await api(`/api/v1/tunnel-deployments/${encodeURIComponent(button.dataset.deploymentScript)}/script?name=${encodeURIComponent(button.dataset.scriptName)}`);$('deployment-script-title').textContent=data.name;$('deployment-script-content').textContent=data.content;$('deployment-script-dialog').showModal();}
   catch(error){$('controlled-status').textContent=diagnostic(error.message);}
 });
 $('deployment-script-copy').addEventListener('click',async()=>{await navigator.clipboard.writeText($('deployment-script-content').textContent);$('deployment-script-copy').textContent=(t("uiCopied"));setTimeout(()=>$('deployment-script-copy').textContent=(t("uiCopy")),1200);});
+let headlessBundles=[],headlessBusy=false;
+function updateHeadlessForm(){
+  const binary=$('headless-format').value==='binary',divert=$('headless-kind').value==='divert',selected=$('headless-binary').value;
+  $('headless-binary-wrap').hidden=!binary;$('headless-trust-wrap').hidden=false;
+  $('headless-binary').innerHTML=headlessBundles.filter(row=>!divert||row.files['tuntom-divert-adapter']).map(row=>`<option value="${esc(row.id)}">${esc(row.name)} · ${esc(row.revision.slice(0,12))}</option>`).join('');
+  if([...$('headless-binary').options].some(o=>o.value===selected))$('headless-binary').value=selected;
+  $('headless-binary').required=binary;$('headless-binary').disabled=!binary||headlessBusy;
+  $('headless-count').min=divert?'2':'1';$('headless-count').step=divert?'2':'1';
+  $('headless-download').disabled=headlessBusy||state.auth?.role!=='admin'||(binary&&!$('headless-binary').value);
+}
+$('headless-kind').addEventListener('change',()=>{$('headless-count').value=$('headless-kind').value==='divert'?'8':'1';updateHeadlessForm();});
+$('headless-format').addEventListener('change',updateHeadlessForm);
+$('headless-form').addEventListener('submit',async event=>{
+  event.preventDefault();if(headlessBusy||state.auth?.role!=='admin')return;
+  const body={kind:$('headless-kind').value,format:$('headless-format').value,name:$('headless-name').value.trim(),peer:$('headless-peer').value.trim(),tunnel_id:Number($('headless-id').value),count:Number($('headless-count').value),port_id:$('headless-port').value.trim(),switch_socket:$('headless-socket').value.trim()};
+  if(body.format==='binary')body.bundle_id=$('headless-binary').value;
+  body.trust_public=$('headless-trust').value.trim();
+  headlessBusy=true;updateHeadlessForm();$('headless-status').textContent=t('uiWorking');
+  try{
+    const blob=await api('/api/v1/headless-bundles','POST',body,120000,'blob');
+    const url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=`headless_${body.kind}_${body.format}_${body.name}.tar.gz`;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);
+    $('headless-status').textContent=t('headlessDownloaded');
+  }catch(error){$('headless-status').textContent=diagnostic(error.message);}finally{headlessBusy=false;updateHeadlessForm();}
+});
 let bundleBusy=false;
 function updateBundleForm(){
   const build=$('bundle-source').value==='build',admin=state.auth?.role==='admin';
-  for(const id of ['bundle-source','bundle-name','bundle-revision'])$(id).disabled=bundleBusy||!admin;
+  for(const id of ['bundle-source','bundle-name','bundle-revision','bundle-component'])$(id).disabled=bundleBusy||!admin;
   $('bundle-build-fields').hidden=!build;$('bundle-upload-fields').hidden=build;
   $('bundle-endpoint').required=build;$('bundle-endpoint').disabled=!build||bundleBusy||!admin;
   for(const name of ['tuntom','tuntomctl']){$(`bundle-${name}`).required=!build;$(`bundle-${name}`).disabled=build||bundleBusy||!admin;}
+  const divert=$('bundle-component').value==='divert';
+  $('bundle-divert-wrap').hidden=!divert;
+  $('bundle-divert').required=!build&&divert;$('bundle-divert').disabled=build||!divert||bundleBusy||!admin;
   $('bundle-submit').disabled=bundleBusy||!admin||(build&&(!state.data?.allow_write||!$('bundle-endpoint').value));$('bundle-submit').textContent=bundleBusy?(t("uiWorking")):build?(t("uiBuildBundle")):(t("uiUploadBundle"));
 }
 async function loadDeploymentBundles(){
@@ -3068,12 +3190,14 @@ async function loadBinaryBundles(){
     const selected=$('bundle-endpoint').value;
     $('bundle-endpoint').innerHTML=endpoints.controlled_endpoints.filter(row=>row.status==='supported').map(row=>`<option value="${esc(row.id)}">${esc(row.address)} · ${esc(row.snapshot?.system?.distribution)} ${esc(row.snapshot?.system?.version)}</option>`).join('');
     if([...$('bundle-endpoint').options].some(option=>option.value===selected))$('bundle-endpoint').value=selected;
+    headlessBundles=data.binary_bundles;updateHeadlessForm();
     updateBundleForm();
-    $('bundles-list').innerHTML=data.binary_bundles.map(row=>`<article class="controlled-card"><header><div><span class="eyebrow">TUNNEL · ${esc(row.os)} ${esc(row.version)} · ${esc(row.architecture)}</span><h3>${esc(row.name)}</h3></div></header><p>${esc(t("uiRevision"))} <code>${esc(row.revision)}</code> · ${esc(new Date(row.created_at).toLocaleString(locale()))}</p><p class="muted">${esc(t("uiDeclaredPlatformELFArchitectureVerifiedLibrariesAnd"))}</p>${Object.entries(row.files).map(([name,file])=>`<p>${esc(name)} · ${(file.size/1048576).toFixed(2)} MiB<br><small class="bundle-hash">SHA-256 ${esc(file.sha256)}</small></p>`).join('')}<button class="quiet-button" data-bundle-download="${esc(row.id)}">↓ Binary bundle .tar.gz</button></article>`).join('')||("<p class=\"service-empty\">"+t("uiNoBundlesYetBuildOneFromGit")+"</p>");
+    $('bundles-list').innerHTML=data.binary_bundles.map(row=>`<article class="controlled-card"><header><div><span class="eyebrow">${row.component==='divert'?'TUNNEL + DIVERT':'TUNNEL'} · ${esc(row.os)} ${esc(row.version)} · ${esc(row.architecture)}</span><h3>${esc(row.name)}</h3></div></header><p>${esc(t("uiRevision"))} <code>${esc(row.revision)}</code> · ${esc(new Date(row.created_at).toLocaleString(locale()))}</p><p class="muted">${esc(t("uiDeclaredPlatformELFArchitectureVerifiedLibrariesAnd"))}</p>${Object.entries(row.files).map(([name,file])=>`<p>${esc(name)} · ${(file.size/1048576).toFixed(2)} MiB<br><small class="bundle-hash">SHA-256 ${esc(file.sha256)}</small></p>`).join('')}<button class="quiet-button" data-bundle-download="${esc(row.id)}">↓ Binary bundle .tar.gz</button></article>`).join('')||("<p class=\"service-empty\">"+t("uiNoBundlesYetBuildOneFromGit")+"</p>");
   }catch(error){$('bundles-status').textContent=diagnostic(error.message);}
 }
 $('bundles-read').addEventListener('click',loadBinaryBundles);
 $('bundle-source').addEventListener('change',updateBundleForm);
+$('bundle-component').addEventListener('change',updateBundleForm);
 $('bundle-endpoint').addEventListener('change',updateBundleForm);
 async function bundleFile(input){
   const file=input.files[0];if(!file||file.size>32*1024*1024)throw new Error((t("uiSelectABinaryUpTo32MiB")));
@@ -3083,10 +3207,10 @@ $('bundle-form').addEventListener('submit',async event=>{
   event.preventDefault();if(bundleBusy||state.auth?.role!=='admin')return;
   const build=$('bundle-source').value==='build';
   const body={name:$('bundle-name').value.trim(),revision:$('bundle-revision').value.trim()};
-  if(build){if(!state.data?.allow_write||!$('bundle-endpoint').value)return;body.endpoint_id=$('bundle-endpoint').value;}
+  if(build){if(!state.data?.allow_write||!$('bundle-endpoint').value)return;body.endpoint_id=$('bundle-endpoint').value;body.component=$('bundle-component').value;}
   bundleBusy=true;updateBundleForm();$('bundles-status').textContent=build?(t("uiBuildingOnTheSelectedSSHHost")):(t("uiUploadingBinaries"));
   try{
-    if(!build){body.os='ubuntu';body.version='26.04';body.architecture='x86_64';body.files={tuntom:await bundleFile($('bundle-tuntom')),tuntomctl:await bundleFile($('bundle-tuntomctl'))};}
+    if(!build){body.os='ubuntu';body.version='26.04';body.architecture='x86_64';body.files={tuntom:await bundleFile($('bundle-tuntom')),tuntomctl:await bundleFile($('bundle-tuntomctl'))};if($('bundle-component').value==='divert')body.files['tuntom-divert-adapter']=await bundleFile($('bundle-divert'));}
     const row=await api('/api/v1/binary-bundles'+(build?'/build':''),'POST',body,build?960000:120000);
     $('bundles-status').textContent=`${t("uiBundle")} ${row.name} ${t("uiSavedItIsAvailableWhenCreatingA")}`;
     for(const name of ['tuntom','tuntomctl'])$(`bundle-${name}`).value='';

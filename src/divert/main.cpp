@@ -220,6 +220,7 @@ int main(int argc, char** argv) {
                     if (clients[path * 2 + 1]) clients[path * 2 + 1]->write_stats(out, prefix + "out_ipc_");
                 }
                 control_auth_config.write_stats(out);
+                routed_control.write_stats(out);
                 recovery.write_stats(out);
                 return out.str();
         };

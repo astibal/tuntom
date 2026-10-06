@@ -275,3 +275,28 @@ class DeploymentDeletionTests(unittest.TestCase):
             with self.assertRaises(KeyError): store.get(row['id'])
         finally:
             store.close()
+
+class RuntimeAccessTests(unittest.TestCase):
+    def test_check_reports_first_blocked_ancestor(self):
+        from unittest.mock import patch
+        from tunnel_deployments import RUNTIME_ACCESS_CHECK
+        code = RUNTIME_ACCESS_CHECK.split("<<'PYACCESS'\n", 1)[1].rsplit('PYACCESS', 1)[0]
+        with patch.object(sys, 'argv', ['-', '/opt/private/deployment']), patch('os.access', side_effect=lambda p, mode: str(p) != '/opt/private'):
+            with self.assertRaisesRegex(SystemExit, 'cannot traverse /opt/private'):
+                exec(code, {})
+        with patch.object(sys, 'argv', ['-', '/opt/private/deployment']), patch('os.access', side_effect=lambda p, mode: str(p) != '/opt/private/deployment/run'):
+            with self.assertRaisesRegex(SystemExit, 'cannot write to /opt/private/deployment/run'):
+                exec(code, {})
+
+    def test_retry_refreshes_stored_runbook_with_access_check(self):
+        import json
+        store = TunnelDeployments(None, Endpoints())
+        self.addCleanup(store.close)
+        row = store.create(draft())
+        with store.db:
+            store.db.execute("UPDATE tunnel_deployment SET status='failed',bundle='{}' WHERE id=?", (row['id'],))
+        secret = store._secret(row['id'])
+        store.deploy(row['id'])
+        bundle = store.get(row['id'], include_bundle=True)['bundle']
+        self.assertIn('Runtime access denied:', bundle['side_a/scripts/30-install-config.sh'])
+        self.assertEqual(secret, store._secret(row['id']))

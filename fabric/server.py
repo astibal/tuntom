@@ -17,6 +17,7 @@ from pathlib import Path
 import re
 import secrets
 import socket
+import subprocess
 import sqlite3
 import threading
 import time
@@ -341,17 +342,17 @@ class Fabric:
         from switch_deployments import execute
         if not isinstance(body, dict): raise APIError(400, "invalid switch deployment request")
         action = body.get("action")
-        if action not in {"inspect", "prepare", "start", "rollback", "undeploy"}: raise APIError(400, "invalid switch deployment action")
-        if action != "inspect" and (not self.allow_write or audit_actor.get().get("role") != "admin"):
+        if action not in {"inspect", "prepare", "start", "rollback", "undeploy", "enable", "status"}: raise APIError(400, "invalid switch deployment action")
+        if action not in {"inspect", "status"} and (not self.allow_write or audit_actor.get().get("role") != "admin"):
             raise APIError(403, "switch deployment requires an admin and writes enabled")
         target = body.get("deployment_id", "")
-        if action != "inspect": self.journal.append("tunnel_deployments.local." + str(action), target, "started")
+        if action not in {"inspect", "status"}: self.journal.append("tunnel_deployments.local." + str(action), target, "started")
         try:
             result = execute(self, body)
         except Exception as error:
-            if action != "inspect": self.journal.append("tunnel_deployments.local." + str(action), target, "failed", {"error": str(error)[:2048]})
+            if action not in {"inspect", "status"}: self.journal.append("tunnel_deployments.local." + str(action), target, "failed", {"error": str(error)[:2048]})
             raise APIError(409, str(error)) from error
-        if action != "inspect": self.journal.append("tunnel_deployments.local." + action, target, "succeeded")
+        if action not in {"inspect", "status"}: self.journal.append("tunnel_deployments.local." + action, target, "succeeded")
         return result
 
     def journal_entries(self, params=None):
@@ -360,7 +361,7 @@ class Fabric:
     def audit_event(self, body):
         if not isinstance(body,dict) or set(body)-{'action','target','outcome','details'}:
             raise APIError(400,'invalid audit event')
-        if body.get('action') not in {'auth.login','auth.logout','users.save','users.delete','services.save','services.delete','http.denied','controlled_endpoints.probe','controlled_endpoints.discover','controlled_endpoints.refresh','tunnel_deployments.create','tunnel_deployments.deploy','tunnel_deployments.undeploy','tunnel_deployments.delete','binary_bundles.create','binary_bundles.build'}:
+        if body.get('action') not in {'auth.login','auth.logout','users.save','users.delete','services.save','services.delete','http.denied','controlled_endpoints.probe','controlled_endpoints.discover','controlled_endpoints.refresh','tunnel_deployments.create','tunnel_deployments.deploy','tunnel_deployments.undeploy','tunnel_deployments.delete','binary_bundles.create','binary_bundles.build','headless_bundles.download'}:
             raise APIError(400,'invalid audit action')
         details=body.get('details',{})
         if not isinstance(details,dict) or set(details)-{'role','enabled','password_changed','status','name','kind','label_count','peek_target_count','tunnel_id','count','address','port'}:
@@ -598,7 +599,7 @@ class Handler(BaseHTTPRequestHandler):
         if len(lengths) != 1 or not re.fullmatch(r"[0-9]{1,8}", lengths[0]):
             raise APIError(400, "invalid Content-Length")
         length = int(lengths[0])
-        limit = 90 * 1024 * 1024 if urlsplit(self.path).path == "/api/v1/binary-bundles" else MAX_BODY * 6 + 4096
+        limit = 130 * 1024 * 1024 if urlsplit(self.path).path == "/api/v1/binary-bundles" else MAX_BODY * 6 + 4096
         if length > limit:
             raise APIError(413, "request too large")
         self._body_raw = self.rfile.read(length)
@@ -641,6 +642,7 @@ class Handler(BaseHTTPRequestHandler):
                 (path == "/api/v1/controlled-endpoints" and self.command == "POST") or
                 re.fullmatch(r"/api/v1/controlled-endpoints/[0-9a-f]{32}/(?:confirm|refresh)", path) or
                 (path in {"/api/v1/binary-bundles", "/api/v1/binary-bundles/build"} and self.command == "POST") or
+                (path == "/api/v1/headless-bundles" and self.command == "POST") or
                 (path == "/api/v1/tunnel-deployments" and self.command == "POST") or
                 re.fullmatch(r"/api/v1/tunnel-deployments/[0-9a-f]{32}/(?:deploy|undeploy|delete)", path) or
                 re.fullmatch(r"/api/v1/endpoints/[^/]+/(?:rules/load|classifier/(?:load|load-flush|disable))", path)))
@@ -736,6 +738,15 @@ class Handler(BaseHTTPRequestHandler):
                 try: filename, content = self.server.tunnel_deployments.binary_bundles.archive(match[1])
                 except KeyError as error: raise APIError(404, str(error)) from error
                 return self.respond(200, content, "application/gzip", {"Content-Disposition": f'attachment; filename="{filename}"'})
+            if path == "/api/v1/headless-bundles" and self.command == "POST":
+                from headless_bundles import archive
+                data = self.body()
+                try: filename, content = archive(data, self.server.tunnel_deployments.binary_bundles)
+                except KeyError as error: raise APIError(404, str(error)) from error
+                except (ValueError, OSError, subprocess.SubprocessError) as error: raise APIError(400, str(error)) from error
+                self.server.fabric.audit_event({'action':'headless_bundles.download','target':data['name'],'outcome':'succeeded',
+                    'details':{'kind':data['kind']+'/'+data['format']}})
+                return self.respond(200, content, "application/gzip", {"Content-Disposition": f'attachment; filename="{filename}"'})
             if path == "/api/v1/tunnel-deployments" and self.command == "GET":
                 return self.respond(200, self.server.tunnel_deployments.list())
             if path == "/api/v1/tunnel-deployments" and self.command == "POST":
@@ -746,6 +757,11 @@ class Handler(BaseHTTPRequestHandler):
                 except (ValueError, sqlite3.IntegrityError) as error: raise APIError(400, str(error)) from error
                 self.server.fabric.audit_event({'action':'tunnel_deployments.create','target':result['id'],'outcome':'succeeded',
                     'details':{'name':result['name'],'tunnel_id':result['config']['tunnel_id'],'count':result['config']['count']}})
+                return self.respond(200, result)
+            match = re.fullmatch(r"/api/v1/tunnel-deployments/([0-9a-f]{32})/runtime", path)
+            if match and self.command == "GET":
+                try: result = self.server.tunnel_deployments.runtime_status(match[1])
+                except KeyError as error: raise APIError(404, str(error)) from error
                 return self.respond(200, result)
             match = re.fullmatch(r"/api/v1/tunnel-deployments/([0-9a-f]{32})/delete", path)
             if match and self.command == "POST":

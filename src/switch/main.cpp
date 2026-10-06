@@ -647,6 +647,7 @@ int main(int argc, char** argv) {
                     << "\ndivert_invalid_drops=" << stats.divert_invalid_drops
                     << "\ndivert_overflow_drops=" << stats.divert_overflow_drops << '\n';
                 control_auth_config.write_stats(out);
+                routed_control.write_stats(out);
                 recovery.write_stats(out);
                 admission.write_stats(out, snapshot_at);
                 if (control) control->write_stats(out);

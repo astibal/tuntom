@@ -190,7 +190,7 @@ class RemoteFabric:
         return result
 
     def switch_deployment(self, body):
-        if body.get("action") != "inspect" and not self.allow_write:
+        if body.get("action") not in {"inspect", "status"} and not self.allow_write:
             raise APIError(403, "writes are disabled")
         return self.call("switch_deployment", body=body)
 

@@ -762,7 +762,7 @@ nepřijímá.
 Admin může ze dvou podporovaných endpointů vytvořit návrh tunnel deploymentu.
 Návrh určuje initiator/listener, TUN nebo switch attachment, počet paralelních
 členů 1..64, ruční či automatické tunnel ID, zdroj software a generate/provided
-PSK. V této fázi se renderuje pouze labový runtime `screen`; vytvoření návrhu
+PSK. Lze zvolit runtime `screen` nebo `systemd`; vytvoření návrhu
 na vzdálené stroje nic neposílá a nic nespouští.
 
 Každý návrh obsahuje čitelný runbook pro obě strany: preflight, instalaci
@@ -855,7 +855,7 @@ switch/listener. Zadej dosažitelnou transportní IP listeneru, port ID a label.
 
 Switch musí být lokálně pozorovaný proces ve stejném mount/network namespace
 jako collector. Socket pochází z aktuálního procesu, ne ze vstupu uživatele.
-Collector potřebuje root, povolené zápisy, `screen`, `flock`, `ss` a nainstalované
+Collector potřebuje root, povolené zápisy, zvolený runtime (`screen` nebo běžící systemd), `flock`, `ss` a nainstalované
 `tuntom` + `tuntomctl` v `/var/lib/tuntom-fabric/bin` (preferované), případně vedle binárky switche. Binárky a jejich nadřazené adresáře
 musí patřit rootovi a nesmí být zapisovatelné jinými uživateli ani symlinky.
 Na hostu switche se neprovádí apt, Git checkout ani build.
@@ -864,7 +864,7 @@ Na hostu switche se neprovádí apt, Git checkout ani build.
 RPC přijímá validovaný záměr a pevně vyjmenované operace prepare/start/rollback,
 nikoli shell příkazy či uploadované skripty. Před nasazením se ověří aktuální
 identita switche a obsazené UDP porty. Restart switche vyžaduje nový návrh.
-Procesy běží v samostatných screen sessions; při chybě startu se zastaví jen
+Procesy běží v samostatných screen sessions nebo systemd services; při chybě startu se zastaví jen
 nově startované strany. Lokální operace se zaznamenávají do auditu bez PSK.
 
 Formulář vybírá iniciátora podle názvů konců (u hostu bez známého názvu podle IP).
@@ -1019,3 +1019,143 @@ Bootstrap nemá osobní účet, proto ukládá vzhled pouze v prohlížeči.
 POST přijímá výhradně `{"palette":"paper"}` a používá identitu relace, nikoli
 uživatelské jméno z těla požadavku. Vlastní vzhled může změnit i admin-ro.
 Volba palety nemění oprávnění ani neruší přihlášení.
+
+### VIA relay deployments
+
+Services → Controlled Endpoints → Create tunnel → **VIA relay** prepares a
+remote service host and a switch attachment. The default follows the lab layout:
+**4 IN + 4 OUT relay tunnels**, eight single-sided divert workers and one shared
+flow table. The count is the total number of tunnels (even, 2–16 in split mode).
+Paired mode uses one adapter with up to 16 relay paths. IDs are allocated using
+normal deployment rules; split IN/OUT groups use separate physical port prefixes.
+
+VIA currently uses the Git build source so the service host receives
+`tuntom-divert-adapter` together with `tuntom` and `tuntomctl`. The collector side
+keeps using its protected installed binaries. Config installation checks for
+relay and split-side CLI support before starting processes. Optional CONTROL
+trust selects a public-key source on the collector. Only validated `x25519`
+public grants are included in the runbook and installed into each deployment's
+`config/control-trust.pub` before preflight; private keys are rejected. The UI
+prefills the lab's public-key source, which can be changed or cleared (remote
+CONTROL is then left at the binary default). Old failed VIA drafts acquire this
+public-key payload on retry without changing their PSK or tunnel IDs.
+
+The draft includes `via-service.rules.txt` for review and merging into an
+existing format-3 ruleset. It does **not** load rules or select traffic for the
+chain. Existing namespace, addresses, routes, VRF and proxy configuration remain
+separate prerequisites. TUN names must be unused when preflight runs; the
+adapter creates its interfaces. Runtime verification checks process/control
+readiness, not end-to-end forwarding through a configured proxy.
+
+Deploy and undeploy archives use the existing workflow. Undeploy stops only
+workers and relays belonging to this deployment and removes its directory,
+shared flow file and secrets. It does not remove external namespace/routing
+configuration or switch rules.
+
+Deployment cards show bounded, timestamped per-host step history and refresh it
+while deploy/undeploy runs. Failed SSH steps report the exit status and a
+redacted stdout/stderr tail; successful steps retain a redacted output tail.
+The last 40 step transitions per side are retained. Private key blocks, secret
+assignments, bearer tokens and long hex keys are masked; scripts, archives and
+stdin payloads are never included in this progress history.
+
+### Systemd runtime and easy undeploy
+
+Every DATA or VIA deployment can select **Screen** (default) or **systemd**.
+The choice applies to both endpoints in the UI; the typed API also supports a
+runtime per side. `autostart` is an explicit boolean for systemd only, default
+false. Existing screen deployments are not converted in place.
+
+A systemd deployment owns one `tuntomfabric_<deployment-id>.target`, one flat
+slice with the same prefix, and one service for every tunnel and VIA worker.
+The target groups starts/stops; services use `PartOf=`, `KillMode=control-group`
+and restart on failure. VIA workers wait for their relay socket after ordered
+relay starts. Existing switch, namespace, routing and public-key prerequisites
+remain explicit; systemd does not create or start an external switch for them.
+
+The runbook contains the units and a digest manifest. Config installation
+refuses conflicting units/overrides, installs the owned units and reloads
+systemd. The target is enabled for boot **only after both deployment sides pass
+verification**. A start/enable failure rolls back all started sides and disables
+autostart; any rollback failure is retained in step history and the overall error.
+The manual `60-enable.sh` is likewise run only after verification on both hosts.
+
+**Undeploy is the same single action for both runtimes.** For systemd it first
+validates unit ownership, disables boot startup and stops the target, services
+and slice. It verifies inactive units and zero main/control PIDs, removes only
+its unit fragments, reloads systemd, clears failed-unit records, and then performs
+the existing process/lock checks and key erasure. A partial install or interrupted
+cleanup can be retried. Failed stops, modified units or external overrides retain
+the deployment files and keys for recovery. Shared packages, external switch
+units and unrelated services are untouched. Retained system journal entries are
+not purged by undeploy.
+
+The deployment card's **Service status and journal** button reads live unit state,
+exit status and restart counts, plus the last 80 journal entries across its
+services (bounded and redacted in the API). It is read-only and available to
+admin-ro accounts, including when writes are disabled. Offline runbooks provide
+`80-status.sh` and the existing standalone undeploy archive.
+
+### Headless Endpoint / Headless Divert Endpoint
+
+Services → Bundles includes an offline kit generator:
+
+- **Headless Endpoint**: DATA tunnel and its switch-side listener.
+- **Headless Divert Endpoint**: split VIA relay tunnels and divert workers,
+  with a switch-side listener group and a service-rule snippet.
+- **Source**: tracked `src/` and license at the Fabric host's Git HEAD,
+  recorded exact revision, portable C++17 Makefile. Run `make`; no Git or
+  network fetch is needed. Build on each target architecture separately.
+- **Binary**: select an Ubuntu 26.04 x86-64 binary bundle. Divert requires
+  a bundle containing `tuntom-divert-adapter`; the existing Git builder and
+  upload form now support that third executable. Binary compatibility still
+  depends on target libraries; this is not a static or cross-platform build.
+
+The admin-only `POST /api/v1/headless-bundles` returns a tar.gz and records
+an audit event. It does not reserve IDs, install switch configuration, create
+SSH inventory or start processes. ID and switch-port collision checks remain
+an operator step for these offline kits. Required fields: `name`, `kind`
+(`endpoint` / `divert`), `format` (`source` / `binary`), `peer` (IP),
+`tunnel_id`, `count`, `port_id`, `switch_socket`; binary also needs `bundle_id`.
+Optional `trust_public` contains public CONTROL grant records. No PSK is
+accepted by the API or included in the archive.
+
+Copy the `endpoint/` directory into the existing namespace/host and `switch/`
+onto the switch host. Start the switch side first, then the endpoint:
+
+```sh
+sudo ./start.sh --secret-file /secure/tunnel.key
+./status.sh
+sudo ./stop.sh
+sudo ./undeploy.sh
+```
+
+The same 0600 file containing 32 hexadecimal PSK characters is supplied on
+both hosts. Scripts retain a protected local copy. Undeploy stops only owned
+processes and removes its own side directory and copied key; the original
+external key, runtime account and shared traversal ACLs remain. Execute in
+the same namespaces used at startup. Runtime requires root/CAP_NET_ADMIN,
+`/dev/net/tun`, Python 3, screen, util-linux, coreutils, iproute2 and acl.
+No dependency installation, systemd setup, routing or namespace creation is
+performed by the kit. VIA service rules must be merged and connected to the
+intended `via [...]` chain explicitly. Trusted CONTROL grants are needed for
+network discovery. The downloadable README documents the exact peer, UDP
+ports, source revision and lifecycle commands.
+
+### Routed CONTROL capacity diagnostics
+
+Updated components export `control_routed_*` stats for receiver contexts,
+reply routes, orphan routes (no execution receipt), confirmed routes, active
+requests and unconfirmed results. Separate counters identify receiver-limit
+and reply-route-limit refusals; errors retain the `control_busy` prefix and
+add the specific reason. Existing `control_remote_*` tunnel metrics describe
+the separate direct CONTROL engine and cannot diagnose routed capacity.
+
+Routing metadata unused for five minutes can be pruned only when there is
+no corresponding transaction or its result has been confirmed. Unconfirmed
+transaction records and their routes remain protected. Routing cleanup never
+deletes the underlying execution history or retries a mutation. Rejected new
+requests do not keep an otherwise idle receiver alive. This is a component
+binary change, not a Fabric-only fix; old running binaries cannot expose the
+new counters. Live diagnosis is still required before attributing a specific
+incident to one of these limits.

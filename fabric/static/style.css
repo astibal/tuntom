@@ -421,3 +421,10 @@ table:not(.process-table)>tbody>tr:is(.selected,[aria-selected="true"],:hover,:f
 .fullscreen-toggle[aria-pressed="true"]{border-color:var(--green);color:var(--green)}
 #fullscreen-status{font-size:11px;color:var(--red);max-width:240px}
 html:fullscreen{background:var(--bg);overflow:auto}
+
+/* Keep VIA IN/OUT fields paired and the three connection basics on one row. */
+.deployment-basics{grid-template-columns:minmax(130px,1fr) minmax(0,2fr) minmax(150px,1fr)}
+#deployment-via{margin-bottom:22px}
+@media(max-width:800px){.deployment-basics{grid-template-columns:1fr}}
+
+.deployment-progress{margin:10px 0}.deployment-progress ol{padding-left:22px;font:11px var(--mono)}.deployment-progress li{margin:8px 0}.deployment-progress time{color:var(--muted)}.deployment-progress pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:220px;overflow:auto;padding:8px;background:var(--bg);border:1px solid var(--line);border-radius:4px}

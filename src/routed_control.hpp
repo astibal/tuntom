@@ -13,12 +13,14 @@ public:
     using Path=control_route::Path;
     using Clock=ControlRouter::Clock;
 private:
-    struct Receiver { RemoteControl transactions; std::map<Id,Path> replies; std::set<Id> confirmed; Clock::time_point used; };
+    friend struct RoutedControlLifecycleTest;
+    struct Receiver { RemoteControl transactions; std::map<Id,Path> replies; std::map<Id,Clock::time_point> reply_seen; std::set<Id> confirmed; Clock::time_point used; };
     struct Pending { Path path; bool discovery=false, acknowledged=false; Clock::time_point deadline; std::vector<Frame> answers; std::size_t answer_bytes=0; std::optional<ControlResponse> error; };
     ControlRouter router_;
     RemoteControl client_;
     std::map<Id,Pending> pending_;
     std::map<Id,std::unique_ptr<Receiver>> receivers_;
+    std::uint64_t busy_origins_=0, busy_replies_=0, pruned_routes_=0;
     ControlDispatcher dispatcher_;
     bool allowed_=false;
     control_auth::Config auth_config_;
@@ -60,7 +62,7 @@ private:
         if(static_cast<unsigned>(frame.kind)>5 || frame.kind==Kind::reply || frame.kind==Kind::confirmed) return;
         auto receiver=receivers_.find(frame.origin);
         if(receiver==receivers_.end()) {
-            if(receivers_.size()>=8) {router_.send(control_route::response(frame,Kind::route_error,"control_busy"),now);return;}
+            if(receivers_.size()>=8) {++busy_origins_;router_.send(control_route::response(frame,Kind::route_error,"control_busy: receiver_limit"),now);return;}
             auto entry=std::make_unique<Receiver>(); auto* r=entry.get(); const auto origin=frame.origin;
             r->transactions.payload_limit(440);
             r->transactions.configure_auth(auth_config_,origin);
@@ -80,12 +82,14 @@ private:
                 },[this](const ControlRequest& request){return dispatcher_.execute(request,allowed_?ControlAccess::all():ControlAccess{});});
             receiver=receivers_.emplace(origin,std::move(entry)).first;
         }
-        auto& r=*receiver->second; r.used=now;
+        auto& r=*receiver->second;
         if(!r.replies.count(frame.request) && r.replies.size()>=128) {
-            if(r.confirmed.empty()) {router_.send(control_route::response(frame,Kind::route_error,"control_busy"),now);return;}
-            r.replies.erase(*r.confirmed.begin());r.confirmed.erase(r.confirmed.begin());
+            if(r.confirmed.empty()) {++busy_replies_;router_.send(control_route::response(frame,Kind::route_error,"control_busy: reply_route_limit"),now);return;}
+            r.reply_seen.erase(*r.confirmed.begin());r.replies.erase(*r.confirmed.begin());r.confirmed.erase(r.confirmed.begin());
         }
+        r.used=now;
         r.replies[frame.request]=frame.reply_path;
+        r.reply_seen[frame.request]=now;
         r.transactions.receive(remote_control::encode(control_route::unwrap(frame)),now);
     }
     static std::string discovery_text(const Pending& pending) {
@@ -141,6 +145,18 @@ public:
         router_.tick(now);client_.tick(now);
         for(auto i=receivers_.begin();i!=receivers_.end();) {
             i->second->transactions.tick(now);
+            // Routing metadata is not an execution receipt. Expire only orphan
+            // routes or acknowledged results; never discard a live/unconfirmed
+            // transaction just because its caller stopped polling.
+            auto& receiver=*i->second;
+            for(auto route=receiver.reply_seen.begin();route!=receiver.reply_seen.end();) {
+                if(now-route->second>std::chrono::minutes(5) &&
+                   (!receiver.transactions.received_state(route->first) || receiver.confirmed.count(route->first))) {
+                    receiver.replies.erase(route->first);
+                    receiver.confirmed.erase(route->first);
+                    route=receiver.reply_seen.erase(route); ++pruned_routes_;
+                } else ++route;
+            }
             if(exclusive_ && exclusive_->first==i->first) {
                 const auto state=i->second->transactions.received_state(exclusive_->second);
                 if(!state || remote_control::terminal(*state))exclusive_.reset();
@@ -151,6 +167,33 @@ public:
         for(auto i=pending_.begin();i!=pending_.end();) {
             if(now>i->second.deadline+std::chrono::minutes(5)){client_.release(i->first);router_.release_discovery(i->first);i=pending_.erase(i);}else ++i;
         }
+    }
+    void write_stats(std::ostream& out) const {
+        std::size_t routes=0, confirmed=0, orphaned=0, protected_routes=0, active_requests=0, unconfirmed_results=0;
+        for(const auto& entry:receivers_) {
+            const auto& receiver=*entry.second;
+            routes+=receiver.replies.size(); confirmed+=receiver.confirmed.size();
+            for(const auto& route:receiver.replies) {
+                const auto state=receiver.transactions.received_state(route.first);
+                if(!state) ++orphaned;
+                else {
+                    if(!remote_control::terminal(*state)) ++active_requests;
+                    else if(!receiver.confirmed.count(route.first)) ++unconfirmed_results;
+                    if(!receiver.confirmed.count(route.first)) ++protected_routes;
+                }
+            }
+        }
+        out << "control_routed_receivers=" << receivers_.size()
+            << "\ncontrol_routed_pending=" << pending_.size()
+            << "\ncontrol_routed_reply_routes=" << routes
+            << "\ncontrol_routed_confirmed_routes=" << confirmed
+            << "\ncontrol_routed_orphan_routes=" << orphaned
+            << "\ncontrol_routed_protected_routes=" << protected_routes
+            << "\ncontrol_routed_active_requests=" << active_requests
+            << "\ncontrol_routed_unconfirmed_results=" << unconfirmed_results
+            << "\ncontrol_routed_busy_receiver_limit=" << busy_origins_
+            << "\ncontrol_routed_busy_reply_route_limit=" << busy_replies_
+            << "\ncontrol_routed_pruned_routes=" << pruned_routes_ << "\n";
     }
     bool active()const {
         if (!pending_.empty() || client_.active()) return true;
