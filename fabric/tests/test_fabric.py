@@ -46,6 +46,7 @@ class DiscoveryTests(unittest.TestCase):
             ("/tmp/tuntomctl", ["tuntomctl", "/tmp/data", "show", "stats"], "tuntomctl", None),
             ("/tmp/main", ["main", "a", "b", "--switch-socket", "/tmp/sw"], "tuntom-divert", "divert"),
         ]
+        cases.append(("/opt/bin/tuntom-divert-adapter", ["/opt/bin/tuntom-divert-adapter", "di0", "do0"], "tuntom-divert-a", "divert"))
         for executable, argv, comm, expected in cases:
             self.assertEqual(kind_of(executable, argv, comm), expected)
 
@@ -69,7 +70,9 @@ class DiscoveryTests(unittest.TestCase):
             (directory / "stat").write_text("123 (name with ) spaces) " + " ".join(fields))
             (directory / "cwd").symlink_to("/tmp/test-cwd")
             (directory / "cgroup").write_text("0::/system.slice/tuntom-switch-test.service\n")
+            (directory / "status").write_text("Uid:\t991\t992\t991\t991\n")
             endpoints, info = discover(proc)
+            self.assertEqual(endpoints[0].uid, 992)
             self.assertEqual(len(endpoints), 1)
             self.assertEqual(endpoints[0].control, "/tmp/test-cwd/control.sock")
             self.assertEqual(endpoints[0].id, "fixture-boot:123:100")

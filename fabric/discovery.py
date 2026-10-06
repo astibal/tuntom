@@ -9,12 +9,12 @@ import socket
 
 # Only explicitly public options are returned. In particular, --cookie and any
 # future secret/password options never enter the API or a reconstructed command.
-VALUE_OPTIONS = set("""control-socket stats-file stats-format socket switch-socket
+VALUE_OPTIONS = set("""user group tun-netns tun-socket control-socket stats-file stats-format socket switch-socket
 switch-port-id switch-label switch-ipc switch-ipc-batch classifier-file rules-file
 divert-file divert-in-port divert-out-port mtu transport-mtu init-window workers
 pool-size queue-size ipc-mode ipc-batch reserve-cpus flow-capacity flow-idle-seconds
 admission-capacity default-back port-id label exit-port trunk-port relay-connect relay-listen relay-port-id auth-command auth-config auth-timeout auth-max-children config-command auth-response-command""".split())
-FLAG_OPTIONS = set("""no-stats crypto-auth-only pmtud no-pmtud no-ttl-compensate
+FLAG_OPTIONS = set("""tun-up no-stats crypto-auth-only pmtud no-pmtud no-ttl-compensate
 switch-exit-node quiet debug auto-pool""".split())
 
 
@@ -27,7 +27,7 @@ class Endpoint:
     kind: str
     name: str
     executable: str
-    uid: int
+    uid: int | None
     state: str
     uptime_seconds: int
     rss_bytes: int
@@ -73,7 +73,7 @@ def kind_of(executable, argv, comm):
     names = {Path(executable.removesuffix(" (deleted)")).name, Path(argv[0]).name if argv else "", comm}
     if names & {"tuntomctl", "tuntom-fabric"}:
         return None
-    if names & {"tuntom-divert"}:
+    if names & {"tuntom-divert", "tuntom-divert-adapter"}:
         return "divert"
     if names & {"tuntom-switch-adapter", "tuntom-adapter"}:
         return "adapter"
@@ -162,9 +162,18 @@ def inspect_process(directory, *, host, boot, uptime, ticks, page_size):
     after = stat_fields(directory / "stat")
     if before[19] != after[19]:
         return None
+    # Non-dumpable processes expose root-owned /proc entries after setuid.
+    # The status record, not directory ownership, describes the runtime identity.
+    uid = None
+    try:
+        match = re.search(r"^Uid:\s+\d+\s+(\d+)", (directory / "status").read_text(), re.M)
+        if match:
+            uid = int(match.group(1))
+    except OSError:
+        pass
     return Endpoint(
         id=f"{boot}:{directory.name}:{before[19]}", pid=int(directory.name), start_ticks=int(before[19]),
-        host=host, kind=kind, name=endpoint_name, executable=executable, uid=directory.stat().st_uid,
+        host=host, kind=kind, name=endpoint_name, executable=executable, uid=uid,
         state=after[0], uptime_seconds=max(0, int(uptime - int(before[19]) / ticks)),
         rss_bytes=max(0, int(after[21])) * page_size, threads=int(after[17]), control=control,
         switch_socket=switch_socket, port_id=opts.get("relay-port-id", opts.get("switch-port-id", opts.get("port-id", ""))),

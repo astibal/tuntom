@@ -37,6 +37,8 @@ class ViaDeploymentTests(unittest.TestCase):
             self.assertIn('--relay-connect', hub)
             self.assertIn(f'--relay-port-id edge-{"in" if index < 4 else "out"}_{index % 4}', hub)
             worker = bundle[f'side_a/runtime/run-via-{index}.sh']
+            self.assertIn('runuser -u tuntom -g tuntom -- python3 -', worker)
+            self.assertIn('adapter-access.py', worker)
             self.assertIn('--side ' + ('in' if index < 4 else 'out'), worker)
             self.assertIn('--shared-flows', worker)
             self.assertIn('--allow-control-trusted', worker)

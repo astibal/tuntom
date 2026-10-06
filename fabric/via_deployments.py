@@ -61,6 +61,7 @@ def relay_port(base, index, count, via):
 
 def extend_bundle(files, config, root):
     from tunnel_deployments import shell, instance
+    from pathlib import Path
     via = config['via']
     count = config['count']
     base = config['side_b']['attachment']['port_id']
@@ -93,6 +94,7 @@ def extend_bundle(files, config, root):
             if control: text = text.rstrip() + " " + shell(*control) + "\n"
             files[key] = text
     prefix = 'side_a/'
+    files[prefix + 'scripts/adapter-access.py'] = Path(__file__).with_name('adapter_access.py').read_text()
     software_key = prefix + 'scripts/20-install-software.sh'
     files[software_key] = files[software_key].replace('echo SOFTWARE_READY',
         'g++ -std=c++17 -pthread -O2 -Wall -Wextra -pedantic "$root/source/src/divert/main.cpp" -o "$root/bin/tuntom-divert-adapter.new"\n'
@@ -123,6 +125,7 @@ def extend_bundle(files, config, root):
         for path in paths:
             path_id = path % (count // 2) if via['mode'] == 'split' else path
             args += ['--relay-path', f'{path_id}={root}/run/relay-{path}.sock']
+        access_paths = shell(*(f'{root}/run/relay-{path}.sock' for path in paths))
         files[prefix + f'runtime/run-{name}.sh'] = f'''#!/bin/bash
 set -euo pipefail
 umask 0077
@@ -130,6 +133,8 @@ root={shlex.quote(root)}
 exec 9>"$root/run/{name}.lock"
 flock -n 9 || {{ echo 'VIA worker is already running' >&2; exit 1; }}
 rm -f -- "$root/run/{name}.control"
+# Check with the identity used after privileged TUN setup, including reconnects.
+runuser -u tuntom -g tuntom -- python3 - "$root/run" {access_paths} < "$root/scripts/adapter-access.py"
 exec {shell(*args)}
 '''
         session = f'tuntom-{config["name"]}-{name}'
@@ -182,6 +187,9 @@ Review via-service.rules.txt and merge it into the switch's format 3 rules.
 Namespace (if selected), IP addresses, routes, VRF and proxy configuration must
 already be prepared independently. This deployment only owns its relay tunnels,
 divert workers, generated files and keys. It does not change switch rules.
+Start as root for TUN setup; adapters then run as tuntom:tuntom. The runtime
+account must retain access to relay socket paths for reconnects. Startup checks
+these permissions as tuntom before launching the adapter.
 '''
 
 
