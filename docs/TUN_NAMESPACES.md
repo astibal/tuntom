@@ -41,6 +41,14 @@ and before its normal privilege drop. There is no long-lived privileged control
 process and no privileged command protocol. The parent waits for the child, so
 a namespace, TUN, metadata, or descriptor-transfer failure aborts startup.
 
+The exit and divert adapters follow the same privilege lifecycle as the main
+tunnel: they open their TUN, IPC, control and shared-flow descriptors first,
+then drop permanently to `tuntom:tuntom`, disable core dumps and set
+`NoNewPrivs`. Unix-socket directories and files reopened at runtime must
+therefore be accessible to that account. Split divert workers retain only their
+already-open multiqueue descriptors; disconnect/reconnect queue detach and
+attach do not require a resident privileged helper.
+
 `TARGET` accepts:
 
 | Form | Resolution |
@@ -161,9 +169,11 @@ The privileged integration tests use real network namespaces and `/dev/net/tun`:
 
 - `tun_netns_integration_test`: encrypted tuntom traffic, fd transfer, child
   exit, UID/GID privilege drop and `NoNewPrivs`;
-- `adapter_netns_integration_test`: bidirectional exit traffic, paired divert
-  traffic through two addressless TUNs, split-side shared multiqueue flow, and
-  clean failure for a missing namespace.
+- `adapter_netns_integration_test`: verified adapter UID/GID drop and
+  `NoNewPrivs`, exit traffic through both the original current-namespace path
+  and the namespace provider, paired divert traffic through two addressless
+  TUNs, split-side multiqueue detach/reconnect/reattach followed by fresh
+  traffic, and clean failure for a missing namespace.
 
 Both tests are always registered with CTest. A host without the required Linux
 capabilities or `/dev/net/tun` reports CTest skip code 77 rather than a false

@@ -10,6 +10,7 @@
 #include "../adapter_tuns.hpp"
 #include "../control_socket.hpp"
 #include "../throughput_stats.hpp"
+#include "../privileges.hpp"
 #include <cerrno>
 #include <chrono>
 #include <csignal>
@@ -161,6 +162,10 @@ int main(int argc, char** argv) {
         std::unique_ptr<ControlSocket> control;
         if (not control_path.empty())
             control = std::make_unique<ControlSocket>(control_path);
+
+        // Everything below operates on already-open descriptors.  Keep the
+        // short privileged setup phase out of the packet-processing lifetime.
+        harden_unprivileged_process();
 
         struct sigaction action {};
         action.sa_handler = request_stop;

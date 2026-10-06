@@ -2,6 +2,8 @@
 """Real namespace TUN regression for exit and two-sided divert adapters."""
 
 import os
+import grp
+import pwd
 import shutil
 import signal
 import socket
@@ -33,6 +35,12 @@ def prerequisites():
         skip("requires /dev/net/tun")
     if subprocess.run(["unshare", "--net", "true"], capture_output=True).returncode:
         skip("requires permission to create and enter network namespaces")
+    try:
+        user = pwd.getpwnam("tuntom")
+        group = grp.getgrnam("tuntom")
+    except KeyError:
+        skip("requires the tuntom user and group")
+    return user.pw_uid, group.gr_gid
 
 
 def checksum(data):
@@ -94,10 +102,13 @@ def ns(holder, *arguments, **kwargs):
 
 
 class IpcServer:
-    def __init__(self, path):
+    def __init__(self, path, uid, gid):
         self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
         self.socket.bind(str(path))
+        os.chown(path, uid, gid)
+        os.chmod(path, 0o660)
         self.socket.listen(4)
+        self.socket.settimeout(8)
         self.clients = []
 
     def accept(self):
@@ -129,21 +140,46 @@ def wait_interface(holder, name, process, log):
     raise RuntimeError(f"{name} was not created in target namespace")
 
 
-def exit_case(binary, root):
+def wait_privilege_drop(process, uid, gid, log):
+    for _ in range(300):
+        if process.poll() is not None:
+            log.flush()
+            raise RuntimeError(Path(log.name).read_text(errors="replace"))
+        fields = {}
+        for line in Path(f"/proc/{process.pid}/status").read_text().splitlines():
+            if ":" in line:
+                key, value = line.split(":", 1)
+                fields[key] = value.split()
+        if (fields.get("Uid") == [str(uid)] * 4 and
+                fields.get("Gid") == [str(gid)] * 4 and
+                fields.get("NoNewPrivs") == ["1"] and
+                "0" not in fields.get("Groups", [])):
+            return
+        time.sleep(.02)
+    raise RuntimeError(f"process {process.pid} did not securely drop privileges")
+
+
+def exit_case(binary, root, uid, gid, external_namespace):
     holder = process = responder = None
     server = None
     log = open(root / "exit.log", "w+")
     try:
         holder = subprocess.Popen(["unshare", "--net", "sleep", "300"])
-        server = IpcServer(root / "exit.sock")
-        process = subprocess.Popen([
-            binary, "ex0", "--switch-socket", str(root / "exit.sock"),
+        suffix = "external" if external_namespace else "current"
+        socket_path = root / f"exit-{suffix}.sock"
+        server = IpcServer(socket_path, uid, gid)
+        command = [binary, "ex0", "--switch-socket", str(socket_path),
             "--switch-port-id", "exit", "--switch-ipc", "v1",
-            "--tun-netns", f"pid:{holder.pid}",
-        ], stdout=subprocess.DEVNULL, stderr=log)
+        ]
+        if external_namespace:
+            command += ["--tun-netns", f"pid:{holder.pid}"]
+        else:
+            command = ["nsenter", f"--net=/proc/{holder.pid}/ns/net", *command]
+        process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=log)
         name, client = server.accept()
         assert name == "exit"
         wait_interface(holder, "ex0", process, log)
+        wait_privilege_drop(process, uid, gid, log)
         ns(holder, "ip", "link", "set", "lo", "up")
         ns(holder, "ip", "address", "add", "10.65.0.2/32", "dev", "lo")
         ns(holder, "ip", "route", "add", "10.65.0.1/32", "dev", "ex0")
@@ -167,13 +203,13 @@ def exit_case(binary, root):
         log.close()
 
 
-def divert_case(binary, root):
+def divert_case(binary, root, uid, gid):
     holder = process = None
     server = None
     log = open(root / "divert.log", "w+")
     try:
         holder = subprocess.Popen(["unshare", "--net", "sleep", "300"])
-        server = IpcServer(root / "divert.sock")
+        server = IpcServer(root / "divert.sock", uid, gid)
         process = subprocess.Popen([
             binary, "di0", "do0", "--switch-socket", str(root / "divert.sock"),
             "--via-instance", "smithproxy#0", "--admission", "immediate",
@@ -184,6 +220,7 @@ def divert_case(binary, root):
         output_client = connections["divert-out~via:s:smithproxy#0"]
         wait_interface(holder, "di0", process, log)
         wait_interface(holder, "do0", process, log)
+        wait_privilege_drop(process, uid, gid, log)
         ns(holder, "sysctl", "-qw", "net.ipv4.ip_forward=1")
         for key in ("all", "default", "di0", "do0"):
             ns(holder, "sysctl", "-qw", f"net.ipv4.conf.{key}.rp_filter=0")
@@ -207,10 +244,10 @@ def divert_case(binary, root):
         log.close()
 
 
-def split_multiqueue_case(binary, root):
+def split_multiqueue_case(binary, root, uid, gid):
     holder = None
     processes = []
-    servers = []
+    servers = {}
     logs = []
     try:
         holder = subprocess.Popen(["unshare", "--net", "sleep", "300"])
@@ -218,8 +255,8 @@ def split_multiqueue_case(binary, root):
         clients = {}
         for side, path_id in (("in", "i"), ("out", "o")):
             socket_path = root / f"split-{side}.sock"
-            server = IpcServer(socket_path)
-            servers.append(server)
+            server = IpcServer(socket_path, uid, gid)
+            servers[side] = server
             log = open(root / f"split-{side}.log", "w+")
             logs.append(log)
             process = subprocess.Popen([
@@ -237,6 +274,8 @@ def split_multiqueue_case(binary, root):
 
         wait_interface(holder, "mdi0", processes[0], logs[0])
         wait_interface(holder, "mdo0", processes[1], logs[1])
+        for process, log in zip(processes, logs):
+            wait_privilege_drop(process, uid, gid, log)
         ns(holder, "sysctl", "-qw", "net.ipv4.ip_forward=1")
         for key in ("all", "default", "mdi0", "mdo0"):
             ns(holder, "sysctl", "-qw", f"net.ipv4.conf.{key}.rp_filter=0")
@@ -254,18 +293,31 @@ def split_multiqueue_case(binary, root):
         opcode, labels, returned = decode(clients["in"].recv(70000))
         assert opcode == 1 and returned[8] == 63 and returned[28:] == b"split-return"
         assert labels[3] & 0xff == 3
+
+        # Closing the live IPC channel makes the unprivileged worker detach its
+        # multiqueue fd.  Its reconnect then attaches the same fd again.  A
+        # second packet proves both privileged-looking ioctls remain usable by
+        # the descriptor owner after dropping UID/GID.
+        clients["in"].close()
+        name, clients["in"] = servers["in"].accept()
+        assert name == "divert-in.i~via:c:smithproxy#mq"
+        request = udp_packet("10.67.0.1", "10.67.0.2", 13001, 443, b"split-reconnected")
+        clients["in"].sendall(frame(via_labels(False), request))
+        opcode, labels, forwarded = decode(clients["out"].recv(70000))
+        assert opcode == 1 and forwarded[28:] == b"split-reconnected"
+        assert labels[3] & 0xff == 2
     finally:
         for process in reversed(processes):
             stop(process)
         stop(holder)
-        for server in servers:
+        for server in servers.values():
             server.close()
         for log in logs:
             log.close()
 
 
-def invalid_namespace(binary, root):
-    server = IpcServer(root / "invalid.sock")
+def invalid_namespace(binary, root, uid, gid):
+    server = IpcServer(root / "invalid.sock", uid, gid)
     log_path = root / "invalid.log"
     try:
         result = subprocess.run([
@@ -282,14 +334,19 @@ def invalid_namespace(binary, root):
 def main():
     if len(sys.argv) != 3:
         raise SystemExit(f"usage: {sys.argv[0]} <exit-adapter> <divert-adapter>")
-    prerequisites()
+    uid, gid = prerequisites()
     with tempfile.TemporaryDirectory(prefix="tuntom-adapter-netns.") as directory:
         root = Path(directory)
-        exit_case(str(Path(sys.argv[1]).resolve()), root)
-        divert_case(str(Path(sys.argv[2]).resolve()), root)
-        split_multiqueue_case(str(Path(sys.argv[2]).resolve()), root)
-        invalid_namespace(str(Path(sys.argv[1]).resolve()), root)
-    print("PASS: exit, paired divert and split multiqueue adapter TUNs work across network namespaces")
+        os.chown(root, uid, gid)
+        os.chmod(root, 0o770)
+        exit_binary = str(Path(sys.argv[1]).resolve())
+        divert_binary = str(Path(sys.argv[2]).resolve())
+        exit_case(exit_binary, root, uid, gid, True)
+        exit_case(exit_binary, root, uid, gid, False)
+        divert_case(divert_binary, root, uid, gid)
+        split_multiqueue_case(divert_binary, root, uid, gid)
+        invalid_namespace(exit_binary, root, uid, gid)
+    print("PASS: adapters drop privileges and preserve direct/provider TUN traffic plus multiqueue reconnect")
 
 
 if __name__ == "__main__":

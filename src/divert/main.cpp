@@ -10,6 +10,7 @@
 #include "../adapter_tuns.hpp"
 #include "../control_socket.hpp"
 #include "../runtime_recovery.hpp"
+#include "../privileges.hpp"
 #include <csignal>
 #include <iostream>
 #include <memory>
@@ -153,6 +154,10 @@ int main(int argc, char** argv) {
             tuns[side] = std::move(opened_tuns[opened_index++]);
             if (shared) tuns[side]->set_queue(false);
         }
+        // TUN creation and the initial multiqueue detach are the only setup
+        // operations requiring privilege.  Runtime attach/detach is performed
+        // through the already-open queue descriptors.
+        harden_unprivileged_process();
         std::vector<Clock::time_point> next_connect(clients.size());
         std::vector<pollfd> fds(clients.size() + 3);
         // Each path gets one visit to its active TUNs as well as its IPC sockets.
