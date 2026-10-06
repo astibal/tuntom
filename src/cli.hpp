@@ -2,6 +2,7 @@
 
 #include "packet.hpp"
 #include "info_message.hpp"
+#include "privileges.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
@@ -26,6 +27,7 @@ inline void usage(const char* program_name) {
         << "  --tun-socket <path>   Receive an already-created TUN fd over a Unix socket\n"
         << "  --tun-netns <target>  Fork a provider and create TUN in name, path, or pid:<PID> netns\n"
         << "  --tun-up              Bring an internally provided TUN up before fd transfer\n"
+        << privilege_options_help
         << "  --transport-mtu <n>   Transport MTU / initial PMTUD target "
            "(default 1400)\n"
         << "  --udp-send-buffer <n> Effective SO_SNDBUF bytes (default 2097152; 0 = OS default)\n"
@@ -116,6 +118,7 @@ inline void parse_options(
         const std::string option = argv[i];
 
         if(control_auth::option(options.control_auth,option,i,argc,argv))continue;
+        if(privilege_option(options.privileges,option,i,argc,argv))continue;
         if (option == "--auth-command" || option == "--auth-config" || option == "--auth-username" || option == "--auth-response-command" || option == "--config-command") {
             if(++i>=argc||!argv[i][0])throw std::runtime_error(option+" requires a value");
             auto& target=option=="--auth-command"?options.auth_command:option=="--auth-config"?options.auth_config:option=="--auth-username"?options.auth_username:

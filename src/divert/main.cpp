@@ -46,6 +46,7 @@ void usage(const char* program) {
         << "  --switch-ipc-batch N      1..16, default 8\n"
         << "  --mtu N                   576..65535, default 1500\n"
         << "  --tun-netns TARGET        Create active TUN side(s) in name, path, or pid:PID netns\n"
+        << tuntom::privilege_options_help
         << "  --flow-capacity N         1..100000000, default 100000\n"
         << "  --flow-idle-seconds N     1..604800, default 86400\n"
         << "  --admission-capacity N    entries per learning set, default 100000\n"
@@ -81,6 +82,7 @@ int main(int argc, char** argv) {
         std::string socket, cookie, control_path, in_port = "divert-in", out_port = "divert-out";
         std::string instance, admission_mode, shared_path, worker_side = "both";
         std::string tun_netns;
+        PrivilegeConfig privileges;
         std::vector<std::string> relay_paths;
         std::size_t mtu = 1500, capacity = 100000, admission_capacity = 100000, idle = 86400;
         ipc::Options options;
@@ -90,6 +92,7 @@ int main(int argc, char** argv) {
             const std::string option = argv[i];
             if (option == "--help" || option == "-h") { usage(argv[0]); return 0; }
             if(tuntom::control_auth::option(control_auth_config,option,i,argc,argv))continue;
+            if(privilege_option(privileges,option,i,argc,argv))continue;
             if (++i >= argc) throw std::runtime_error(option + " requires a value");
             const std::string value = argv[i];
             if (option == "--switch-socket") socket = value;
@@ -157,7 +160,7 @@ int main(int argc, char** argv) {
         // TUN creation and the initial multiqueue detach are the only setup
         // operations requiring privilege.  Runtime attach/detach is performed
         // through the already-open queue descriptors.
-        harden_unprivileged_process();
+        harden_unprivileged_process(privileges);
         std::vector<Clock::time_point> next_connect(clients.size());
         std::vector<pollfd> fds(clients.size() + 3);
         // Each path gets one visit to its active TUNs as well as its IPC sockets.

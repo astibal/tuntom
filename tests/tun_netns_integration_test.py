@@ -47,11 +47,13 @@ def prerequisites():
     device = Path("/dev/net/tun")
     if not device.exists() or not stat.S_ISCHR(device.stat().st_mode):
         skip("requires /dev/net/tun")
+    runtime_user = os.environ.get("TUNTOM_TEST_RUNTIME_USER", "tuntom")
+    runtime_group = os.environ.get("TUNTOM_TEST_RUNTIME_GROUP", "tuntom")
     try:
-        user = pwd.getpwnam("tuntom")
-        group = grp.getgrnam("tuntom")
+        user = pwd.getpwnam(runtime_user)
+        group = grp.getgrnam(runtime_group)
     except KeyError:
-        skip("requires the tuntom user and group")
+        skip(f"requires the {runtime_user} user and {runtime_group} group")
     if not id_is_mapped("/proc/self/uid_map", user.pw_uid):
         skip("tuntom UID is not mapped in this user namespace")
     if not id_is_mapped("/proc/self/gid_map", group.gr_gid):
@@ -59,7 +61,7 @@ def prerequisites():
     probe = subprocess.run(["unshare", "--net", "true"], capture_output=True)
     if probe.returncode:
         skip("requires permission to create and enter network namespaces")
-    return user.pw_uid, group.gr_gid
+    return runtime_user, runtime_group, user.pw_uid, group.gr_gid
 
 
 def stop(process):
@@ -132,7 +134,7 @@ def main():
     if len(sys.argv) != 2:
         raise SystemExit(f"usage: {sys.argv[0]} <tuntom>")
     tuntom = str(Path(sys.argv[1]).resolve())
-    expected_uid, expected_gid = prerequisites()
+    runtime_user, runtime_group, expected_uid, expected_gid = prerequisites()
     holders = []
     tunnels = []
     logs = []
@@ -154,12 +156,14 @@ def main():
                 tuntom, "server", TUNNEL_ID, SERVER_IF,
                 "--quiet", "--no-stats", "--no-pmtud",
                 "--tun-netns", f"pid:{holders[1].pid}", "--tun-up",
+                "--user", runtime_user, "--group", runtime_group,
             ], env=environment, stdout=subprocess.DEVNULL, stderr=server_log)
             tunnels.append(server)
             client = subprocess.Popen([
                 tuntom, "client", TUNNEL_ID, CLIENT_IF, "127.0.0.1",
                 "--quiet", "--no-stats", "--no-pmtud",
                 "--tun-netns", f"pid:{holders[0].pid}", "--tun-up",
+                "--user", runtime_user, "--group", runtime_group,
             ], env=environment, stdout=subprocess.DEVNULL, stderr=client_log)
             tunnels.append(client)
             pairs = [(server, server_log), (client, client_log)]

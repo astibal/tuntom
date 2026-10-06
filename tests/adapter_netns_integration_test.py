@@ -35,12 +35,17 @@ def prerequisites():
         skip("requires /dev/net/tun")
     if subprocess.run(["unshare", "--net", "true"], capture_output=True).returncode:
         skip("requires permission to create and enter network namespaces")
+    runtime_user = os.environ.get("TUNTOM_TEST_RUNTIME_USER", "tuntom")
+    runtime_group = os.environ.get("TUNTOM_TEST_RUNTIME_GROUP", "tuntom")
     try:
-        user = pwd.getpwnam("tuntom")
-        group = grp.getgrnam("tuntom")
+        user = pwd.getpwnam(runtime_user)
+        group = grp.getgrnam(runtime_group)
+        default_user = pwd.getpwnam("tuntom")
+        default_group = grp.getgrnam("tuntom")
     except KeyError:
-        skip("requires the tuntom user and group")
-    return user.pw_uid, group.gr_gid
+        skip(f"requires tuntom:tuntom and {runtime_user}:{runtime_group}")
+    return (runtime_user, runtime_group, user.pw_uid, group.gr_gid,
+            default_user.pw_uid, default_group.gr_gid)
 
 
 def checksum(data):
@@ -137,7 +142,19 @@ def wait_interface(holder, name, process, log):
         if result.returncode == 0:
             return
         time.sleep(.02)
-    raise RuntimeError(f"{name} was not created in target namespace")
+    log.flush()
+    links = ns(holder, "ip", "-brief", "link", capture_output=True, text=True,
+               check=False).stdout
+    local_links = subprocess.run(
+        ["ip", "-brief", "link"], capture_output=True, text=True,
+        check=False).stdout
+    process_netns = os.readlink(f"/proc/{process.pid}/ns/net")
+    holder_netns = os.readlink(f"/proc/{holder.pid}/ns/net")
+    raise RuntimeError(
+        f"{name} was not created in target namespace\n"
+        f"adapter netns={process_netns}; holder netns={holder_netns}\n"
+        f"target links:\n{links}local links:\n{local_links}adapter log:\n"
+        f"{Path(log.name).read_text(errors='replace')}")
 
 
 def wait_privilege_drop(process, uid, gid, log):
@@ -159,7 +176,8 @@ def wait_privilege_drop(process, uid, gid, log):
     raise RuntimeError(f"process {process.pid} did not securely drop privileges")
 
 
-def exit_case(binary, root, uid, gid, external_namespace):
+def exit_case(binary, root, runtime_user, runtime_group, uid, gid, external_namespace,
+              explicit_identity=True):
     holder = process = responder = None
     server = None
     log = open(root / "exit.log", "w+")
@@ -169,8 +187,9 @@ def exit_case(binary, root, uid, gid, external_namespace):
         socket_path = root / f"exit-{suffix}.sock"
         server = IpcServer(socket_path, uid, gid)
         command = [binary, "ex0", "--switch-socket", str(socket_path),
-            "--switch-port-id", "exit", "--switch-ipc", "v1",
-        ]
+                   "--switch-port-id", "exit", "--switch-ipc", "v1"]
+        if explicit_identity:
+            command += ["--user", runtime_user, "--group", runtime_group]
         if external_namespace:
             command += ["--tun-netns", f"pid:{holder.pid}"]
         else:
@@ -203,7 +222,7 @@ def exit_case(binary, root, uid, gid, external_namespace):
         log.close()
 
 
-def divert_case(binary, root, uid, gid):
+def divert_case(binary, root, runtime_user, runtime_group, uid, gid):
     holder = process = None
     server = None
     log = open(root / "divert.log", "w+")
@@ -214,6 +233,7 @@ def divert_case(binary, root, uid, gid):
             binary, "di0", "do0", "--switch-socket", str(root / "divert.sock"),
             "--via-instance", "smithproxy#0", "--admission", "immediate",
             "--switch-ipc", "v1", "--tun-netns", f"pid:{holder.pid}",
+            "--user", runtime_user, "--group", runtime_group,
         ], stdout=subprocess.DEVNULL, stderr=log)
         connections = dict(server.accept() for _ in range(2))
         input_client = connections["divert-in~via:c:smithproxy#0"]
@@ -244,7 +264,7 @@ def divert_case(binary, root, uid, gid):
         log.close()
 
 
-def split_multiqueue_case(binary, root, uid, gid):
+def split_multiqueue_case(binary, root, runtime_user, runtime_group, uid, gid):
     holder = None
     processes = []
     servers = {}
@@ -265,6 +285,7 @@ def split_multiqueue_case(binary, root, uid, gid):
                 "--relay-path", f"{path_id}={socket_path}",
                 "--shared-flows", str(shared), "--switch-ipc", "v1",
                 "--tun-netns", f"pid:{holder.pid}",
+                "--user", runtime_user, "--group", runtime_group,
             ], stdout=subprocess.DEVNULL, stderr=log)
             processes.append(process)
             name, client = server.accept()
@@ -316,7 +337,7 @@ def split_multiqueue_case(binary, root, uid, gid):
             log.close()
 
 
-def invalid_namespace(binary, root, uid, gid):
+def invalid_namespace(binary, root, runtime_user, runtime_group, uid, gid):
     server = IpcServer(root / "invalid.sock", uid, gid)
     log_path = root / "invalid.log"
     try:
@@ -324,6 +345,7 @@ def invalid_namespace(binary, root, uid, gid):
             binary, "bad0", "--switch-socket", str(root / "invalid.sock"),
             "--switch-port-id", "bad", "--switch-ipc", "v1",
             "--tun-netns", "/definitely/missing/tuntom-netns",
+            "--user", runtime_user, "--group", runtime_group,
         ], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, timeout=5)
         assert result.returncode == 1 and "Cannot open network namespace" in result.stderr
         assert not Path("/sys/class/net/bad0").exists()
@@ -334,18 +356,20 @@ def invalid_namespace(binary, root, uid, gid):
 def main():
     if len(sys.argv) != 3:
         raise SystemExit(f"usage: {sys.argv[0]} <exit-adapter> <divert-adapter>")
-    uid, gid = prerequisites()
+    (runtime_user, runtime_group, uid, gid,
+     default_uid, default_gid) = prerequisites()
     with tempfile.TemporaryDirectory(prefix="tuntom-adapter-netns.") as directory:
         root = Path(directory)
         os.chown(root, uid, gid)
-        os.chmod(root, 0o770)
+        os.chmod(root, 0o777)
         exit_binary = str(Path(sys.argv[1]).resolve())
         divert_binary = str(Path(sys.argv[2]).resolve())
-        exit_case(exit_binary, root, uid, gid, True)
-        exit_case(exit_binary, root, uid, gid, False)
-        divert_case(divert_binary, root, uid, gid)
-        split_multiqueue_case(divert_binary, root, uid, gid)
-        invalid_namespace(exit_binary, root, uid, gid)
+        exit_case(exit_binary, root, runtime_user, runtime_group, uid, gid, True)
+        exit_case(exit_binary, root, "tuntom", "tuntom", default_uid, default_gid,
+                  False, explicit_identity=False)
+        divert_case(divert_binary, root, runtime_user, runtime_group, uid, gid)
+        split_multiqueue_case(divert_binary, root, runtime_user, runtime_group, uid, gid)
+        invalid_namespace(exit_binary, root, runtime_user, runtime_group, uid, gid)
     print("PASS: adapters drop privileges and preserve direct/provider TUN traffic plus multiqueue reconnect")
 
 

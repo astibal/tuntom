@@ -66,6 +66,20 @@ int main() {
     require(options.classifier_file == "/etc/tuntom/ingress.rules", "classifier path lost");
     require(options.control_socket == "/run/tuntom/42c.control", "control socket lost");
 
+    {
+        std::vector<std::string> privilege_arguments {
+            "--user", "packet-user", "--group", "packet-group"};
+        std::vector<char*> privilege_argv;
+        for (auto& argument : privilege_arguments) privilege_argv.push_back(argument.data());
+        Options privilege_options;
+        parse_options(static_cast<int>(privilege_argv.size()), privilege_argv.data(), 0,
+                      privilege_options);
+        require(privilege_options.privileges.user == "packet-user", "runtime user lost");
+        require(privilege_options.privileges.group == "packet-group", "runtime group lost");
+    }
+    require(parse_fails({"--user"}), "missing runtime user accepted");
+    require(parse_fails({"--group", ""}), "empty runtime group accepted");
+
     require(!parse_fails({"--tun-socket", "/run/tuntom/ut42c.fd"}),
             "external TUN socket rejected");
     require(!parse_fails({"--tun-netns", "edge", "--tun-up"}),

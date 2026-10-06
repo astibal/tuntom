@@ -46,7 +46,7 @@ Contributors remain responsible for the changes they submit.
 | Networking | IPv4 policy routing, connection marks, MSS clamping, optional SNAT, lifecycle hooks |
 | Remote VIA adapters | [IPC relay over tuntom](docs/RELAY.md), optional multipath and [separate IN/OUT workers](docs/RELAY_SPLIT_SIDES.md), one hub IPC connection per tunnel, no remote switch |
 | Observability | Text statistics, signal-controlled snapshots, logs, Wireshark dissector |
-| Runtime | No external crypto libraries; drops privileges to `tuntom:tuntom` |
+| Runtime | No external crypto libraries; drops privileges to `tuntom:tuntom` by default |
 | Switching | Optional [label switching](README_SWITCHING.md) to connect tunnel links and exit paths |
 
 The tunnel engine handles transport. Linux networking and the included
@@ -380,7 +380,10 @@ rejected. DATA headers are 25 bytes, fragmented DATA headers 37 bytes. Tunnel ID
 stays in configuration/key derivation; only INIT/RESPONSE transmit the version.
 
 Processes start as root to initialize networking, then drop privileges to
-`tuntom:tuntom`, disable core dumps, and set `no_new_privs`.
+`tuntom:tuntom`, disable core dumps, and set `no_new_privs`. The `tuntom`, exit
+adapter and divert adapter binaries accept `--user NAME --group NAME` to select
+a different runtime identity. Both options default independently to `tuntom`;
+the selected account and group must already exist.
 
 ## Operations
 

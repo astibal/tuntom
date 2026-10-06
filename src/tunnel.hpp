@@ -121,8 +121,8 @@ public:
         reserve_hot_path_buffers();
 
         if (options_.switch_socket.empty() && !options_.relay_mode() &&
-            options_.tun_socket.empty() && options_.tun_netns.empty()) drop_privileges();
-        else harden_unprivileged_process();
+            options_.tun_socket.empty() && options_.tun_netns.empty()) drop_privileges(options_.privileges);
+        else harden_unprivileged_process(options_.privileges);
         if (options_.relay_mode()) relay_ = std::make_unique<relay::Endpoint>(options_.relay_connect, options_.relay_listen, options_.relay_port_id);
 
         // The initial check must use the final runtime identity. Connecting as

@@ -49,6 +49,12 @@ therefore be accessible to that account. Split divert workers retain only their
 already-open multiqueue descriptors; disconnect/reconnect queue detach and
 attach do not require a resident privileged helper.
 
+`tuntom`, `tuntom-switch-adapter` and `tuntom-divert-adapter` accept
+`--user NAME` and `--group NAME`. Each defaults to `tuntom`, preserving existing
+commands. These options choose the permanent runtime identity after setup; they
+do not affect which identity performs the initial TUN creation. The named user
+and group must exist before startup.
+
 `TARGET` accepts:
 
 | Form | Resolution |

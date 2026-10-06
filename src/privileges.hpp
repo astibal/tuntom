@@ -15,6 +15,20 @@
 
 namespace tuntom {
 
+inline constexpr const char* privilege_options_help =
+    "  --user <name>          Runtime user after privileged setup (default tuntom)\n"
+    "  --group <name>         Runtime group after privileged setup (default tuntom)\n";
+
+inline bool privilege_option(
+    PrivilegeConfig& config, const std::string& option,
+    int& index, int argc, char** argv) {
+    if (option != "--user" and option != "--group") return false;
+    if (++index >= argc or not argv[index][0])
+        throw std::runtime_error(option + " requires a nonempty name");
+    (option == "--user" ? config.user : config.group) = argv[index];
+    return true;
+}
+
 inline void harden_process_before_privilege_drop() {
     ::umask(0077);
 
@@ -69,7 +83,7 @@ inline void verify_supplementary_groups(gid_t expected_gid) {
     }
 }
 
-inline void drop_privileges() {
+inline void drop_privileges(const PrivilegeConfig& config = {}) {
     if (::geteuid() != 0) {
         throw std::runtime_error(
             "tuntom must start as root in order to initialize networking "
@@ -78,22 +92,22 @@ inline void drop_privileges() {
 
     harden_process_before_privilege_drop();
 
-    passwd* user = ::getpwnam(runtime_user);
+    passwd* user = ::getpwnam(config.user.c_str());
     if (user == nullptr) {
         throw std::runtime_error(
-            std::string("Runtime user does not exist: ") + runtime_user);
+            "Runtime user does not exist: " + config.user);
     }
 
-    group* runtime_group_entry = ::getgrnam(runtime_group);
+    group* runtime_group_entry = ::getgrnam(config.group.c_str());
     if (runtime_group_entry == nullptr) {
         throw std::runtime_error(
-            std::string("Runtime group does not exist: ") + runtime_group);
+            "Runtime group does not exist: " + config.group);
     }
 
     const uid_t uid = user->pw_uid;
     const gid_t gid = runtime_group_entry->gr_gid;
 
-    if (::initgroups(runtime_user, gid) != 0) {
+    if (::initgroups(config.user.c_str(), gid) != 0) {
         throw std::runtime_error(
             "initgroups() failed: " +
             std::string(std::strerror(errno)));
@@ -150,12 +164,12 @@ inline void drop_privileges() {
     verify_supplementary_groups(gid);
 
     log_info(
-        "Privileges dropped and hardened as ", runtime_user, ":", runtime_group);
+        "Privileges dropped and hardened as ", config.user, ":", config.group);
 }
 
-inline void harden_unprivileged_process() {
+inline void harden_unprivileged_process(const PrivilegeConfig& config = {}) {
     if (::geteuid() == 0) {
-        drop_privileges();
+        drop_privileges(config);
         return;
     }
 

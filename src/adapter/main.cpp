@@ -65,6 +65,7 @@ void usage(const char* program) {
         << "  --switch-ipc-batch <n> Maximum references per record, 1..16 (default 8)\n"
         << "  --mtu <n>             TUN MTU (default 1500)\n"
         << "  --tun-netns <target>  Create TUN in a named, path, or pid:<PID> network namespace\n"
+        << tuntom::privilege_options_help
         << "  --classifier-file <path> L3/L4 rules for TUN packets missing reverse cache\n"
         << "  --l4-capacity <n>     L4 LRU entries (default 1000000)\n"
         << "  --l3-capacity <n>     L3 LRU entries (default 250000)\n"
@@ -95,6 +96,7 @@ int main(int argc, char** argv) {
         std::string control_path;
         std::string classifier_file;
         std::string tun_netns;
+        PrivilegeConfig privileges;
         std::size_t mtu = 1500;
         std::size_t l4_capacity = 1000000;
         std::size_t l3_capacity = 250000;
@@ -111,6 +113,7 @@ int main(int argc, char** argv) {
                 return 0;
             }
             if(tuntom::control_auth::option(control_auth_config,option,index,argc,argv))continue;
+            if(privilege_option(privileges,option,index,argc,argv))continue;
             if (option == "--l4-only") { l4_only = true; continue; }
             if (++index >= argc) throw std::runtime_error(option + " requires a value");
             if (option == "--switch-ipc") ipc_options.mode = ipc::parse_mode(argv[index]);
@@ -165,7 +168,7 @@ int main(int argc, char** argv) {
 
         // Everything below operates on already-open descriptors.  Keep the
         // short privileged setup phase out of the packet-processing lifetime.
-        harden_unprivileged_process();
+        harden_unprivileged_process(privileges);
 
         struct sigaction action {};
         action.sa_handler = request_stop;

@@ -43,6 +43,11 @@ inline constexpr std::size_t max_ipc_fragments_per_packet = 256;
 inline constexpr const char* runtime_user = "tuntom";
 inline constexpr const char* runtime_group = "tuntom";
 
+struct PrivilegeConfig {
+    std::string user = runtime_user;
+    std::string group = runtime_group;
+};
+
 enum class LogLevel {
     quiet = 0,
     info = 1,

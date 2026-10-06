@@ -77,6 +77,7 @@ struct Options {
     std::string tun_socket;
     std::string tun_netns;
     bool tun_up = false;
+    PrivilegeConfig privileges;
     std::size_t transport_mtu = default_transport_mtu;
     std::size_t udp_send_buffer = 2 * 1024 * 1024;
     std::size_t udp_receive_buffer = 2 * 1024 * 1024;
