@@ -615,7 +615,8 @@ int main(int argc, char** argv) {
                     snapshot_at - started_at).count();
                 std::ostringstream out;
                 out.exceptions(std::ios::badbit);
-                out << "format=txt\nformat_version=1\ncomponent=switch\n"
+                out << "format=txt\nformat_version=1\nversion=" << tuntom::version
+                    << "\ncomponent=switch\n"
                     << "pid=" << ::getpid() << "\nuptime_seconds=" << uptime << "\n"
                     << "connections_current=" << counts.first << "\n"
                     << "connections_pending=" << counts.second << "\n"

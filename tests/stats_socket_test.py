@@ -73,8 +73,12 @@ def run_case(tuntom, switch, ctl, unavailable_path):
             ], env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             processes.append(client)
             wait_for([server_control, client_control], processes)
-            assert snapshot(ctl, server_control)["stats_enabled"] == "0"
-            assert snapshot(ctl, client_control)["stats_enabled"] == "0"
+            server_snapshot = snapshot(ctl, server_control)
+            client_snapshot = snapshot(ctl, client_control)
+            assert server_snapshot["version"] == "5.1.123"
+            assert client_snapshot["version"] == "5.1.123"
+            assert server_snapshot["stats_enabled"] == "0"
+            assert client_snapshot["stats_enabled"] == "0"
             assert file_state(client_stats) == original_file
 
             app = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)

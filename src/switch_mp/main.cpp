@@ -128,7 +128,8 @@ int main(int argc, char **argv) {
                 const auto now = Clock::now();
                 std::ostringstream out;
                 out.exceptions(std::ios::badbit);
-                out << "format=txt\nformat_version=1\ncomponent=switch\nimplementation=tomtom-"
+                out << "format=txt\nformat_version=1\nversion=" << tuntom::version
+                    << "\ncomponent=switch\nimplementation=tomtom-"
                        "switch-mp\n"
                     << "pid=" << ::getpid() << "\nuptime_seconds="
                     << std::chrono::duration_cast<std::chrono::seconds>(now - started_at).count()

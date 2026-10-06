@@ -69,20 +69,20 @@ for binary in (st, mp):
                     print(subprocess.run([ctl,str(root/socket_name),'show','stats'],capture_output=True,text=True).stdout,file=sys.stderr)
                 raise AssertionError(result.stderr)
             time.sleep(.05)
-        assert 'component=adapter\n' in result.stdout, result
+        assert 'version=5.1.123\n' in result.stdout and 'component=adapter\n' in result.stdout, result
         direct = subprocess.run([ctl,'switch',str(sw.control),'--port','local-exit','---','show','stats'],
                                 capture_output=True,text=True,timeout=10)
-        assert direct.returncode==0 and 'component=adapter\n' in direct.stdout, direct
+        assert direct.returncode==0 and 'version=5.1.123\n' in direct.stdout and 'component=adapter\n' in direct.stdout, direct
         if binary == mp:
             assert 'switch_ipc_mmap=1\n' in direct.stdout, direct.stdout
         request_id = result.stderr.split('request_id=')[1].splitlines()[0]
         saved = command('request','status',request_id,target='proxy-in0~via:c:smithproxy#0')
         assert saved.returncode==0 and saved.stdout==result.stdout, saved
         tunnel_stats = command('show','stats')
-        assert tunnel_stats.returncode==0 and 'session_confirmed=1\n' in tunnel_stats.stdout, tunnel_stats
+        assert tunnel_stats.returncode==0 and 'version=5.1.123\n' in tunnel_stats.stdout and 'session_confirmed=1\n' in tunnel_stats.stdout, tunnel_stats
         for target in ('proxy-in1~via:c:smithproxy#1','proxy-out1~via:s:smithproxy#1'):
             result = command('show','stats',target=target)
-            assert result.returncode==0 and 'component=divert-adapter\n' in result.stdout, result
+            assert result.returncode==0 and 'version=5.1.123\n' in result.stdout and 'component=divert-adapter\n' in result.stdout, result
         source = root/'classifier.conf'
         body = 'format 1\n' + '# opaque text\n'*400 + 'classify ip4 proto tcp dport 443 to [7]\n'
         source.write_text(body)

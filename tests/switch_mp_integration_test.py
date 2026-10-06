@@ -64,6 +64,7 @@ class Switch:
             if "=" in line:
                 key, value = line.split("=", 1)
                 result[key] = int(value) if value.isdigit() else value
+        assert result.get("version") == "5.1.123", result
         assert result.get("implementation") == "tomtom-switch-mp", result
         return result
 

@@ -103,6 +103,7 @@ def main():
                 ctl_binary, control_path, "show", "stats"
             ], text=True)
             required = {
+                "version=5.1.123",
                 "component=switch",
                 "connections_current=3",
                 "route_misses=1",

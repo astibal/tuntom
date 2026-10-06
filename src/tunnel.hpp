@@ -1,6 +1,7 @@
 #pragma once
 
 #include "privileges.hpp"
+#include "version.hpp"
 #include "tun_device.hpp"
 #include "tun_provider.hpp"
 #include "udp_endpoint.hpp"
@@ -1969,6 +1970,7 @@ private:
         output
             << "format=txt\n"
             << "format_version=1\n"
+            << "version=" << tuntom::version << "\n"
             << "pid=" << ::getpid() << "\n"
             << "tunnel_id=" << tunnel_id_ << "\n"
             << "mode=" << (server_mode_ ? "server" : "client") << "\n"

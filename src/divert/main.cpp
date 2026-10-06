@@ -221,7 +221,8 @@ int main(int argc, char** argv) {
                     ready_paths += path_ready(path);
                     pairs += connected(path * 2) && connected(path * 2 + 1);
                 }
-                out << "format=txt\nformat_version=1\ncomponent=divert-adapter\n"
+                out << "format=txt\nformat_version=1\nversion=" << tuntom::version
+                    << "\ncomponent=divert-adapter\n"
                     << "divert_in_connected=" << connected(0) << "\ndivert_out_connected=" << connected(1)
                     << "\nrelay_paths=" << relay_paths.size() << "\nconnected_pairs=" << pairs
                     << "\nconnected_paths=" << ready_paths << "\nworker_side=" << worker_side
