@@ -7,6 +7,7 @@
 #include "../ipc/switch_protocol.hpp"
 #include "../switch_client.hpp"
 #include "../tun_device.hpp"
+#include "../adapter_tuns.hpp"
 #include "../control_socket.hpp"
 #include "../throughput_stats.hpp"
 #include <cerrno>
@@ -62,6 +63,7 @@ void usage(const char* program) {
         << "  --switch-ipc <mode>   auto (default), v1, inline (V2 without mmap)\n"
         << "  --switch-ipc-batch <n> Maximum references per record, 1..16 (default 8)\n"
         << "  --mtu <n>             TUN MTU (default 1500)\n"
+        << "  --tun-netns <target>  Create TUN in a named, path, or pid:<PID> network namespace\n"
         << "  --classifier-file <path> L3/L4 rules for TUN packets missing reverse cache\n"
         << "  --l4-capacity <n>     L4 LRU entries (default 1000000)\n"
         << "  --l3-capacity <n>     L3 LRU entries (default 250000)\n"
@@ -91,6 +93,7 @@ int main(int argc, char** argv) {
         std::string port_id;
         std::string control_path;
         std::string classifier_file;
+        std::string tun_netns;
         std::size_t mtu = 1500;
         std::size_t l4_capacity = 1000000;
         std::size_t l3_capacity = 250000;
@@ -115,6 +118,10 @@ int main(int argc, char** argv) {
             else if (option == "--switch-socket") socket_path = argv[index];
             else if (option == "--switch-port-id") port_id = argv[index];
             else if (option == "--control-socket") control_path = argv[index];
+            else if (option == "--tun-netns") {
+                tun_netns = argv[index];
+                if (tun_netns.empty()) throw std::runtime_error("--tun-netns must not be empty");
+            }
             else if (option == "--classifier-file") {
                 classifier_file = argv[index];
                 if (classifier_file.empty()) throw std::runtime_error("--classifier-file must not be empty");
@@ -136,8 +143,8 @@ int main(int argc, char** argv) {
             throw std::runtime_error("--switch-socket and --switch-port-id are required");
 
         auto classifier = PacketClassifier::from_file(classifier_file);
-        TunDevice tun(interface_name, mtu);
-        tun.set_up();
+        auto opened_tuns = adapter_tuns::open({{interface_name, false}}, mtu, tun_netns);
+        auto& tun = *opened_tuns.front();
         SwitchClient switch_client(socket_path, port_id, ipc_options);
         ExitAdapterRoutes routes(
             l3_capacity, l4_capacity,

@@ -53,6 +53,69 @@ The tunnel engine handles transport. Linux networking and the included
 `tuntom-net.sh` helper handle routing and firewall policy; custom routes and
 DNAT rules can be added through hooks.
 
+### TUN fd from another network namespace
+
+See [TUN file descriptors across network namespaces](docs/TUN_NAMESPACES.md)
+for the complete tunnel, exit-adapter, divert/multiqueue, privilege and
+compatibility model.
+
+`tuntom` can receive an already-created TUN file descriptor over a pathname
+Unix socket. The descriptor is transferred with `SCM_RIGHTS`; packet data does
+not travel through the Unix socket.
+
+```text
+ network namespace A                  network namespace B
+ +----------------------+             +----------------------+
+ | tuntom-tun-helper    |-- TUN fd -->| tuntom               |
+ | creates ut42c        | Unix socket | --tun-socket ...     |
+ +----------+-----------+             +----------------------+
+            |
+          ut42c
+```
+
+The simplest setup starts the helper inside the desired namespace:
+
+```bash
+ip netns exec edge tuntom-tun-helper /run/tuntom/ut42c.fd ut42c --mtu 1500 --up &
+tuntom client 42 ut42c server.example --tun-socket /run/tuntom/ut42c.fd
+```
+
+For the common case, no separate helper process or filesystem socket is needed.
+`tuntom` forks the same provider code, moves only the short-lived child into the
+target network namespace, and transfers the TUN fd over an inherited socketpair:
+
+```bash
+tuntom client 42 ut42c server.example --tun-netns edge --tun-up
+tuntom client 42 ut42c server.example --tun-netns /run/netns/edge
+tuntom client 42 ut42c server.example --tun-netns pid:1234
+```
+
+The fork happens synchronously during startup, before tuntom starts worker
+threads or drops privileges. The child exits immediately after the transfer;
+the interface remains in the target network namespace while the parent keeps
+the open TUN fd. `tuntom-tun-helper` is a thin standalone frontend over the same
+provider implementation, retained for independently supervised processes.
+
+As a convenience, the helper itself can enter a named namespace, an explicit
+namespace path, or a process namespace. It creates the pathname listener before
+calling `setns()`, so a tuntom process in another network namespace can connect:
+
+```bash
+tuntom-tun-helper /run/tuntom/ut42c.fd ut42c --netns edge --up &
+tuntom-tun-helper /run/tuntom/ut42c.fd ut42c --netns /run/netns/edge --up &
+tuntom-tun-helper /run/tuntom/ut42c.fd ut42c --netns pid:1234 --up &
+```
+
+The helper accepts one client, transfers the fd, removes the socket path and
+exits. The socket is mode `0600`. Its advertised interface name and MTU must
+match tuntom's positional interface name and `--mtu`; mismatches fail startup.
+Without `--up`, interface state is left for the normal network setup tooling.
+Creating the TUN requires `CAP_NET_ADMIN` in the target network namespace;
+entering another namespace additionally requires the corresponding `setns(2)`
+permission. Mount-namespace convenience is deliberately not included: the
+socket path must refer to shared or bind-mounted filesystem storage visible to
+both processes.
+
 ## Label switching
 
 `tuntom` also supports **optional label switching** to connect tunnel links

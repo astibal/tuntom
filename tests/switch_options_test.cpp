@@ -66,6 +66,26 @@ int main() {
     require(options.classifier_file == "/etc/tuntom/ingress.rules", "classifier path lost");
     require(options.control_socket == "/run/tuntom/42c.control", "control socket lost");
 
+    require(!parse_fails({"--tun-socket", "/run/tuntom/ut42c.fd"}),
+            "external TUN socket rejected");
+    require(!parse_fails({"--tun-netns", "edge", "--tun-up"}),
+            "forked TUN provider rejected");
+    require(!parse_fails({"--tun-netns", "pid:1234"}),
+            "PID network namespace rejected");
+    require(parse_fails({"--tun-netns", "edge", "--tun-socket", "/tmp/tun"}),
+            "two TUN providers accepted together");
+    require(parse_fails({"--tun-up"}), "--tun-up accepted without a forked provider");
+    require(parse_fails({"--tun-socket"}), "missing external TUN socket path accepted");
+    require(parse_fails({"--tun-socket", ""}), "empty external TUN socket path accepted");
+    require(parse_fails({"--tun-socket", "/tmp/tun", "--relay-listen", "/tmp/relay"}),
+            "external TUN accepted in relay mode");
+    require(parse_fails({"--tun-socket", "/tmp/tun", "--switch-socket", "/tmp/switch",
+                         "--switch-port-id", "p", "--switch-label", "1"}),
+            "external TUN accepted for a non-exit switch port");
+    require(!parse_fails({"--tun-socket", "/tmp/tun", "--switch-socket", "/tmp/switch",
+                          "--switch-port-id", "p", "--switch-label", "1", "--switch-exit-node"}),
+            "external TUN rejected for a switch exit");
+
     require(parse_fails({"--switch-socket", "/tmp/x"}), "missing port ID/label accepted");
     require(parse_fails({"--switch-socket", "/tmp/x", "--switch-label", "1"}),
             "missing port ID accepted");

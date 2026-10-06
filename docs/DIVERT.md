@@ -257,6 +257,23 @@ sudo ip netns exec tt-divert "$B/tuntom-divert-adapter" di0 do0 \
 The adapter only creates/opens the TUNs, sets their MTU, and brings the links up.
 It does not manage addresses, routes, forwarding, namespaces, or VRFs.
 
+Alternatively, keep the adapter beside its switch/relay IPC and create only its
+TUN interfaces in the proxy namespace:
+
+```bash
+sudo "$B/tuntom-divert-adapter" di0 do0 \
+  --switch-socket "$R/switch.sock" --cookie hTX --mtu 1500 \
+  --tun-netns tt-divert --control-socket "$R/divert.control"
+```
+
+`--tun-netns` accepts an iproute2 namespace name, an explicit namespace path,
+or `pid:PID`. A short-lived child enters the namespace, creates and brings up
+all active TUN sides, passes their descriptors to the adapter with
+`SCM_RIGHTS`, and exits. The same path supports split-side shared multiqueue
+workers; every worker for one proxy instance must target the same namespace.
+Without `--tun-netns`, creation remains in the adapter's current namespace as
+before.
+
 ### 3. Routes and activation — terminal C
 
 Once `di0` and `do0` exist:

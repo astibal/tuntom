@@ -7,6 +7,7 @@
 #include "../common.hpp"
 #include "../switch_client.hpp"
 #include "../tun_device.hpp"
+#include "../adapter_tuns.hpp"
 #include "../control_socket.hpp"
 #include "../runtime_recovery.hpp"
 #include <csignal>
@@ -43,10 +44,11 @@ void usage(const char* program) {
         << "  --switch-ipc auto|v1|inline  default auto\n"
         << "  --switch-ipc-batch N      1..16, default 8\n"
         << "  --mtu N                   576..65535, default 1500\n"
+        << "  --tun-netns TARGET        Create active TUN side(s) in name, path, or pid:PID netns\n"
         << "  --flow-capacity N         1..100000000, default 100000\n"
         << "  --flow-idle-seconds N     1..604800, default 86400\n"
         << "  --admission-capacity N    entries per learning set, default 100000\n"
-        << "Creates/opens TUNs in the current network namespace; does not configure routes or VRFs.\n";
+        << "Creates/opens TUNs in the current namespace, or --tun-netns target; does not configure routes or VRFs.\n";
 }
 struct Stats {
     std::uint64_t switch_rx = 0, switch_tx = 0, tun_rx = 0, tun_tx = 0, bypass = 0;
@@ -77,6 +79,7 @@ int main(int argc, char** argv) {
             throw std::runtime_error("two distinct TUN names of at most 15 bytes are required");
         std::string socket, cookie, control_path, in_port = "divert-in", out_port = "divert-out";
         std::string instance, admission_mode, shared_path, worker_side = "both";
+        std::string tun_netns;
         std::vector<std::string> relay_paths;
         std::size_t mtu = 1500, capacity = 100000, admission_capacity = 100000, idle = 86400;
         ipc::Options options;
@@ -99,6 +102,10 @@ int main(int argc, char** argv) {
             else if (option == "--via-instance") instance = value;
             else if (option == "--admission") admission_mode = value;
             else if (option == "--control-socket") control_path = value;
+            else if (option == "--tun-netns") {
+                tun_netns = value;
+                if (tun_netns.empty()) throw std::runtime_error("--tun-netns requires a nonempty target");
+            }
             else if (option == "--divert-in-port") in_port = value;
             else if (option == "--divert-out-port") out_port = value;
             else if (option == "--switch-ipc") options.mode = ipc::parse_mode(value);
@@ -137,10 +144,14 @@ int main(int argc, char** argv) {
         std::unique_ptr<ControlSocket> control;
         if (!control_path.empty()) control = std::make_unique<ControlSocket>(control_path);
         std::unique_ptr<TunDevice> tuns[2];
+        std::vector<adapter_tuns::Interface> requested_tuns;
+        for (unsigned side = 0; side < 2; ++side) if (has_side(side))
+            requested_tuns.push_back({side ? out_name : in_name, bool(shared)});
+        auto opened_tuns = adapter_tuns::open(requested_tuns, mtu, tun_netns);
+        std::size_t opened_index = 0;
         for (unsigned side = 0; side < 2; ++side) if (has_side(side)) {
-            tuns[side] = std::make_unique<TunDevice>(side ? out_name : in_name, mtu, bool(shared));
+            tuns[side] = std::move(opened_tuns[opened_index++]);
             if (shared) tuns[side]->set_queue(false);
-            tuns[side]->set_up();
         }
         std::vector<Clock::time_point> next_connect(clients.size());
         std::vector<pollfd> fds(clients.size() + 3);

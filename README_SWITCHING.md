@@ -482,6 +482,22 @@ Both lifecycle helpers also accept `--divert-file PATH`:
 ./mk_switch_mp.sh switch --auto-pool --rules-file ./switch.rules --divert-file ./divert.conf
 ```
 
+The exit adapter and divert adapter can place their TUN interface(s) in another
+network namespace while keeping switch IPC in the adapter process namespace:
+
+```bash
+tuntom-switch-adapter ex0 --switch-socket /run/tuntom/switch.sock \
+  --switch-port-id exit --tun-netns exit-ns
+
+tuntom-divert-adapter di0 do0 --switch-socket /run/tuntom/switch.sock \
+  --via-instance smithproxy#0 --tun-netns pid:1234
+```
+
+The target may be a namespace name, path, or `pid:PID`. Omitting
+`--tun-netns` preserves the original command line and current-namespace TUN
+creation behavior. See [TUN file descriptors across network namespaces](docs/TUN_NAMESPACES.md)
+for lifecycle, multiqueue and privilege details.
+
 Divert requires versioned rules (format 1 or 2), supplied by `--rules-file` or
 the existing `pre/up` hook. The helper stages and validates the divert file
 before replacing the running switch, then saves it as the instance's `divert`

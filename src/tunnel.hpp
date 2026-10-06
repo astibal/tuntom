@@ -2,6 +2,7 @@
 
 #include "privileges.hpp"
 #include "tun_device.hpp"
+#include "tun_provider.hpp"
 #include "udp_endpoint.hpp"
 #include "udp_tx_queue.hpp"
 #include "switch_client.hpp"
@@ -89,7 +90,20 @@ public:
         }
 
         if (!options_.relay_mode() && (options_.switch_socket.empty() or options_.switch_exit_node)) {
-            tun_ = std::make_unique<TunDevice>(interface_name, options_.tun_mtu);
+            if (!options_.tun_netns.empty()) {
+                tun_ = std::make_unique<TunDevice>(tun_provider::create_in_child(
+                    interface_name, options_.tun_mtu, options_.tun_netns, options_.tun_up));
+            } else if (options_.tun_socket.empty()) {
+                tun_ = std::make_unique<TunDevice>(interface_name, options_.tun_mtu);
+            } else {
+                tun_ = std::make_unique<TunDevice>(options_.tun_socket);
+                if (tun_->interface_name() != interface_name)
+                    throw std::runtime_error("TUN fd interface is " + tun_->interface_name() +
+                                             ", expected " + interface_name);
+                if (tun_->provided_mtu() != options_.tun_mtu)
+                    throw std::runtime_error("TUN fd MTU is " + std::to_string(tun_->provided_mtu()) +
+                                             ", expected " + std::to_string(options_.tun_mtu));
+            }
         }
         if (not options_.switch_socket.empty() && !access_worker_) {
             switch_ = std::make_unique<SwitchClient>(
@@ -106,7 +120,8 @@ public:
         validate_fragment_capacity();
         reserve_hot_path_buffers();
 
-        if (options_.switch_socket.empty() && !options_.relay_mode()) drop_privileges();
+        if (options_.switch_socket.empty() && !options_.relay_mode() &&
+            options_.tun_socket.empty() && options_.tun_netns.empty()) drop_privileges();
         else harden_unprivileged_process();
         if (options_.relay_mode()) relay_ = std::make_unique<relay::Endpoint>(options_.relay_connect, options_.relay_listen, options_.relay_port_id);
 

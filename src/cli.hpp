@@ -23,6 +23,9 @@ inline void usage(const char* program_name) {
         << "\n"
         << "Transport options:\n"
         << "  --mtu <n>             TUN/inner MTU (default 1500)\n"
+        << "  --tun-socket <path>   Receive an already-created TUN fd over a Unix socket\n"
+        << "  --tun-netns <target>  Fork a provider and create TUN in name, path, or pid:<PID> netns\n"
+        << "  --tun-up              Bring an internally provided TUN up before fd transfer\n"
         << "  --transport-mtu <n>   Transport MTU / initial PMTUD target "
            "(default 1400)\n"
         << "  --udp-send-buffer <n> Effective SO_SNDBUF bytes (default 2097152; 0 = OS default)\n"
@@ -229,6 +232,16 @@ inline void parse_options(
                     argv[i],
                     576,
                     max_ip_packet_size);
+        } else if (option == "--tun-socket") {
+            if (++i >= argc || !argv[i][0]) throw std::runtime_error("--tun-socket requires a path");
+            if (!options.tun_socket.empty()) throw std::runtime_error("duplicate --tun-socket");
+            options.tun_socket = argv[i];
+        } else if (option == "--tun-netns") {
+            if (++i >= argc || !argv[i][0]) throw std::runtime_error("--tun-netns requires a target");
+            if (!options.tun_netns.empty()) throw std::runtime_error("duplicate --tun-netns");
+            options.tun_netns = argv[i];
+        } else if (option == "--tun-up") {
+            options.tun_up = true;
         } else if (option == "--transport-mtu") {
             if (++i >= argc) {
                 throw std::runtime_error(
@@ -289,6 +302,16 @@ inline void parse_options(
             throw std::runtime_error("relay requires connect + port ID or listen, exclusively of switch/classifier mode");
         if (!options.relay_port_id.empty()) (void)encode_switch_registration(options.relay_port_id);
     } else if (!options.relay_port_id.empty()) throw std::runtime_error("--relay-port-id requires --relay-connect");
+    if (!options.tun_socket.empty() &&
+        (options.relay_mode() || (!options.switch_socket.empty() && !options.switch_exit_node)))
+        throw std::runtime_error("--tun-socket requires a mode which uses a TUN");
+    if (!options.tun_netns.empty() && !options.tun_socket.empty())
+        throw std::runtime_error("--tun-netns and --tun-socket are mutually exclusive");
+    if ((!options.tun_netns.empty() || options.tun_up) &&
+        (options.relay_mode() || (!options.switch_socket.empty() && !options.switch_exit_node)))
+        throw std::runtime_error("--tun-netns/--tun-up require a mode which uses a TUN");
+    if (options.tun_up && options.tun_netns.empty())
+        throw std::runtime_error("--tun-up requires --tun-netns");
     if (options.switch_socket.empty() and
         (options.switch_label_set or not options.switch_stack.empty() or options.switch_exit_node or
          not options.switch_port_id.empty() or not options.classifier_file.empty())) {

@@ -74,6 +74,9 @@ struct Options {
     bool ttl_compensate = true;
     bool pmtud_auto = true;
     std::size_t tun_mtu = default_tun_mtu;
+    std::string tun_socket;
+    std::string tun_netns;
+    bool tun_up = false;
     std::size_t transport_mtu = default_transport_mtu;
     std::size_t udp_send_buffer = 2 * 1024 * 1024;
     std::size_t udp_receive_buffer = 2 * 1024 * 1024;

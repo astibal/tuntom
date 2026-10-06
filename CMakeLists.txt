@@ -11,6 +11,9 @@ link_libraries(Threads::Threads)
 add_executable(tuntom src/main.cpp)
 target_compile_options(tuntom PRIVATE -Wall -Wextra -pedantic)
 
+add_executable(tuntom-tun-helper src/tun_helper_main.cpp)
+target_compile_options(tuntom-tun-helper PRIVATE -Wall -Wextra -pedantic)
+
 add_executable(tuntom-gatekeeper src/gatekeeper_main.cpp)
 target_compile_options(tuntom-gatekeeper PRIVATE -Wall -Wextra -pedantic)
 
@@ -61,6 +64,9 @@ if(BUILD_TESTING)
     add_executable(packet_classifier_test tests/packet_classifier_test.cpp)
     target_compile_options(packet_classifier_test PRIVATE -Wall -Wextra -Wconversion -pedantic)
     add_test(NAME packet_classifier_test COMMAND packet_classifier_test)
+    add_executable(tun_fd_socket_test tests/tun_fd_socket_test.cpp)
+    target_compile_options(tun_fd_socket_test PRIVATE -Wall -Wextra -Wconversion -pedantic)
+    add_test(NAME tun_fd_socket_test COMMAND tun_fd_socket_test)
     target_link_options(control_auth_test PRIVATE -Wl,--wrap=getrandom)
     target_link_options(switch_client_test PRIVATE
         -Wl,--wrap=connect -Wl,--wrap=send -Wl,--wrap=sendmsg -Wl,--wrap=getsockopt)
@@ -70,6 +76,15 @@ if(BUILD_TESTING)
     set_tests_properties(logging_test PROPERTIES TIMEOUT 40)
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME tun_netns_integration_test COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/tun_netns_integration_test.py $<TARGET_FILE:tuntom>)
+        set_tests_properties(tun_netns_integration_test PROPERTIES
+            TIMEOUT 30 RUN_SERIAL TRUE SKIP_RETURN_CODE 77)
+        add_test(NAME adapter_netns_integration_test COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/adapter_netns_integration_test.py
+            $<TARGET_FILE:tuntom-switch-adapter> $<TARGET_FILE:tuntom-divert-adapter>)
+        set_tests_properties(adapter_netns_integration_test PROPERTIES
+            TIMEOUT 30 RUN_SERIAL TRUE SKIP_RETURN_CODE 77)
         add_test(NAME auth_relocate_integration_test COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/auth_relocate_integration_test.py
             $<TARGET_FILE:tuntom> $<TARGET_FILE:tuntom-switch> $<TARGET_FILE:tuntomctl>)

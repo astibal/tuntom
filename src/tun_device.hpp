@@ -12,6 +12,7 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include "tun_fd_socket.hpp"
 
 namespace tuntom {
 
@@ -48,6 +49,24 @@ public:
         set_mtu(mtu);
     }
 
+    explicit TunDevice(const std::string& socket_path) {
+        const int socket_fd = tun_fd_socket::connect(socket_path);
+        try {
+            auto received = tun_fd_socket::receive(socket_fd);
+            fd_ = received.fd;
+            interface_name_ = std::move(received.interface_name);
+            provided_mtu_ = received.mtu;
+        } catch (...) {
+            ::close(socket_fd);
+            throw;
+        }
+        ::close(socket_fd);
+    }
+
+    explicit TunDevice(tun_fd_socket::Received received, bool multiqueue = false)
+        : fd_(received.fd), interface_name_(std::move(received.interface_name)),
+          multiqueue_(multiqueue), provided_mtu_(received.mtu) {}
+
     ~TunDevice() {
         if (fd_ >= 0) {
             ::close(fd_);
@@ -57,6 +76,9 @@ public:
     int fd() const {
         return fd_;
     }
+
+    const std::string& interface_name() const { return interface_name_; }
+    std::size_t provided_mtu() const { return provided_mtu_; }
 
     ssize_t read_packet(std::uint8_t* buffer, std::size_t size) {
         return ::read(fd_, buffer, size);
@@ -126,6 +148,7 @@ private:
     int fd_ = -1;
     std::string interface_name_;
     bool multiqueue_ = false;
+    std::size_t provided_mtu_ = 0;
 };
 
 } // namespace tuntom

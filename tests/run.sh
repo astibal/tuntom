@@ -29,6 +29,8 @@ echo "Building application"
 "${CXX:-g++}" -std=c++17 -pthread -O2 -Wall -Wextra -Wconversion -pedantic \
     "${tests_dir}/../src/adapter/main.cpp" -o "${build_dir}/tuntom-switch-adapter"
 "${CXX:-g++}" -std=c++17 -pthread -O2 -Wall -Wextra -Wconversion -pedantic \
+    "${tests_dir}/../src/divert/main.cpp" -o "${build_dir}/tuntom-divert-adapter"
+"${CXX:-g++}" -std=c++17 -pthread -O2 -Wall -Wextra -Wconversion -pedantic \
     "${tests_dir}/../src/control/main.cpp" -o "${build_dir}/tuntomctl"
 
 if command -v python3 >/dev/null 2>&1; then
@@ -89,6 +91,17 @@ if command -v python3 >/dev/null 2>&1; then
         "${build_dir}/tuntom-switch" "${build_dir}/tuntomctl"
     python3 "${tests_dir}/switch_tunnel_test.py" \
         "${build_dir}/tuntom" "${build_dir}/tuntom-switch" "${build_dir}/tuntomctl"
+    netns_status=0
+    python3 "${tests_dir}/tun_netns_integration_test.py" "${build_dir}/tuntom" || netns_status=$?
+    if (( netns_status != 0 && netns_status != 77 )); then
+        exit "$netns_status"
+    fi
+    adapter_netns_status=0
+    python3 "${tests_dir}/adapter_netns_integration_test.py" \
+        "${build_dir}/tuntom-switch-adapter" "${build_dir}/tuntom-divert-adapter" || adapter_netns_status=$?
+    if (( adapter_netns_status != 0 && adapter_netns_status != 77 )); then
+        exit "$adapter_netns_status"
+    fi
     python3 "${tests_dir}/stats_socket_test.py" \
         "${build_dir}/tuntom" "${build_dir}/tuntom-switch" "${build_dir}/tuntomctl"
 else
