@@ -2,7 +2,6 @@ name: Release Debian package
 
 on:
   push:
-    branches: [main]
     tags: ['[0-9]*.[0-9]*.[0-9]*']
   workflow_dispatch:
 
@@ -100,26 +99,3 @@ jobs:
         run: |
           gh release create "${RELEASE_TAG}" dist/tuntom_*.deb dist/SHA256SUMS \
             --verify-tag --title "Tuntom ${RELEASE_TAG}" --generate-notes
-
-  backfill-stable-aliases:
-    if: >-
-      github.ref == 'refs/heads/main' &&
-      startsWith(github.event.head_commit.message, 'release: add stable package aliases')
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v4
-
-      - name: Download and publish stable aliases
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          version=$(sed -n 's/.*version = "\([0-9][0-9.]*\)";.*/\1/p' src/version.hpp)
-          mkdir dist
-          curl --fail --location --output dist/tuntom_amd64.deb \
-            "https://github.com/${GITHUB_REPOSITORY}/releases/download/${version}/tuntom_${version}-1_amd64.deb"
-          curl --fail --location --output dist/tuntom_arm64.deb \
-            "https://github.com/${GITHUB_REPOSITORY}/releases/download/${version}/tuntom_${version}-1_arm64.deb"
-          gh release upload "${version}" dist/tuntom_amd64.deb dist/tuntom_arm64.deb --clobber
