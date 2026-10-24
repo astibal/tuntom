@@ -743,10 +743,11 @@ sudo apt install /tmp/tuntom-package/packages/tuntom_*.deb
 
 The package contains the Tuntom binaries, runtime helper, documentation and
 examples. Fabric is intentionally packaged separately and is not included.
-Publishing a GitHub Release tagged `v<version>` builds and tests native `amd64`
-and `arm64` packages on a Debian 11 baseline, then attaches both `.deb` files to
-the release. The version is read from `src/version.hpp`. A manually started
-workflow keeps the packages as workflow artifacts without modifying a release.
+Pushing a numeric version tag such as `5.1.123` builds and tests native `amd64`
+and `arm64` packages on a Debian 11 baseline, then creates a GitHub Release with
+both `.deb` files and `SHA256SUMS`. The tag must exactly match the version in
+`src/version.hpp`. A manually started workflow keeps the packages as workflow
+artifacts without publishing a release.
 
 See [test coverage](tests/README.md) and
 [standalone binary setup](docs/DETAILS.md#using-the-binary-without-the-bootstrap-script).
