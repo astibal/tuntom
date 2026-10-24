@@ -1159,3 +1159,31 @@ requests do not keep an otherwise idle receiver alive. This is a component
 binary change, not a Fabric-only fix; old running binaries cannot expose the
 new counters. Live diagnosis is still required before attributing a specific
 incident to one of these limits.
+
+### SAS Tunel Endpoint template
+
+The SAS TE renderer, V3 deployment workflow and example inputs are documented in
+[templates/README.md](templates/README.md). Services → SAS Endpoints provides
+lookup, sanity checks, package download, managed Deploy, status and Undeploy.
+Fabric prepares a collector listener and registers the client with SAS; SAS owns
+client execution and verified stop. Optional addresses/routes use an owned
+persistent TUN in the instance namespace. Existing foreign resources are preserved.
+Deployment requires explicit V3 capabilities and the supported runtime profile;
+unsupported or uncertain states are reported rather than bypassed.
+
+Existing SAS deployments expose **Apply changes** with an IP/route diff. This
+updates only network settings, without restarting SAS or the collector listener.
+Removing a line removes the recorded address/route; empty fields remove all
+previously managed entries. An owned persistent TUN is required: a deployment
+originally started without network configuration cannot adopt an unmarked live
+TUN through Apply. Transport checks use the current SAS execution namespace
+(host/root network namespace under the updated V3 contract), independently
+of the TUN target. Routes covering the outer transport IP are rejected only when
+transport and TUN share the same namespace. Missing transport routes are reported
+separately, before network mutation.
+
+Updates use an optimistic configuration revision and serialize against Deploy
+and Undeploy. A host-side journal records pending entries before mutation, so a
+lost SSH response or partial failure can be reconciled by repeating Apply.
+Network changes are not atomic: failures are shown as `attention` and may leave
+partial changes until retried. The journal also supports verified Undeploy cleanup.

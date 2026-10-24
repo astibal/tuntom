@@ -428,3 +428,47 @@ html:fullscreen{background:var(--bg);overflow:auto}
 @media(max-width:800px){.deployment-basics{grid-template-columns:1fr}}
 
 .deployment-progress{margin:10px 0}.deployment-progress ol{padding-left:22px;font:11px var(--mono)}.deployment-progress li{margin:8px 0}.deployment-progress time{color:var(--muted)}.deployment-progress pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:220px;overflow:auto;padding:8px;background:var(--bg);border:1px solid var(--line);border-radius:4px}
+
+#sas-form {max-width:760px}
+#sas-fields {border:0;padding:0;margin:0;min-width:0}
+#sas-fields label {display:block;margin:12px 0;color:var(--muted);font-size:12px}
+#sas-fields input,#sas-fields select {display:block;width:100%;margin-top:5px}
+#sas-fields details {margin:16px 0}
+#sas-result pre {white-space:pre-wrap;overflow-wrap:anywhere;max-height:420px;overflow:auto}
+#sas-location {display:grid;grid-template-columns:max-content 1fr;gap:8px 20px}
+#sas-location dd {margin:0;overflow-wrap:anywhere}
+
+#controlled-metadata-dialog {width:min(560px,calc(100vw - 32px));padding:0}
+#controlled-metadata-form input,#controlled-metadata-form textarea {display:block;width:100%;margin-top:6px}
+.endpoint-description {white-space:pre-wrap;overflow-wrap:anywhere}
+
+#controlled-metadata-form .field-help {display:block;margin:6px 0 12px;color:var(--muted);font-size:0.85rem;line-height:1.5}
+
+.endpoint-help {position:relative;display:inline-block;cursor:help;color:var(--muted)}
+.endpoint-help-popup {display:none;position:absolute;z-index:20;top:100%;left:-1rem;width:min(360px,65vw);padding:12px;border:1px solid currentColor;border-radius:6px;background:var(--panel, #1c2419);color:var(--text, #e1e5d5);box-shadow:0 6px 20px #0006;font-size:0.85rem;font-weight:normal;line-height:1.55;white-space:normal}
+.endpoint-help:hover .endpoint-help-popup,.endpoint-help:focus .endpoint-help-popup {display:block}
+
+.sas-field-help {display:block;margin:6px 0 12px;color:var(--muted);font-size:0.85rem;line-height:1.5;max-width:75ch}
+
+#sas-form [aria-invalid="true"] {border-color:#ee8076;box-shadow:0 0 0 1px #ee807655}
+.sas-field-info {margin:4px 0 10px}
+.sas-field-info>summary {display:inline-block;cursor:pointer;font-size:1rem;padding:2px 6px;list-style:none}
+.sas-field-info[open] {padding:6px 10px;border-left:2px solid var(--muted)}
+
+#sas-sanity {font-size:0.78rem;line-height:1.35}
+#sas-sanity h4 {font-size:0.85rem;margin:10px 0 5px}
+#sas-sanity p {margin:5px 0;max-width:85ch}
+#sas-sanity ul {list-style:none;margin:6px 0;padding:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:3px 16px}
+#sas-sanity .sas-check {display:flex;flex-wrap:wrap;gap:3px 8px;padding:2px 0;overflow-wrap:anywhere}
+#sas-sanity .sas-check strong {font-weight:500}
+#sas-sanity .sas-check-missing {color:var(--danger,#ff9188)}
+
+/* SAS creation stays tucked away; current deployments remain in view. */
+.sas-template-panel{margin:16px 0 22px}
+.sas-template-panel>summary{display:list-item;list-style-position:inside;width:fit-content;max-width:100%;padding:10px 16px;border:1px solid var(--accent);border-radius:7px;background:var(--accent);color:var(--bg);font-weight:650;cursor:pointer}
+.sas-template-panel>summary:hover{filter:brightness(1.08)}
+.sas-template-panel>summary:focus-visible,.sas-deployment-archive>summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.sas-template-panel[open]>summary{margin-bottom:16px}
+.sas-deployment-archive{margin-top:18px;border-top:1px solid var(--line);padding-top:14px}
+.sas-deployment-archive>summary{cursor:pointer;color:var(--muted);padding:8px 0;font-weight:600}
+.sas-deployment-archive>.controlled-card{margin-top:12px}

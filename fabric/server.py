@@ -361,15 +361,20 @@ class Fabric:
     def audit_event(self, body):
         if not isinstance(body,dict) or set(body)-{'action','target','outcome','details'}:
             raise APIError(400,'invalid audit event')
-        if body.get('action') not in {'auth.login','auth.logout','users.save','users.delete','services.save','services.delete','http.denied','controlled_endpoints.probe','controlled_endpoints.discover','controlled_endpoints.refresh','tunnel_deployments.create','tunnel_deployments.deploy','tunnel_deployments.undeploy','tunnel_deployments.delete','binary_bundles.create','binary_bundles.build','headless_bundles.download'}:
+        if body.get('action') not in {'auth.login','auth.logout','users.save','users.delete','services.save','services.delete','http.denied','controlled_endpoints.probe','controlled_endpoints.discover','controlled_endpoints.refresh','tunnel_deployments.create','tunnel_deployments.deploy','tunnel_deployments.undeploy','tunnel_deployments.delete','binary_bundles.create','binary_bundles.build','headless_bundles.download','sas_te.preview','sas_te.resolve','sas_te.deploy','sas_te.undeploy','sas_te.apply','controlled_endpoints.metadata'}:
             raise APIError(400,'invalid audit action')
         details=body.get('details',{})
-        if not isinstance(details,dict) or set(details)-{'role','enabled','password_changed','status','name','kind','label_count','peek_target_count','tunnel_id','count','address','port'}:
+        network_fields={'before','after'} if body.get('action')=='sas_te.apply' else set()
+        if not isinstance(details,dict) or set(details)-network_fields-{'role','enabled','password_changed','status','name','kind','label_count','peek_target_count','tunnel_id','count','address','port'}:
             raise APIError(400,'invalid audit metadata')
         if any(k in details and not isinstance(details[k],bool) for k in ('enabled','password_changed')) or ('role' in details and not isinstance(details['role'],str)) or ('status' in details and not isinstance(details['status'],(int,str))):
             raise APIError(400,'invalid audit metadata types')
         if any(k in details and not isinstance(details[k],str) for k in ('name','kind','address')) or any(k in details and (not isinstance(details[k],int) or isinstance(details[k],bool)) for k in ('label_count','peek_target_count','tunnel_id','count','port')):
             raise APIError(400,'invalid audit metadata types')
+        if network_fields & set(details):
+            from sas_te import network_options
+            try: details={**details,**{key:network_options(details[key]) for key in network_fields if key in details}}
+            except (ValueError,TypeError): raise APIError(400,'invalid audit network metadata') from None
         if body.get('outcome') not in {'started','succeeded','failed'}:raise APIError(400,'invalid audit outcome')
         return {'id':self.journal.append(body['action'],str(body.get('target',''))[:128],body['outcome'],details)}
 
@@ -498,13 +503,17 @@ class Server(ThreadingHTTPServer):
         self.services = Services(services_path)
         self.controlled_endpoints = ControlledEndpoints(services_path, SSHDiscovery(controlled_ssh_user, controlled_ssh_key))
         self.tunnel_deployments = TunnelDeployments(services_path, self.controlled_endpoints, controlled_git_url, fabric=fabric)
+        from sas_deployments import SASDeployments
+        self.sas_deployments = SASDeployments(services_path, self.controlled_endpoints, fabric, self.tunnel_deployments.secret_dir)
         self.peek_url, self.peek_token = peek_url, peek_token
         self.slots = threading.BoundedSemaphore(24)
         super().__init__(address, Handler)
 
     def server_close(self):
         try:
-            try: self.tunnel_deployments.close()
+            try:
+                self.sas_deployments.close()
+                self.tunnel_deployments.close()
             finally:
                 try: self.controlled_endpoints.close()
                 finally: self.services.close()
@@ -640,8 +649,10 @@ class Handler(BaseHTTPRequestHandler):
                 (path == "/api/v1/services" and self.command == "POST") or
                 re.fullmatch(r"/api/v1/services/[0-9a-f]{32}/delete", path) or
                 (path == "/api/v1/controlled-endpoints" and self.command == "POST") or
-                re.fullmatch(r"/api/v1/controlled-endpoints/[0-9a-f]{32}/(?:confirm|refresh)", path) or
+                re.fullmatch(r"/api/v1/controlled-endpoints/[0-9a-f]{32}/(?:confirm|refresh|metadata)", path) or
                 (path in {"/api/v1/binary-bundles", "/api/v1/binary-bundles/build"} and self.command == "POST") or
+                (path in {"/api/v1/sas-te/preview", "/api/v1/sas-te/resolve", "/api/v1/sas-te/deploy"} and self.command == "POST") or
+                re.fullmatch(r"/api/v1/sas-deployments/[0-9a-f]{32}/(?:status|undeploy|apply)", path) or
                 (path == "/api/v1/headless-bundles" and self.command == "POST") or
                 (path == "/api/v1/tunnel-deployments" and self.command == "POST") or
                 re.fullmatch(r"/api/v1/tunnel-deployments/[0-9a-f]{32}/(?:deploy|undeploy|delete)", path) or
@@ -738,6 +749,42 @@ class Handler(BaseHTTPRequestHandler):
                 try: filename, content = self.server.tunnel_deployments.binary_bundles.archive(match[1])
                 except KeyError as error: raise APIError(404, str(error)) from error
                 return self.respond(200, content, "application/gzip", {"Content-Disposition": f'attachment; filename="{filename}"'})
+            if path == "/api/v1/sas-deployments" and self.command == "GET":
+                return self.respond(200, self.server.sas_deployments.list())
+            sas_match = re.fullmatch(r"/api/v1/sas-deployments/([0-9a-f]{32})/(status|undeploy|apply)", path)
+            if (path == "/api/v1/sas-te/deploy" or sas_match) and self.command == "POST":
+                action = 'deploy' if not sas_match else sas_match[2]
+                if action != 'status' and not self.server.fabric.snapshot()["allow_write"]:
+                    raise APIError(403, 'writes are disabled')
+                try:
+                    if action == 'deploy': result = self.server.sas_deployments.create(self.body())
+                    elif action == 'apply': result = self.server.sas_deployments.apply(sas_match[1], self.body())
+                    elif action == 'status': result = self.server.sas_deployments.status(sas_match[1])
+                    else: result = self.server.sas_deployments.undeploy(sas_match[1])
+                except KeyError as error: raise APIError(404, str(error)) from error
+                except (ValueError, TypeError) as error: raise APIError(400, str(error)) from error
+                except (OSError, RuntimeError, subprocess.SubprocessError) as error: raise APIError(409, str(error)) from error
+                if action != 'status':
+                    self.server.fabric.audit_event({'action':'sas_te.'+action,'target':result['id'],'outcome':'started'})
+                return self.respond(200, result)
+            if path == "/api/v1/sas-te/resolve" and self.command == "POST":
+                from sas_te import resolve_request
+                try: result = resolve_request(self.body(), self.server.controlled_endpoints)
+                except KeyError as error: raise APIError(400, "missing or unknown SAS instance/endpoint") from error
+                except (ValueError, TypeError, AttributeError) as error: raise APIError(400, str(error)) from error
+                except (OSError, RuntimeError) as error: raise APIError(409, str(error)) from error
+                self.server.fabric.audit_event({'action':'sas_te.resolve','target':result['location']['id'],
+                    'outcome':'succeeded','details':{'kind':'SAS Tunel Endpoint'}})
+                return self.respond(200, result)
+            if path == "/api/v1/sas-te/preview" and self.command == "POST":
+                from sas_te import preview_request
+                try: result = preview_request(self.body(), self.server.controlled_endpoints)
+                except KeyError as error: raise APIError(400, "missing or unknown SAS template field/endpoint") from error
+                except (ValueError, TypeError, AttributeError) as error: raise APIError(400, str(error)) from error
+                except (OSError, RuntimeError) as error: raise APIError(409, str(error)) from error
+                self.server.fabric.audit_event({'action':'sas_te.preview','target':result['plan']['instance_id'],
+                    'outcome':'succeeded','details':{'kind':'SAS Tunel Endpoint'}})
+                return self.respond(200, result)
             if path == "/api/v1/headless-bundles" and self.command == "POST":
                 from headless_bundles import archive
                 data = self.body()
@@ -821,6 +868,14 @@ class Handler(BaseHTTPRequestHandler):
                 self.server.fabric.audit_event({'action':'controlled_endpoints.discover','target':match[1],
                     'outcome':'succeeded' if result['status'] in {'supported','unsupported'} else 'failed',
                     'details':{'status':result['status']}})
+                return self.respond(200, result)
+            match = re.fullmatch(r"/api/v1/controlled-endpoints/([0-9a-f]{32})/metadata", path)
+            if match and self.command == "POST":
+                try: result = self.server.controlled_endpoints.update_metadata(match[1], self.body())
+                except KeyError as error: raise APIError(404, str(error)) from error
+                except ValueError as error: raise APIError(400, str(error)) from error
+                self.server.fabric.audit_event({'action':'controlled_endpoints.metadata','target':match[1],
+                    'outcome':'succeeded','details':{'name':result['name']}})
                 return self.respond(200, result)
             match = re.fullmatch(r"/api/v1/controlled-endpoints/([0-9a-f]{32})/refresh", path)
             if match and self.command == "POST":

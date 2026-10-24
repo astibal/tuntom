@@ -643,6 +643,102 @@ Object.assign(messages, {
   uiManuallySelected:["zvoleno ručně","manually selected","sélectionné manuellement"],
   uiAllocationMethodNotRecorded:["způsob přidělení nezaznamenán","allocation method not recorded","méthode d’attribution non enregistrée"],
   uiTarget:["Cíl","Target","Cible"],
+  endpointMetadata:["Upravit údaje endpointu","Edit endpoint details","Modifier les informations du point de terminaison"],
+  endpointName:["Název","Name","Nom"],
+  endpointDescription:["Popisek","Description","Description"],
+  endpointAddressHelp:["SSH adresa a port určují, kam se Fabric připojuje při správě tohoto stroje. Zde jsou pouze pro orientaci.","The SSH address and port identify the machine Fabric connects to for management. They are shown here for reference.","L’adresse et le port SSH identifient la machine à laquelle Fabric se connecte pour la gérer. Ils sont affichés ici à titre indicatif."],
+  endpointNameHelp:["Krátké jméno stroje, například Praha · proxy 1. Uvidíš ho na kartě i při výběru stroje pro deployment. Nemění hostname stroje. Prázdné pole použije původní označení.","A short machine name, such as Prague · proxy 1. Shown on its card and in deployment selectors. Does not change the machine hostname. Leave blank to use the original label.","Un nom court, par exemple Paris · proxy 1. Affiché sur la fiche et dans les sélecteurs de déploiement. Ne modifie pas le nom d’hôte. Laissez vide pour conserver le libellé d’origine."],
+  endpointDescriptionHelp:["Volitelná poznámka pro ostatní správce: k čemu stroj slouží, kde je nebo kdo se o něj stará. Zobrazuje se na kartě. Nepatří sem hesla ani tajné klíče.","An optional note for other administrators: what the machine does, where it is, or who maintains it. Shown on its card. Do not include passwords or secret keys.","Une note facultative pour les autres administrateurs : rôle, emplacement ou responsable de la machine. Affichée sur la fiche. N’y mettez pas de mots de passe ni de clés secrètes."],
+  endpointNameDetails:["Název je vaše vlastní označení endpointu ve Fabricu. Pomáhá rozlišit stroje se stejným operačním systémem; zvol například lokalitu a roli: Praha · proxy 1. Nemusí být jedinečný, proto při výběru vždy zkontroluj i SSH adresu. Uložení nepřejmenovává vzdálený stroj, tunely ani služby a nic nerestartuje. Název uvidí i ostatní uživatelé tohoto Fabricu. Automatické obnovení discovery ho nepřepíše. Maximum je 120 znaků.","The name is your own label for this endpoint in Fabric. It helps distinguish machines running the same operating system; use a location and role, such as Prague · proxy 1. Names need not be unique, so also check the SSH address when selecting a machine. Saving does not rename the remote host, tunnels or services, or restart anything. Other users of this Fabric can see the name. Discovery refreshes will not overwrite it. Maximum: 120 characters.","Le nom est votre propre libellé dans Fabric. Il distingue les machines utilisant le même système ; choisissez par exemple un lieu et un rôle : Paris · proxy 1. Les noms ne sont pas forcément uniques : vérifiez aussi l’adresse SSH. L’enregistrement ne renomme ni la machine distante, ni les tunnels, ni les services, et ne redémarre rien. Les autres utilisateurs de ce Fabric voient ce nom. La découverte ne l’écrase pas. Maximum : 120 caractères."],
+  endpointDescriptionDetails:["Popisek je sdílená provozní poznámka, ne konfigurace. Může obsahovat účel stroje, umístění, správce nebo odkaz na interní dokumentaci. Podporuje více řádků, zobrazuje se jako prostý text na kartě endpointu a zůstává zachovaný při discovery. Nic z něj se neposílá jako příkaz na vzdálený stroj. Je viditelný ostatním uživatelům tohoto Fabricu, proto sem nepatří hesla, privátní klíče ani jiné přístupové údaje. Vymazáním pole poznámku odstraníš. Maximum je 2 000 znaků.","The description is a shared operational note, not configuration. Include the machine’s purpose, location, maintainer or an internal documentation link. It supports multiple lines, appears as plain text on the endpoint card and survives discovery refreshes. None of it is sent to the remote machine as a command. Other users of this Fabric can read it, so do not include passwords, private keys or other credentials. Clear the field to remove the note. Maximum: 2,000 characters.","La description est une note partagée, pas une configuration. Indiquez le rôle, le lieu, le responsable ou un lien vers la documentation interne. Plusieurs lignes sont possibles ; le texte est affiché sur la fiche et conservé lors de la découverte. Il n’est jamais envoyé comme commande à la machine distante. Les autres utilisateurs de ce Fabric peuvent le lire : n’y mettez aucun mot de passe, clé privée ou identifiant secret. Videz le champ pour supprimer la note. Maximum : 2 000 caractères."],
+  endpointMetadataHint:["Volitelné údaje pro orientaci. SSH adresa a ověřené klíče se nemění; discovery údaje zachová.","Optional display metadata. SSH address and verified keys stay unchanged; discovery preserves these details.","Métadonnées facultatives. L’adresse SSH et les clés vérifiées restent inchangées ; la découverte conserve ces informations."],
+  endpointSave:["Uložit","Save","Enregistrer"],
+  endpointCancel:["Zrušit","Cancel","Annuler"],
+  endpointSaved:["Údaje endpointu uloženy.","Endpoint details saved.","Informations enregistrées."],
+  sasHelpEntry:["Server, na který se Fabric přihlásí přes SSH a spustí sas_which_instance pro zadané UUID. SAS z něj zjistí skutečný host, namespace a pracovní adresář instance. Nemusí to být host, kde instance běží.", "Fabric connects here over SSH and runs sas_which_instance for the UUID below. SAS returns the actual host, namespace and working directory. This need not be the host running the instance.", "Fabric se connecte ici en SSH et lance sas_which_instance pour cet UUID. SAS fournit l’hôte réel, le namespace et le répertoire de travail. Ce serveur peut être différent de l’hôte de l’instance."],
+  sasHelpInstance:["UUID nebo alias existující instance SAS (např. tatka-smoula). Resolve zjistí UUID a další operace použijí tuto přesnou identitu. Nejde o ID tunelu.", "UUID or alias of an existing SAS instance (e.g. tatka-smoula). Resolve obtains the UUID; subsequent operations use that exact identity. This is not the tunnel ID.", "UUID ou alias d’une instance SAS existante (ex. tatka-smoula). Resolve obtient l’UUID ; les opérations suivantes utilisent cette identité précise. Ce n’est pas l’ID du tunnel."],
+  sasHelpSwitch:["Switch, ke kterému bude připojen serverový konec tunelu. Tento výběr zatím doplní pouze cestu k jeho socketu v podrobnostech; IP adresu musíš zadat zvlášť.", "The switch for the server end of the tunnel. This selection currently fills only its socket path under details; enter its IP address separately.", "Switch auquel raccorder le côté serveur du tunnel. Ce choix renseigne uniquement le chemin du socket dans les détails ; saisissez l’adresse IP séparément."],
+  sasHelpPeer:["Nech prázdné pro doplnění ze zdrojové IP SSH při Resolve. Nebo zadej IP hostu se serverovou stranou tunelu, dostupnou ze SAS hostu. Sem klient navazuje UDP spojení. Není to IP uvnitř instance ani nutně SSH adresa.", "Leave blank to use the SSH source IP during Resolve. Or enter the tunnel server host IP reachable from the SAS host. The client opens its UDP connection here. This is not the IP inside the instance and may differ from the SSH address.", "Laissez vide pour utiliser l’IP source SSH lors de Resolve. Ou saisissez l’IP du serveur de tunnel joignable depuis SAS. Le client y établit la connexion UDP. Ce n’est pas l’IP interne de l’instance, ni forcément l’adresse SSH."],
+  sasHelpId:["Číslo 1–255 společné oběma koncům tunelu. Určuje UDP port 40000 + ID: například ID 232 používá port 40232. Na cílovém hostu zvol neobsazený port; náhled dostupnost nekontroluje ani nerezervuje.", "A number from 1 to 255 shared by both tunnel ends. UDP port = 40000 + ID; ID 232 uses port 40232. Choose an unused port on the server host; preview neither checks nor reserves it.", "Nombre de 1 à 255 commun aux deux extrémités. Port UDP = 40000 + ID ; 232 utilise 40232. Choisissez un port libre sur le serveur ; l’aperçu ne le vérifie ni ne le réserve."],
+  sasHelpPort:["Jméno nového připojení uvnitř switche, například sas-praha-1. Není to TCP/UDP port. Musí nekolidovat s jiným portem tohoto switche; náhled kolizi zatím nekontroluje.", "Name of the new connection inside the switch, such as sas-prague-1. Not a TCP/UDP port. It must not collide with another port on this switch; preview does not check collisions yet.", "Nom de la nouvelle connexion dans le switch, par exemple sas-paris-1. Ce n’est pas un port TCP/UDP. Il ne doit pas entrer en conflit avec un port existant ; l’aperçu ne le vérifie pas encore."],
+  sasHelpSocket:["Cesta k Unix socketu switche na serverovém hostu. Serverová strana tunelu se přes něj připojí ke switchi. Nejde o cestu uvnitř SAS instance.", "Path to the switch Unix socket on the server host. The server end of the tunnel connects to the switch through it. This is not a path inside the SAS instance.", "Chemin du socket Unix du switch sur l’hôte serveur. Le côté serveur du tunnel s’y raccorde. Ce n’est pas un chemin dans l’instance SAS."],
+  sasHelpLabel:["Číselný štítek provozu přicházejícího z tunelu do switche. Musí odpovídat jeho směrovacím pravidlům. Není to popisek; hodnota 0 sama o sobě nezaručuje správné směrování.", "Numeric label for traffic entering the switch from this tunnel. It must match the switch routing rules. It is not a display name; 0 does not guarantee correct routing.", "Étiquette numérique du trafic entrant dans le switch depuis ce tunnel. Elle doit correspondre aux règles de routage. Ce n’est pas un nom ; 0 ne garantit pas un routage correct."],
+  sasHelpPrefix:["Číslo služby SAS: 10 spojuje 10-start.sh a 10.lock v instalaci s 10.pid v privátním runtime. Není to Tunnel ID a zatím není rezervované.", "SAS service number: 10 links 10-start.sh and 10.lock in the installation to 10.pid in private runtime. Not a Tunnel ID and not reserved yet.", "Numéro SAS : 10 relie 10-start.sh et 10.lock dans l’installation à 10.pid dans le runtime privé. Ce n’est pas l’ID du tunnel et il n’est pas encore réservé."],
+  sasHelpInterface:["Jméno síťového TUN rozhraní vytvořeného uvnitř namespace instance, například ut0. Vytvoření rozhraní samo nenastaví IP adresy ani routy.", "Name of the TUN network interface created inside the instance namespace, such as ut0. Creating it does not configure IP addresses or routes.", "Nom de l’interface TUN créée dans le namespace de l’instance, par exemple ut0. Sa création ne configure ni adresses IP ni routes."],
+  sasHelpUser:["Linuxový účet, pod kterým poběží Tuntom po vytvoření TUN rozhraní. Musí existovat v prostředí, kde SAS proces spouští; není to SSH uživatel ani účet Fabricu.", "Linux account used by Tuntom after creating the TUN interface. Must exist in the environment where SAS starts the process; not an SSH or Fabric account.", "Compte Linux utilisé par Tuntom après la création de l’interface TUN. Doit exister dans l’environnement d’exécution SAS ; ce n’est pas un compte SSH ou Fabric."],
+  sasHelpGroup:["Linuxová skupina pro běžící proces. Musí existovat a spolu s účtem mít přístup k potřebným souborům. Výchozí tuntom musí potvrdit runtime profil SAS.", "Linux group for the running process. It must exist and, with the account, have access to required files. The SAS runtime profile must confirm the default tuntom identity.", "Groupe Linux du processus. Il doit exister et permettre l’accès aux fichiers nécessaires avec le compte choisi. Le profil SAS doit confirmer l’identité tuntom par défaut."],
+  sasHelpBuild:["Existující build z Binary bundles. Výběr zatím jen předvyplní commit; binárku neinstaluje ani nevloží do archivu šablony. Kompatibilitu s prostředím SAS je nutné ověřit.", "An existing build from Binary bundles. Selection currently only fills the commit; it does not install or include the binary in the template archive. SAS runtime compatibility must be verified.", "Build existant de Binary bundles. Le choix renseigne seulement le commit ; il n’installe ni n’inclut le binaire dans l’archive du modèle. La compatibilité SAS reste à vérifier."],
+  sasSshSource:["Zdrojová IP SSH viděná na originu","SSH source IP seen by the origin","IP source SSH vue par l’origine"],
+  sasSshNote:["Toto je adresa příchozího SSH spojení, ne ověřená adresa pro UDP tunel. Může patřit NATu nebo mezilehlému hostu. Pokud bylo pole transportní IP prázdné, použije se tato adresa; ručně zadaná hodnota se zachová.","This is the incoming SSH connection address, not a verified UDP tunnel address. It may belong to NAT or an intermediate host. If transport IP was blank, this address is used; a manually entered value is preserved.","Adresse de la connexion SSH entrante, pas une adresse vérifiée pour le tunnel UDP. Elle peut appartenir à un NAT ou un hôte intermédiaire. Si l’IP de transport était vide, cette adresse est utilisée ; une valeur saisie est conservée."],
+  sasSshMissing:["Zdrojovou IP na originu se nepodařilo ověřit. Zatím ji zjišťujeme jen tehdy, když je vstupní SSH server přímo origin instance.","Could not verify the source IP on the origin. Currently detected only when the SSH entry server is the instance origin itself.","Impossible de vérifier l’IP source sur l’origine. Détection disponible uniquement si le serveur SSH d’entrée est l’origine de l’instance."],
+  sasResolveOnly:["Načíst instanci a doplnit údaje","Resolve instance and fill details","Résoudre l’instance et compléter les champs"],
+  sasResolveHelp:["Stačí vybrat SSH server a zadat UUID. Fabric sám načte umístění instance a zdrojovou IP SSH. Ručně zadanou transportní adresu zachová. Ostatní pole vyplníš až před přípravou šablony.","Only the SSH server and UUID are needed. Fabric reads the instance location and SSH source IP itself. A manually entered transport address is preserved. Complete remaining fields before preparing the template.","Seuls le serveur SSH et l’UUID sont nécessaires. Fabric lit l’emplacement et l’IP source SSH. Une adresse de transport saisie est conservée. Complétez les autres champs avant de préparer le modèle."],
+  sasNextHelp:["Další krok: doplň údaje níže a vytvoř náhled šablony. Tento průvodce zatím končí stažením šablony; skutečné nasazení ještě není dostupné.","Next: complete the fields below and prepare a template preview. This wizard currently ends with a template download; live deployment is not available yet.","Ensuite : complétez les champs ci-dessous et préparez l’aperçu. Cet assistant se termine actuellement par le téléchargement du modèle ; le déploiement actif n’est pas encore disponible."],
+  sasContinue:["Pokračovat k údajům šablony","Continue to template details","Continuer vers les détails du modèle"],
+  sasResolveOk:["Instance nalezena. Zkontroluj zjištěné údaje a pokračuj níže.","Instance found. Review the detected details and continue below.","Instance trouvée. Vérifiez les informations détectées et continuez ci-dessous."],
+  sasResolveUnavailable:["Instance nalezena, ale namespace nebo pracovní adresář není dostupný. Oprav stav instance v SAS a spusť načtení znovu.","Instance found, but its namespace or working directory is unavailable. Fix the instance in SAS and resolve again.","Instance trouvée, mais son namespace ou répertoire est indisponible. Corrigez l’instance dans SAS puis relancez la résolution."],
+  sasFieldInvalid:["Doplnit nebo opravit","Complete or correct","Compléter ou corriger"],
+  sasCreateUser:["Vytvořit uživatele a skupinu, pokud chybí a je to možné", "Create user and group if missing and possible", "Créer l’utilisateur et le groupe si absents et possible"],
+  sasCreateUserHelp:["Volba pro budoucí nasazení, ne pro Resolve. Existující UID/GID se nezmění. V SAS rootfs musí vytvoření povolit ověřený runtime profil; účet na hostu ho nenahrazuje. Živé nasazení zatím není dostupné.", "A future deployment option, not a Resolve action. Existing UID/GID stay unchanged. Creating accounts inside SAS rootfs requires a verified runtime profile; a host account is not a substitute. Live deployment is not available yet.", "Option pour le futur déploiement, pas pour Resolve. Les UID/GID existants restent inchangés. La création dans le rootfs SAS nécessite un profil validé ; un compte sur l’hôte ne le remplace pas. Le déploiement actif reste indisponible."],
+  sasSanityTitle:["Kontrola SAS hostu", "SAS host checks", "Contrôles de l’hôte SAS"],
+  sasSanityScope:["Kontrola hostu přes SSH. V3 vyžaduje chráněný instalační adresář mimo /work a privátní runtime; izolaci mountů musí zajistit SAS i v plain režimu. Tato kontrola sama neověřuje izolaci, ABI ani oprávnění služby k TUN.", "Read-only SSH host checks. V3 requires a protected installation outside /work and private runtime; SAS must enforce mount isolation even in plain mode. These checks do not prove isolation, ABI or service TUN permissions.", "Contrôles SSH en lecture seule. V3 exige une installation protégée hors de /work et un runtime privé ; SAS doit isoler les montages même sans rootfs. Ces contrôles ne prouvent ni l’isolation, ni l’ABI, ni les permissions TUN."],
+  sasSanityMissing:["Kontrola se nepodařila: ověř přímé připojení na origin a dostupnost Pythonu 3. Stav je neznámý, ne připravený.", "Checks unavailable: verify a direct connection to the origin and Python 3 availability. State is unknown, not ready.", "Contrôles indisponibles : vérifiez la connexion directe à l’origine et Python 3. État inconnu, pas prêt."],
+  sasCheck_ok:["Nalezeno", "Found", "Trouvé"],
+  sasCheck_missing:["Chybí", "Missing", "Absent"],
+  sasCheck_info:["Informace", "Information", "Information"],
+  sasCheck_warning:["Ověřit", "Review", "À vérifier"],
+  sasCheck_user:["Účet", "User account", "Compte utilisateur"],
+  sasCheck_group:["Skupina", "Group", "Groupe"],
+  sasCheck_workspace_binary:["Tuntom v pracovním adresáři", "Tuntom in workspace", "Tuntom dans le répertoire de travail"],
+  sasCheck_path_binary:["Tuntom v PATH hostu", "Tuntom in host PATH", "Tuntom dans le PATH de l’hôte"],
+  sasCheck_workspace:["Pracovní adresář", "Workspace", "Répertoire de travail"],
+  sasCheck_namespace:["Namespace", "Namespace", "Namespace"],
+  sasCheck_tun_device:["Zařízení TUN na hostu", "Host TUN device", "Périphérique TUN de l’hôte"],
+  sasCheck_account_creation:["Možnost vytvoření účtu na hostu", "Host account creation prerequisites", "Prérequis de création de compte sur l’hôte"],
+  sasCheck_host_prerequisites_present:["Root a nástroje jsou dostupné; úspěch vytvoření ještě není ověřený.", "Root and tools available; successful creation is not yet verified.", "Root et outils disponibles ; réussite de création non vérifiée."],
+  sasCheck_host_prerequisites_missing:["Chybí root oprávnění, nástroje nebo zápis do /etc.", "Missing root privileges, tools or write access to /etc.", "Privilèges root, outils ou accès en écriture à /etc manquants."],
+  sasFieldHelp:["Nápověda k poli","Field help","Aide du champ"],
+  sasPackageOnly:["Balíček obsahuje binárku aktuální instalace Fabricu, startovací skript, metadata a návrh registrace. Nic se nenasadilo. Secret není přibalen; před spuštěním zbývá ověřit knihovny a připravit serverovou stranu i životní cyklus SAS.","The package contains the current Fabric installation binary, start script, metadata and proposed registration. Nothing was deployed. No secret is included; verify libraries and prepare the server side and SAS lifecycle before activation.","Le paquet contient le binaire de l’installation Fabric, le script, les métadonnées et l’inscription proposée. Rien n’est déployé. Aucun secret inclus ; vérifiez les bibliothèques et préparez le serveur et le cycle de vie SAS avant activation."],
+  sasInstalledBinary:["Binárka z instalace Fabricu","Binary from Fabric installation","Binaire de l’installation Fabric"],
+  sasCheck_installation:["Instalační adresář SAS", "SAS installation directory", "Répertoire d’installation SAS"],
+  sasCheck_installation_paths:["Ochrana instalační cesty", "Installation path protection", "Protection du chemin d’installation"],
+  sasCheck_installation_binary:["Tuntom v instalaci microservices", "Tuntom in microservices installation", "Tuntom dans l’installation microservices"],
+  sasInstallation:["Instalace (microservices_dir)", "Installation (microservices_dir)", "Installation (microservices_dir)"],
+  sasApplianceWork:["Pracovní data instance (ne pro instalaci)", "Appliance workspace (not an installation destination)", "Données de l’instance (pas une destination d’installation)"],
+  sasDeployReady:["Balíček je připravený. Deploy vytvoří serverovou stranu a zaregistruje službu u SAS; start provede SAS při dalším scanu.", "Package ready. Deploy prepares the server side and registers the service with SAS; SAS starts it on its next scan.", "Paquet prêt. Deploy prépare le serveur et inscrit le service ; SAS le démarre au prochain scan."],
+  sasDeployNeed:["Deploy vyžaduje vybraný lokální switch a SAS managed V3 s installation/supervision/status/stop.", "Deploy requires a selected local switch and SAS managed V3 installation/supervision/status/stop.", "Deploy exige un switch local sélectionné et SAS managed V3 installation/supervision/status/stop."],
+  sasInstanceLabel:["Instance — UUID nebo alias", "Instance — UUID or alias", "Instance — UUID ou alias"],
+  sasApply:["Použít změny", "Apply changes", "Appliquer les modifications"],
+  sasDiff:["Zkontrolovat rozdíl", "Preview changes", "Voir les différences"],
+  sasNoChanges:["Beze změn; lze znovu aplikovat pro opravu rozpracované operace.", "No changes; reapply to reconcile an interrupted operation.", "Aucun changement ; réappliquer pour terminer une opération interrompue."],
+  sasApplyHelp:["Mění pouze spravované IP adresy a routy, bez restartu. Odebrané řádky se odstraní. Prázdná pole odstraní dříve spravované nastavení. Vyžaduje vlastní persistentní TUN Fabricu.", "Updates managed IP addresses and routes without restarting. Removed lines are deleted. Empty fields remove previously managed settings. Requires a persistent TUN owned by Fabric.", "Modifie les adresses IP et routes gérées sans redémarrage. Les lignes retirées sont supprimées. Les champs vides suppriment la configuration gérée. Nécessite un TUN persistant appartenant à Fabric."],
+  sasShowTemplate:["Zobrazit šablonu deploymentu", "Show Deployment Template", "Afficher le modèle de déploiement"],
+  sasArchive:["Archiv", "Archive", "Archives"],
+  sasDeploymentsTitle:["SAS deploymenty", "SAS deployments", "Déploiements SAS"],
+  sasRefreshStatus:["Obnovit stav SAS", "Refresh SAS status", "Actualiser l’état SAS"],
+  sasUndeploy:["Undeploy — zastavit a odstranit", "Undeploy — stop and remove", "Undeploy — arrêter et supprimer"],
+  sasNetwork:["Volitelné IP adresy a routing", "Optional IP addresses and routing", "Adresses IP et routage facultatifs"],
+  sasAddresses:["Adresy rozhraní — CIDR, jedna na řádek", "Interface addresses — CIDR, one per line", "Adresses d’interface — CIDR, une par ligne"],
+  sasRoutes:["Routy — jedna na řádek", "Routes — one per line", "Routes — une par ligne"],
+  sasNetworkHelp:["Prázdná pole nic nenastavují. Zadané adresy a routy se vztahují jen k TUN v namespace instance. Formát routy: CIDR [via IP] [metric číslo]. Výchozí routa: 0.0.0.0/0 nebo ::/0. Fabric vytvoří vlastní persistentní TUN, takže konfigurace přežije restart služby. Cizí rozhraní a konfliktní routy nepřepíše. Undeploy odstraní vlastní TUN až po ověřeném stopu SAS.", "Empty fields make no network changes. Addresses and routes apply only to the TUN in the instance namespace. Route format: CIDR [via IP] [metric number]. Default route: 0.0.0.0/0 or ::/0. Fabric creates an owned persistent TUN so configuration survives service restart. Foreign interfaces and conflicting routes are not overwritten. Undeploy removes the owned TUN only after verified SAS stop.", "Champs vides : aucune configuration réseau. Adresses et routes concernent uniquement le TUN dans le namespace de l’instance. Format : CIDR [via IP] [metric nombre]. Route par défaut : 0.0.0.0/0 ou ::/0. Fabric crée un TUN persistant lui appartenant. Interfaces tierces et routes en conflit ne sont pas écrasées. Undeploy supprime le TUN après arrêt SAS vérifié."],
+  sasHint:["Šablona spravovaná SAS. Fabric načte umístění instance přes SSH; procesy spouští a hlídá SAS.","SAS-managed template. Fabric resolves the instance over SSH; SAS starts and supervises processes.","Modèle géré par SAS. Fabric résout l’instance via SSH ; SAS démarre et supervise les processus."],
+  sasBlocked:["Deploy je dostupný po vytvoření balíčku pro managed V3 instanci. Nejdřív se ověří capabilities, ABI a prázdný slot; SAS spouští proces sám.", "Deploy is available after preparing a package for a managed V3 instance. Capabilities, ABI and an empty slot are checked first; SAS starts the process itself.", "Deploy devient disponible après préparation d’un paquet pour une instance managed V3. Capacités, ABI et emplacement libre sont vérifiés ; SAS lance le processus."],
+  sasEntry:["SAS vstupní SSH server","SAS entry SSH server","Serveur SSH d’entrée SAS"],
+  sasSwitch:["Pozorovaný switch (předvyplní socket)","Observed switch (fills socket path)","Switch observé (renseigne le socket)"],
+  sasManual:["Zadat ručně","Enter manually","Saisir manuellement"],
+  sasAdvanced:["Podrobnosti tunelu a SAS registrace","Tunnel and SAS registration details","Détails du tunnel et de l’inscription SAS"],
+  sasPrefix:["Navržený prefix (zatím nerezervovaný)","Proposed prefix (not reserved yet)","Préfixe proposé (non réservé)"],
+  sasUser:["Runtime uživatel","Runtime user","Utilisateur runtime"],
+  sasGroup:["Runtime skupina","Runtime group","Groupe runtime"],
+  sasPreview:["Vytvořit deploy package","Create deploy package","Créer le paquet de déploiement"],
+  sasResolved:["Umístění podle SAS","Location reported by SAS","Emplacement fourni par SAS"],
+  sasReviewOnly:["Náhled nic neinstaluje, nespouští ani nerezervuje. Archiv je určený k revizi; neobsahuje binárku ani secret. Umístění se musí znovu ověřit na originu před instalací.","Preview does not install, start or reserve anything. Archive is for review and contains no binary or secret. Revalidate location on the origin before installation.","L’aperçu n’installe, ne démarre ni ne réserve rien. Archive de revue sans binaire ni secret. Revérifier l’emplacement sur l’origine avant installation."],
+  sasDownload:["Stáhnout deploy package .tar.gz","Download deploy package .tar.gz","Télécharger le paquet .tar.gz"],
+  sasDeployBlocked:["Deploy — čeká na SAS V3","Deploy — awaiting SAS V3","Déployer — en attente de SAS V3"],
+  sasScript:["SAS startovací skript a registrace","SAS start script and registration","Script de démarrage et inscription SAS"],
+  sasPlan:["Plán a podmínky nasazení","Deployment plan and prerequisites","Plan et prérequis de déploiement"],
+  sasReady:["Deploy package připraven. Nic nebylo nasazeno ani spuštěno.","Deploy package ready. Nothing was deployed or started.","Paquet prêt. Rien n’a été déployé ni démarré."],
+  sasNoEntry:["Nejdřív přidej a ověř SSH host v Controlled Endpoints.","First add and verify an SSH host in Controlled Endpoints.","Ajoute et vérifie d’abord un hôte SSH dans Controlled Endpoints."],
   headlessType:["Typ endpointu","Endpoint type","Type de point de terminaison"],
   headlessHint:["Offline balíček bez SSH. Obsahuje endpoint i protistranu pro switch. Stažení nerezervuje ID ani nespouští procesy. Secret dodáš zvlášť na obě strany; namespace a routování spravuje appliance.","Offline kit without SSH. Includes endpoint and switch counterpart. Downloading does not reserve IDs or start processes. Supply the same secret separately on both sides; the appliance manages namespaces and routing.","Kit hors ligne sans SSH, avec endpoint et contrepartie du switch. Le téléchargement ne réserve aucun ID et ne démarre aucun processus. Fournis le même secret séparément des deux côtés ; l’appliance gère les namespaces et le routage."],
   headlessFormat:["Varianta","Format","Format"],
@@ -1244,7 +1340,7 @@ async function refresh(force = false) {
     const data = await api("/api/v1/snapshot");
     state.data = data;
     state.failure = "";
-    state.warnings.observe(data.endpoints.map(e=>({endpointId:e.id, name:e.name, pid:e.pid,
+    state.warnings.observe(data.endpoints.map(e=>({endpointId:e.id, name:e.name, pid:e.pid, source:e.source,
       sampleId:e.sampled_at, checks:outdated(e)?[]:(e.health?.checks || []), changes:e.changes})));
     $("login").hidden = true; $("workspace").hidden = false;
     $("login-error").hidden = true;
@@ -2639,7 +2735,7 @@ const controlledView={rows:[],deployments:[],busy:false};
 let externalsTimer=null;
 function showServicesTab(name){
   clearTimeout(externalsTimer);externalsTimer=null;
-  for(const tab of ['managed','externals','controlled','bundles']){
+  for(const tab of ['managed','externals','controlled','bundles','sas']){
     $(`services-${tab}`).hidden=name!==tab;
     $(`services-tab-${tab}`).classList.toggle('active',name===tab);
     $(`services-tab-${tab}`).setAttribute('aria-selected',String(name===tab));
@@ -2647,6 +2743,7 @@ function showServicesTab(name){
   if(name==='externals')loadExternals();
   if(name==='controlled')loadControlledEndpoints();
   if(name==='bundles')loadBinaryBundles();
+  if(name==='sas')loadSasTemplate();
 }
 $('externals-list').addEventListener('click',event=>{
   const button=event.target.closest('[data-external-detail]');if(!button)return;
@@ -2772,6 +2869,7 @@ $('services-tab-managed').addEventListener('click',()=>showServicesTab('managed'
 $('services-tab-externals').addEventListener('click',()=>showServicesTab('externals'));
 $('services-tab-controlled').addEventListener('click',()=>showServicesTab('controlled'));
 $('services-tab-bundles').addEventListener('click',()=>showServicesTab('bundles'));
+$('services-tab-sas').addEventListener('click',()=>showServicesTab('sas'));
 $('externals-read').addEventListener('click',loadExternals);
 $('externals-filter').addEventListener('input',renderExternalsTable);
 $('externals-label-only').addEventListener('change',renderExternalsTable);
@@ -2906,7 +3004,7 @@ async function undeployFromUI(id){
   finally{stopProgress();controlledBusy(false);}
 }
 function renderControlledEndpoints(message=''){
-  $('controlled-list').innerHTML=controlledView.rows.map(row=>{const system=row.snapshot?.system,keys=row.host_keys||[];return `<article class="controlled-card ${controlledTone(row)}"><header><div><span class="eyebrow">SSH · ${esc(row.address)}:${esc(row.port)}</span><h3>${system?`${esc(system.distribution)} ${esc(system.version)}`:'Controlled Endpoint'}</h3></div><span class="controlled-state">● ${esc(controlledStatus(row))}</span></header>${system?`<div class="controlled-facts"><span>${esc(system.os)}</span><span>${esc(system.architecture)}</span><span>snapshot ${esc(new Date(row.discovered_at).toLocaleString(locale()))}</span></div>`:''}${endpointTunnelInfo(row.id)}${row.error?`<p class="controlled-error">${esc(row.error)}</p>`:''}${row.status==='awaiting_host_key'?`<div class="host-key-review"><strong>${esc(t("uiVerifyTheSSHHostKeyOutsideFabric"))}</strong>${keys.map(key=>`<label><input type="radio" name="host-key-${esc(row.id)}" value="${esc(key.fingerprint)}" ${keys.length===1?'checked':''}><code>${esc(key.fingerprint)}</code><small>${esc(key.type)} · ${esc(key.bits)} bit</small></label>`).join('')}<button class="primary" data-controlled-confirm="${esc(row.id)}">${esc(t("uiConfirmAndRunDiscovery"))}</button></div>`:`<div class="controlled-placeholder"><button class="quiet-button" data-controlled-refresh="${esc(row.id)}">↻ ${esc(t("uiRefreshDiscovery"))}</button>${row.status==='supported'?`<button class="primary" data-deployment-from="${esc(row.id)}">${endpointDeployments(row.id).some(item=>item.status!=='undeployed'&&item.status!=='draft')?(t("uiAnotherTunnel")):(t("uiCreateTunnel"))}</button>`:''}</div>`}</article>`}).join('')||("<div class=\"service-empty\">"+t("uiNoControlledEndpointsYet")+"</div>");
+  $('controlled-list').innerHTML=controlledView.rows.map(row=>{const system=row.snapshot?.system,keys=row.host_keys||[];return `<article class="controlled-card ${controlledTone(row)}"><header><div><span class="eyebrow">SSH · ${esc(row.address)}:${esc(row.port)}</span><h3>${row.name?esc(row.name):system?`${esc(system.distribution)} ${esc(system.version)}`:'Controlled Endpoint'}</h3></div><span class="controlled-state">● ${esc(controlledStatus(row))}</span></header>${system?`<div class="controlled-facts"><span>${esc(system.distribution||system.os)} ${esc(system.version||'')}</span><span>${esc(system.architecture)}</span><span>snapshot ${esc(new Date(row.discovered_at).toLocaleString(locale()))}</span></div>`:''}${row.description?`<p class="endpoint-description">${esc(row.description)}</p>`:''}<button class="quiet-button" data-controlled-metadata="${esc(row.id)}" ${state.auth?.role==='admin'?'':'disabled'}>${esc(t('endpointMetadata'))}</button>${endpointTunnelInfo(row.id)}${row.error?`<p class="controlled-error">${esc(row.error)}</p>`:''}${row.status==='awaiting_host_key'?`<div class="host-key-review"><strong>${esc(t("uiVerifyTheSSHHostKeyOutsideFabric"))}</strong>${keys.map(key=>`<label><input type="radio" name="host-key-${esc(row.id)}" value="${esc(key.fingerprint)}" ${keys.length===1?'checked':''}><code>${esc(key.fingerprint)}</code><small>${esc(key.type)} · ${esc(key.bits)} bit</small></label>`).join('')}<button class="primary" data-controlled-confirm="${esc(row.id)}">${esc(t("uiConfirmAndRunDiscovery"))}</button></div>`:`<div class="controlled-placeholder"><button class="quiet-button" data-controlled-refresh="${esc(row.id)}">↻ ${esc(t("uiRefreshDiscovery"))}</button>${row.status==='supported'?`<button class="primary" data-deployment-from="${esc(row.id)}">${endpointDeployments(row.id).some(item=>item.status!=='undeployed'&&item.status!=='draft')?(t("uiAnotherTunnel")):(t("uiCreateTunnel"))}</button>`:''}</div>`}</article>`}).join('')||("<div class=\"service-empty\">"+t("uiNoControlledEndpointsYet")+"</div>");
   $('controlled-status').textContent=message||`${controlledView.rows.length} ${t("uiEndpointsDiscoverySnapshotsDoNotRefreshAutomatically")}`;
   $('controlled-new').disabled=controlledView.busy||state.auth?.role!=='admin';
   $('deployment-new').disabled=controlledView.busy||state.auth?.role!=='admin'||!canCreateDeployment();
@@ -2926,7 +3024,26 @@ $('controlled-form').addEventListener('submit',async event=>{
   try{await api('/api/v1/controlled-endpoints','POST',{address:$('controlled-address').value.trim(),port:Number($('controlled-port').value)});$('controlled-form').hidden=true;controlledBusy(false);await loadControlledEndpoints((t("uiHostKeyLoadedVerifyItsFingerprintBefore")));}
   catch(error){$('controlled-form-status').textContent=diagnostic(error.message);}finally{controlledBusy(false);}
 });
+let controlledMetadataId='',controlledMetadataBusy=false;
+$('controlled-metadata-cancel').addEventListener('click',()=>{$('controlled-metadata-dialog').close();});
+$('controlled-metadata-form').addEventListener('submit',async event=>{
+  event.preventDefault();if(controlledMetadataBusy||state.auth?.role!=='admin'||!controlledMetadataId)return;
+  controlledMetadataBusy=true;$('controlled-metadata-save').disabled=true;$('controlled-metadata-status').textContent=t('uiWorking');
+  try{
+    await api(`/api/v1/controlled-endpoints/${encodeURIComponent(controlledMetadataId)}/metadata`,'POST',{name:$('controlled-metadata-name').value,description:$('controlled-metadata-description').value});
+    $('controlled-metadata-dialog').close();await loadControlledEndpoints(t('endpointSaved'));
+  }catch(error){$('controlled-metadata-status').textContent=diagnostic(error.message);}finally{controlledMetadataBusy=false;$('controlled-metadata-save').disabled=false;}
+});
 $('controlled-list').addEventListener('click',async event=>{
+  const edit=event.target.closest('[data-controlled-metadata]');
+  if(edit){
+    if(controlledMetadataBusy||state.auth?.role!=='admin')return;
+    const row=controlledView.rows.find(item=>item.id===edit.dataset.controlledMetadata);if(!row)return;
+    controlledMetadataId=row.id;$('controlled-metadata-address').textContent=row.address+':'+row.port;
+    $('controlled-metadata-name').value=row.name||'';$('controlled-metadata-description').value=row.description||'';
+    $('controlled-metadata-status').textContent='';$('controlled-metadata-dialog').showModal();$('controlled-metadata-name').focus();return;
+  }
+
   const undeploy=event.target.closest('[data-deployment-undeploy]');if(undeploy){await undeployFromUI(undeploy.dataset.deploymentUndeploy);return;}
   const create=event.target.closest('[data-deployment-from]');if(create){openDeploymentForm(create.dataset.deploymentFrom);return;}
   const refresh=event.target.closest('[data-controlled-refresh]');
@@ -2943,7 +3060,8 @@ $('controlled-list').addEventListener('click',async event=>{
 });
 function deploymentSwitches(){return (state.data?.endpoints||[]).filter(row=>row.kind==='switch'&&row.source!=='discovered'&&row.switch_socket);}
 function canCreateDeployment(){const n=supportedControlledEndpoints().length;return n>=2||(n>=1&&deploymentSwitches().length>0);}
-function endpointOption(row){return `<option value="${esc(row.id)}">${esc(row.address)}:${esc(row.port)} · ${esc(row.snapshot?.system?.distribution||'Unknown')} ${esc(row.snapshot?.system?.version||'')}</option>`;}
+function controlledEndpointLabel(row){return (row.name?row.name+' · ':'')+row.address+':'+row.port;}
+function endpointOption(row){return `<option value="${esc(row.id)}">${esc(controlledEndpointLabel(row))} · ${esc(row.snapshot?.system?.distribution||'Unknown')} ${esc(row.snapshot?.system?.version||'')}</option>`;}
 let deploymentAddressHint={key:'',ip:'',error:''};
 function deploymentHost(id){return supportedControlledEndpoints().find(row=>row.id===id);}
 function deploymentHostName(row){return row?.name||row?.snapshot?.system?.hostname||row?.address||(t("uiHost"));}
@@ -3062,7 +3180,9 @@ function reattemptDeploymentBody(config, existing=[]){
   return body;
 }
 function renderDeployments(){
-  $('deployment-list').innerHTML=controlledView.deployments.map(row=>{
+  const archiveOpen=$('controlled-deployment-archive')?.open||false;
+  const archived=row=>['failed','undeployed','undeploy_failed'].includes(row.status);
+  const renderCard=row=>{
     const c=row.config,a=controlledView.rows.find(item=>item.id===c.side_a.endpoint_id),b=controlledView.rows.find(item=>item.id===c.side_b.endpoint_id),deployable=['draft','failed','undeployed'].includes(row.status);
     const progress=Object.entries(row.side_states||{}).map(([side,result])=>{
       const title=side==='side_a'?t('uiHost'):t('uiTarget');
@@ -3075,7 +3195,11 @@ function renderDeployments(){
     const allocation=c.id_allocation==='automatic'?(t("uiAutomaticallyAssigned")):c.id_allocation==='manual'?(t("uiManuallySelected")):(t("uiAllocationMethodNotRecorded"));
     const archives=['deploy','undeploy'].map(kind=>`<button class="quiet-button deployment-archive" data-deployment-archive="${esc(row.id)}" data-archive-kind="${kind}">↓ ${kind}_runbook_${esc(row.name)}.tar.gz</button>`).join('');
     return `<article class="deployment-card ${esc(row.status)}"><header><div><span class="deployment-state">${esc(deploymentStatus(row))}</span><h3>${esc(row.name)}${c.via?' · VIA '+esc(c.via.mode):''}</h3></div><span class="tag">ID ${esc(c.tunnel_id)} · ${esc(allocation)}</span></header><p>${esc(a?.address||c.side_a.switch_name||c.side_a.endpoint_id)} <strong>${esc(c.side_a.role)}</strong> ↔ <strong>${esc(c.side_b.role)}</strong> ${esc(b?.address||c.side_b.switch_name||c.side_b.endpoint_id)}</p><p>Tunnel IDs: ${esc(deploymentIDs(row).join(', '))} · ${esc(runtimes)}</p>${runtimeButton}<p class="muted">${esc(t("uiLastOperationStatus"))} · ${esc(new Date(row.updated_at).toLocaleString(locale()))}. ${esc(t("uiCheckLiveTrafficInTheTopology"))}</p>${progress}${row.last_error?`<p class="controlled-error">${esc(row.last_error)}</p>`:''}<div class="button-row">${deployable?`<button class="primary" data-deployment-run="${esc(row.id)}" ${state.auth?.role==='admin'?'':'disabled'}>${row.status==='undeployed'?t('uiReattempt'):row.status==='failed'?(t("uiRetryDeploy")):(t("uiDeploy"))}</button>`:''}${canUndeploy(row)?`<button class="danger-button" data-deployment-undeploy="${esc(row.id)}" ${state.auth?.role==='admin'?'':'disabled'}>${esc(t("uiUndeploy"))}</button>`:''}</div>${row.status==='undeployed'?`<button class="danger-button" data-deployment-delete="${esc(row.id)}" ${state.auth?.role==='admin'?'':'disabled'}>${esc(t("uiDeleteRecord"))}</button>`:''}<div class="deployment-archives">${archives}</div><details><summary>${esc(t("uiIndividualFiles"))} · ${esc(row.scripts.length)}</summary><div class="deployment-scripts">${row.scripts.map(name=>`<button class="quiet-button" data-deployment-script="${esc(row.id)}" data-script-name="${esc(name)}">${esc(name)}</button>`).join('')}</div></details></article>`;
-  }).join('')||("<div class=\"service-empty\">"+t("uiNoTunnelRunbooksYet")+"</div>");
+  };
+  const active=controlledView.deployments.filter(row=>!archived(row));
+  const archive=controlledView.deployments.filter(archived);
+  $('deployment-list').innerHTML=active.map(renderCard).join('')+
+    (archive.length?`<details id="controlled-deployment-archive" class="sas-deployment-archive" ${archiveOpen?'open':''}><summary>${esc(t('sasArchive'))} <span>(${archive.length})</span></summary>${archive.map(renderCard).join('')}</details>`:'')||`<div class="service-empty">${esc(t('uiNoTunnelRunbooksYet'))}</div>`;
 }
 $('deployment-new').addEventListener('click',()=>openDeploymentForm());
 $('deployment-type').addEventListener('change',()=>{if($('deployment-type').value==='via'){$('deployment-count').value='8';$('deployment-via-mode').value='split';}updateDeploymentForm();});
@@ -3141,6 +3265,170 @@ $('deployment-list').addEventListener('click',async event=>{
   catch(error){$('controlled-status').textContent=diagnostic(error.message);}
 });
 $('deployment-script-copy').addEventListener('click',async()=>{await navigator.clipboard.writeText($('deployment-script-content').textContent);$('deployment-script-copy').textContent=(t("uiCopied"));setTimeout(()=>$('deployment-script-copy').textContent=(t("uiCopy")),1200);});
+let sasBusy=false,sasPreviewResult=null,sasBuildRows=[];
+function invalidateSasPreview(){sasPreviewResult=null;$('sas-result').hidden=true;$('sas-deploy').disabled=true;}
+async function loadSasTemplate(){
+  loadSasDeployments();
+  if(sasBusy)return;
+  $('sas-fields').disabled=state.auth?.role!=='admin';
+  try{
+    const [hosts,bundles]=await Promise.all([api('/api/v1/controlled-endpoints'),api('/api/v1/binary-bundles')]);
+    const old=$('sas-entry').value;
+    $('sas-entry').innerHTML=hosts.controlled_endpoints.filter(row=>['supported','unsupported','discovery_failed'].includes(row.status)).map(row=>`<option value="${esc(row.id)}">${esc(controlledEndpointLabel(row))}</option>`).join('');
+    if([...$('sas-entry').options].some(o=>o.value===old))$('sas-entry').value=old;
+    if(old!==$('sas-entry').value)invalidateSasPreview();
+    const selected=$('sas-switch').value;
+    $('sas-switch').innerHTML=`<option value="">${esc(t('sasManual'))}</option>`+deploymentSwitches().map(row=>`<option value="${esc(row.id)}">${esc(row.name)}</option>`).join('');
+    if([...$('sas-switch').options].some(o=>o.value===selected))$('sas-switch').value=selected;
+    sasBuildRows=bundles.binary_bundles;
+    const build=$('sas-build').value;
+    $('sas-build').innerHTML=`<option value="">${esc(t('sasManual'))}</option>`+sasBuildRows.map(row=>`<option value="${esc(row.id)}">${esc(row.name)} · ${esc(row.revision.slice(0,12))}</option>`).join('');
+    if([...$('sas-build').options].some(o=>o.value===build))$('sas-build').value=build;
+    $('sas-preview').disabled=!$('sas-entry').value||state.auth?.role!=='admin';
+    $('sas-status').textContent=$('sas-entry').value?'':t('sasNoEntry');updateSasNext();
+  }catch(error){$('sas-status').textContent=diagnostic(error.message);}
+}
+function sasNetworkOptions(addressText=$('sas-addresses').value,routeText=$('sas-routes').value){
+  const addresses=addressText.split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
+  const routes=routeText.split(/\r?\n/).map(line=>line.trim()).filter(Boolean).map(line=>{
+    const match=line.match(/^(\S+)(?:\s+via\s+(\S+))?(?:\s+metric\s+(\d+))?$/);
+    if(!match)throw new Error('Route: CIDR [via IP] [metric number]');
+    return {destination:match[1],...(match[2]?{via:match[2]}:{}),metric:match[3]?Number(match[3]):100};
+  });
+  return {addresses,routes};
+}
+function sasTemplateBody(){
+  return {package:true,entry_endpoint_id:$('sas-entry').value,template:{type:'sas-tunel-endpoint',network:sasNetworkOptions(),instance_id:$('sas-instance').value.trim(),prefix:$('sas-prefix').value.trim(),tunnel_id:Number($('sas-id').value),interface:$('sas-interface').value.trim(),peer:$('sas-peer').value.trim(),switch:{socket:$('sas-socket').value.trim(),port_id:$('sas-port').value.trim(),label:$('sas-label').value.trim()},runtime:{user:$('sas-user').value.trim(),group:$('sas-group').value.trim(),create_user_if_needed:$('sas-create-user').checked}}};
+}
+function sasIncompleteFields(){
+  return [...$('sas-form').querySelectorAll('input,select')].filter(el=>el.required&&!el.validity.valid);
+}
+function updateSasNext(){
+  for(const el of $('sas-form').querySelectorAll('input,select'))el.setAttribute('aria-invalid',String(el.required&&!el.validity.valid));
+  $('sas-missing').innerHTML=sasIncompleteFields().map(el=>`<li>${esc(t('sasFieldInvalid'))}: ${esc(el.closest('label')?.querySelector('span')?.textContent||el.closest('label')?.firstChild?.textContent?.trim()||el.id)}</li>`).join('');
+}
+$('sas-continue').addEventListener('click',()=>{
+  const target=sasIncompleteFields()[0]||$('sas-preview');
+  const details=target.closest('details');if(details)details.open=true;
+  target.scrollIntoView({behavior:'smooth',block:'center'});target.focus();
+  if(target!==$('sas-preview'))target.reportValidity();
+});
+$('sas-form').addEventListener('input',updateSasNext);
+$('sas-form').addEventListener('change',()=>{queueMicrotask(updateSasNext);});
+$('sas-resolve').addEventListener('click',async()=>{
+  if(sasBusy||state.auth?.role!=='admin')return;
+  if(!$('sas-entry').reportValidity()||!$('sas-instance').reportValidity())return;
+  invalidateSasPreview();sasBusy=true;$('sas-fields').disabled=true;$('sas-next').hidden=true;$('sas-resolve-info').textContent='';$('sas-sanity').textContent='';$('sas-resolve-status').textContent=t('uiWorking');$('sas-status').textContent='';
+  try{
+    const result=await api('/api/v1/sas-te/resolve','POST',{entry_endpoint_id:$('sas-entry').value,instance_id:$('sas-instance').value.trim(),runtime:{user:$('sas-user').value.trim(),group:$('sas-group').value.trim()}},60000);
+    $('sas-instance').value=result.location.id;
+    const location=result.location,ssh=result.ssh_observation;
+    const binary=result.installed_binary||{};
+    $('sas-installed-binary').textContent=t('sasInstalledBinary')+': '+(binary.path?`${binary.path} · ${binary.version} · ${binary.architecture} · SHA256 ${binary.sha256}`:binary.error||'—');
+
+    const sanity=result.sanity;
+    const checkLabel=value=>{const key='sasCheck_'+value;const translated=t(key);return translated===key?value:translated;};
+    $('sas-sanity').innerHTML=`<h4>${esc(t('sasSanityTitle'))}</h4><p>${esc(t('sasSanityScope'))}</p>`+(sanity?.status==='checked'?`<ul>${(sanity.checks||[]).map(check=>`<li class="sas-check ${check.status==='missing'?'sas-check-missing':''}"><strong>${esc(checkLabel(check.status))} · ${esc(checkLabel(check.name))}</strong><span>${esc(checkLabel(check.detail))}</span></li>`).join('')}</ul>`:`<p>${esc(t('sasSanityMissing'))}</p>`);
+
+    if(ssh.status==='observed'&&!$('sas-peer').value.trim())$('sas-peer').value=ssh.source_ip;
+    $('sas-resolve-info').innerHTML=Object.entries({Origin:location.origin,Namespace:location.namespace,[t('sasInstallation')]:location.microservices_dir,[t('sasApplianceWork')]:location.work_dir,State:location.state||'—',...(ssh.status==='observed'?{[t('sasSshSource')]:ssh.source_ip}:{})}).map(([k,v])=>`<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('');
+    const available=location.microservice_contract_version===3&&location.namespace_exists===true&&location.work_dir_exists===true;
+    $('sas-resolve-status').textContent=t(available?'sasResolveOk':'sasResolveUnavailable')+' '+t(ssh.status==='observed'?'sasSshNote':'sasSshMissing');
+    $('sas-next').hidden=!available;updateSasNext();
+  }catch(error){$('sas-resolve-status').textContent=diagnostic(error.message);}finally{sasBusy=false;$('sas-fields').disabled=state.auth?.role!=='admin';}
+});
+$('sas-entry').addEventListener('change',()=>{$('sas-resolve-info').textContent='';$('sas-resolve-status').textContent='';$('sas-sanity').textContent='';$('sas-next').hidden=true;});
+$('sas-instance').addEventListener('input',()=>{$('sas-resolve-info').textContent='';$('sas-resolve-status').textContent='';$('sas-sanity').textContent='';$('sas-next').hidden=true;});
+for(const id of ['sas-user','sas-group'])$(id).addEventListener('input',()=>{$('sas-sanity').textContent='';});
+$('sas-refresh').addEventListener('click',loadSasTemplate);
+$('sas-form').addEventListener('input',invalidateSasPreview);
+$('sas-form').addEventListener('change',invalidateSasPreview);
+$('sas-form').addEventListener('invalid',event=>{const details=event.target.closest('details');if(details)details.open=true;},true);
+$('sas-switch').addEventListener('change',()=>{const row=deploymentSwitches().find(e=>e.id===$('sas-switch').value);if(row)$('sas-socket').value=row.switch_socket;});
+$('sas-form').addEventListener('submit',async event=>{
+  event.preventDefault();if(sasBusy||state.auth?.role!=='admin')return;
+  let body;try{body=sasTemplateBody();}catch(error){$('sas-status').textContent=error.message;$('sas-routes').closest('details').open=true;$('sas-routes').focus();return;}invalidateSasPreview();sasBusy=true;$('sas-fields').disabled=true;$('sas-status').textContent=t('uiWorking');
+  try{
+    const result=await api('/api/v1/sas-te/preview','POST',body,45000);sasPreviewResult=result;
+    const location=result.plan.location_snapshot;
+    $('sas-location').innerHTML=Object.entries({Origin:location.origin,Namespace:location.namespace,[t('sasInstallation')]:location.microservices_dir,[t('sasApplianceWork')]:location.work_dir,State:location.state||'—'}).map(([k,v])=>`<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('');
+    const ssh=result.plan.ssh_observation;
+    if(ssh?.used_as_transport_ip&&!$('sas-peer').value.trim())$('sas-peer').value=ssh.source_ip;
+    $('sas-ssh-observation').textContent=ssh?.status==='observed'?`${t('sasSshSource')}: ${ssh.source_ip} → ${ssh.destination_ip}:${ssh.destination_port}. ${t('sasSshNote')}`:t('sasSshMissing');
+    $('sas-script').textContent=result.files[`payload/microservices/${result.plan.prefix_proposal}-start.sh`]+'\n# db.info (proposed)\n'+result.files['registration.row'];
+    $('sas-plan').textContent=JSON.stringify(result.plan,null,2);$('sas-result').hidden=false;$('sas-status').textContent=t('sasReady');
+    const caps=location.microservice_capabilities||{},ready=!!$('sas-switch').value&&location.microservice_mode==='managed'&&location.microservice_execution_enabled===true&&['installation','supervision','status','stop'].every(key=>caps[key]===true);
+    $('sas-deploy').disabled=!ready||state.auth?.role!=='admin';$('sas-deploy-hint').textContent=t(ready?'sasDeployReady':'sasDeployNeed');
+
+  }catch(error){$('sas-status').textContent=diagnostic(error.message);}finally{sasBusy=false;$('sas-fields').disabled=state.auth?.role!=='admin';}
+});
+let sasDeployPoll=null;
+const sasNetworkRows=new Map();
+function sasRouteText(route){return `${route.destination}${route.via?' via '+route.via:''} metric ${route.metric}`;}
+function sasNetworkEditor(row){
+  if(!['registered','running','attention'].includes(row.state)||state.auth?.role!=='admin')return '';
+  const network=row.network||{addresses:[],routes:[]};
+  return `<details class="sas-network-editor" data-id="${esc(row.id)}"><summary>${esc(t('sasApply'))}</summary><p>${esc(t('sasApplyHelp'))}</p><label>${esc(t('sasAddresses'))}<textarea data-network-addresses>${esc(network.addresses.join('\n'))}</textarea></label><label>${esc(t('sasRoutes'))}<textarea data-network-routes>${esc(network.routes.map(sasRouteText).join('\n'))}</textarea></label><button type="button" class="quiet-button" data-network-preview>${esc(t('sasDiff'))}</button><pre data-network-diff></pre><button type="button" data-network-apply disabled>${esc(t('sasApply'))}</button><p class="controlled-error" data-network-error></p></details>`;
+}
+
+async function loadSasDeployments(){
+  clearTimeout(sasDeployPoll);
+  try{
+    const result=await api('/api/v1/sas-deployments');
+    sasNetworkRows.clear();result.sas_deployments.forEach(row=>sasNetworkRows.set(row.id,row));
+    const archiveOpen=$('sas-archive')?.open||false;
+    const archived=row=>['attention','removed','failed','stopped','completed'].includes(row.state);
+    const renderCard=row=>`<article class="controlled-card"><strong>${esc(row.origin)} · ${esc(row.instance_id)} / ${esc(row.prefix)}</strong><p>${esc(row.state)}</p>${row.error?`<p class="controlled-error">${esc(row.error)}</p>`:''}<details><summary>${esc(t('uiDetails'))}</summary>${row.progress.map(item=>`<p>${esc(item.at)} · ${esc(item.message)}</p>`).join('')}</details><button type="button" class="quiet-button" data-sas-status="${esc(row.id)}" ${['deploying','undeploying','applying','removed'].includes(row.state)?'disabled':''}>${esc(t('sasRefreshStatus'))}</button><button type="button" class="quiet-button" data-sas-undeploy="${esc(row.id)}" ${['registered','running','attention'].includes(row.state)&&state.auth?.role==='admin'?'':'disabled'}>${esc(t('sasUndeploy'))}</button>${sasNetworkEditor(row)}</article>`;
+    const active=result.sas_deployments.filter(row=>!archived(row));
+    const archive=result.sas_deployments.filter(archived);
+    $('sas-deployments').innerHTML=`<h3>${esc(t('sasDeploymentsTitle'))}</h3>`+active.map(renderCard).join('')+
+      (archive.length?`<details id="sas-archive" class="sas-deployment-archive" ${archiveOpen?'open':''}><summary>${esc(t('sasArchive'))} <span>(${archive.length})</span></summary>${archive.map(renderCard).join('')}</details>`:'');
+    if(result.sas_deployments.some(row=>['deploying','undeploying','applying'].includes(row.state)))sasDeployPoll=setTimeout(loadSasDeployments,3000);
+  }catch(error){$('sas-status').textContent=diagnostic(error.message);}
+}
+$('sas-deploy').addEventListener('click',async()=>{
+  if(!sasPreviewResult||sasBusy||state.auth?.role!=='admin')return;
+  sasBusy=true;$('sas-deploy').disabled=true;
+  try{
+    await api('/api/v1/sas-te/deploy','POST',{entry_endpoint_id:$('sas-entry').value,template:JSON.parse(sasPreviewResult.files['template.json']),switch_id:$('sas-switch').value,expected_sha256:sasPreviewResult.plan.binary.sha256},90000);
+    invalidateSasPreview();await loadSasDeployments();$('sas-deployments').scrollIntoView({behavior:'smooth',block:'start'});
+  }catch(error){$('sas-deploy-hint').textContent=diagnostic(error.message);$('sas-deploy').disabled=false;}finally{sasBusy=false;}
+});
+$('sas-deployments').addEventListener('input',event=>{
+  const editor=event.target.closest('.sas-network-editor');if(!editor)return;
+  editor.querySelector('[data-network-apply]').disabled=true;editor.querySelector('[data-network-diff]').textContent='';delete editor.dataset.preview;
+});
+$('sas-deployments').addEventListener('click',async event=>{
+  const control=event.target.closest('[data-network-preview],[data-network-apply]');if(!control||control.disabled)return;
+  const editor=control.closest('.sas-network-editor'),row=sasNetworkRows.get(editor.dataset.id),error=editor.querySelector('[data-network-error]');
+  error.textContent='';
+  try{
+    const network=sasNetworkOptions(editor.querySelector('[data-network-addresses]').value,editor.querySelector('[data-network-routes]').value);
+    if(control.hasAttribute('data-network-preview')){
+      const lines=n=>[...n.addresses.map(a=>'IP '+a),...n.routes.map(r=>'route '+sasRouteText(r))];
+      const before=lines(row.network),after=lines(network),diff=[...before.filter(v=>!after.includes(v)).map(v=>'- '+v),...after.filter(v=>!before.includes(v)).map(v=>'+ '+v)];
+      editor.querySelector('[data-network-diff]').textContent=diff.join('\n')||t('sasNoChanges');
+      editor.dataset.preview=JSON.stringify(network);editor.querySelector('[data-network-apply]').disabled=false;
+    }else{
+      if(editor.dataset.preview!==JSON.stringify(network))return;
+      control.disabled=true;
+      await api(`/api/v1/sas-deployments/${encodeURIComponent(row.id)}/apply`,'POST',{network,expected_revision:row.network_revision},90000);
+      await loadSasDeployments();
+    }
+  }catch(problem){error.textContent=diagnostic(problem.message);control.disabled=false;}
+});
+$('sas-deployments').addEventListener('click',async event=>{
+  const button=event.target.closest('[data-sas-status],[data-sas-undeploy]');if(!button||button.disabled)return;
+  button.disabled=true;const ident=button.dataset.sasStatus||button.dataset.sasUndeploy,action=button.dataset.sasStatus?'status':'undeploy';
+  try{await api(`/api/v1/sas-deployments/${encodeURIComponent(ident)}/${action}`,'POST',{},90000);await loadSasDeployments();}
+  catch(error){$('sas-status').textContent=diagnostic(error.message);button.disabled=false;}
+});
+$('sas-download').addEventListener('click',()=>{
+  if(!sasPreviewResult||state.auth?.role!=='admin')return;
+  const result=sasPreviewResult,bytes=Uint8Array.from(atob(result.archive_base64),c=>c.charCodeAt(0)),url=URL.createObjectURL(new Blob([bytes],{type:'application/gzip'})),link=document.createElement('a');
+  link.href=url;link.download=result.filename;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);
+});
+
 let headlessBundles=[],headlessBusy=false;
 function updateHeadlessForm(){
   const binary=$('headless-format').value==='binary',divert=$('headless-kind').value==='divert',selected=$('headless-binary').value;
@@ -3188,7 +3476,7 @@ async function loadBinaryBundles(){
   try{
     const [data,endpoints]=await Promise.all([api('/api/v1/binary-bundles'),api('/api/v1/controlled-endpoints')]);
     const selected=$('bundle-endpoint').value;
-    $('bundle-endpoint').innerHTML=endpoints.controlled_endpoints.filter(row=>row.status==='supported').map(row=>`<option value="${esc(row.id)}">${esc(row.address)} · ${esc(row.snapshot?.system?.distribution)} ${esc(row.snapshot?.system?.version)}</option>`).join('');
+    $('bundle-endpoint').innerHTML=endpoints.controlled_endpoints.filter(row=>row.status==='supported').map(row=>`<option value="${esc(row.id)}">${esc(controlledEndpointLabel(row))} · ${esc(row.snapshot?.system?.distribution)} ${esc(row.snapshot?.system?.version)}</option>`).join('');
     if([...$('bundle-endpoint').options].some(option=>option.value===selected))$('bundle-endpoint').value=selected;
     headlessBundles=data.binary_bundles;updateHeadlessForm();
     updateBundleForm();
@@ -3466,7 +3754,7 @@ function renderWarnings() {
     $("warning-list").innerHTML=items.map(item=>{
       const reasons=item.checks.flatMap(check=>checkReasons(item,check));
       const exists=present.has(item.endpointId);
-      return `<article class="warning-balloon ${item.resolved?"warning-resolved":""}"><div class="warning-balloon-heading"><span class="attention-mark" aria-hidden="true">!</span><span>${esc(t(item.resolved?"warningResolved":"recordedWarning"))}</span><time data-warning-age="${item.id}" datetime="${esc(item.sampleId)}"></time><button class="warning-dismiss" data-dismiss-warning="${item.id}" aria-label="${esc(t("dismissWarning",{name:item.name}))}">×</button></div><button class="warning-process" data-warning-process="${esc(item.endpointId)}" data-warning-id="${item.id}" ${exists ? "" : "disabled"}>${esc(item.name)} <small>PID ${item.pid}</small>${exists ? " ↗" : ""}</button>${exists ? "" : `<p class="warning-gone">${esc(t("warningProcessGone"))}</p>`}<p>${esc(t("warningOccurrences",{count:item.count}))} · ${esc(t("warningFirst"))} ${esc(new Date(item.firstSampleId).toLocaleTimeString(locale()))}</p><p data-warning-resolution="${item.id}" ${item.resolved?"":"hidden"}></p><ul>${reasons.map(reason=>`<li><button class="warning-reason" data-warning-process="${esc(item.endpointId)}" data-warning-id="${item.id}" ${exists?"":"disabled"}>${esc(reason.text)}${exists?" ↗":""}</button></li>`).join("")}</ul></article>`;
+      return `<article class="warning-balloon ${item.resolved?"warning-resolved":""}"><div class="warning-balloon-heading"><span class="attention-mark" aria-hidden="true">!</span><span>${esc(t(item.resolved?"warningResolved":"recordedWarning"))}</span><time data-warning-age="${item.id}" datetime="${esc(item.sampleId)}"></time><button class="warning-dismiss" data-dismiss-warning="${item.id}" aria-label="${esc(t("dismissWarning",{name:item.name}))}">×</button></div><button class="warning-process" data-warning-process="${esc(item.endpointId)}" data-warning-id="${item.id}" ${exists ? "" : "disabled"}>${esc(item.name)} <small>${esc(processIdentity(item))}</small>${exists ? " ↗" : ""}</button>${exists ? "" : `<p class="warning-gone">${esc(t("warningProcessGone"))}</p>`}<p>${esc(t("warningOccurrences",{count:item.count}))} · ${esc(t("warningFirst"))} ${esc(new Date(item.firstSampleId).toLocaleTimeString(locale()))}</p><p data-warning-resolution="${item.id}" ${item.resolved?"":"hidden"}></p><ul>${reasons.map(reason=>`<li><button class="warning-reason" data-warning-process="${esc(item.endpointId)}" data-warning-id="${item.id}" ${exists?"":"disabled"}>${esc(reason.text)}${exists?" ↗":""}</button></li>`).join("")}</ul></article>`;
     }).join("");
   }
   for (const item of items) {

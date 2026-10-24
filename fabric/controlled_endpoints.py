@@ -142,12 +142,30 @@ class ControlledEndpoints:
                 UNIQUE(address,port));
         """)
 
+        self.db.execute("CREATE TABLE IF NOT EXISTS controlled_endpoint_metadata(id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL)")
+        self.db.commit()
+
+    def update_metadata(self, endpoint_id, data):
+        if not isinstance(data, dict) or set(data) != {'name', 'description'}:
+            raise ValueError('expected name and description')
+        for key, limit in (('name', 120), ('description', 2000)):
+            value = data[key]
+            if not isinstance(value, str) or len(value) > limit or any(ord(c) < 32 and not (key == 'description' and c in '\n\t') for c in value) or '\x7f' in value:
+                raise ValueError('invalid endpoint ' + key)
+        with self.lock, self.db:
+            self.get(endpoint_id)
+            self.db.execute("INSERT INTO controlled_endpoint_metadata VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description",
+                            (endpoint_id, data['name'].strip(), data['description'].strip()))
+        return self.get(endpoint_id)
+
     def close(self):
         with self.lock: self.db.close()
 
     @staticmethod
     def _public(row) -> dict:
         value = dict(row)
+        value.setdefault("name", "")
+        value.setdefault("description", "")
         value["host_keys"] = [{key: item[key] for key in ("bits", "fingerprint", "type")}
                               for item in json.loads(value["host_keys"])]
         value["snapshot"] = json.loads(value["snapshot"]) if value["snapshot"] else None
@@ -155,12 +173,12 @@ class ControlledEndpoints:
 
     def list(self) -> dict:
         with self.lock:
-            rows = self.db.execute("SELECT * FROM controlled_endpoint ORDER BY address,port").fetchall()
+            rows = self.db.execute("SELECT e.*,COALESCE(m.name,'') AS name,COALESCE(m.description,'') AS description FROM controlled_endpoint e LEFT JOIN controlled_endpoint_metadata m ON m.id=e.id ORDER BY e.address,e.port").fetchall()
             return {"controlled_endpoints": [self._public(row) for row in rows]}
 
     def get(self, endpoint_id: str) -> dict:
         if not re.fullmatch(r"[0-9a-f]{32}", endpoint_id): raise KeyError("unknown controlled endpoint")
-        with self.lock: row = self.db.execute("SELECT * FROM controlled_endpoint WHERE id=?", (endpoint_id,)).fetchone()
+        with self.lock: row = self.db.execute("SELECT e.*,COALESCE(m.name,'') AS name,COALESCE(m.description,'') AS description FROM controlled_endpoint e LEFT JOIN controlled_endpoint_metadata m ON m.id=e.id WHERE e.id=?", (endpoint_id,)).fetchone()
         if not row: raise KeyError("unknown controlled endpoint")
         return self._public(row)
 
