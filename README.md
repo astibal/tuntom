@@ -749,6 +749,13 @@ both `.deb` files and `SHA256SUMS`. The tag must exactly match the version in
 `src/version.hpp`. A manually started workflow keeps the packages as workflow
 artifacts without publishing a release.
 
+The latest non-prerelease also provides stable architecture-specific URLs:
+
+```text
+https://github.com/astibal/tuntom/releases/latest/download/tuntom_amd64.deb
+https://github.com/astibal/tuntom/releases/latest/download/tuntom_arm64.deb
+```
+
 See [test coverage](tests/README.md) and
 [standalone binary setup](docs/DETAILS.md#using-the-binary-without-the-bootstrap-script).
 Direct execution requires the `tuntom` user/group and root at startup.
