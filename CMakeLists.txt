@@ -1,5 +1,15 @@
 cmake_minimum_required(VERSION 3.16)
-project(tuntom LANGUAGES CXX)
+
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/src/version.hpp" TUNTOM_VERSION_LINE
+    REGEX "inline constexpr std::string_view version = \"[0-9]+\\.[0-9]+\\.[0-9]+\";")
+string(REGEX MATCH "[0-9]+\\.[0-9]+\\.[0-9]+" TUNTOM_VERSION "${TUNTOM_VERSION_LINE}")
+if(NOT TUNTOM_VERSION)
+    message(FATAL_ERROR "Could not read the Tuntom version from src/version.hpp")
+endif()
+
+project(tuntom VERSION ${TUNTOM_VERSION} LANGUAGES CXX)
+
+include(GNUInstallDirs)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -31,6 +41,52 @@ target_compile_options(tuntomctl PRIVATE -Wall -Wextra -pedantic)
 
 add_executable(tuntom-divert-adapter src/divert/main.cpp)
 target_compile_options(tuntom-divert-adapter PRIVATE -Wall -Wextra -Wconversion -pedantic)
+
+install(TARGETS
+    tuntom
+    tuntom-tun-helper
+    tuntom-gatekeeper
+    tuntom-switch
+    tomtom-switch-mp
+    tuntom-switch-adapter
+    tuntomctl
+    tuntom-divert-adapter
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(PROGRAMS tuntom-net.sh
+    DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}/tuntom)
+install(FILES tuntom.lua
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/tuntom/wireshark)
+install(FILES README.md README_SWITCHING.md README_SWITCHING_MP.md
+    DESTINATION ${CMAKE_INSTALL_DOCDIR})
+install(FILES LICENSE.md
+    DESTINATION ${CMAKE_INSTALL_DOCDIR}
+    RENAME copyright)
+install(DIRECTORY docs/
+    DESTINATION ${CMAKE_INSTALL_DOCDIR}/docs
+    FILES_MATCHING PATTERN "*.md")
+install(DIRECTORY examples/
+    DESTINATION ${CMAKE_INSTALL_DOCDIR}/examples
+    PATTERN "via" EXCLUDE)
+install(FILES packaging/tuntom.tmpfiles
+    DESTINATION lib/tmpfiles.d
+    RENAME tuntom.conf)
+
+configure_file(packaging/changelog.in changelog @ONLY)
+find_program(GZIP_EXECUTABLE gzip)
+if(NOT GZIP_EXECUTABLE)
+    message(FATAL_ERROR "gzip is required to build the Debian package")
+endif()
+execute_process(
+    COMMAND ${GZIP_EXECUTABLE} -9cn changelog
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    OUTPUT_FILE ${CMAKE_CURRENT_BINARY_DIR}/changelog.gz
+    RESULT_VARIABLE GZIP_RESULT)
+if(NOT GZIP_RESULT EQUAL 0)
+    message(FATAL_ERROR "Could not compress the Debian changelog")
+endif()
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/changelog.gz
+    DESTINATION ${CMAKE_INSTALL_DOCDIR}
+    RENAME changelog.Debian.gz)
 
 include(CTest)
 if(BUILD_TESTING)
@@ -262,3 +318,31 @@ if(BUILD_TESTING)
         set_tests_properties(logging_recovery_test PROPERTIES TIMEOUT 60)
     endif()
 endif()
+
+set(CPACK_GENERATOR DEB)
+set(CPACK_PACKAGE_DIRECTORY "${CMAKE_BINARY_DIR}/packages")
+set(CPACK_PACKAGE_NAME tuntom)
+set(CPACK_PACKAGE_VENDOR "Tuntom")
+set(CPACK_PACKAGE_CONTACT "Ales Stibal <astib@mag0.net>")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
+    "Encrypted UDP TUN tunnel and label-switching tools")
+set(CPACK_PACKAGE_DESCRIPTION
+    "Tuntom carries IPv4 and IPv6 traffic between Linux TUN interfaces over an
+encrypted UDP transport. It also includes label switches, adapters, a
+gatekeeper, namespace-aware TUN helper and the tuntomctl control client.")
+set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Ales Stibal <astib@mag0.net>")
+set(CPACK_DEBIAN_PACKAGE_RELEASE 1)
+set(CPACK_DEBIAN_PACKAGE_SECTION net)
+set(CPACK_DEBIAN_PACKAGE_PRIORITY optional)
+set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
+set(CPACK_DEBIAN_PACKAGE_DEPENDS "adduser")
+set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "iproute2, iptables")
+set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA
+    "${CMAKE_CURRENT_SOURCE_DIR}/packaging/postinst")
+set(CPACK_STRIP_FILES TRUE)
+set(CPACK_INSTALL_DEFAULT_DIRECTORY_PERMISSIONS
+    OWNER_READ OWNER_WRITE OWNER_EXECUTE
+    GROUP_READ GROUP_EXECUTE
+    WORLD_READ WORLD_EXECUTE)
+include(CPack)

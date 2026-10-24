@@ -1,0 +1,6 @@
+tuntom (@PROJECT_VERSION@-1) unstable; urgency=medium
+
+  * Package the complete Tuntom runtime separately from Fabric.
+  * Publish native amd64 and arm64 packages from a Debian 11 baseline.
+
+ -- Ales Stibal <astib@mag0.net>  Sat, 24 Oct 2026 00:00:00 +0200

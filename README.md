@@ -730,6 +730,24 @@ test when `tshark` and `python3` are available. It requires no root or live tunn
 bash tests/run.sh
 ```
 
+### Debian package
+
+Build the runtime package locally with CPack:
+
+```bash
+cmake -S . -B /tmp/tuntom-package -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+cmake --build /tmp/tuntom-package
+cpack --config /tmp/tuntom-package/CPackConfig.cmake -G DEB
+sudo apt install /tmp/tuntom-package/packages/tuntom_*.deb
+```
+
+The package contains the Tuntom binaries, runtime helper, documentation and
+examples. Fabric is intentionally packaged separately and is not included.
+Publishing a GitHub Release tagged `v<version>` builds and tests native `amd64`
+and `arm64` packages on a Debian 11 baseline, then attaches both `.deb` files to
+the release. The version is read from `src/version.hpp`. A manually started
+workflow keeps the packages as workflow artifacts without modifying a release.
+
 See [test coverage](tests/README.md) and
 [standalone binary setup](docs/DETAILS.md#using-the-binary-without-the-bootstrap-script).
 Direct execution requires the `tuntom` user/group and root at startup.
