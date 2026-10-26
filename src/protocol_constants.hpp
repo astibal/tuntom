@@ -1,0 +1,41 @@
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+
+namespace tuntom {
+
+// Wire and packet limits shared by all platform backends.
+inline constexpr std::uint8_t protocol_version_v5 = 5;
+
+inline constexpr std::size_t protocol_header_v5_size = 25;
+
+inline constexpr std::size_t protocol_fragment_v5_size = 37;
+inline constexpr std::size_t protocol_probe_v5_size = 35;
+inline constexpr std::size_t protocol_handshake_v5_size = 34;
+
+inline constexpr std::size_t udp_header_size = 8;
+inline constexpr std::size_t ipv4_header_min_size = 20;
+inline constexpr std::size_t ipv6_header_size = 40;
+inline constexpr std::size_t buffer_size = 65536;
+
+inline constexpr std::size_t default_tun_mtu = 1500;
+inline constexpr std::size_t default_transport_mtu = 1400;
+inline constexpr std::size_t min_transport_mtu = 500;
+inline constexpr std::size_t pmtud_upper_mtu = 1500;
+inline constexpr int pmtud_probe_timeout_seconds = 2;
+inline constexpr std::size_t max_ip_packet_size = 65535;
+// Largest canonical switch frame (8 labels) plus the relay envelope.
+inline constexpr std::size_t max_ipc_packet_size = max_ip_packet_size + 72 + 32;
+
+inline constexpr int keepalive_seconds = 20;
+inline constexpr int rtt_probe_interval_seconds = 15;
+inline constexpr int rtt_probe_timeout_seconds = 5;
+inline constexpr int reassembly_timeout_seconds = 3;
+inline constexpr std::size_t max_reassembly_entries = 512;
+inline constexpr std::size_t max_reassembly_bytes = 16 * 1024 * 1024;
+inline constexpr std::size_t max_reassembly_discarded = 32768;
+inline constexpr std::size_t max_fragments_per_packet = 64;
+inline constexpr std::size_t max_ipc_fragments_per_packet = 256;
+
+} // namespace tuntom

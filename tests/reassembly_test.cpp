@@ -1,5 +1,6 @@
 // Deterministic overload and loss tests. No sockets, real-time sleeps or root.
 #include "../src/reassembly.hpp"
+#include "../src/common.hpp"
 #include <iostream>
 #include <limits>
 #include <sstream>

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "packet.hpp"
+#include "packet_types.hpp"
 #include "processing_stats.hpp"
 #include <algorithm>
 #include <chrono>

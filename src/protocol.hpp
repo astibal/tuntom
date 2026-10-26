@@ -1,7 +1,7 @@
 #pragma once
 
-#include "packet.hpp"
-#include "info_message.hpp"
+#include "packet_types.hpp"
+#include "info_codec.hpp"
 #include "wire.hpp"
 #include <algorithm>
 #include <array>
@@ -10,7 +10,6 @@
 #include <cstring>
 #include <stdexcept>
 #include <vector>
-#include <arpa/inet.h>
 
 namespace tuntom {
 

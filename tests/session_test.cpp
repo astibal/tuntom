@@ -1,5 +1,6 @@
 // Socket-free state-machine tests with an explicit monotonic clock.
 #include "../src/session.hpp"
+#include "../src/common.hpp"
 
 using namespace tuntom;
 

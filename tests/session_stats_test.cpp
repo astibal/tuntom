@@ -1,4 +1,5 @@
 #include "../src/session.hpp"
+#include "../src/common.hpp"
 #include <sstream>
 #include <iostream>
 #include <map>

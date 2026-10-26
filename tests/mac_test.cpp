@@ -1,4 +1,5 @@
 #include "../src/protocol.hpp"
+#include "../src/common.hpp"
 
 #include <random>
 
