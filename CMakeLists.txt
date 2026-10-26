@@ -90,6 +90,10 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/changelog.gz
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(platform_random_test tests/platform_random_test.cpp)
+    target_compile_options(platform_random_test PRIVATE -Wall -Wextra -Wconversion -pedantic)
+    target_link_options(platform_random_test PRIVATE -Wl,--wrap=getrandom)
+    add_test(NAME platform_random_test COMMAND platform_random_test)
     foreach(component tuntom tuntomctl tuntom-tun-helper tuntom-gatekeeper
                       tuntom-switch tomtom-switch-mp tuntom-switch-adapter tuntom-divert-adapter)
         add_test(NAME version_${component} COMMAND ${component} --version)

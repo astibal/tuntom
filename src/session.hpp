@@ -5,6 +5,7 @@
 #include "x25519.hpp"
 #include "replay.hpp"
 #include "reassembly.hpp"
+#include "platform/random.hpp"
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
@@ -18,12 +19,6 @@
 #include <limits>
 #include <stdexcept>
 #include <vector>
-#ifdef _WIN32
-#include <windows.h>
-#include <bcrypt.h>
-#else
-#include <sys/random.h>
-#endif
 
 namespace tuntom {
 
@@ -543,24 +538,7 @@ private:
         random_retry_after_ = now + retry_interval;
     }
     static bool random_bytes(std::uint8_t* output, std::size_t size) {
-#ifdef _WIN32
-        // Use the system CSPRNG; failure never falls back to weaker entropy.
-        if (size > (std::numeric_limits<ULONG>::max)()) {
-            return false;
-        }
-        return BCryptGenRandom(nullptr, output, static_cast<ULONG>(size),
-                               BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0;
-#else
-        while (size != 0) {
-            const auto n = ::getrandom(output, size, GRND_NONBLOCK);
-            // No fallback entropy and no unbounded EINTR retry in the packet
-            // loop. The next handshake attempt waits for the retry interval.
-            if (n <= 0) return false;
-            output += n;
-            size -= static_cast<std::size_t>(n);
-        }
-        return true;
-#endif
+        return platform::random_bytes(output, size);
     }
     static std::uint64_t random_id() {
         std::array<std::uint8_t, 8> bytes {};
