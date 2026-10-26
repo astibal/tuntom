@@ -1,6 +1,17 @@
 #pragma once
 
+// Keep Win32 macros out of the portable session headers.
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
+// windows.h may already have been included by the embedding application.
+#ifdef min
+#undef min
+#endif
+#ifdef max
+#undef max
+#endif
 #include <bcrypt.h>
 #include <cstddef>
 #include <cstdint>

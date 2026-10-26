@@ -1,4 +1,5 @@
 #pragma once
+#include "control_keygen.hpp"
 #include "control_route.hpp"
 #include "control_discovery.hpp"
 #include "control_protocol.hpp"

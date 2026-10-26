@@ -1,6 +1,7 @@
 #pragma once
 #include "ascon.hpp"
 #include "x25519.hpp"
+#include "platform/random.hpp"
 #include <algorithm>
 #include <chrono>
 #include <fstream>
@@ -12,10 +13,6 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
-#include <sys/random.h>
-#include <cerrno>
-#include <fcntl.h>
-#include <unistd.h>
 
 namespace tuntom::control_auth {
 using Key = x25519::Bytes;
@@ -26,12 +23,10 @@ using Time = Clock::time_point;
 constexpr std::size_t challenge_size=80, proof_size=88;
 struct EntropyError : std::runtime_error {using std::runtime_error::runtime_error;};
 inline void random(Key& key) {
-    std::size_t at=0;
-    while(at<key.size()) {
-        const auto n=::getrandom(key.data()+at,key.size()-at,GRND_NONBLOCK);
-        if(n<0 && errno==EINTR)continue;
-        if(n<=0)throw EntropyError("cannot generate control challenge");
-        at+=static_cast<std::size_t>(n);
+    // Entropy failure aborts this attempt; the caller controls retry policy.
+    if (!platform::random_bytes(key.data(), key.size())) {
+        secure_zero(key.data(), key.size());
+        throw EntropyError("cannot generate control challenge");
     }
 }
 inline Key parse_key(const std::string& text) {
@@ -167,29 +162,6 @@ inline constexpr const char* help =
     "  --control-require-authority HEX  Require this public key; otherwise peer selects\n"
     "  --control-require-caps MASK   Additional required capabilities (u64)\n"
     "  --control-require-level N     Minimum level for every required capability\n";
-// Key provisioning is explicit and never overwrites existing files.
-inline void keygen(const std::string& private_path,const std::string& public_path,
-                   std::uint64_t caps,std::uint64_t level) {
-    if(private_path==public_path)throw std::runtime_error("private and public key paths must differ");
-    Secret<32> secret;random(secret.bytes);Key pub{};x25519::public_key(pub,secret.bytes);
-    auto write_file=[](const std::string& path,const std::string& data,mode_t mode) {
-        const int fd=::open(path.c_str(),O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC,mode);
-        if(fd<0)throw std::runtime_error("cannot create control key file: "+path);
-        std::size_t at=0;bool ok=true;
-        while(at<data.size()) {
-            const auto n=::write(fd,data.data()+at,data.size()-at);
-            if(n<0 && errno==EINTR)continue;
-            if(n<=0){ok=false;break;}at+=static_cast<std::size_t>(n);
-        }
-        if(::close(fd)!=0)ok=false;
-        if(!ok){::unlink(path.c_str());throw std::runtime_error("cannot write control key file: "+path);}
-    };
-    auto priv="x25519-secret "+hex(secret.bytes)+" "+std::to_string(caps)+" "+std::to_string(level)+"\n";
-    WipeGuard wipe(priv.data(),priv.size());
-    write_file(private_path,priv,0600);
-    try{write_file(public_path,"x25519 "+hex(pub)+" "+std::to_string(caps)+" "+std::to_string(level)+"\n",0644);}
-    catch(...){::unlink(private_path.c_str());throw;}
-}
 struct Challenge {
     Key n{},authority{};
     std::uint64_t caps=0,level=0;

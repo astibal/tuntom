@@ -1,5 +1,28 @@
 # tuntom
 
+## Portable protocol build (Linux / Windows)
+
+The session and CONTROL authentication core can be built independently of the
+Linux daemons, without Skewer, TUN privileges, packaging tools or network setup:
+
+```sh
+cmake -S . -B build-core -DTUNTOM_PORTABLE_CORE_ONLY=ON -DBUILD_TESTING=ON
+cmake --build build-core
+ctest --test-dir build-core --output-on-failure
+```
+
+For cross-compilation, also pass a Windows CMake toolchain file and run the
+resulting `portable_core_test.exe` on Windows. The `tuntom-core` interface target
+supplies the headers and Windows CNG dependency. It tests real system entropy,
+CONTROL challenge/proof authentication, tamper/replay rejection and encrypted
+PFS sessions. It does **not** build a Windows VPN executable: packet I/O, daemon
+lifecycle and traffic protection are separate platform integration work.
+Private-key file provisioning remains Linux-only, with exclusive creation and
+restricted permissions; unsupported platforms fail explicitly rather than
+writing secrets using inherited/default file permissions.
+
+## Linux tunnel
+
 **Linux IP tunneling over UDP, with encrypted forward-secret sessions and SSH
 deployment.**
 
