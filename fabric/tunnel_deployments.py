@@ -353,6 +353,8 @@ The PSK is intentionally absent from this bundle; create secrets/master.env mode
     if config.get("via"):
         from via_deployments import extend_bundle
         extend_bundle(scripts, config, root)
+    from tunnel_network import extend_bundle as extend_network
+    extend_network(scripts, config, root)
     from systemd_deployments import extend_bundle as extend_systemd
     extend_systemd(scripts, config, root)
     scripts.update(undeploy_bundle(config))

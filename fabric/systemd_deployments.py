@@ -36,6 +36,11 @@ WantedBy=multi-user.target
         for runner, unit in services.items():
             adapter = runner.startswith('via-')
             dependencies = ('Wants=' + ' '.join(relays) + '\nAfter=' + ' '.join(relays) + '\n') if adapter else ''
+            network_path = root + '/runtime/network-' + runner + '.sh'
+            networked = prefix + 'runtime/network-' + runner + '.sh' in files
+            before = ('ExecStartPre=/bin/bash ' + unit_quote(network_path) + ' down\n') if networked else ''
+            after = ('ExecStartPost=/bin/bash ' + unit_quote(network_path) + ' up\n'
+                     'ExecStopPost=/bin/bash ' + unit_quote(network_path) + ' down\n') if networked else ''
             units[unit] = header + f'''[Unit]
 Description=Tuntom {config['name']} / {runner}
 PartOf={target}
@@ -47,8 +52,8 @@ StartLimitBurst=10
 Type=exec
 Slice={slice_name}
 WorkingDirectory={root.replace("%", "%%")}
-ExecStart=/bin/bash {unit_quote(root + '/runtime/run-' + runner + '.sh')}
-Restart=on-failure
+{before}ExecStart=/bin/bash {unit_quote(root + '/runtime/run-' + runner + '.sh')}
+{after}Restart=on-failure
 RestartSec=2s
 KillMode=control-group
 TimeoutStopSec=25s

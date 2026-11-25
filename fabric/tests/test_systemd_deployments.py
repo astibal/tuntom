@@ -83,6 +83,22 @@ class SystemdDeploymentTests(unittest.TestCase):
                     unit=bundle['side_a/systemd/'+cleanup.systemd_prefix('d'*32)+'_via_0.service']
                     self.assertIn('_231c.service',unit)
 
+    def test_return_routing_hooks_only_for_kernel_tun_endpoints(self):
+        config, bundle = self.bundle()
+        for side in ('side_a', 'side_b'):
+            units = [text for name, text in bundle.items()
+                     if name.startswith(side + '/systemd/') and name.endswith('.service')]
+            networked = config[side]['attachment']['type'] == 'tun'
+            for unit in units:
+                self.assertEqual('ExecStartPre=' in unit, networked)
+                self.assertEqual('ExecStartPost=' in unit, networked)
+                self.assertEqual('ExecStopPost=' in unit, networked)
+            if networked:
+                self.assertIn(side + '/runtime/tuntom-net.sh', bundle)
+                self.assertIn('iptables', bundle[side + '/scripts/10-install-dependencies.sh'])
+        _, via = self.bundle(via=True)
+        self.assertFalse(any('/runtime/network-' in name for name in via))
+
     def test_runtime_validation_preserves_screen_default(self):
         self.assertEqual(validate(draft())[0]['side_a']['runtime'],'screen')
         for value in ('other',None):

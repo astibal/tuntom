@@ -1187,3 +1187,22 @@ and Undeploy. A host-side journal records pending entries before mutation, so a
 lost SSH response or partial failure can be reconciled by repeating Apply.
 Network changes are not atomic: failures are shown as `attention` and may leave
 partial changes until retried. The journal also supports verified Undeploy cleanup.
+
+### Generated TUN return-routing lifecycle
+
+Plain TUN deployment endpoints now install fail-closed IPv4 return routing by
+default. Systemd units reserve the blackhole policy with ExecStartPre, wait
+for the TUN/control socket and activate it with ExecStartPost, then withdraw the
+live route with ExecStopPost (including failed starts and process crashes).
+Screen runners use the same hooks and a signal/exit cleanup trap. Pure switch
+and VIA relay endpoints do not receive kernel TUN routing hooks.
+
+Members use distinct upper-16-bit marks and tables (10000 + encoded member ID).
+The TUN is brought UP without assigning addresses, enabling forwarding or
+publishing ports. Validate host policy-rule precedence before deployment.
+Stopped deployments retain policy guards intentionally, including on undeploy;
+permanent retirement requires explicit guard cleanup after old flows expire.
+This is not a remote-peer health detector: while the TUN remains, traffic stays
+on it rather than falling back to the host default route. A configuration that
+routes arbitrary new unmarked traffic into TUNs also needs matching persistent
+policy guards; the generated protection covers marked tracked return traffic.

@@ -31,8 +31,8 @@ def route(mark=None):
 
 def expect_blocked():
     result = route(MARK)
-    rejected = 'unreachable' in result.stderr.lower() or 'no route to host' in result.stderr.lower()
-    assert result.returncode != 0 and rejected, result
+    assert result.returncode != 0, result
+    assert 'blackhole default' in run('ip', '-4', 'route', 'show', 'table', TABLE).stdout
     assert 'fallback' in route().stdout, 'ordinary host route must remain usable'
     # Unrelated low mark bits (such as TPROXY) must not bypass our mask.
     assert route(str(int(MARK) | 1)).returncode != 0
@@ -50,7 +50,7 @@ def send_marked_reply():
         try:
             sock.sendto(b'return-route-test', ('198.18.0.10', 41942))
         except OSError as error:
-            assert error.errno in (errno.ENETUNREACH, errno.EHOSTUNREACH), error
+            assert error.errno in (errno.EINVAL,), error
         else:
             raise AssertionError('locally generated marked reply escaped')
 
@@ -76,7 +76,7 @@ def inside():
     lifecycle('up')
     run('ip', 'link', 'del', 'tt-test')
     expect_blocked()
-    print('PASS: disappearing interface retains unreachable fallback')
+    print('PASS: disappearing interface retains blackhole fallback')
 
     lifecycle('down')
     lifecycle('down')

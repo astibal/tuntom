@@ -100,7 +100,7 @@ iptables_delete_chain() {
 # Keep the policy reservation across stop/start. Removing it would let existing
 # conntrack entries fall through to the host's ordinary routing tables.
 tuntom_reply_route_ensure() {
-    ip -4 route replace unreachable default table "$TUNTOM_TABLE" metric 42760
+    ip -4 route replace blackhole default table "$TUNTOM_TABLE" metric 42760
 
     local rules
     rules="$(ip -4 rule show fwmark "${TUNTOM_MARK}/${TUNTOM_MARK_MASK}" table "$TUNTOM_TABLE")"
@@ -127,6 +127,18 @@ tuntom_reply_marks_ensure() {
         -j "$reply_chain" >/dev/null 2>&1; then
         iptables -t mangle -A PREROUTING ! -i "$TUNTOM_IF" -j "$reply_chain"
     fi
+    if ! iptables -t mangle -C OUTPUT \
+        -m connmark --mark "${TUNTOM_MARK}/${TUNTOM_MARK_MASK}" \
+        -j CONNMARK --restore-mark \
+        --nfmask "$TUNTOM_MARK_MASK" \
+        --ctmask "$TUNTOM_MARK_MASK" >/dev/null 2>&1; then
+        iptables -t mangle -A OUTPUT \
+            -m connmark --mark "${TUNTOM_MARK}/${TUNTOM_MARK_MASK}" \
+            -j CONNMARK --restore-mark \
+            --nfmask "$TUNTOM_MARK_MASK" \
+            --ctmask "$TUNTOM_MARK_MASK"
+    fi
+
 }
 
 tuntom_net_up() {
@@ -167,18 +179,6 @@ tuntom_net_up() {
     iptables -t mangle -A "$mangle_chain" \
         -i "$TUNTOM_IF" \
         -j MARK --set-xmark "0/${TUNTOM_MARK_MASK}"
-
-    if ! iptables -t mangle -C OUTPUT \
-        -m connmark --mark "${TUNTOM_MARK}/${TUNTOM_MARK_MASK}" \
-        -j CONNMARK --restore-mark \
-        --nfmask "$TUNTOM_MARK_MASK" \
-        --ctmask "$TUNTOM_MARK_MASK" >/dev/null 2>&1; then
-        iptables -t mangle -A OUTPUT \
-            -m connmark --mark "${TUNTOM_MARK}/${TUNTOM_MARK_MASK}" \
-            -j CONNMARK --restore-mark \
-            --nfmask "$TUNTOM_MARK_MASK" \
-            --ctmask "$TUNTOM_MARK_MASK"
-    fi
 
     #
     # FORWARD helpers

@@ -911,11 +911,11 @@ return path can be associated with them.
 
 ### Reply routing when a tunnel stops
 
-`tuntom-net.sh` installs an IPv4 `unreachable default` with metric 42760 in
+`tuntom-net.sh` installs an IPv4 `blackhole default` with metric 42760 in
 its policy table, behind the live TUN default (metric 0). If the live route or
 interface disappears, marked traffic terminates there instead of falling
 through to `main`. Stop removes only the live default; the policy rule,
-unreachable route, reply-restoration chain (`TUNTOM_<id>_R`) and OUTPUT mark
+blackhole route, reply-restoration chain (`TUNTOM_<id>_R`) and OUTPUT mark
 restoration deliberately remain. Repeated start/stop reuses this reservation.
 Reserve that mark/mask/table and interface name until all old flows are retired;
 permanent manual removal of these guards removes their protection as well.
