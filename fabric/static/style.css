@@ -472,3 +472,7 @@ html:fullscreen{background:var(--bg);overflow:auto}
 .sas-deployment-archive{margin-top:18px;border-top:1px solid var(--line);padding-top:14px}
 .sas-deployment-archive>summary{cursor:pointer;color:var(--muted);padding:8px 0;font-weight:600}
 .sas-deployment-archive>.controlled-card{margin-top:12px}
+
+/* Native disclosure controls keep deployment details accessible by keyboard. */
+.endpoint-tunnels>summary,.deployment-card>details>summary{cursor:pointer}
+.deployment-card>details>summary>header{display:inline-flex;width:calc(100% - 24px);vertical-align:middle;align-items:center;justify-content:space-between;gap:12px}
