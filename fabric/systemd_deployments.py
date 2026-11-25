@@ -2,6 +2,7 @@
 from pathlib import Path
 import hashlib
 import json
+import re
 import shlex
 from deployment_cleanup import systemd_prefix
 
@@ -15,6 +16,12 @@ def extend_bundle(files, config, root):
     for side_name in ('side_a', 'side_b'):
         side = config[side_name]
         if side['runtime'] != 'systemd': continue
+        # Collector discovery supplies the service owning the observed switch.
+        switch_unit = side.get('switch_systemd_unit', '')
+        valid_switch_unit = re.fullmatch(r'[A-Za-z0-9_.@:-]+\.service', switch_unit) if switch_unit else True
+        if not valid_switch_unit:
+            raise ValueError('invalid switch systemd service name')
+        switch_dependencies = f'Wants={switch_unit}\nAfter={switch_unit}\n' if switch_unit else ''
         prefix = side_name + '/'
         ident = config['deployment_id']
         base = systemd_prefix(ident)
@@ -45,7 +52,7 @@ WantedBy=multi-user.target
 Description=Tuntom {config['name']} / {runner}
 PartOf={target}
 After=network-online.target
-{dependencies}StartLimitIntervalSec=60
+{switch_dependencies}{dependencies}StartLimitIntervalSec=60
 StartLimitBurst=10
 
 [Service]

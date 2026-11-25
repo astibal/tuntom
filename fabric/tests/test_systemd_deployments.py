@@ -217,3 +217,23 @@ class SystemdDeploymentTests(unittest.TestCase):
         with patch.object(local,'execute',return_value={'output':'ActiveState=active'}) as run:
             result=Fabric.switch_deployment(SimpleNamespace(allow_write=False),{'action':'status','deployment_id':'d'*32})
         self.assertIn('active',result['output']);run.assert_called_once()
+
+class SwitchBootOrderTests(unittest.TestCase):
+    def test_only_switch_side_orders_after_discovered_service(self):
+        config, _ = validate(systemd_draft())
+        config['deployment_id'] = 'a' * 32
+        config['side_a']['switch_systemd_unit'] = 'tuntom-rs1-switch.service'
+        files = render_bundle(config, {config[side]['endpoint_id']: 'host' for side in ('side_a', 'side_b')}, 'unused', '/opt/tuntom/test')
+        for name, content in files.items():
+            if not name.endswith('.service'):
+                continue
+            expected = name.startswith('side_a/')
+            self.assertEqual('Wants=tuntom-rs1-switch.service\n' in content, expected)
+            self.assertEqual('After=tuntom-rs1-switch.service\n' in content, expected)
+
+    def test_switch_service_cannot_inject_unit_directives(self):
+        config, _ = validate(systemd_draft())
+        config['deployment_id'] = 'a' * 32
+        config['side_a']['switch_systemd_unit'] = 'switch.service\nRequires=other.service'
+        with self.assertRaisesRegex(ValueError, 'invalid switch systemd'):
+            render_bundle(config, {config[side]['endpoint_id']: 'host' for side in ('side_a', 'side_b')}, 'unused', '/opt/tuntom/test')

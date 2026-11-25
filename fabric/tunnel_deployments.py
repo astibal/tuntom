@@ -435,6 +435,7 @@ class TunnelDeployments:
                 side["attachment"]["switch_socket"] = resolved["switch_socket"]
                 side["local_binaries"] = resolved["binaries"]
                 side["switch_name"] = resolved["name"]
+                side["switch_systemd_unit"] = resolved.get("systemd_unit", "")
                 endpoint_addresses[side["endpoint_id"]] = resolved["name"] + " (collector)"
                 continue
             endpoint = self.endpoints.get(side["endpoint_id"])
@@ -744,7 +745,7 @@ class TunnelDeployments:
         for key in ("side_a", "side_b"):
             side = dict(config[key]); side["attachment"] = dict(side["attachment"])
             if side.get("switch_id"):
-                for field in ("endpoint_id", "local_binaries", "switch_name"): side.pop(field, None)
+                for field in ("endpoint_id", "local_binaries", "switch_name", "switch_systemd_unit"): side.pop(field, None)
                 side["attachment"].pop("switch_socket", None)
             intent[key] = side
         intent["secret"] = {"mode": "generate"}

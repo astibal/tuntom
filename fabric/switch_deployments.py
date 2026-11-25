@@ -57,7 +57,8 @@ def inspect_switch(fabric, key):
             ports.update(port['name'] for port in (row.get('switch_detail') or {}).get('ports', []) if port.get('name'))
         elif row.get('source', 'local') == 'local' and row.get('switch_socket') == endpoint.switch_socket and row.get('port_id'):
             ports.add(row['port_id'])
-    return {'name': endpoint.name, 'switch_socket': endpoint.switch_socket, 'binaries': binaries, 'ports': sorted(ports)}
+    return {'name': endpoint.name, 'switch_socket': endpoint.switch_socket, 'binaries': binaries, 'ports': sorted(ports),
+            'systemd_unit': getattr(endpoint, 'unit', '')}
 
 
 def run_script(root, step, timeout=120):
@@ -136,6 +137,7 @@ def execute(fabric, body):
                 (root / '.fabric-intent').write_text(intent)
             side['attachment']['switch_socket'] = resolved['switch_socket']
             side['local_binaries'] = resolved['binaries']
+            side['switch_systemd_unit'] = resolved.get('systemd_unit', '')
             config.update(schema=1, deployment_id=ident)
             addresses = {config[key]['endpoint_id']: 'collector' for key in ('side_a', 'side_b')}
             bundle = render_bundle(config, addresses, '', root=str(root))
