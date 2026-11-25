@@ -14,6 +14,7 @@ set -euo pipefail
 #   TUNTOM_MARK_MASK   default: 0x00ff0000
 #   TUNTOM_MARK        default: TUNTOM_ID << 16
 #   TUNTOM_TABLE       default: 10000 + TUNTOM_ID
+#   TUNTOM_RULE_PRIORITY default: 29800 (integration range 29000..29999)
 #   TUNTOM_CHAIN       default: TUNTOM_<id>
 #   TUNTOM_MSS_CLAMP   default: 1
 #   TUNTOM_SNAT        default: 0
@@ -34,6 +35,8 @@ TUNTOM_MARK_MASK="${TUNTOM_MARK_MASK:-0x00ff0000}"
 TUNTOM_MARK="${TUNTOM_MARK:-$((TUNTOM_ID << 16))}"
 TUNTOM_TABLE="${TUNTOM_TABLE:-$((10000 + TUNTOM_ID))}"
 TUNTOM_CHAIN="${TUNTOM_CHAIN:-TUNTOM_${TUNTOM_ID}}"
+TUNTOM_RULE_PRIORITY="${TUNTOM_RULE_PRIORITY:-29800}"
+TUNTOM_POLICY_HELPER="${TUNTOM_POLICY_HELPER:-$(dirname "${BASH_SOURCE[0]}")/fwmark-policy-rule.py}"
 
 # Defaults:
 # - MSS clamping ON
@@ -102,23 +105,26 @@ iptables_delete_chain() {
 tuntom_reply_route_ensure() {
     ip -4 route replace blackhole default table "$TUNTOM_TABLE" metric 42760
 
-    local rules
-    rules="$(ip -4 rule show fwmark "${TUNTOM_MARK}/${TUNTOM_MARK_MASK}" table "$TUNTOM_TABLE")"
-    if [[ -z "$rules" ]]; then
-        ip -4 rule add fwmark "${TUNTOM_MARK}/${TUNTOM_MARK_MASK}" table "$TUNTOM_TABLE"
-    fi
+    # TPROXY (29100) delivers locally before tunnel return routing (29800).
+    # Parallel tunnels share this priority with disjoint connection marks.
+    python3 "${TUNTOM_POLICY_HELPER}" 4 "$TUNTOM_RULE_PRIORITY" \
+        "$TUNTOM_MARK" "$TUNTOM_MARK_MASK" "$TUNTOM_TABLE"
 }
 
 # Reply restoration has a separate lifetime from ingress marking. Keep it when
 # the TUN disappears, including for locally generated replies from a proxy.
 tuntom_reply_marks_ensure() {
+    # Transparent upstream sockets may reuse the original client tuple.
+    # Only replies may restore the tunnel mark; ORIGINAL follows normal routing.
     local reply_chain="${TUNTOM_CHAIN}_R"
     iptables_ensure_chain mangle "$reply_chain"
     if ! iptables -t mangle -C "$reply_chain" \
+        -m conntrack --ctdir REPLY \
         -m connmark --mark "${TUNTOM_MARK}/${TUNTOM_MARK_MASK}" \
         -j CONNMARK --restore-mark \
         --nfmask "$TUNTOM_MARK_MASK" --ctmask "$TUNTOM_MARK_MASK" >/dev/null 2>&1; then
         iptables -t mangle -A "$reply_chain" \
+            -m conntrack --ctdir REPLY \
             -m connmark --mark "${TUNTOM_MARK}/${TUNTOM_MARK_MASK}" \
             -j CONNMARK --restore-mark \
             --nfmask "$TUNTOM_MARK_MASK" --ctmask "$TUNTOM_MARK_MASK"
@@ -128,17 +134,33 @@ tuntom_reply_marks_ensure() {
         iptables -t mangle -A PREROUTING ! -i "$TUNTOM_IF" -j "$reply_chain"
     fi
     if ! iptables -t mangle -C OUTPUT \
+        -m conntrack --ctdir REPLY \
         -m connmark --mark "${TUNTOM_MARK}/${TUNTOM_MARK_MASK}" \
         -j CONNMARK --restore-mark \
         --nfmask "$TUNTOM_MARK_MASK" \
         --ctmask "$TUNTOM_MARK_MASK" >/dev/null 2>&1; then
         iptables -t mangle -A OUTPUT \
+            -m conntrack --ctdir REPLY \
             -m connmark --mark "${TUNTOM_MARK}/${TUNTOM_MARK_MASK}" \
             -j CONNMARK --restore-mark \
             --nfmask "$TUNTOM_MARK_MASK" \
             --ctmask "$TUNTOM_MARK_MASK"
     fi
 
+    # Upgrade existing rules only after their REPLY-only replacements exist.
+    # These rules survive tunnel stop, so changing only the append is not enough.
+    local chain
+    for chain in "$reply_chain" OUTPUT; do
+        while iptables -t mangle -C "$chain" \
+            -m connmark --mark "${TUNTOM_MARK}/${TUNTOM_MARK_MASK}" \
+            -j CONNMARK --restore-mark \
+            --nfmask "$TUNTOM_MARK_MASK" --ctmask "$TUNTOM_MARK_MASK" >/dev/null 2>&1; do
+            iptables -t mangle -D "$chain" \
+                -m connmark --mark "${TUNTOM_MARK}/${TUNTOM_MARK_MASK}" \
+                -j CONNMARK --restore-mark \
+                --nfmask "$TUNTOM_MARK_MASK" --ctmask "$TUNTOM_MARK_MASK"
+        done
+    done
 }
 
 tuntom_net_up() {

@@ -95,6 +95,7 @@ class SystemdDeploymentTests(unittest.TestCase):
                 self.assertEqual('ExecStopPost=' in unit, networked)
             if networked:
                 self.assertIn(side + '/runtime/tuntom-net.sh', bundle)
+                self.assertIn(side + '/runtime/fwmark-policy-rule.py', bundle)
                 self.assertIn('iptables', bundle[side + '/scripts/10-install-dependencies.sh'])
         _, via = self.bundle(via=True)
         self.assertFalse(any('/runtime/network-' in name for name in via))

@@ -43,16 +43,12 @@ def expect_live():
     assert result.returncode == 0 and 'tt-test' in result.stdout, result
 
 
-def send_marked_reply():
-    # Seed a conntrack mark before the helper's OUTPUT restore rule. This models
-    # an established reply without depending on a userspace conntrack utility.
+def send_marked_original():
+    # A transparent upstream socket may share the original connection mark.
+    # ORIGINAL must use normal routing even when the return tunnel is down.
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-        try:
-            sock.sendto(b'return-route-test', ('198.18.0.10', 41942))
-        except OSError as error:
-            assert error.errno in (errno.EINVAL,), error
-        else:
-            raise AssertionError('locally generated marked reply escaped')
+        sent = sock.sendto(b'original-route-test', ('198.18.0.10', 41942))
+        assert sent == len(b'original-route-test')
 
 
 def inside():
@@ -85,8 +81,8 @@ def inside():
     run('iptables', '-t', 'mangle', '-C', 'PREROUTING', '!', '-i', 'tt-test', '-j', 'TUNTOM_42_R')
     run('iptables', '-t', 'mangle', '-I', 'OUTPUT', '1', '-p', 'udp', '--dport', '41942',
         '-j', 'CONNMARK', '--set-xmark', MARK + '/0x00ff0000')
-    send_marked_reply()
-    print('PASS: repeated teardown retains reply restoration and blocks local replies')
+    send_marked_original()
+    print('PASS: repeated teardown retains reply restoration and allows original-direction upstream traffic')
 
     run('ip', 'link', 'add', 'tt-test', 'type', 'dummy')
     run('ip', 'link', 'set', 'tt-test', 'up')
@@ -94,7 +90,7 @@ def inside():
     expect_live()
     lifecycle('down')
     expect_blocked()
-    send_marked_reply()
+    send_marked_original()
     print('PASS: restart and teardown with interface still present')
 
 

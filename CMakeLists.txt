@@ -63,7 +63,7 @@ install(TARGETS
     tuntomctl
     tuntom-divert-adapter
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(PROGRAMS tuntom-net.sh
+install(PROGRAMS tuntom-net.sh fwmark-policy-rule.py
     DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}/tuntom)
 install(FILES tuntom.lua
     DESTINATION ${CMAKE_INSTALL_DATADIR}/tuntom/wireshark)

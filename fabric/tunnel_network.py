@@ -46,6 +46,7 @@ def extend_bundle(files, config, root):
             continue
         prefix = side_name + '/'
         files[prefix + 'runtime/tuntom-net.sh'] = (Path(__file__).resolve().parents[1] / 'tuntom-net.sh').read_text()
+        files[prefix + 'runtime/fwmark-policy-rule.py'] = (Path(__file__).resolve().parents[1] / 'fwmark-policy-rule.py').read_text()
         suffix = 'c' if side['role'] == 'initiator' else 's'
         for index in range(config['count']):
             member = str(config['tunnel_id']) + (f'_{index}' if index else '')
@@ -79,7 +80,7 @@ bash "$network" up
 wait "$child"
 '''
         key = prefix + 'scripts/10-install-dependencies.sh'
-        files[key] = files[key].replace('iproute2 acl', 'iproute2 iptables acl')
+        files[key] = files[key].replace('iproute2 acl', 'iproute2 iptables python3 acl')
         files[prefix + 'scripts/00-preflight.sh'] += 'command -v iptables >/dev/null\n'
         files[prefix + 'README.txt'] += '''
 TUN return routing is fail-closed by default (IPv4). Startup brings the TUN up,
