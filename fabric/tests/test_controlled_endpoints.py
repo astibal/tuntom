@@ -1,9 +1,11 @@
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import patch
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from controlled_endpoints import ControlledEndpoints, validate_target
+from controlled_endpoints import ControlledEndpoints, SSHDiscovery, validate_target
 
 
 class FakeDiscovery:
@@ -20,6 +22,18 @@ class FakeDiscovery:
 
 
 class ControlledEndpointsTests(unittest.TestCase):
+    def test_discovery_platform_matrix(self):
+        for version, architecture, supported in (
+                ('24.04', 'x86_64', True), ('26.04', 'x86_64', True),
+                ('22.04', 'x86_64', False), ('24.04', 'aarch64', False)):
+            with self.subTest(version=version, architecture=architecture):
+                output = f'ID=ubuntu\nNAME=Ubuntu\nVERSION_ID={version}\n__TUNTOM_ARCH__{architecture}\n'
+                result = SimpleNamespace(returncode=0, stdout=output, stderr='')
+                with patch('controlled_endpoints.subprocess.run', return_value=result):
+                    snapshot = SSHDiscovery().discover('192.0.2.10', 22, 'test-key\n')
+                self.assertEqual(snapshot['supported'], supported)
+                self.assertEqual(snapshot['system']['version'], version)
+
     def test_host_key_confirmation_then_snapshot(self):
         store = ControlledEndpoints(None, FakeDiscovery())
         try:

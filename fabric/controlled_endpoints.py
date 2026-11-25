@@ -17,7 +17,7 @@ import threading
 
 # Phase 0 intentionally uses an exact allowlist.  Add a platform only after its
 # future deployment template has been tested on that exact release.
-SUPPORTED_PLATFORMS = {("ubuntu", "26.04", "x86_64")}
+SUPPORTED_PLATFORMS = {("ubuntu", "24.04", "x86_64"), ("ubuntu", "26.04", "x86_64")}
 
 
 def timestamp() -> str:

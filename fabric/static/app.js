@@ -818,7 +818,8 @@ Object.assign(messages, {
   uiGitRevisionVersion:["Git revize / verze","Git revision / version","Révision Git / version"],
   uiBuildHost:["Host pro sestavení","Build host","Hôte de compilation"],
   uiRequiresWritesEnabledInFabricAndA:["Vyžaduje povolené zápisy ve Fabricu a podporovaný Controlled Endpoint. Host musí mít git, g++ a python3. Sestavení proběhne v dočasném adresáři bez instalace; může trvat několik minut. Použije se obecné x86-64, nikoli -march=native. Uloží se přesný Git commit.","Requires writes enabled in Fabric and a supported Controlled Endpoint. The host needs git, g++ and python3. The build runs in a temporary directory without installation and may take several minutes. It uses generic x86-64 rather than -march=native. The exact Git commit is recorded.","Nécessite les écritures activées dans Fabric et un endpoint contrôlé compatible. L’hôte doit disposer de git, g++ et python3. La compilation s’effectue dans un répertoire temporaire sans installation et peut prendre plusieurs minutes. Elle utilise x86-64 générique plutôt que -march=native. Le commit Git exact est enregistré."],
-  uiPlatformUbuntu2604LinuxX8664:["Platforma: Ubuntu 26.04 · Linux x86-64. Kompatibilitu knihoven a CPU potvrzuješ výběrem odpovídajících binárek.","Platform: Ubuntu 26.04 · Linux x86-64. Select binaries with compatible libraries and CPU requirements.","Plateforme : Ubuntu 26.04 · Linux x86-64. Sélectionne des binaires compatibles avec les bibliothèques et le CPU."],
+  bundleTargetPlatform:["Cílová platforma","Target platform","Plateforme cible"],
+  bundleCompatibility:["Použij binárky sestavené pro zvolenou verzi Ubuntu a kompatibilní CPU.","Use binaries built for the selected Ubuntu release and a compatible CPU.","Utilise des binaires compilés pour la version Ubuntu sélectionnée et un CPU compatible."],
   uiELFX8664UpTo32MiB:["ELF x86-64 · nejvýše 32 MiB na soubor. Fabric soubory uloží a spočítá SHA-256; na observeru je nespouští.","ELF x86-64 · up to 32 MiB per file. Fabric stores the files and computes SHA-256; it does not execute them on the observer.","ELF x86-64 · 32 Mio maximum par fichier. Fabric stocke les fichiers et calcule SHA-256 ; il ne les exécute pas sur l’observateur."],
   uiNewService:["Nová služba","New service","Nouveau service"],
   uiDNSServiceTestDNSDoTDoH:["+ Test DNS služby (DNS / DoT / DoH)","+ DNS service test (DNS / DoT / DoH)","+ Test de service DNS (DNS / DoT / DoH)"],
@@ -3468,6 +3469,7 @@ let bundleBusy=false;
 function updateBundleForm(){
   const build=$('bundle-source').value==='build',admin=state.auth?.role==='admin';
   for(const id of ['bundle-source','bundle-name','bundle-revision','bundle-component'])$(id).disabled=bundleBusy||!admin;
+  $('bundle-platform').disabled=build||bundleBusy||!admin;
   $('bundle-build-fields').hidden=!build;$('bundle-upload-fields').hidden=build;
   $('bundle-endpoint').required=build;$('bundle-endpoint').disabled=!build||bundleBusy||!admin;
   for(const name of ['tuntom','tuntomctl']){$(`bundle-${name}`).required=!build;$(`bundle-${name}`).disabled=build||bundleBusy||!admin;}
@@ -3509,7 +3511,7 @@ $('bundle-form').addEventListener('submit',async event=>{
   if(build){if(!state.data?.allow_write||!$('bundle-endpoint').value)return;body.endpoint_id=$('bundle-endpoint').value;body.component=$('bundle-component').value;}
   bundleBusy=true;updateBundleForm();$('bundles-status').textContent=build?(t("uiBuildingOnTheSelectedSSHHost")):(t("uiUploadingBinaries"));
   try{
-    if(!build){body.os='ubuntu';body.version='26.04';body.architecture='x86_64';body.files={tuntom:await bundleFile($('bundle-tuntom')),tuntomctl:await bundleFile($('bundle-tuntomctl'))};if($('bundle-component').value==='divert')body.files['tuntom-divert-adapter']=await bundleFile($('bundle-divert'));}
+    if(!build){body.os='ubuntu';body.version=$('bundle-platform').value;body.architecture='x86_64';body.files={tuntom:await bundleFile($('bundle-tuntom')),tuntomctl:await bundleFile($('bundle-tuntomctl'))};if($('bundle-component').value==='divert')body.files['tuntom-divert-adapter']=await bundleFile($('bundle-divert'));}
     const row=await api('/api/v1/binary-bundles'+(build?'/build':''),'POST',body,build?960000:120000);
     $('bundles-status').textContent=`${t("uiBundle")} ${row.name} ${t("uiSavedItIsAvailableWhenCreatingA")}`;
     for(const name of ['tuntom','tuntomctl'])$(`bundle-${name}`).value='';

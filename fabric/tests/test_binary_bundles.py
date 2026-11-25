@@ -32,6 +32,20 @@ class Hosts(Endpoints):
 
 
 class BinaryBundleTests(unittest.TestCase):
+    def test_noble_bundle_keeps_release_boundary(self):
+        store = BinaryBundles(None)
+        try:
+            data = upload()
+            data['version'] = '24.04'
+            bundle = store.create(data)
+            system = dict(os='ubuntu', version='24.04', architecture='x86_64')
+            self.assertEqual(store.compatible(bundle['id'], system)['version'], '24.04')
+            system['version'] = '26.04'
+            with self.assertRaisesRegex(ValueError, 'does not match'):
+                store.compatible(bundle['id'], system)
+        finally:
+            store.close()
+
     def test_upload_persistence_and_archive_integrity(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'store.db'
