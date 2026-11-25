@@ -909,6 +909,25 @@ The resulting fwmark selects the tunnel-specific routing table. Packets arriving
 from the TUN as `INVALID` or `UNTRACKED` are dropped because no persistent
 return path can be associated with them.
 
+### Reply routing when a tunnel stops
+
+`tuntom-net.sh` installs an IPv4 `unreachable default` with metric 42760 in
+its policy table, behind the live TUN default (metric 0). If the live route or
+interface disappears, marked traffic terminates there instead of falling
+through to `main`. Stop removes only the live default; the policy rule,
+unreachable route, reply-restoration chain (`TUNTOM_<id>_R`) and OUTPUT mark
+restoration deliberately remain. Repeated start/stop reuses this reservation.
+Reserve that mark/mask/table and interface name until all old flows are retired;
+permanent manual removal of these guards removes their protection as well.
+
+This does not detect a remote session failure while the local TUN and route
+remain present: packets still enter that TUN and depend on tunnel handling.
+Earlier policy rules, more-specific administrator routes, IPv6 and custom
+hooks are outside this fallback. In particular, hooks must not flush the policy
+table or remove its rule. Integrations with TPROXY must validate rule priorities
+and mark masks. The guard applies to tracked flows bearing this tunnel's mark,
+not arbitrary new connections initiated by a proxy.
+
 ## Public ingress for a private service
 
 A site can publish an internal HTTPS service through a public edge gateway.

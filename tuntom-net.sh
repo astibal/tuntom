@@ -97,14 +97,36 @@ iptables_delete_chain() {
     iptables -t "$table" -X "$chain" 2>/dev/null || true
 }
 
-ip_rule_delete() {
-    local mark="$1"
-    local mask="$2"
-    local table="$3"
+# Keep the policy reservation across stop/start. Removing it would let existing
+# conntrack entries fall through to the host's ordinary routing tables.
+tuntom_reply_route_ensure() {
+    ip -4 route replace unreachable default table "$TUNTOM_TABLE" metric 42760
 
-    while ip rule del fwmark "${mark}/${mask}" table "$table" >/dev/null 2>&1; do
-        :
-    done
+    local rules
+    rules="$(ip -4 rule show fwmark "${TUNTOM_MARK}/${TUNTOM_MARK_MASK}" table "$TUNTOM_TABLE")"
+    if [[ -z "$rules" ]]; then
+        ip -4 rule add fwmark "${TUNTOM_MARK}/${TUNTOM_MARK_MASK}" table "$TUNTOM_TABLE"
+    fi
+}
+
+# Reply restoration has a separate lifetime from ingress marking. Keep it when
+# the TUN disappears, including for locally generated replies from a proxy.
+tuntom_reply_marks_ensure() {
+    local reply_chain="${TUNTOM_CHAIN}_R"
+    iptables_ensure_chain mangle "$reply_chain"
+    if ! iptables -t mangle -C "$reply_chain" \
+        -m connmark --mark "${TUNTOM_MARK}/${TUNTOM_MARK_MASK}" \
+        -j CONNMARK --restore-mark \
+        --nfmask "$TUNTOM_MARK_MASK" --ctmask "$TUNTOM_MARK_MASK" >/dev/null 2>&1; then
+        iptables -t mangle -A "$reply_chain" \
+            -m connmark --mark "${TUNTOM_MARK}/${TUNTOM_MARK_MASK}" \
+            -j CONNMARK --restore-mark \
+            --nfmask "$TUNTOM_MARK_MASK" --ctmask "$TUNTOM_MARK_MASK"
+    fi
+    if ! iptables -t mangle -C PREROUTING ! -i "$TUNTOM_IF" \
+        -j "$reply_chain" >/dev/null 2>&1; then
+        iptables -t mangle -A PREROUTING ! -i "$TUNTOM_IF" -j "$reply_chain"
+    fi
 }
 
 tuntom_net_up() {
@@ -112,6 +134,10 @@ tuntom_net_up() {
     local forward_chain="${TUNTOM_CHAIN}_F"
     local nat_chain="${TUNTOM_CHAIN}_N"
     local snat_chain="${TUNTOM_CHAIN}_S"
+
+    # Install the terminal fallback before enabling any connection marks.
+    tuntom_reply_route_ensure
+    tuntom_reply_marks_ensure
 
     #
     # PREROUTING connection ownership and reply mark handling
@@ -141,13 +167,6 @@ tuntom_net_up() {
     iptables -t mangle -A "$mangle_chain" \
         -i "$TUNTOM_IF" \
         -j MARK --set-xmark "0/${TUNTOM_MARK_MASK}"
-
-    iptables -t mangle -A "$mangle_chain" \
-        ! -i "$TUNTOM_IF" \
-        -m connmark --mark "${TUNTOM_MARK}/${TUNTOM_MARK_MASK}" \
-        -j CONNMARK --restore-mark \
-        --nfmask "$TUNTOM_MARK_MASK" \
-        --ctmask "$TUNTOM_MARK_MASK"
 
     if ! iptables -t mangle -C OUTPUT \
         -m connmark --mark "${TUNTOM_MARK}/${TUNTOM_MARK_MASK}" \
@@ -205,10 +224,7 @@ tuntom_net_up() {
     #
     # Policy routing for reply traffic
     #
-    ip_rule_delete "$TUNTOM_MARK" "$TUNTOM_MARK_MASK" "$TUNTOM_TABLE"
-    ip rule add fwmark "${TUNTOM_MARK}/${TUNTOM_MARK_MASK}" table "$TUNTOM_TABLE"
-
-    ip route replace table "$TUNTOM_TABLE" default dev "$TUNTOM_IF"
+    ip -4 route replace table "$TUNTOM_TABLE" default dev "$TUNTOM_IF" metric 0
 }
 
 tuntom_net_down() {
@@ -217,23 +233,16 @@ tuntom_net_down() {
     local nat_chain="${TUNTOM_CHAIN}_N"
     local snat_chain="${TUNTOM_CHAIN}_S"
 
-    ip_rule_delete "$TUNTOM_MARK" "$TUNTOM_MARK_MASK" "$TUNTOM_TABLE"
-    ip route flush table "$TUNTOM_TABLE" 2>/dev/null || true
+    # Withdraw only our live route. The fallback, policy rule and reply marks
+    # must survive teardown, so late replies cannot escape through main.
+    tuntom_reply_route_ensure
+    tuntom_reply_marks_ensure
+    ip -4 route del table "$TUNTOM_TABLE" default dev "$TUNTOM_IF" metric 0 2>/dev/null || true
 
     iptables_delete_jump mangle PREROUTING "$mangle_chain"
     iptables_delete_chain mangle "$mangle_chain"
 
-    while iptables -t mangle -C OUTPUT \
-        -m connmark --mark "${TUNTOM_MARK}/${TUNTOM_MARK_MASK}" \
-        -j CONNMARK --restore-mark \
-        --nfmask "$TUNTOM_MARK_MASK" \
-        --ctmask "$TUNTOM_MARK_MASK" >/dev/null 2>&1; do
-        iptables -t mangle -D OUTPUT \
-            -m connmark --mark "${TUNTOM_MARK}/${TUNTOM_MARK_MASK}" \
-            -j CONNMARK --restore-mark \
-            --nfmask "$TUNTOM_MARK_MASK" \
-            --ctmask "$TUNTOM_MARK_MASK"
-    done
+    # OUTPUT restoration deliberately remains installed for existing flows.
 
     iptables_delete_jump mangle FORWARD "$forward_chain"
     iptables_delete_chain mangle "$forward_chain"

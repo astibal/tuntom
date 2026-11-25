@@ -155,6 +155,9 @@ if(BUILD_TESTING)
     set_tests_properties(logging_test PROPERTIES TIMEOUT 40)
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME net_return_route_test COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/net_return_route_test.py)
+        set_tests_properties(net_return_route_test PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
         add_test(NAME tun_netns_integration_test COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/tun_netns_integration_test.py $<TARGET_FILE:tuntom>)
         set_tests_properties(tun_netns_integration_test PROPERTIES
