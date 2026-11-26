@@ -30,7 +30,7 @@ for directory in reversed((root, *root.parents)):
     if not os.access(directory, os.X_OK):
         sys.exit("Runtime access denied: user tuntom cannot traverse " + str(directory) +
                  ". Automatic ACL preparation did not make this directory accessible.")
-for name in ("run", "log"):
+for name in ("run", "log", "config"):
     directory = root / name
     if not os.access(directory, os.W_OK | os.X_OK):
         sys.exit("Runtime access denied: user tuntom cannot write to " + str(directory))
@@ -189,6 +189,8 @@ def undeploy_bundle(config):
     return files
 
 
+# Render deployment assets without shipping mutable configuration as an overwriteable asset.
+# Installation seeds missing classifiers; subsequent installs retain edits and backups.
 def render_bundle(config, endpoint_addresses, git_url, root=None):
     root = root or f"/opt/tuntom/deployments/{config['name']}"
     scripts = {}
@@ -200,9 +202,17 @@ def render_bundle(config, endpoint_addresses, git_url, root=None):
             ident = member + suffix
             interface = "-" if side["attachment"]["type"] == "switch" else f"ut{ident}"
             args = [f"{root}/bin/tuntom", "client" if suffix == "c" else "server", member, interface]
+
             if suffix == "c": args.append(side["peer_address"])
-            args += ["--mtu", "1500", "--transport-mtu", "1400", "--control-socket", f"{root}/run/{ident}.control", "--no-stats"]
+            args += [
+                "--mtu", "1500",
+                "--transport-mtu", "1400",
+                "--control-socket", f"{root}/run/{ident}.control",
+                "--no-stats",
+            ]
+
             if side["attachment"]["type"] == "switch":
+                args += ["--classifier-file", f"{root}/config/{ident}.classifier"]
                 attachment = side["attachment"]
                 port = attachment["port_id"] + (f"_{index}" if index else "")
                 args += ["--switch-socket", attachment["switch_socket"], "--switch-port-id", port,
@@ -212,6 +222,7 @@ set -euo pipefail
 umask 0077
 root={shlex.quote(root)}
 install -d -o tuntom -g tuntom -m 0770 "$root/run" "$root/log"
+install -d -o tuntom -g tuntom -m 0700 "$root/config"
 exec 9>"$root/run/{ident}.lock"
 flock -n 9 || {{ echo {shlex.quote(ident + ' is already running')} >&2; exit 1; }}
 rm -f -- "$root/run/{ident}.control"
@@ -308,6 +319,18 @@ set -euo pipefail
 root={shlex.quote(root)}
 {install}echo SOFTWARE_READY
 '''
+        initialize_classifiers = ""
+
+        if side["attachment"]["type"] == "switch":
+            for member in members:
+                classifier = f"{root}/config/{member}{suffix}.classifier"
+                initialize_classifiers += f'''classifier={shlex.quote(classifier)}
+if [[ ! -e "$classifier" && ! -L "$classifier" ]]; then
+    (umask 077; set -o noclobber; printf '# classifier disabled\\n' > "$classifier")
+    chown tuntom:tuntom "$classifier"
+fi
+'''
+
         scripts[f"{side_name}/scripts/30-install-config.sh"] = f'''#!/bin/bash
 set -euo pipefail
 root={shlex.quote(root)}
@@ -315,21 +338,36 @@ test -x "$root/bin/tuntom"
 test -x "$root/bin/tuntomctl"
 test -s "$root/secrets/master.env"
 install -d -o tuntom -g tuntom -m 0770 "$root/run" "$root/log"
+install -d -o tuntom -g tuntom -m 0700 "$root/config"
 chown root:tuntom "$root"
 chmod 0750 "$root" "$root/bin" "$root/runtime" "$root/scripts"
 chmod 0600 "$root/secrets/master.env"
 chmod 0755 "$root"/runtime/run-*.sh "$root"/scripts/*.sh
-echo CONFIG_READY
+{initialize_classifiers}echo CONFIG_READY
 '''
-        if not side.get("switch_id"):
-            scripts[f"{side_name}/scripts/deployment-access.py"] = Path(__file__).with_name("deployment_access.py").read_text()
-            scripts[f"{side_name}/scripts/30-install-config.sh"] = scripts[f"{side_name}/scripts/30-install-config.sh"].replace("echo CONFIG_READY", 'python3 "$root/scripts/deployment-access.py" "$root"\n' + RUNTIME_ACCESS_CHECK + "echo CONFIG_READY")
+        scripts[f"{side_name}/scripts/deployment-access.py"] = Path(__file__).with_name("deployment_access.py").read_text()
+        access_check = RUNTIME_ACCESS_CHECK
+
+        if side.get("switch_id"):
+            # Local collector owns runtime sockets/logs; only configuration files are daemon-writable.
+            access_check = access_check.replace('("run", "log", "config")', '("config",)')
+
+        install_script = f"{side_name}/scripts/30-install-config.sh"
+        prepare_access = 'python3 "$root/scripts/deployment-access.py" "$root"\n'
+        scripts[install_script] = scripts[install_script].replace(
+            "echo CONFIG_READY", prepare_access + access_check + "echo CONFIG_READY"
+        )
+
         if side.get("switch_id"):
             # Collector host uses its installed binaries; never apt/build here.
             prefix = f"{side_name}/"
             for key in list(scripts):
                 if key.startswith(prefix):
                     scripts[key] = scripts[key].replace("-o tuntom -g tuntom", "-o root -g root").replace("root:tuntom", "root:root")
+                    # Saved configuration is written after the daemon drops privileges.
+                    scripts[key] = scripts[key].replace('-o root -g root -m 0700 "$root/config"',
+                                                        '-o tuntom -g tuntom -m 0700 "$root/config"')
+
             scripts[prefix + "scripts/10-install-dependencies.sh"] = "#!/bin/bash\nset -euo pipefail\ncommand -v screen\ncommand -v flock\ncommand -v ss\n"
             scripts[prefix + "scripts/20-install-software.sh"] = "#!/bin/bash\nset -euo pipefail\n" + shell("install", "-d", "-m", "0750", root + "/bin") + "\n" + "\n".join(
                 shell("install", "-m", "0755", side["local_binaries"][name], root + "/bin/" + name) for name in ("tuntom", "tuntomctl")) + "\n"

@@ -41,16 +41,23 @@ public:
         ControlOperation op;
         op.family = command.substr(0, a); op.operation = command.substr(a + 1, b - a - 1);
         op.length = control_length(command.substr(b + 1));
+
         if (op.family != "classifier" && op.family != "rules" && op.family != "divert") throw std::runtime_error("unknown_command");
-        if (op.operation == "show") {
-            if (op.length) throw std::runtime_error("show has no body");
+        const bool classifier_command = op.family == "classifier";
+        const bool load = op.operation == "load" || op.operation == "load-save";
+        const bool flush = op.operation == "load-flush" || op.operation == "load-flush-save";
+        const bool disable = op.operation == "disable" || op.operation == "disable-save";
+        const bool read_state = op.family != "divert" && op.operation == "state";
+
+        if (op.operation == "show" || read_state) {
+            if (op.length) throw std::runtime_error("show/state has no body");
         } else if (op.family == "divert") {
             if (op.length || (op.operation != "enable" && op.operation != "stop")) throw std::runtime_error("expected divert enable|stop|show 0");
             op.permission = ControlPermission::divert_write; op.mutation = true;
         } else if (op.operation == "check") {
             op.permission = op.family == "classifier" ? ControlPermission::classifier_validate : ControlPermission::rules_validate;
-        } else if (op.operation == "load" || (op.family == "classifier" && (op.operation == "load-flush" || op.operation == "disable"))) {
-            if (op.operation == "disable" && op.length) throw std::runtime_error("disable has no body");
+        } else if (load || (classifier_command && (flush || disable))) {
+            if (disable && op.length) throw std::runtime_error("disable has no body");
             op.permission = op.family == "classifier" ? ControlPermission::classifier_write : ControlPermission::rules_write;
             op.mutation = true;
         } else throw std::runtime_error("unknown operation");

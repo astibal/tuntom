@@ -145,7 +145,13 @@ inline int tuntom_control_main(int argc, char **argv) {
             operation = argv[first + 1];
         if (!stats && argc >= first + 2 && (std::string(argv[first]) == "rules" || classifier)) {
             operation = argv[first + 1];
-            if ((operation == "check" || operation == "load" || (classifier && operation == "load-flush")) && argc == first + 3) {
+            const bool load = operation == "load" || operation == "load-save";
+            const bool flush = classifier && (operation == "load-flush" || operation == "load-flush-save");
+            const bool needs_file = operation == "check" || load || flush;
+            const bool disable = classifier && (operation == "disable" || operation == "disable-save");
+            const bool no_body = operation == "show" || operation == "state" || disable;
+
+            if (needs_file && argc == first + 3) {
                 if (std::string(argv[first + 2]) == "-") {
                     std::array<char, tuntom::control_chunk_size> bytes{};
                     while (std::cin.read(bytes.data(), bytes.size()) || std::cin.gcount()) {
@@ -154,19 +160,20 @@ inline int tuntom_control_main(int argc, char **argv) {
                     }
                     if (!std::cin.eof()) throw std::runtime_error("cannot read stdin");
                 } else body = tuntom::read_rules_file(argv[first + 2]);
-            } else if ((operation != "show" && !(classifier && operation == "disable")) || argc != first + 2) operation.clear();
+            } else if (!no_body || argc != first + 2) operation.clear();
         }
+
         if (!discovery && !port_list && !stats && !flows && !status && operation.empty()) {
             std::cerr << "Switch: tuntomctl switch [--socket PATH | PATH] --port-list|--port-tree\n";
             std::cerr << "Routed: tuntomctl switch [SOCKET] [--port NAME] [--peer | --peer-port NAME] --- COMMAND|discover [tree]\n";
             std::cerr << "Remote: tuntomctl remote [--socket PATH] [--remote-retries N] [--remote-wait N[ms|s]] --- COMMAND\n";
             std::cerr << "Key generation: " << argv[0] << " auth-keygen PRIVATE PUBLIC CAPS LEVEL\n"
                       << "Usage: " << argv[0] << " <control-socket> show stats|flows\n"
-                      << "       " << argv[0] << " [control-socket] rules show\n"
-                      << "       " << argv[0] << " [control-socket] rules check|load FILE|-\n";
+                      << "       " << argv[0] << " [control-socket] rules show|state\n"
+                      << "       " << argv[0] << " [control-socket] rules check|load|load-save FILE|-\n";
             std::cerr << "       " << argv[0] << " <control-socket> divert enable|stop|show\n";
-            std::cerr << "       " << argv[0] << " <control-socket> classifier check|load|load-flush FILE|-\n"
-                      << "       " << argv[0] << " <control-socket> classifier show|disable\n";
+            std::cerr << "       " << argv[0] << " <control-socket> classifier check|load|load-save|load-flush|load-flush-save FILE|-\n"
+                      << "       " << argv[0] << " <control-socket> classifier show|state|disable|disable-save\n";
             return 1;
         }
         if (switch_mode && !explicit_socket) path = discover_switch_socket();

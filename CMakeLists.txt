@@ -140,6 +140,11 @@ if(BUILD_TESTING)
     add_executable(switch_ruleset_v2_test tests/switch_ruleset_v2_test.cpp)
     target_compile_options(switch_ruleset_v2_test PRIVATE -Wall -Wextra -Wconversion -pedantic)
     add_test(NAME switch_ruleset_v2_test COMMAND switch_ruleset_v2_test)
+    add_executable(config_state_test tests/config_state_test.cpp)
+    target_compile_options(config_state_test PRIVATE -Wall -Wextra -Wconversion -pedantic)
+    target_link_options(config_state_test PRIVATE -Wl,--wrap=read -Wl,--wrap=write
+        -Wl,--wrap=fsync -Wl,--wrap=renameat -Wl,--wrap=fstat -Wl,--wrap=openat)
+    add_test(NAME config_state_test COMMAND config_state_test)
     add_executable(packet_classifier_test tests/packet_classifier_test.cpp)
     target_compile_options(packet_classifier_test PRIVATE -Wall -Wextra -Wconversion -pedantic)
     add_test(NAME packet_classifier_test COMMAND packet_classifier_test)
@@ -251,6 +256,10 @@ if(BUILD_TESTING)
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/switch_ruleset_integration_test.py
             $<TARGET_FILE:tuntom-switch> $<TARGET_FILE:tomtom-switch-mp> $<TARGET_FILE:tuntomctl> $<TARGET_FILE:switch_v2_faults>)
         set_tests_properties(switch_ruleset_integration_test PROPERTIES TIMEOUT 90)
+        add_test(NAME config_state_integration_test COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/config_state_integration_test.py
+            $<TARGET_FILE:tuntom-switch> $<TARGET_FILE:tomtom-switch-mp>)
+        set_tests_properties(config_state_integration_test PROPERTIES TIMEOUT 90)
         add_test(NAME switch_ecmp_integration_test COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/switch_ecmp_integration_test.py
             $<TARGET_FILE:tuntom-switch> $<TARGET_FILE:tomtom-switch-mp>)
@@ -286,7 +295,7 @@ if(BUILD_TESTING)
         add_test(NAME switch_mp_tunnel_test COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/switch_tunnel_test.py
             $<TARGET_FILE:tuntom> $<TARGET_FILE:tomtom-switch-mp> $<TARGET_FILE:tuntomctl>)
-        set_tests_properties(switch_mp_tunnel_test PROPERTIES TIMEOUT 30)
+        set_tests_properties(switch_mp_tunnel_test PROPERTIES TIMEOUT 30 RESOURCE_LOCK udp_40237)
         add_test(NAME switch_test COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/switch_test.py
             $<TARGET_FILE:tuntom-switch> $<TARGET_FILE:tuntomctl>)
@@ -294,7 +303,7 @@ if(BUILD_TESTING)
         add_test(NAME switch_tunnel_test COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/switch_tunnel_test.py
             $<TARGET_FILE:tuntom> $<TARGET_FILE:tuntom-switch> $<TARGET_FILE:tuntomctl>)
-        set_tests_properties(switch_tunnel_test PROPERTIES TIMEOUT 30)
+        set_tests_properties(switch_tunnel_test PROPERTIES TIMEOUT 30 RESOURCE_LOCK udp_40237)
         add_library(accept_faults SHARED tests/accept_faults.cpp)
         target_link_libraries(accept_faults PRIVATE ${CMAKE_DL_LIBS})
         add_test(NAME switch_capacity_test COMMAND ${Python3_EXECUTABLE}

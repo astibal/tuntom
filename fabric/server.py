@@ -378,7 +378,24 @@ class Fabric:
         if body.get('outcome') not in {'started','succeeded','failed'}:raise APIError(400,'invalid audit outcome')
         return {'id':self.journal.append(body['action'],str(body.get('target',''))[:128],body['outcome'],details)}
 
+    # Query target persistence separately from active rules. An older daemon may
+    # reject this optional query without preventing the active configuration from being read.
+    def configuration_state(self, endpoint, family):
+        try:
+            operation = "classifier-state" if family == "classifier" else "state"
+            response = self.control_query(endpoint, operation)
+            return dict(
+                line.split("=", 1)
+                for line in response.splitlines()
+                if "=" in line
+            )
+
+        except ControlError as error:
+            return {"available": "0", "error": str(error)}
+
     @audited("classifier")
+    # Validate revisions and write permissions before applying a classifier edit.
+    # Saved edits use the target file; a failed save never falls back to a temporary edit.
     def classifier(self, key, operation, body=None):
         if operation not in {"show", "check", "load", "load-flush", "disable"}:
             raise APIError(400, "unsupported classifier operation")
@@ -388,10 +405,17 @@ class Fabric:
         mutation = operation in {"load", "load-flush", "disable"}
         if mutation and not self.allow_write:
             raise APIError(403, "classifier writes are disabled; restart with --allow-write")
+
         candidate = ""
+        persist = body.get("persist", True) if isinstance(body, dict) else True
+
+        if not isinstance(persist, bool):
+            raise APIError(400, "persist must be a boolean")
+
         if operation != "show":
-            if not isinstance(body, dict) or set(body) - {"rules", "expected_sha256", "expected_generation"}:
+            if not isinstance(body, dict) or set(body) - {"rules", "expected_sha256", "expected_generation", "persist"}:
                 raise APIError(400, "expected rules, expected_sha256 and expected_generation")
+
             if operation != "disable":
                 candidate = body.get("rules")
                 if not isinstance(candidate, str) or not candidate.strip():
@@ -411,7 +435,9 @@ class Fabric:
                 revision = digest(current)
                 if operation == "show":
                     return {"rules":current, "sha256":revision, "generation":generation,
-                            "metrics":{k:v for k,v in metrics.items() if k.startswith("classifier_")}, "sampled_at":now()}
+                            "metrics":{k:v for k,v in metrics.items() if k.startswith("classifier_")}, "sampled_at":now(),
+                            "persistence": self.configuration_state(endpoint, "classifier")}
+
                 if mutation and (body.get("expected_sha256") != revision or body.get("expected_generation") != generation):
                     raise APIError(409, "active classifier changed; reload and review before writing")
                 checked = None
@@ -428,11 +454,20 @@ class Fabric:
                     'previous_sha256':revision,'candidate_sha256':digest(candidate),'previous_generation':generation,
                     'diff':text,'diff_truncated':truncated})
                 sent = True
-                result = self.control_query(endpoint, "classifier-" + operation, candidate)
+                command = "classifier-" + operation
+
+                if persist:
+                    command += "-save"
+
+                result = self.control_query(endpoint, command, candidate)
                 self.wake.set()
                 LOG.info(json.dumps({"event":"classifier."+operation, "endpoint":key, "at":now(),
                                      "previous_generation":generation, "candidate_sha256":digest(candidate)}))
-                return {"result":result, "persistence":"runtime only"}
+                return {
+                    "result": result,
+                    "persistence": "saved on target" if persist else "runtime only",
+                }
+
             except ControlError as error:
                 raise APIError(422, str(error)) from error
             except (OSError, ValueError) as error:
@@ -443,6 +478,8 @@ class Fabric:
                 raise APIError(502, message) from error
 
     @audited("rules")
+    # Apply switch rules through CONTROL with optimistic revision checks.
+    # Persistence is selected explicitly and performed by the owning daemon.
     def rules(self, key, operation, body=None):
         endpoint = self.endpoint(key)
         if endpoint.source == "discovered" and operation != "show":
@@ -451,10 +488,17 @@ class Fabric:
             raise APIError(400, "rules are supported only by switches")
         if operation == "load" and not self.allow_write:
             raise APIError(403, "rule writes are disabled; restart with --allow-write")
+
         candidate = None
+        persist = body.get("persist", True) if isinstance(body, dict) else True
+
+        if not isinstance(persist, bool):
+            raise APIError(400, "persist must be a boolean")
+
         if operation != "show":
-            if not isinstance(body, dict) or set(body) - {"rules", "expected_sha256"}:
+            if not isinstance(body, dict) or set(body) - {"rules", "expected_sha256", "persist"}:
                 raise APIError(400, "expected rules and optional expected_sha256")
+
             candidate = body.get("rules")
             if not isinstance(candidate, str) or not candidate.strip():
                 raise APIError(400, "rules must be nonempty text")
@@ -464,8 +508,11 @@ class Fabric:
             try:
                 current = self.control_query(endpoint, "show")
                 revision = digest(current)
+
                 if operation == "show":
-                    return {"rules": current, "sha256": revision, "sampled_at": now()}
+                    return {"rules": current, "sha256": revision, "sampled_at": now(),
+                            "persistence": self.configuration_state(endpoint, "rules")}
+
                 if operation == "load":
                     if body.get("expected_sha256") != revision:
                         raise APIError(409, "active rules changed or expected_sha256 is missing; reload and review")
@@ -476,11 +523,15 @@ class Fabric:
                     return {"result": checked, "sha256": revision, "diff": diff}
                 text,truncated=clipped(diff)
                 self.journal.append('rules.load',key,'prepared',{'previous_sha256':revision,'candidate_sha256':digest(candidate),'diff':text,'diff_truncated':truncated})
-                result = self.control_query(endpoint, "load", candidate)
+                result = self.control_query(endpoint, "load-save" if persist else "load", candidate)
                 self.wake.set()
                 LOG.info(json.dumps({"event": "rules.load", "endpoint": key, "at": now(),
                                      "previous_sha256": revision, "candidate_sha256": digest(candidate)}))
-                return {"result": result, "persistence": "runtime only"}
+                return {
+                    "result": result,
+                    "persistence": "saved on target" if persist else "runtime only",
+                }
+
             except ControlError as error:
                 raise APIError(422, str(error)) from error
             except (OSError, ValueError) as error:

@@ -708,7 +708,8 @@ U routed CONTROL také nadále platí popsané omezení identity cíle mezi DISC
 Load zachová cache; load-flush u adaptéru smaže L3/L4 reverse cache a může ovlivnit
 existující toky. Disable vypne klasifikátor, cache zachová. UI zobrazuje dopad
 před potvrzením; operace se týká jedné komponenty, nikoli celé vizuální skupiny.
-Změny jsou runtime-only. Po zápisu nebo nejasném výsledku se musí konfigurace
+Změny se standardně ukládají na cíli; dočasný režim lze zvolit explicitně.
+Po zápisu nebo nejasném výsledku se musí konfigurace
 znovu načíst; UI zápisy automaticky neopakuje. Vypnutý export není validní návrh.
 
 ### Managed Services
@@ -1206,3 +1207,51 @@ This is not a remote-peer health detector: while the TUN remains, traffic stays
 on it rather than falling back to the host default route. A configuration that
 routes arbitrary new unmarked traffic into TUNs also needs matching persistent
 policy guards; the generated protection covers marked tracked return traffic.
+
+### Durable rules and classifiers
+
+Fabric edits now default to **save on target and apply**. Unchecking the save
+checkbox explicitly selects a temporary edit. There is no automatic fallback to
+a temporary edit when saving fails or an older daemon rejects the command.
+Reading a configuration also reports whether the file exists and matches the
+active text. Unknown/unsupported persistence is shown explicitly.
+
+The daemon saves directly to its existing `--rules-file` or `--classifier-file`.
+There is no second configuration file or precedence layer. Both the file and its
+parent directory need appropriate service-account access; atomic replacement
+requires directory write permission. Existing read-only configurations still
+load normally, but saving fails explicitly until permissions are provisioned.
+Without a configured file, temporary operations still work and saving is rejected.
+Symlink destinations are rejected on save rather than replaced or followed.
+
+Fabric switch-attached tunnel runbooks provision `config/` mode 0700 and pass
+`--classifier-file config/<member>.classifier`. Installation creates a disabled
+classifier only if the file does not exist; redeployment preserves edited files
+and their backups. Explicit undeploy removes the whole deployment. Existing
+switch/adapter units retain their current file option and need writable parent
+directories, with narrowly scoped systemd write access where applicable.
+
+Startup reads the same file that saving updates. Invalid or unreadable files
+abort startup. A persisted disabled classifier remains disabled after restart.
+The target validates/prepares the candidate, saves it, and then activates it.
+Saving uses a same-directory temporary file (0600), file fsync, atomic rename,
+and directory fsync. The old file content is retained as `.previous` before
+replacement. A directory fsync failure after rename explicitly reports uncertain
+durability and leaves runtime unchanged. A process crash between save and
+activation can likewise leave new disk content with old runtime. Group edits
+remain sequential, not an atomic transaction across components.
+
+Native CONTROL / tuntomctl operations:
+
+- `rules state`, `rules load-save FILE`;
+- `classifier state`, `classifier load-save FILE`,
+  `classifier load-flush-save FILE`, `classifier disable-save`.
+
+Existing `load`, `load-flush` and `disable` commands remain temporary. Saved
+operations use the same write capability as their temporary counterparts and
+never accept a client-supplied filesystem path. Loading/flushing, validation,
+and routing semantics are otherwise unchanged. Fabric's HTTP operations keep
+their names and accept a strict boolean `persist` (default true).
+
+This covers switch rules and packet classifiers, not transient flow caches,
+manual host routes, divert admission state, or arbitrary runtime parameters.

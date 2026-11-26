@@ -38,7 +38,8 @@ class ClassifierTests(unittest.TestCase):
             self.assertIn('+# changed',checked['diff'])
             self.assertNotIn('classifier-load',[c[0] for c in calls])
             for op in ('load','load-flush','disable'):
-                payload={'expected_sha256':digest(RULES),'expected_generation':'2'}
+                payload={'expected_sha256':digest(RULES),'expected_generation':'2','persist':False}
+
                 if op!='disable':payload['rules']=RULES
                 f.classifier('id',op,payload)
                 self.assertEqual(calls[-1],('classifier-'+op,'' if op=='disable' else RULES))
@@ -74,14 +75,17 @@ class ClassifierTests(unittest.TestCase):
         f,calls=self.make()
         original=f.control_query
         def broken(endpoint,operation,body=''):
-            if operation=='classifier-load-flush':
+
+            if operation=='classifier-load-flush-save':
                 calls.append((operation,body));raise TimeoutError('lost response')
+
             return original(endpoint,operation,body)
         f.control_query=broken
         with self.assertRaises(APIError) as caught:
             f.classifier('id','load-flush',{'rules':RULES,'expected_sha256':digest(RULES),'expected_generation':'2'})
+
         self.assertIn('outcome may be unknown',str(caught.exception))
-        self.assertEqual(sum(op=='classifier-load-flush' for op,_ in calls),1)
+        self.assertEqual(sum(op=='classifier-load-flush-save' for op,_ in calls),1)
 
     def test_network_classifier_body_and_per_instance_reservation(self):
         fixture=test_network.NetworkTests()

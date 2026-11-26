@@ -322,7 +322,7 @@ class APITests(unittest.TestCase):
                         code, active = self.request("GET", path)
                         self.assertEqual(code, 200, active)
                         candidate = "format 2\nserial 2\nswitch a, [1] to b, [3] allow\n"
-                        payload = {"rules": candidate, "expected_sha256":active["sha256"]}
+                        payload = {"rules": candidate, "expected_sha256":active["sha256"], "persist":False}
                         code, checked = self.request("POST", path + "/check", payload)
                         self.assertEqual(code, 200, checked)
                         self.assertIn("+serial 2", checked["diff"])
@@ -335,6 +335,14 @@ class APITests(unittest.TestCase):
                         self.assertEqual(self.request("POST", path + "/load", payload)[0], 409)
                         self.assertEqual(self.request("POST", path + "/check", {"rules":"format 2\nserial 3\nnonsense\n"})[0], 422)
                         self.assertIn("serial 2", self.request("GET", path)[1]["rules"])
+                        active = self.request("GET", path)[1]
+                        self.assertEqual(active["persistence"]["saved"], "1")
+                        code, result = self.request("POST", path + "/load", {
+                            "rules": candidate, "expected_sha256": active["sha256"]})
+                        self.assertEqual(code, 200, result)
+                        self.assertEqual(result["persistence"], "saved on target")
+                        self.assertIn("serial 2", rules.read_text())
+                        self.assertEqual(self.request("GET", path)[1]["persistence"]["matches_active"], "1")
                         # An already-open socket cannot silently target a different PID.
                         live = self.fabric.endpoint(endpoint["id"])
                         with self.assertRaises(OSError):

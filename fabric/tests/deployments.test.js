@@ -56,7 +56,7 @@ test('endpoint shows deployment state, IDs and undeploy; archives precede loose 
  const target={innerHTML:''};
  const helpers=source.slice(source.indexOf('function deploymentStatus('),source.indexOf('async function undeployFromUI('));
  const render=source.slice(source.indexOf('function renderDeployments('),source.indexOf("$('deployment-new').addEventListener"));
- const api=runInNewContext(helpers+render+';({endpointTunnelInfo,renderDeployments,canUndeploy})',{$:()=>target,t,esc:String,locale:()=> 'cs-CZ',state:{auth:{role:'admin'}},controlledView:{rows:[],deployments:[row]}});
+ const api=runInNewContext(helpers+render+';({endpointTunnelInfo,renderDeployments,canUndeploy})',{document:{querySelectorAll:()=>[]},$:()=>target,t,esc:String,locale:()=> 'cs-CZ',state:{auth:{role:'admin'}},controlledView:{rows:[],deployments:[row]}});
  assert.match(api.endpointTunnelInfo('a'),/Nasazeno/);assert.match(api.endpointTunnelInfo('a'),/1, 1_1/);
  assert.match(api.endpointTunnelInfo('a'),/Undeploy/);api.renderDeployments();
  assert.ok(target.innerHTML.indexOf('deploy_runbook_vpn.tar.gz')<target.innerHTML.indexOf('undeploy_runbook_vpn.tar.gz'));
@@ -98,7 +98,7 @@ test('systemd cards expose a read-only runtime status and journal action',()=>{
  const target={innerHTML:''};
  const helpers=source.slice(source.indexOf('function deploymentStatus('),source.indexOf('async function undeployFromUI('));
  const render=source.slice(source.indexOf('function renderDeployments('),source.indexOf("$('deployment-new').addEventListener"));
- const api=runInNewContext(helpers+render+';({renderDeployments})',{$:()=>target,t,esc:String,locale:()=> 'en-GB',state:{auth:{role:'admin-ro'}},controlledView:{rows:[],deployments:[row]}});
+ const api=runInNewContext(helpers+render+';({renderDeployments})',{document:{querySelectorAll:()=>[]},$:()=>target,t,esc:String,locale:()=> 'en-GB',state:{auth:{role:'admin-ro'}},controlledView:{rows:[],deployments:[row]}});
  api.renderDeployments();assert.match(target.innerHTML,/data-deployment-runtime="d"/);assert.match(target.innerHTML,/systemd/);
  row.status='undeployed';api.renderDeployments();assert.doesNotMatch(target.innerHTML,/data-deployment-runtime/);
 });

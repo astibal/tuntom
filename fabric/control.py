@@ -43,8 +43,10 @@ def encode_route(route):
 
 def query(path, operation, body="", timeout=4, expected_pid=None, expected_start_ticks=None, max_response_bytes=None,
           route=None, on_accepted=None):
-    if operation not in ("stats", "flows", "show", "check", "load", "discover", "classifier-show", "classifier-check", "classifier-load", "classifier-load-flush", "classifier-disable"):
+
+    if operation not in ("stats", "flows", "show", "check", "load", "discover", "classifier-show", "classifier-check", "classifier-load", "classifier-load-flush", "classifier-disable", "state", "load-save", "classifier-state", "classifier-load-save", "classifier-load-flush-save", "classifier-disable-save"):
         raise ValueError("unknown control operation")
+
     encoded_route = encode_route(route) if route is not None else None
     if operation == "discover" and route is None:
         raise ValueError("discover requires routed control")
@@ -53,8 +55,10 @@ def query(path, operation, body="", timeout=4, expected_pid=None, expected_start
     payload = body.encode("utf-8")
     if len(payload) > MAX_BODY:
         raise ValueError("rules exceed 1 MiB")
-    if operation in ("stats", "flows", "show", "discover", "classifier-show", "classifier-disable") and payload:
+
+    if operation in ("stats", "flows", "show", "discover", "classifier-show", "classifier-disable", "state", "classifier-state", "classifier-disable-save") and payload:
         raise ValueError("unexpected control body")
+
     deadline = time.monotonic() + timeout
     with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as connection:
         def remaining():

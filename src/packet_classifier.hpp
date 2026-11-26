@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ip_flow.hpp"
+#include "config_state.hpp"
 #include "switch_ruleset.hpp"
 #include <arpa/inet.h>
 #include <array>
@@ -84,6 +85,7 @@ struct ClassifierRule {
 // Ordered, stateless assignment of an initial switch label stack. No packet or
 // flow is retained. The returned stack belongs to this immutable configuration.
 class PacketClassifier {
+    ConfigState state_;
     std::vector<ClassifierRule> rules_;
     bool enabled_ = false;
     std::string text_;
@@ -157,15 +159,41 @@ public:
         if (!header) throw std::runtime_error("classifier format header is required");
         return result;
     }
+    // Load and retain the same file path for subsequent saves. The disabled marker
+    // preserves an explicit disable across restart; malformed files still fail startup.
     static PacketClassifier from_file(const std::string& path) {
-        return path.empty() ? PacketClassifier{} : parse(read_rules_file(path));
+        PacketClassifier result;
+
+        if (!path.empty()) {
+            const auto text = read_rules_file(path);
+            const bool disabled = text == "# classifier disabled\n";
+
+            if (!disabled) result = parse(text);
+        }
+        result.state_ = ConfigState(path);
+        return result;
     }
+
     // Called between packet-processing steps; flush must not throw.
-    template<class Flush> std::string control(const std::string& operation,
-                                              const std::string& body, Flush flush) {
-        if (operation == "show") return enabled_ ? text_ : "# classifier disabled\n";
-        if (operation != "check" && operation != "load" && operation != "load-flush" && operation != "disable")
+    template<class Flush>
+    std::string control(const std::string& requested, const std::string& body, Flush flush) {
+        const auto active = enabled_ ? text_ : "# classifier disabled\n";
+
+        if (requested == "state") return state_.status(active);
+
+        const bool persist = requested.size() > 5 && requested.substr(requested.size() - 5) == "-save";
+        const auto operation = persist ? requested.substr(0, requested.size() - 5) : requested;
+
+        if (operation == "show") return active;
+
+        const bool validate_only = operation == "check";
+        const bool load = operation == "load" || operation == "load-flush";
+        const bool disable = operation == "disable";
+
+        if (!validate_only && !load && !disable) {
             throw std::runtime_error("unknown classifier operation");
+        }
+
         PacketClassifier next;
         try {
             if (operation != "disable") next = parse(body);
@@ -173,14 +201,23 @@ public:
             if (operation != "check") ++load_errors_;
             throw;
         }
+
         if (operation == "check") return "valid=1\n";
-        // Prepare the response before committing any state.
+
+        // Prepare the response and persist before changing the active classifier.
         auto response = "classifier_generation=" + std::to_string(generation_ + 1) + "\n";
+
+        if (persist) state_.save(next.enabled_ ? next.text_ : "# classifier disabled\n");
+
         rules_.swap(next.rules_);
         text_.swap(next.text_);
         enabled_ = next.enabled_;
         ++generation_;
-        if (operation == "load-flush") { flush(); ++flushes_; }
+
+        if (operation == "load-flush") {
+            flush();
+            ++flushes_;
+        }
         return response;
     }
     const std::vector<std::uint64_t>* classify(const std::uint8_t* packet, std::size_t size) {

@@ -183,6 +183,9 @@ int main(int argc, char **argv) {
                     }
                     return config.divert_config->command(operation);
                 }
+
+                if (operation == "state") return config.config_state.status(config.ruleset ? config.ruleset->text() : "");
+
                 if (operation == "show") {
                     if (!config.ruleset) throw std::runtime_error("legacy CLI routes are active; load a versioned ruleset to enable export");
                     return config.ruleset->text();
@@ -191,9 +194,16 @@ int main(int argc, char **argv) {
                 const bool changed = tuntom::ruleset_changed(config.ruleset, *next);
                 auto response = std::string(operation == "check" ? "checked" : changed ? "applied" : "unchanged") +
                     " serial=" + std::to_string(next->serial) + "\n";
-                if (changed || operation == "check") {
+                const bool persist = operation == "load-save";
+                const bool apply = operation == "load" || persist;
+                const bool prepare = changed || operation == "check" || persist;
+
+                if (prepare) {
                     auto plan = engine.prepare_rules(next);
-                    if (operation == "load") {
+
+                    if (persist) config.config_state.save(next->text());
+
+                    if (apply && changed) {
                         engine.publish(std::move(plan), true);
                         config.ruleset.swap(next);
                         config.routes.clear(); config.exits.clear(); config.trunks.clear(); config.default_back = false;

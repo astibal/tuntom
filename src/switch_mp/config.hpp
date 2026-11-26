@@ -4,6 +4,7 @@
 #include "../ipc/switch_protocol.hpp"
 #include "../switch_routes.hpp"
 #include "../switch_ruleset.hpp"
+#include "../config_state.hpp"
 #include "../switch_admission.hpp"
 #include "scheduler.hpp"
 #include "../ipc/switch_v2.hpp"
@@ -25,6 +26,7 @@ using PortRoutes = SwitchPortRoutes;
 struct Config {
     control_auth::Config control_auth;
     std::string socket, control;
+    ConfigState config_state;
     std::unordered_map<std::string, PortRoutes> routes;
     std::unordered_set<std::string> exits, trunks;
     std::shared_ptr<const SwitchRuleset> ruleset;
@@ -168,6 +170,8 @@ inline Config parse_config(int argc, char **argv) {
     for (const auto &port : config.exits)
         if (config.trunks.count(port))
             throw std::runtime_error("Port is both adapter and trunk: " + port);
+    config.config_state = ConfigState(rules_file);
+
     if (!rules_file.empty()) {
         if (!config.routes.empty() || !config.exits.empty() || !config.trunks.empty() || config.default_back)
             throw std::runtime_error("--rules-file cannot be combined with legacy routing options");

@@ -8,6 +8,7 @@
 #include "../ipc/switch_protocol.hpp"
 #include "../switch_routes.hpp"
 #include "../switch_ruleset.hpp"
+#include "../config_state.hpp"
 #include "../switch_ecmp.hpp"
 #include "../divert/switch.hpp"
 #include "../via/switch.hpp"
@@ -240,6 +241,8 @@ int main(int argc, char** argv) {
             usage(argv[0]);
             throw std::runtime_error("--socket is required");
         }
+        tuntom::ConfigState config_state(rules_file);
+
         if (!rules_file.empty()) {
             if (!routes.empty() || !exit_ports.empty() || default_back)
                 throw std::runtime_error("--rules-file cannot be combined with legacy routing options");
@@ -667,6 +670,9 @@ int main(int argc, char** argv) {
                         throw std::runtime_error("both divert adapter ports must be connected");
                     return divert_config->command(operation);
                 }
+
+                if (operation == "state") return config_state.status(ruleset ? ruleset->text() : "");
+
                 if (operation == "show") {
                     if (!ruleset) throw std::runtime_error("legacy CLI routes are active; load a versioned ruleset to enable export");
                     return ruleset->text();
@@ -685,7 +691,12 @@ int main(int argc, char** argv) {
                 }
                 auto response = std::string(operation == "check" ? "checked" : changed ? "applied" : "unchanged") +
                     " serial=" + std::to_string(next->serial) + "\n";
-                if (operation == "load" && changed) {
+                const bool persist = operation == "load-save";
+                const bool apply = operation == "load" || persist;
+
+                if (persist) config_state.save(next->text());
+
+                if (apply && changed) {
                     for (std::size_t i = 0; i < connections.size(); ++i) {
                         connections[i].program = std::move(programs[i]);
                         connections[i].exit_role = exits[i];

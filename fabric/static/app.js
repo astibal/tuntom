@@ -102,8 +102,13 @@ deploymentReadingRuntime:["Načítám stav služeb a journal…", "Reading servi
   servicePeekHint:["Jeden target na řádek: URL a volitelný interval v sekundách.","One target per line: URL and optional interval in seconds.","Une cible par ligne : URL et intervalle facultatif en secondes."],
   save:["Uložit","Save","Enregistrer"],
   delete:["Smazat","Delete","Supprimer"],
+  persistConfig:["Uložit na cíli pro příští start (vypnuto = dočasně)","Save on target for next start (unchecked = temporary)","Enregistrer sur la cible pour le prochain démarrage (décoché = temporaire)"],
+  savedConfig:["Uloženo na cíli","Saved on target","Enregistré sur la cible"],
+  noSavedConfig:["Konfigurační soubor na cíli neexistuje","Configuration file does not exist on target","Le fichier de configuration est absent sur la cible"],
+  unsavedConfig:["Aktivní změny nejsou uložené","Active changes are not saved","Changements actifs non enregistrés"],
+  noConfigStore:["Ukládání na cíli není nastavené nebo podporované","Target persistence is not configured or supported","Persistance non configurée ou non prise en charge"],
   classifierTitle:["Klasifikátor","Classifier","Classificateur"],
-  classifierHint:["L3/L4 pravidla přiřazující label stack. Změny platí pro jednu komponentu, pouze do restartu.","L3/L4 rules assigning label stacks. Changes affect one component and last until restart.","Règles L3/L4 attribuant des piles de labels. Les changements concernent un composant, jusqu’au redémarrage."],
+  classifierHint:["L3/L4 pravidla přiřazující label stack. Změny lze uložit na cíli nebo použít dočasně.","L3/L4 rules assigning label stacks. Changes can be saved on the target or applied temporarily.","Règles L3/L4 attribuant des piles de labels. Les changements peuvent être enregistrés sur la cible ou appliqués temporairement."],
   classifierChoose:["Vyber DATA tunel připojený ke switchi nebo TUN adaptér.","Select a switch-attached DATA tunnel or a TUN adapter.","Choisis un tunnel DATA relié au switch ou un adaptateur TUN."],
   classifierLoad:["Použít pravidla","Apply rules","Appliquer les règles"],
   classifierFlush:["Použít + vyprázdnit cache","Apply + flush caches","Appliquer + vider les caches"],
@@ -2625,10 +2630,33 @@ async function classifierGroupAction(e,draft,operation) {
   }
   classifierBusy=true;draft.message={key:'working'};draft.targets=targets;renderClassifier();
   try {
-    const outcome=await classifierBatch(targets,operation,text,draft.review,async(id,op,text,expected)=>api(`/api/v1/endpoints/${encodeURIComponent(id)}/classifier`+(op==='show'?'':'/'+op),op==='show'?'GET':'POST',op==='show'?undefined:{rules:text,expected_sha256:expected?.sha256,expected_generation:expected?.generation},180000),results=>{draft.batch=results;renderClassifier();});
+    // Carry the save choice through each member request without changing batch revision checks.
+    const request = async (id, operation, rules, expected) => {
+      const reading = operation === 'show';
+      const path = `/api/v1/endpoints/${encodeURIComponent(id)}/classifier`;
+      const body = reading ? undefined : {
+        rules,
+        persist: $('classifier-persist').checked,
+        expected_sha256: expected?.sha256,
+        expected_generation: expected?.generation,
+      };
+      return api(path + (reading ? '' : '/' + operation), reading ? 'GET' : 'POST', body, 180000);
+    };
+    // Keep per-member results visible while a sequential group operation is still running.
+    const updateProgress = results => {
+      draft.batch = results;
+      renderClassifier();
+    };
+    const outcome = await classifierBatch(targets, operation, text, draft.review, request, updateProgress);
     if(operation==='show') {
       const own=outcome.results.find(r=>r.id===e.id)?.result;
-      if(own)Object.assign(draft,{text:own.rules,active:own.rules,revision:own.sha256,generation:own.generation});
+      if (own) Object.assign(draft, {
+        text: own.rules,
+        active: own.rules,
+        revision: own.sha256,
+        generation: own.generation,
+        persistence: own.persistence,
+      });
       draft.checked=null;draft.review=null;draft.diff='';
     } else if(operation==='check') {
       draft.checked=outcome.ok?{text}:null;
@@ -2637,9 +2665,20 @@ async function classifierGroupAction(e,draft,operation) {
     draft.message=outcome.ok?(mutation?t('classifierReload'):operation==='check'?t('classifierBatchReady'):t('rulesLoaded')):outcome.results.filter(r=>r.error).map(r=>r.name+': '+r.error).join(' · ');
     if(mutation)await refresh(true);
   } finally {
-    if(mutation){draft.checked=null;draft.revision=null;draft.review=null;}
+    if (mutation) {
+      draft.checked = null;
+      draft.revision = null;
+      draft.review = null;
+      draft.persistence = null;
+    }
     classifierBusy=false;renderClassifier();
   }
+}
+// Describe disk/runtime agreement; an unavailable store must not look like a successful save.
+function persistenceText(value) {
+  if (!value || value.configured !== '1') return t('noConfigStore');
+  if (value.saved !== '1') return t('noSavedConfig');
+  return t(value.matches_active === '1' ? 'savedConfig' : 'unsavedConfig');
 }
 function renderClassifier() {
   const e=selected(),valid=supportsClassifier(e) && (!!e.control || e.source==="discovered");
@@ -2648,7 +2687,15 @@ function renderClassifier() {
   const targets=e?(draft.targets || classifierTargets(e)):[];
   $('classifier-siblings').disabled=classifierBusy || e?.kind!=='tunnel';
   $('classifier-targets').textContent=valid?t('classifierBatchHint',{names:targets.map(e=>e.name).join(', ')}):'';
-  $('classifier-reviews').innerHTML=(draft.batch || []).map(row=>`<details class="classifier-review" open><summary>${esc(row.name)} · ${esc(row.state)}${row.result?' · generation '+esc(row.result.generation):''}</summary>${row.error?`<p class="map-warning-count">${esc(row.error)}</p>`:''}<pre class="diff">${esc(row.applied?.result || row.result?.diff || row.result?.rules || (row.result?t('noDiff'):''))}</pre></details>`).join('');
+  $('classifier-reviews').innerHTML = (draft.batch || []).map(row => {
+    const generation = row.result ? ' · generation ' + esc(row.result.generation) : '';
+    const error = row.error ? `<p class="map-warning-count">${esc(row.error)}</p>` : '';
+    const applied = row.applied ? row.applied.result + ' · ' + row.applied.persistence : '';
+    const detail = applied || row.result?.diff || row.result?.rules || (row.result ? t('noDiff') : '');
+    return `<details class="classifier-review" open><summary>${esc(row.name)} · ${esc(row.state)}${generation}</summary>${error}<pre class="diff">${esc(detail)}</pre></details>`;
+  }).join('');
+  $('classifier-persist').disabled=classifierBusy;
+  $('classifier-persistence').textContent=valid?persistenceText(draft.persistence):'';
   $('classifier-title').textContent=t('classifierTitle')+(valid?' · '+e.name:'');
   $('classifier-summary').textContent=valid?(['0','1'].includes(metrics.classifier_enabled)?t(metrics.classifier_enabled==='1'?'classifierOn':'classifierOff'):t('classifierUnknown')):'';
   $('classifier-stats').innerHTML=valid?['generation','rules','hits','misses','parse_errors','load_errors','flushes'].map(key=>`<div><dt>${esc('classifier_'+key)}</dt><dd>${esc(metrics['classifier_'+key] ?? '—')}</dd></div>`).join(''):'';
@@ -2678,10 +2725,31 @@ async function classifierAction(operation) {
   classifierBusy=true;draft.message={key:'working'};renderClassifier();
   const expected=operation==='disable'?draft:draft.checked || draft;
   try {
-    const result=await api(`/api/v1/endpoints/${encodeURIComponent(e.id)}/classifier`+(operation==='show'?'':'/'+operation),operation==='show'?'GET':'POST',operation==='show'?undefined:{rules:operation==='disable'?'':text,expected_sha256:expected.revision,expected_generation:expected.generation},180000);
-    if(operation==='show')Object.assign(draft,{text:result.rules,active:result.rules,revision:result.sha256,generation:result.generation,checked:null,diff:'',message:{key:'rulesLoaded'}});
+    const reading = operation === 'show';
+    const path = `/api/v1/endpoints/${encodeURIComponent(e.id)}/classifier`;
+    const body = reading ? undefined : {
+      rules: operation === 'disable' ? '' : text,
+      persist: $('classifier-persist').checked,
+      expected_sha256: expected.revision,
+      expected_generation: expected.generation,
+    };
+    const result = await api(path + (reading ? '' : '/' + operation), reading ? 'GET' : 'POST', body, 180000);
+    if (operation === 'show') Object.assign(draft, {
+      text: result.rules,
+      active: result.rules,
+      revision: result.sha256,
+      generation: result.generation,
+      persistence: result.persistence,
+      checked: null,
+      diff: '',
+      message: {key: 'rulesLoaded'},
+    });
     else if(operation==='check')Object.assign(draft,{checked:{text,revision:result.sha256,generation:result.generation},diff:result.diff,message:result.result});
-    else {draft.message=result.result+' · '+t('classifierReload');await refresh(true);}
+    else {
+      draft.persistence = null;
+      draft.message = result.result + ' · ' + result.persistence + ' · ' + t('classifierReload');
+      await refresh(true);
+    }
   } catch(error) {draft.checked=null;draft.message=error.message+(mutation?' · '+t('classifierReload'):'');}
   finally {
     if(mutation){draft.revision=null;draft.checked=null;}
@@ -2705,6 +2773,8 @@ function draftFor(id) {
 function renderRules() {
   const e = selected(), valid = e?.kind === "switch" && (!!e.control || e.source==="discovered"), remote=e?.source==="discovered";
   const draft = e ? draftFor(e.id) : {text:"", message:"", diff:""};
+  $("rules-persist").disabled=state.ruleBusy;
+  $("rules-persistence").textContent=valid?persistenceText(draft.persistence):"";
   $("rules-title").textContent = valid ? t("rulesFor",{name:e.name}) : t("rules");
   $("rules-hint").textContent = t(valid ? (state.data.allow_write && !remote ? "editRulesHint" : "readOnlyHint") : "chooseSwitch");
   $("rules-read").disabled = !valid || state.ruleBusy;
@@ -2725,10 +2795,25 @@ async function ruleAction(operation) {
   state.ruleBusy = true; draft.message = {key:"working"}; renderRules();
   try {
     const result = await api(endpointURL(e.id) + (operation === "show" ? "" : "/" + operation), operation === "show" ? "GET" : "POST",
-      operation === "show" ? undefined : {rules:text, expected_sha256:operation === "load" ? draft.checked.revision : draft.revision});
-    if (operation === "show") { draft.text = result.rules; draft.active = result.rules; draft.revision=result.sha256; draft.checked=null; draft.diff=""; draft.message={key:"rulesLoaded"}; }
+      operation === "show" ? undefined : {rules:text, persist:$("rules-persist").checked, expected_sha256:operation === "load" ? draft.checked.revision : draft.revision});
+    if (operation === "show") {
+      draft.persistence = result.persistence;
+      draft.text = result.rules;
+      draft.active = result.rules;
+      draft.revision = result.sha256;
+      draft.checked = null;
+      draft.diff = "";
+      draft.message = {key: "rulesLoaded"};
+    }
     if (operation === "check") { draft.checked={text,revision:result.sha256}; draft.diff=result.diff; draft.message=result.result; }
-    if (operation === "load") { draft.checked=null; draft.revision=null; draft.diff=""; draft.message={key:"loadResult",params:{result:result.result}}; await refresh(true); }
+    if (operation === "load") {
+      draft.persistence = null;
+      draft.checked = null;
+      draft.revision = null;
+      draft.diff = "";
+      draft.message = {key: "loadResult", params: {result: result.result + " · " + result.persistence}};
+      await refresh(true);
+    }
   } catch (error) { draft.checked=null; draft.message=error.message; }
   finally { state.ruleBusy=false; renderRules(); }
 }

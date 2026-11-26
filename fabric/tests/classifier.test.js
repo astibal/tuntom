@@ -15,14 +15,14 @@ function actions({fail=false,confirm=true}={}) {
  const draft={text:'format 1\nclassify to [17]\n',active:'old',revision:'r',generation:'3',checked:{text:'format 1\nclassify to [17]\n',revision:'r',generation:'3'}};
  const calls=[],e={id:'control:a',kind:'adapter',name:'ex0'};
  const classifierAction=runInNewContext(source.slice(source.indexOf('async function classifierAction('),source.indexOf("$('classifier-siblings').addEventListener"))+';classifierAction',{
- selected:()=>e,supportsClassifier,classifierTargets:()=>[e],classifierBusy:false,classifierDraft:()=>draft,state:{data:{allow_write:true}},window:{confirm:()=>confirm},t:k=>k,renderClassifier(){},refresh:async()=>{},api:async(...args)=>{calls.push(args);if(fail)throw Error('lost response');return {result:'classifier_generation=4'};}
+ $:()=>({checked:true}),selected:()=>e,supportsClassifier,classifierTargets:()=>[e],classifierBusy:false,classifierDraft:()=>draft,state:{data:{allow_write:true}},window:{confirm:()=>confirm},t:k=>k,renderClassifier(){},refresh:async()=>{},api:async(...args)=>{calls.push(args);if(fail)throw Error('lost response');return {result:'classifier_generation=4'};}
  });
  return {classifierAction,draft,calls};
 }
 test('load-flush sends generation once and invalidates the draft revision even on ambiguous failure',async()=>{
  for(const fail of [false,true]) {
   const {classifierAction,draft,calls}=actions({fail});await classifierAction('load-flush');
-  assert.equal(calls.length,1);assert.equal(calls[0][2].expected_generation,'3');
+  assert.equal(calls.length,1);assert.equal(calls[0][2].persist,true);assert.equal(calls[0][2].expected_generation,'3');
   assert.equal(draft.revision,null);assert.equal(draft.checked,null);
  }
 });

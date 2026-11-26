@@ -265,8 +265,10 @@ class Network:
             return node['endpoint']
 
     def read(self, key, operation, body=""):
-        if operation not in {'stats', 'flows', 'show', 'classifier-show', 'classifier-check', 'classifier-load', 'classifier-load-flush', 'classifier-disable'}:
+
+        if operation not in {'stats', 'flows', 'show', 'classifier-show', 'classifier-check', 'classifier-load', 'classifier-load-flush', 'classifier-disable', 'state', 'classifier-state', 'classifier-load-save', 'classifier-load-flush-save', 'classifier-disable-save'}:
             raise APIError(403, 'discovered components support read-only operations')
+
         instance = key.removeprefix('control:')
         with self.lock:
             node = self.nodes.get(instance)
